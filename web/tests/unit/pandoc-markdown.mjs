@@ -49,6 +49,10 @@ test("inline math follows Pandoc's dollar rules", () => {
   assert.deepEqual(texts("$x $", "InlineMath"), []);
   assert.deepEqual(texts("$x$5", "InlineMath"), []);
   assert.deepEqual(texts("$a\\$b$", "InlineMath"), ["$a\\$b$"]);
+  assert.deepEqual(texts("$5 and $10 and x$", "InlineMath"), ["$10 and x$"]);
+  assert.deepEqual(texts("$a $b$", "InlineMath"), ["$b$"]);
+  assert.deepEqual(texts("$x$5 y$", "InlineMath"), ["$5 y$"]);
+  assert.deepEqual(texts("$a \\$ b$", "InlineMath"), ["$a \\$ b$"]);
   assert.deepEqual(texts("$a_1 * b_2$", "Emphasis"), []);
 });
 
