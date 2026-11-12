@@ -23,8 +23,6 @@
     oncheck,
     visual = false,
     onvisual,
-    paper = false,
-    onpaper,
     commands = {},
   } = $props();
 
@@ -158,14 +156,6 @@
   <button type="button" role="switch" class="switch" aria-checked={visual} aria-label={m.common_visual_mode()}
           data-state={visual ? "checked" : "unchecked"} onclick={() => onvisual?.(!visual)}>
     <span class="switch-thumb" data-state={visual ? "checked" : "unchecked"}></span>
-  </button>
-</SettingRow>
-
-<SettingRow id="editor-paper" title={m.editorsettings_paper_title()}
-            description={m.editorsettings_paper_description()}>
-  <button type="button" role="switch" class="switch" aria-checked={paper} aria-label={m.editorsettings_paper_title()}
-          data-state={paper ? "checked" : "unchecked"} onclick={() => onpaper?.(!paper)}>
-    <span class="switch-thumb" data-state={paper ? "checked" : "unchecked"}></span>
   </button>
 </SettingRow>
 

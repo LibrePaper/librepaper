@@ -1748,8 +1748,7 @@
                 latexAssist={preferences.state.latexAssist} onlatexassist={preferences.setLatexAssist}
                 proofing={preferences.state.proofing} onproofing={preferences.setProofing}
                 dialect={preferences.state.dialect} ondialect={preferences.setDialect}
-                check={preferences.state.check} oncheck={preferences.setCheck}
-                paper={preferences.state.paper} onpaper={preferences.setPaper} />
+                check={preferences.state.check} oncheck={preferences.setCheck} />
 
 <Modal open={Boolean(renaming)} title={m.landing_rename_title()}
        description={m.landing_rename_description()}

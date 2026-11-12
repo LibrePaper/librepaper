@@ -272,10 +272,7 @@
   import { VISUAL_FORMATS } from "../lib/visual-markup/formats.js";
   import { applyFormat, formatState } from "../lib/visual-markup/formatting.js";
   import { documentFacts } from "../lib/visual-markup/facts.js";
-  import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
   import { paperVisual } from "../lib/paper/index.js";
-  import { typstFacts } from "../lib/visual-markup/typst-facts.js";
-  import { orgFacts } from "../lib/visual-markup/org-facts.js";
   import { m } from "../lib/paraglide/messages.js";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
@@ -296,7 +293,7 @@
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     // A suggester's typing is always tracked: tracking starts on and cannot be stopped.
     suggestOnly = false,
-    visual = false, paper = false, imageUrl = null,
+    visual = false, imageUrl = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment, onchangeselect,
     // Called with the caret's formatting (formatState) while visual mode is on.
@@ -747,9 +744,9 @@
     untrack(() => {
       const path = pathOfDoc(session.doc, id);
       const format = formatOf(path);
-      const compute = { latex: documentFacts, markdown: markdownFacts, org: orgFacts, typst: typstFacts }[format];
-      if (!target || !visual || !compute) return;
-      const facts = compute(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
+      // Only LaTeX is drawn by the visual-markup layer, which reads these facts; the paper view computes its own.
+      if (!target || !visual || format !== "latex") return;
+      const facts = documentFacts(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
       const sent = JSON.stringify(facts, factsJson);
       if (!fresh && sentFacts.get(target) === sent) return;
       sentFacts.set(target, sent);
@@ -1747,13 +1744,14 @@
 
   // The visual layer for a file, or nothing where it draws no such format. The
   // colours depend on the page's mode, so this is read again on a theme change.
-  // With the paper setting on, a Markdown, Quarto, Org or Typst file is drawn by the paper layer instead.
+  // Markdown, Quarto, Org and Typst files are drawn by the paper layer; LaTeX by the visual-markup layer.
   function visualOn(on, path) {
-    if (on && untrack(() => paper) && /\.(md|markdown|qmd|org|typ)$/i.test(path)) {
+    if (!on) return [];
+    if (/\.(md|markdown|qmd|org|typ)$/i.test(path)) {
       const format = /\.org$/i.test(path) ? "org" : /\.qmd$/i.test(path) ? "quarto" : /\.typ$/i.test(path) ? "typst" : "markdown";
       return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", project: format === "typst" ? () => paperProject(path) : null });
     }
-    return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) }) : [];
+    return visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) });
   }
   // The source-code chrome for a file. It is dropped only where the visual layer draws the file,
   // the same test visualOn applies, so a .bib or .py file keeps its line numbers in visual mode.
@@ -2145,7 +2143,6 @@
   // The visual layer switch works the same way, and redraws nothing else.
   $effect(() => {
     void visual;
-    void paper;
     if (view) untrack(() => syncVisual(view));
   });
 

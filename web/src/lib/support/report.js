@@ -8,7 +8,7 @@
 import { desktop } from "../desktop/client.js";
 import { PREFIX } from "../build-preferences.js";
 import { PANES } from "../panes.js";
-import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_FONT, EDITOR_LATEX_ASSIST, EDITOR_LINE_HEIGHT, EDITOR_PAPER, EDITOR_SIZE, EDITOR_SPELLCHECK, KEYMAP, KEYS, SOURCE_SIDE, keyFor, read } from "../storage.js";
+import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_FONT, EDITOR_LATEX_ASSIST, EDITOR_LINE_HEIGHT, EDITOR_SIZE, EDITOR_SPELLCHECK, KEYMAP, KEYS, SOURCE_SIDE, keyFor, read } from "../storage.js";
 import { entries } from "./log.js";
 import { snapshot } from "./providers.js";
 import { scrubMessage } from "./redact.js";
@@ -150,7 +150,6 @@ function changedSettings() {
   differs("LaTeX assist", EDITOR_LATEX_ASSIST, true);
   differs("Grammar and spelling", EDITOR_SPELLCHECK, "browser");
   differs("Code check", EDITOR_CHECK, true);
-  differs("Paper view", EDITOR_PAPER, false);
   for (const pane of Object.values(PANES)) {
     const value = read(pane.key, null);
     if (value !== null) lines.push([`Pane ${pane.name}`, String(value)]);
