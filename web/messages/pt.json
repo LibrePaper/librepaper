@@ -2575,6 +2575,7 @@
   "rename_invalid_chars": "Este formato não aceita esse nome",
   "rename_label": "Renomear {name} para",
   "renderers_local_failed": "Falha ao renderizar {format} neste computador.",
+  "renderers_quarto_failed": "Não foi possível mostrar a pré-visualização do Quarto.",
   "renderersettings_aria": "{name} renderiza em",
   "renderersettings_description": "Os documentos {name} são renderizados neste navegador ou, com Executar código ativado, neste computador.",
   "renderersettings_note": "A ferramenta pode baixar pacotes por conta própria.",

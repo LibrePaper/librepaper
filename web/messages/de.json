@@ -2575,6 +2575,7 @@
   "rename_invalid_chars": "Dieses Format erlaubt diesen Namen nicht",
   "rename_label": "{name} umbenennen in",
   "renderers_local_failed": "{format} konnte nicht auf diesem Computer gerendert werden.",
+  "renderers_quarto_failed": "Die Quarto-Vorschau konnte nicht angezeigt werden.",
   "renderersettings_aria": "Ort der Darstellung von {name}",
   "renderersettings_description": "{name}-Dokumente werden in diesem Browser gerendert oder, solange „Code ausführen“ aktiviert ist, auf diesem Computer.",
   "renderersettings_note": "Das Werkzeug kann Pakete selbstständig herunterladen.",

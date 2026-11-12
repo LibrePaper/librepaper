@@ -2575,6 +2575,7 @@
   "rename_invalid_chars": "Este formato no admite ese nombre",
   "rename_label": "Renombrar {name} a",
   "renderers_local_failed": "Error al compilar {format} en este equipo.",
+  "renderers_quarto_failed": "No se pudo mostrar la vista previa de Quarto.",
   "renderersettings_aria": "{name} se compila en",
   "renderersettings_description": "Los documentos de {name} se compilan en este navegador, o en este equipo mientras «Ejecutar código» esté activado.",
   "renderersettings_note": "La herramienta puede descargar paquetes por su cuenta.",

@@ -364,11 +364,11 @@ function draftTree(tree, markdown) {
 // A Quarto document the module cannot draft (an older module, or a failure
 // inside it) is shown as its source, with the reason beside it.
 async function quartoFailure(error, tree, title) {
-  const message = error?.message || String(error);
+  const reason = error?.message || String(error);
   return {
     html: await textPage(tree.texts?.[tree.main] ?? "", tree.main, title || tree.main),
     pdf: null,
-    diagnostics: [{ severity: "error", message, hints: [], file: tree.main, line: 0, column: 0, end_line: 0, end_column: 0 }],
+    diagnostics: [{ severity: "error", message: m.renderers_quarto_failed(), hints: [reason], file: tree.main, line: 0, column: 0, end_line: 0, end_column: 0 }],
   };
 }
 

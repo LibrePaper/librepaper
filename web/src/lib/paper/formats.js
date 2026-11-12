@@ -49,7 +49,7 @@ function lineRanges(text) {
  * @returns {import("./blocks.js").PaperBlock[] | null}
  */
 export function renderedBlocksOf(text, renderer, path) {
-  const rendered = renderer.renderBlocks(text, path);
+  const rendered = renderer.renderBlocks?.(text, path) ?? null;
   if (!rendered) return null;
   const lines = lineRanges(text);
   const blocks = [];

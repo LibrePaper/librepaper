@@ -2575,6 +2575,7 @@
   "rename_invalid_chars": "Ce format n’accepte pas ce nom",
   "rename_label": "Renommer {name} en",
   "renderers_local_failed": "Le rendu en {format} sur cet ordinateur a échoué.",
+  "renderers_quarto_failed": "L’aperçu Quarto n’a pas pu être affiché.",
   "renderersettings_aria": "Rendu de {name} dans",
   "renderersettings_description": "Les documents {name} sont produits dans ce navigateur, ou sur cet ordinateur lorsque « Exécuter le code » est activé.",
   "renderersettings_note": "L’outil peut lui-même télécharger des paquets.",

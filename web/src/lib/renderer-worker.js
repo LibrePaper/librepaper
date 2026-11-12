@@ -4,7 +4,7 @@ import { renderResolving } from "./needs.js";
 // What earlier compiles fetched -- packages -- for the life of this worker.
 // See `needs.js`.
 const fetched = new Map();
-/** @typedef {{tree: object, title: string, format?: string, old?: string, new?: string, source?: string, path?: string, offset?: number, explicit?: boolean}} RendererArgs */
+/** @typedef {{tree: object, title: string, format?: string, old?: string, new?: string, source?: string, path?: string, offset?: number, explicit?: boolean, forPandoc?: boolean}} RendererArgs */
 /** @typedef {{id: string, url: string, operation: string, args: RendererArgs}} RendererRequest */
 /** @typedef {{location: Location, onmessage: ((event: MessageEvent<RendererRequest>) => void) | null, postMessage: (message: unknown, transfer?: Transferable[]) => void}} RendererWorkerScope */
 /** @type {RendererWorkerScope} */

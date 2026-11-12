@@ -337,6 +337,7 @@ export function matchResults(results, cells) {
 /// stays here, in the browser; the module only places what it is given.
 export const QUARTO_SIDECAR = ".librepaper/quarto.json";
 
+/** @param {string} source @param {{path?: string, results?: any, strings?: Record<string, string>}} [options] */
 export async function quartoSidecar(source, { path = "main.qmd", results = null, strings } = {}) {
   const parsed = parseQuarto(source, { path });
   const hashes = await Promise.all(parsed.cells.map((cell) => cellFingerprint(cell)));

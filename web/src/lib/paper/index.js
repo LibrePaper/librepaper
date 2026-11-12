@@ -148,13 +148,17 @@ function paperField(path, imageUrl, adapter) {
 function loaderFor(adapter) {
   return ViewPlugin.define((view) => {
     const plugin = { destroyed: false, destroy() { plugin.destroyed = true; } };
-    Promise.all([loadPaperRenderer(adapter.module), adapter.ready()])
-      .then(([renderer]) => {
+    // The page stylesheet is always the Markdown renderer's: it is the house
+    // style every format shares, whichever renderer draws this file.
+    const house = adapter.module === "markdown" ? null : loadPaperRenderer("markdown").catch(() => null);
+    Promise.all([loadPaperRenderer(adapter.module), adapter.ready(), house])
+      .then(([renderer, , markdown]) => {
         if (plugin.destroyed) return;
-        if (!document.head.querySelector("style[data-librepaper-paper]")) {
+        const pageCss = (adapter.module === "markdown" ? renderer : markdown)?.pageCss;
+        if (pageCss && !document.head.querySelector("style[data-librepaper-paper]")) {
           const style = document.createElement("style");
           style.setAttribute("data-librepaper-paper", "");
-          style.textContent = paperStylesheet(renderer.pageCss);
+          style.textContent = paperStylesheet(pageCss);
           document.head.appendChild(style);
         }
         // The Markdown page stylesheet does not cover Typst's MathML, so Typst brings its own rules.

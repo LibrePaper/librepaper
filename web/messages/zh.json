@@ -2560,6 +2560,7 @@
   "rename_invalid_chars": "此格式不允许使用该名称",
   "rename_label": "将 {name} 重命名为",
   "renderers_local_failed": "在这台电脑上渲染 {format} 失败。",
+  "renderers_quarto_failed": "无法显示 Quarto 预览。",
   "renderersettings_aria": "{name} 的渲染位置",
   "renderersettings_description": "{name} 文档在此浏览器中渲染；开启“运行代码”后，则在这台电脑上渲染。",
   "renderersettings_note": "该工具可能会自行下载包。",

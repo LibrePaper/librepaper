@@ -2560,6 +2560,7 @@
   "rename_invalid_chars": "この形式ではその名前は使えません",
   "rename_label": "{name} の名前を変更",
   "renderers_local_failed": "このコンピューターで{format}をレンダリングできませんでした。",
+  "renderers_quarto_failed": "Quarto のプレビューを表示できませんでした。",
   "renderersettings_aria": "{name}のレンダリング先",
   "renderersettings_description": "{name}ドキュメントは、このブラウザーで、または「コードを実行」がオンの間はこのコンピューターでレンダリングされます。",
   "renderersettings_note": "ツールが自動的にパッケージをダウンロードすることがあります。",

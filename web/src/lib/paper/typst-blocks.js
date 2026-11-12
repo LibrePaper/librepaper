@@ -35,16 +35,17 @@ export function splitTypstBlocks(text) {
   if (!tree) return null;
   /** @type {PaperBlock[]} */
   const blocks = [];
-  /** @param {number} from @param {number} to @param {string} kind @param {boolean} render */
-  const emit = (from, to, kind, render) => {
+  /** @param {number} from @param {number} to @param {string} kind @param {boolean} render @param {boolean} [trivia] */
+  const emit = (from, to, kind, render, trivia = false) => {
     from = lineStart(text, from);
     to = lineEnd(text, to);
     const previous = blocks.at(-1);
     // Two blocks on one line cannot both be shown as whole lines, so they become one.
-    // A merged block stays source if either part does.
+    // A merged block stays source if either part does, except that a label
+    // or comment sharing the line (`= Intro <sec:intro>`) changes nothing.
     if (previous && from <= previous.to) {
       previous.to = Math.max(previous.to, to);
-      previous.render = previous.render && render;
+      if (!trivia) previous.render = previous.render && render;
       return;
     }
     blocks.push({ from, to, kind, render });
@@ -56,7 +57,7 @@ export function splitTypstBlocks(text) {
   const flush = () => {
     if (run) {
       const comment = run.kind !== "" && !run.content;
-      emit(run.from, run.to, comment ? "Comment" : run.kind, run.content);
+      emit(run.from, run.to, comment ? "Comment" : run.kind, run.content, !run.content);
     }
     run = null;
   };

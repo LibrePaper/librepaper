@@ -19,7 +19,8 @@ const decoder = new TextDecoder();
  * @typedef {{ fromLine: number, toLine: number, html: string }} RenderedBlock
  * @typedef {{
  *   render: (markdown: string) => string,
- *   renderBlocks: (source: string, main: string) => RenderedBlock[] | null,
+ *   renderBlocks?: (source: string, main: string) => RenderedBlock[] | null,
+ *   mathCss?: string,
  *   pageCss: string,
  * }} PaperRenderer
  */
@@ -172,7 +173,7 @@ export function loadPaperRenderer(key = "markdown") {
   const url = globalThis.LIBREPAPER_MODULES?.[key];
   if (!url) return Promise.reject(new Error(`no ${key} renderer URL`));
   const attempt = verifiedModuleBytes(url)
-    .then((bytes) => (key === "typst" ? createTypstPaperRenderer(bytes) : createPaperRenderer(bytes)))
+    .then((bytes) => /** @type {Promise<PaperRenderer>} */ (key === "typst" ? createTypstPaperRenderer(bytes) : createPaperRenderer(bytes)))
     .then((renderer) => {
       current.set(key, renderer);
       return renderer;
