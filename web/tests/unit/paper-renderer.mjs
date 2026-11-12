@@ -53,13 +53,19 @@ const renderer = await createPaperRenderer(bytes);
   await assert.rejects(loadPaperRenderer());
 }
 
-// The stylesheet is scoped to the block container, its page layout is undone,
-// and the page's :root rule does not carry over.
+// The stylesheet is scoped to the block container and its page layout is
+// undone. The page's :root variables carry over onto the scope root, and the
+// dark theme class (on the editor, outside the scope) reaches them.
 {
-  const css = paperStylesheet("body { color: red; max-width: 46rem }\n:root { --ink: #000 }\nh1 { margin-top: 1em }");
+  const css = paperStylesheet("body { color: red; max-width: 46rem }\n:root { --ink: #000 }\n.lp-dark { --ink: #fff }\n.lp-dark img { background: #fff }\nh1 { margin-top: 1em }");
   assert.ok(css.includes("@scope (.cm-lp-paper)"));
   assert.ok(css.includes(":scope {"));
   assert.doesNotMatch(css, /:root/);
   assert.doesNotMatch(css, /body\s*\{/);
-  assert.ok(css.includes(".cm-lp-paper-dark .cm-lp-paper"));
+  assert.match(css, /:scope \{ --ink: #000 \}/);
+  assert.match(css, /\.lp-dark :scope \{ --ink: #fff \}/);
+  assert.match(css, /\.lp-dark :scope img \{/);
+  assert.doesNotMatch(css, /cm-lp-paper-dark/);
+  const both = paperStylesheet(":root.lp-dark { --ink: #fff }\n.lp-dark :root { --a: 1 }");
+  assert.equal(both.match(/\.lp-dark :scope \{/g).length, 2);
 }

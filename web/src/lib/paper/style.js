@@ -9,11 +9,15 @@
  * @returns {string}
  */
 export function paperStylesheet(pageCss) {
-  // `:root` is the page's own paper; the editor sets its own colours, so the
-  // rule goes. `body` becomes the scope root.
+  // `body` becomes the scope root, and so does `:root`: the page's custom
+  // properties (the house colours) must reach the block. The dark theme is
+  // the `lp-dark` class on the editor, an ancestor of the scope root, so a
+  // selector that names it is rewritten to `.lp-dark :scope`.
   const scoped = pageCss
-    .replace(/:root\s*\{[^}]*\}/g, "")
-    .replace(/(^|[\s,}])body\s*\{/g, "$1:scope {");
+    .replace(/(^|[\s,}])body\s*\{/g, "$1:scope {")
+    .replace(/(?:html|:root)\.lp-dark(?![\w-])|\.lp-dark\s+(?::root|html)(?![\w-])/g, ".lp-dark :scope")
+    .replace(/:root(?![\w-])/g, ":scope")
+    .replace(/(?<![\w-])\.lp-dark(?!\s*:scope)(?![\w-])/g, ".lp-dark :scope");
   // The source of the block being edited is set in the page's face too, so
   // revealing a block changes its markup and not its type.
   const font = /(?:^|[\s,}])body\s*\{[^}]*?font:\s*([\d.]+px)\/([\d.]+)\s+([^;}]+)/.exec(pageCss);
@@ -51,15 +55,5 @@ a { text-decoration: underline; }
 pre { white-space: pre; }
 }`,
     sourceType,
-    // Dark paper mirrors the reader's dark rules: code blocks stay light so
-    // their colours keep contrast, and inline code takes the editor's ink.
-    `.cm-lp-paper-dark .cm-lp-paper blockquote { color: rgb(255 255 255 / 0.72); border-left-color: rgb(255 255 255 / 0.25); }
-.cm-lp-paper-dark .cm-lp-paper hr { border-top-color: rgb(255 255 255 / 0.2); }
-.cm-lp-paper-dark .cm-lp-paper pre { background-color: #f2f4f7; color: #1a1d21; }
-.cm-lp-paper-dark .cm-lp-paper :not(pre) > code { background-color: rgb(255 255 255 / 0.1); color: inherit; }
-.cm-lp-paper-dark .cm-lp-paper img { background-color: #fff; }
-.cm-lp-paper-dark .cm-lp-paper a { color: #7aa2f7; }
-.cm-lp-paper-dark .cm-lp-paper :is(table, th, td) { border-color: rgb(255 255 255 / 0.15); }
-.cm-lp-paper-dark .cm-lp-paper th { background-color: rgb(255 255 255 / 0.05); }`,
   ].join("\n");
 }
