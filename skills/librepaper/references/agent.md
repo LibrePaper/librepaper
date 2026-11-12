@@ -24,6 +24,7 @@ lp comment main.tex --on 'exact text' --body 'Your comment'
 lp suggest main.tex --find 'exact old text' --replace 'new text'
 lp insert main.tex --after 'exact anchor text' --text 'new text'
 lp create notes/summary.md --text 'file text'
+lp rename notes/summary.md notes/overview.md
 lp withdraw 3f9c… 7a1e…
 ```
 
