@@ -2247,13 +2247,6 @@
     if (format) untrack(() => buildSettings.follow({ format, user }));
   });
   const setBuildPreferences = (next) => buildSettings.choose(next, sourceFormat);
-  const shareProps = $derived({
-    share: shareResults,
-    onshare: setShareResults,
-    shareStatus: sharedResults.state.status,
-    pdfOutput: buildPreferences.output === "pdf",
-  });
-
   // Shared results: the output of the last local run of a Quarto document,
   // kept by the server for collaborators who have no data of their own. Every
   // role fetches it; only a run on this computer uploads it.
@@ -2269,6 +2262,9 @@
   async function refreshResults() {
     const before = sharedResults.state.record?.updatedAt;
     const next = await sharedResults.refresh();
+    // Deleted (from Settings or by a collaborator): the next run uploads again
+    // even when its output is identical to the last one this tab sent.
+    if (!next) sharedResults.reset();
     // A run on this computer draws its own output, so it never re-runs
     // because its own upload came back.
     if (readerDisposed || localExecution || (next?.updatedAt ?? "") === (before ?? "")) return;
@@ -2307,6 +2303,12 @@
       sharedResults.skip("unmatched");
     }
   }
+  const shareProps = $derived({
+    share: shareResults,
+    onshare: setShareResults,
+    shareStatus: sharedResults.state.status,
+    pdfOutput: ["pdf", "docx"].includes(buildPreferences.output),
+  });
   const stopLatex = () => buildSettings.stopLatex();
 
   const configureLatex = (format, owner = session) => buildSettings.configureLatex(format, owner, buildUserId);
