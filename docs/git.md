@@ -77,6 +77,7 @@ librepaper push     # send your commits to the project
 Pull fetches each named version as a commit on the `librepaper/main` branch, adds the project's current state as one more commit if it has unnamed edits, and merges the result into your branch. If the merge conflicts, resolve it the usual Git way and commit. Pull refuses to start if you have uncommitted changes. Use `--no-merge` to fetch without merging.
 
 Push sends every new, changed and deleted file in one request; the project accepts all of them or none. The version is named after your latest commit subject (followed by "and N more" if several commits went out together) and credited to its author. Override these with `--message` and `--author`. Push is refused if someone changed the same file on the web since your last pull. Pull, then push again.
+A text file renamed with its text unchanged is sent as a rename, so its comments stay on it.
 
 To create a project from an existing repository, run `librepaper push --title "Thesis draft"`. To see what a first pull would do without writing anything, add `--preview`.
 

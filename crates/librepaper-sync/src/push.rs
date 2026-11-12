@@ -66,6 +66,7 @@ struct Plan<'a> {
     create: Vec<Value>,
     delete: Vec<Value>,
     put_binary: Vec<Value>,
+    rename: Vec<Value>,
     uploads: Vec<(String, &'a Local)>,
 }
 
@@ -75,30 +76,70 @@ impl Plan<'_> {
             && self.create.is_empty()
             && self.delete.is_empty()
             && self.put_binary.is_empty()
+            && self.rename.is_empty()
     }
 
     fn body(&self, operation: &str, sync: Value) -> Value {
+        let mut change = json!({
+            "dependencies": self.dependencies,
+            "patches": self.patches,
+            "create": self.create,
+            "delete": self.delete,
+            "put_binary": self.put_binary,
+        });
+        // Only a push with a rename carries the key: an older server refuses
+        // a field it does not know, and sends without renames must keep
+        // working on it.
+        if !self.rename.is_empty() {
+            change["rename"] = json!(self.rename);
+        }
         json!({
             "operation": operation,
-            "change": {
-                "dependencies": self.dependencies,
-                "patches": self.patches,
-                "create": self.create,
-                "delete": self.delete,
-                "put_binary": self.put_binary,
-            },
+            "change": change,
             "sync": sync,
         })
     }
 }
 
+/// Pairs each deleted text file with an added text file of the same LF text,
+/// which is a rename on disk. A file that was also edited has another hash
+/// and stays a delete and a create. Each path pairs once, and a deleted path
+/// takes the first unpaired match in sorted order. Returns `(from, to)`.
+fn find_renames(
+    recorded: &BTreeMap<String, FileRecord>,
+    found: &Scan,
+    changes: &LocalChanges,
+) -> Vec<(String, String)> {
+    let mut taken: Vec<&String> = Vec::new();
+    let mut pairs = Vec::new();
+    for from in &changes.deleted {
+        let Some(before) = recorded.get(from) else {
+            continue;
+        };
+        if before.kind != Kind::Text {
+            continue;
+        }
+        let to = changes.added.iter().find(|to| {
+            let file = &found.files[*to];
+            !taken.contains(to) && file.kind == Kind::Text && file.sha == before.sha
+        });
+        if let Some(to) = to {
+            taken.push(to);
+            pairs.push((from.clone(), to.clone()));
+        }
+    }
+    pairs
+}
+
 /// What to send for the paths that differ. `bases` holds the LF text each
-/// changed text file was last agreed on.
+/// changed text file was last agreed on. With `pair_renames` off, a rename is
+/// sent as the delete and the create it was before.
 fn plan_change<'a>(
     recorded: &BTreeMap<String, FileRecord>,
     found: &'a Scan,
     changes: &LocalChanges,
     bases: &BTreeMap<String, String>,
+    pair_renames_too: bool,
 ) -> Plan<'a> {
     let mut plan = Plan {
         dependencies: Vec::new(),
@@ -106,9 +147,22 @@ fn plan_change<'a>(
         create: Vec::new(),
         delete: Vec::new(),
         put_binary: Vec::new(),
+        rename: Vec::new(),
         uploads: Vec::new(),
     };
-    for path in &changes.added {
+    // A rename names the file by path only: the server checks its hash
+    // through the deleted file's recorded state, not a dependency here.
+    let renames = if pair_renames_too {
+        find_renames(recorded, found, changes)
+    } else {
+        Vec::new()
+    };
+    let renamed_from = |path: &String| renames.iter().any(|(from, _)| from == path);
+    let renamed_to = |path: &String| renames.iter().any(|(_, to)| to == path);
+    for (from, to) in &renames {
+        plan.rename.push(json!({"from": from, "to": to}));
+    }
+    for path in changes.added.iter().filter(|path| !renamed_to(*path)) {
         let file = &found.files[path];
         match file.kind {
             Kind::Text => plan.create.push(json!({
@@ -146,7 +200,7 @@ fn plan_change<'a>(
             }
         }
     }
-    for path in &changes.deleted {
+    for path in changes.deleted.iter().filter(|path| !renamed_from(*path)) {
         let Some(before) = recorded.get(path) else {
             continue;
         };
@@ -218,12 +272,14 @@ async fn send(client: &Client, slug: &str, body: &Value) -> Result<Sent, Error> 
 /// Posts the request a pending push holds and settles the state by what the
 /// server said. Only the effects saved with the request are applied. A
 /// refusal clears the attempt and leaves the baseline where it was; an error
-/// keeps the attempt, key and effects, for the next push.
+/// keeps the attempt, key and effects, for the next push. `renamed` is how
+/// many of the files are renames, which the summary counts once.
 async fn settle_pending(
     client: &Client,
     store: &dyn StateStore,
     state: &mut State,
     pending: &PendingPush,
+    renamed: usize,
 ) -> Result<PushOutcome, Error> {
     let slug = state.link.slug.clone();
     match send(client, &slug, &pending.request).await? {
@@ -261,10 +317,19 @@ async fn settle_pending(
             Ok(PushOutcome::Pushed {
                 label_sha: sha,
                 sequence,
-                files: pending.upsert_files.len() + pending.deleted_paths.len(),
+                files: (pending.upsert_files.len() + pending.deleted_paths.len())
+                    .saturating_sub(renamed),
             })
         }
     }
+}
+
+/// How many renames a pending push carries. Each one is a file in both the
+/// upserts and the deletes, and counts once.
+fn renames_in(pending: &PendingPush) -> usize {
+    pending.request["change"]["rename"]
+        .as_array()
+        .map_or(0, Vec::len)
 }
 
 /// Sends the directory's changes to the project as one named version. A push
@@ -297,7 +362,8 @@ pub async fn push(
         if pending.actor != client.actor() {
             return Err(Error::PendingActor);
         }
-        match settle_pending(client, store, &mut state, &pending).await? {
+        let resumed = renames_in(&pending);
+        match settle_pending(client, store, &mut state, &pending, resumed).await? {
             outcome @ PushOutcome::Pushed { .. } => settled = Some(outcome),
             refused => return Ok(refused),
         }
@@ -362,52 +428,79 @@ pub async fn push(
         }
     }
 
-    let plan = plan_change(&state.files, &found, &changes, &bases);
-    if plan.is_empty() {
-        return Ok(settled.unwrap_or(PushOutcome::Nothing));
+    // An older server cannot parse the `rename` key and answers the body as
+    // malformed. That push is sent once more as the delete and the create it
+    // was before, with a new request key, since the refused one was never
+    // recorded.
+    let mut pair_renames = true;
+    loop {
+        let plan = plan_change(&state.files, &found, &changes, &bases, pair_renames);
+        if plan.is_empty() {
+            return Ok(settled.unwrap_or(PushOutcome::Nothing));
+        }
+        for (path, file) in &plan.uploads {
+            upload(client, &slug, path, file).await?;
+        }
+        let mut sync = json!({"provider": "cli", "message": options.message});
+        if let Some(author) = options
+            .author
+            .as_deref()
+            .map(str::trim)
+            .filter(|author| !author.is_empty())
+        {
+            sync["author"] = json!(author);
+        }
+        let request_key = librepaper_base::util::new_request_key();
+        let request = plan.body(&request_key, sync);
+        let upsert_files = changes
+            .added
+            .iter()
+            .chain(&changes.changed)
+            .map(|path| {
+                let file = &found.files[path];
+                (
+                    path.clone(),
+                    FileRecord {
+                        kind: file.kind,
+                        sha: file.sha.clone(),
+                    },
+                )
+            })
+            .collect();
+        let pending = PendingPush {
+            request_key,
+            actor: client.actor(),
+            request,
+            upsert_files,
+            deleted_paths: changes.deleted.clone(),
+            commit: source_commit
+                .clone()
+                .or_else(|| git.as_ref().and_then(|git| git.rev("HEAD"))),
+        };
+        // Saved before the post, so an answer that never arrives can be settled
+        // by the next push. When the save fails nothing has been sent.
+        state.pending = Some(pending.clone());
+        store.save(&state)?;
+        let renamed = plan.rename.len();
+        match settle_pending(client, store, &mut state, &pending, renamed).await {
+            Err(error) if pair_renames && !plan.rename.is_empty() && refuses_rename(&error) => {
+                state.pending = None;
+                store.save(&state)?;
+                pair_renames = false;
+            }
+            outcome => return outcome,
+        }
     }
-    for (path, file) in &plan.uploads {
-        upload(client, &slug, path, file).await?;
-    }
-    let mut sync = json!({"provider": "cli", "message": options.message});
-    if let Some(author) = options
-        .author
-        .as_deref()
-        .map(str::trim)
-        .filter(|author| !author.is_empty())
-    {
-        sync["author"] = json!(author);
-    }
-    let request_key = librepaper_base::util::new_request_key();
-    let request = plan.body(&request_key, sync);
-    let upsert_files = changes
-        .added
-        .iter()
-        .chain(&changes.changed)
-        .map(|path| {
-            let file = &found.files[path];
-            (
-                path.clone(),
-                FileRecord {
-                    kind: file.kind,
-                    sha: file.sha.clone(),
-                },
-            )
-        })
-        .collect();
-    let pending = PendingPush {
-        request_key,
-        actor: client.actor(),
-        request,
-        upsert_files,
-        deleted_paths: changes.deleted.clone(),
-        commit: source_commit.or_else(|| git.as_ref().and_then(|git| git.rev("HEAD"))),
-    };
-    // Saved before the post, so an answer that never arrives can be settled
-    // by the next push. When the save fails nothing has been sent.
-    state.pending = Some(pending.clone());
-    store.save(&state)?;
-    settle_pending(client, store, &mut state, &pending).await
+}
+
+/// Whether a refusal is an older server's answer to a body it could not
+/// parse. An older server parses the body into a struct without the `rename`
+/// key, and any parse error is answered as "the change is malformed". A
+/// current server never calls a well-formed body malformed, and the caller
+/// retries only a plan that carried renames.
+fn refuses_rename(error: &Error) -> bool {
+    matches!(error, Error::Http { status: 400, detail }
+        if detail.contains("the change is malformed"))
 }
 
 /// Sends an asset the project does not hold yet.
@@ -628,7 +721,7 @@ mod tests {
         let bases =
             BTreeMap::from([("edited.tex".to_string(), "alpha\nbeta\ngamma\n".to_string())]);
 
-        let plan = plan_change(&recorded, &found, &changes, &bases);
+        let plan = plan_change(&recorded, &found, &changes, &bases, true);
         assert_eq!(plan.patches.len(), 1);
         assert_eq!(plan.patches[0].exact, "beta");
         assert_eq!(plan.patches[0].replacement, "BETA");
@@ -688,7 +781,7 @@ mod tests {
         let recorded = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\ntwo\n"))]);
         let changes = compare(dir.path(), &recorded, &found);
         assert!(changes.is_empty(), "the hashes are of the LF text");
-        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
         assert!(plan.is_empty());
     }
 
@@ -698,9 +791,89 @@ mod tests {
         let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         let recorded = BTreeMap::from([("fig/a.png".to_string(), record(Kind::Asset, b"x"))]);
         let changes = compare(dir.path(), &recorded, &found);
-        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
         assert!(plan.dependencies.is_empty());
         assert_eq!(plan.delete.len(), 1);
+    }
+
+    #[test]
+    fn a_text_file_renamed_with_the_same_text_is_one_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "new.tex", b"same\n");
+        write(dir.path(), "kept.tex", b"kept\n");
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
+        let recorded = BTreeMap::from([
+            ("old.tex".to_string(), record(Kind::Text, b"same\n")),
+            ("kept.tex".to_string(), record(Kind::Text, b"kept\n")),
+        ]);
+        let changes = compare(dir.path(), &recorded, &found);
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
+        assert_eq!(plan.rename, [json!({"from": "old.tex", "to": "new.tex"})]);
+        assert!(plan.create.is_empty());
+        assert!(plan.delete.is_empty());
+        assert!(plan.dependencies.is_empty());
+        let body = plan.body("v2.1.0", json!({}));
+        assert_eq!(
+            body["change"]["rename"],
+            json!([{"from": "old.tex", "to": "new.tex"}])
+        );
+
+        // Without pairing the same change is the delete and the create.
+        let plain = plan_change(&recorded, &found, &changes, &BTreeMap::new(), false);
+        assert!(plain.rename.is_empty());
+        assert_eq!(plain.create, [json!({"path": "new.tex", "text": "same\n"})]);
+        assert_eq!(
+            plain.delete,
+            [json!({"path": "old.tex", "expect": record(Kind::Text, b"same\n").sha})]
+        );
+    }
+
+    #[test]
+    fn a_renamed_and_edited_file_is_still_a_delete_and_a_create() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "new.tex", b"alpha\nbeta\n");
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
+        let recorded = BTreeMap::from([("old.tex".to_string(), record(Kind::Text, b"alpha\n"))]);
+        let changes = compare(dir.path(), &recorded, &found);
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
+        assert!(plan.rename.is_empty());
+        assert_eq!(plan.create, [json!({"path": "new.tex", "text": "alpha\nbeta\n"})]);
+        assert_eq!(plan.dependencies, [dependency("old.tex", &record(Kind::Text, b"alpha\n").sha)]);
+        assert_eq!(plan.delete.len(), 1);
+    }
+
+    #[test]
+    fn a_rename_takes_the_first_unpaired_match_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.tex", b"same\n");
+        write(dir.path(), "b.tex", b"same\n");
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
+        let recorded = BTreeMap::from([
+            ("x.tex".to_string(), record(Kind::Text, b"same\n")),
+            ("y.tex".to_string(), record(Kind::Text, b"same\n")),
+        ]);
+        let changes = compare(dir.path(), &recorded, &found);
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
+        assert_eq!(
+            plan.rename,
+            [
+                json!({"from": "x.tex", "to": "a.tex"}),
+                json!({"from": "y.tex", "to": "b.tex"}),
+            ]
+        );
+        assert!(plan.create.is_empty() && plan.delete.is_empty());
+    }
+
+    #[test]
+    fn a_push_without_a_rename_sends_no_rename_key() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "new.tex", b"fresh\n");
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
+        let recorded = BTreeMap::new();
+        let changes = compare(dir.path(), &recorded, &found);
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
+        let body = plan.body("v2.1.0", json!({}));
+        assert!(body["change"].get("rename").is_none());
     }
 
     #[test]
@@ -719,11 +892,11 @@ mod tests {
             changes.is_empty(),
             "the file left the sync, it was not deleted"
         );
-        assert!(plan_change(&recorded, &found, &changes, &BTreeMap::new()).is_empty());
+        assert!(plan_change(&recorded, &found, &changes, &BTreeMap::new(), true).is_empty());
 
         recorded.insert("gone.tex".to_string(), record(Kind::Text, b"gone\n"));
         let changes = compare(dir.path(), &recorded, &found);
-        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
         let gone = Digest::of(b"gone\n").to_hex();
         assert_eq!(plan.delete, [json!({"path": "gone.tex", "expect": gone})]);
         assert_eq!(plan.dependencies, [dependency("gone.tex", &gone)]);
@@ -750,7 +923,7 @@ mod tests {
         let found = scan(dir.path(), &Rules::default(), None, &exclude).unwrap();
         let changes = compare(dir.path(), &recorded, &found);
         assert_eq!(changes.added, ["fig/new.png"]);
-        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
         assert!(plan.create.is_empty());
         assert_eq!(
             plan.put_binary,
@@ -1116,6 +1289,67 @@ mod tests {
         assert_eq!(posted[0]["operation"], pending.request_key.as_str());
         assert_eq!(posted[1], posted[0]);
         assert!(store.load().unwrap().unwrap().pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_server_that_refuses_the_rename_key_gets_the_push_once_more_without_it() {
+        let server = Fake::start().await;
+        server.script(vec![
+            Answer::Reply(
+                400,
+                json!({"error": "the change is malformed"}),
+            ),
+            accepted("l1", 1),
+        ]);
+        let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        let mut state = store.load().unwrap().unwrap();
+        state.files = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\n"))]);
+        store.save(&state).unwrap();
+        std::fs::rename(dir.path().join("a.tex"), dir.path().join("b.tex")).unwrap();
+
+        let client = server.client();
+        let outcome = push(&client, dir.path(), &store, &options(None)).await;
+        // The retry sent a delete and a create, so both count.
+        assert!(
+            matches!(&outcome, Ok(PushOutcome::Pushed { files: 2, .. })),
+            "{outcome:?}"
+        );
+        let posted = server.posted();
+        assert_eq!(posted.len(), 2);
+        assert_eq!(
+            posted[0]["change"]["rename"],
+            json!([{"from": "a.tex", "to": "b.tex"}])
+        );
+        assert!(posted[1]["change"].get("rename").is_none());
+        assert_eq!(posted[1]["change"]["create"][0]["path"], "b.tex");
+        assert_eq!(posted[1]["change"]["delete"][0]["path"], "a.tex");
+        assert_ne!(posted[1]["operation"], posted[0]["operation"]);
+
+        let state = store.load().unwrap().unwrap();
+        assert!(state.pending.is_none());
+        assert!(state.files.contains_key("b.tex") && !state.files.contains_key("a.tex"));
+    }
+
+    #[tokio::test]
+    async fn an_accepted_rename_is_one_file_in_the_summary() {
+        let server = Fake::start().await;
+        server.script(vec![accepted("l1", 1)]);
+        let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
+            return;
+        };
+        let mut state = store.load().unwrap().unwrap();
+        state.files = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\n"))]);
+        store.save(&state).unwrap();
+        std::fs::rename(dir.path().join("a.tex"), dir.path().join("b.tex")).unwrap();
+
+        let outcome = push(&server.client(), dir.path(), &store, &options(None)).await;
+        assert!(
+            matches!(&outcome, Ok(PushOutcome::Pushed { files: 1, .. })),
+            "{outcome:?}"
+        );
+        assert_eq!(server.posted().len(), 1);
     }
 
     /// A store that reads one state and cannot write.
