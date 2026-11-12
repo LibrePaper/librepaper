@@ -89,7 +89,16 @@ function build(state, path, imageUrl, adapter) {
   const renderer = currentPaperRenderer(adapter.module);
   if (!renderer) return { decorations: Decoration.none, rendered: [] };
   const text = state.doc.toString();
-  const blocks = adapter.splitBlocks(text);
+  // The whole document rendered at once when the format can; null falls back to drawing each block alone.
+  let whole = null;
+  if (adapter.renderedBlocks) {
+    try {
+      whole = adapter.renderedBlocks(text, renderer, path());
+    } catch {
+      whole = null;
+    }
+  }
+  const blocks = whole ?? adapter.splitBlocks(text);
   if (!blocks) return { decorations: Decoration.none, rendered: [] };
   const ranges = state.selection.ranges;
   const marks = [];
@@ -97,10 +106,14 @@ function build(state, path, imageUrl, adapter) {
   for (const block of blocks) {
     if (!block.render || touches(ranges, block)) continue;
     let html = "";
-    try {
-      html = renderer.render(adapter.blockSource(text, block, blocks));
-    } catch {
-      continue;
+    if (whole) {
+      html = block.html ?? "";
+    } else {
+      try {
+        html = renderer.render(adapter.blockSource(text, block, blocks));
+      } catch {
+        continue;
+      }
     }
     if (!html.trim()) continue;
     rendered.push(block);

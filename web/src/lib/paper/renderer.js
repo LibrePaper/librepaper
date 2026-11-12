@@ -12,7 +12,16 @@ const CACHE_LIMIT = 2000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-/** @typedef {{ render: (markdown: string) => string, pageCss: string }} PaperRenderer */
+/**
+ * A top-level block of a whole document, as the module renders it: its
+ * 1-based inclusive lines and its HTML.
+ * @typedef {{ fromLine: number, toLine: number, html: string }} RenderedBlock
+ * @typedef {{
+ *   render: (markdown: string) => string,
+ *   renderBlocks: (source: string, main: string) => RenderedBlock[] | null,
+ *   pageCss: string,
+ * }} PaperRenderer
+ */
 
 /** @type {Map<string, PaperRenderer>} the loaded renderer of each module key */
 const current = new Map();
@@ -41,6 +50,42 @@ function compilePage(wasm, markdown) {
   if (wasm.ok() === 0 || length === 0) return "";
   // Read the buffer only now: compile may have grown memory.
   return decoder.decode(new Uint8Array(wasm.memory.buffer, wasm.output_ptr(), length));
+}
+
+/**
+ * The top-level blocks the module renders for a whole document, or null when
+ * the module has no `compile_blocks` export or the compile fails.
+ * @param {WebAssembly.Exports & Record<string, any>} wasm
+ * @param {string} source
+ * @param {string} main the main file's name; a `.qmd` name selects Quarto
+ * @returns {RenderedBlock[] | null}
+ */
+function compileBlocks(wasm, source, main) {
+  if (typeof wasm.compile_blocks !== "function") return null;
+  const mainBytes = encoder.encode(main);
+  const mainPointer = wasm.alloc(mainBytes.length);
+  new Uint8Array(wasm.memory.buffer, mainPointer, mainBytes.length).set(mainBytes);
+  wasm.set_main(mainPointer, mainBytes.length);
+  if (typeof wasm.dealloc === "function") wasm.dealloc(mainPointer, mainBytes.length);
+
+  const bytes = encoder.encode(source);
+  const sourcePointer = wasm.alloc(bytes.length);
+  new Uint8Array(wasm.memory.buffer, sourcePointer, bytes.length).set(bytes);
+  const length = wasm.compile_blocks(sourcePointer, bytes.length);
+  if (typeof wasm.dealloc === "function") wasm.dealloc(sourcePointer, bytes.length);
+  if (wasm.ok() === 0 || length === 0) return null;
+  // Read the buffer only now: compile_blocks may have grown memory.
+  const json = decoder.decode(new Uint8Array(wasm.memory.buffer, wasm.output_ptr(), length));
+  try {
+    const parsed = JSON.parse(json);
+    return parsed.blocks.map((/** @type {any} */ block) => ({
+      fromLine: block.from_line,
+      toLine: block.to_line,
+      html: block.html,
+    }));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -85,12 +130,32 @@ export async function createPaperRenderer(bytes) {
     return html;
   }
 
+  // The editor asks for a document's blocks once per change, so one entry is enough.
+  /** @type {{ key: string, blocks: RenderedBlock[] | null } | null} */
+  let lastBlocks = null;
+
+  /**
+   * The document's top-level blocks as the module renders them whole, or null
+   * when the module cannot (no `compile_blocks` export). `main` is the file's
+   * name; a `.qmd` name selects Quarto.
+   * @param {string} source
+   * @param {string} main
+   * @returns {RenderedBlock[] | null}
+   */
+  function renderBlocks(source, main) {
+    const key = main + "\0" + source;
+    if (lastBlocks && lastBlocks.key === key) return lastBlocks.blocks;
+    const blocks = compileBlocks(wasm, source, main);
+    lastBlocks = { key, blocks };
+    return blocks;
+  }
+
   // The stylesheet is the page's own, from an empty document. A `<style>`
   // element carries no document content, so compiling nothing is enough.
   const style = /<style[^>]*>([\s\S]*?)<\/style>/.exec(compilePage(wasm, ""));
   const pageCss = style ? style[1].trim() : "";
 
-  return { render, pageCss };
+  return { render, renderBlocks, pageCss };
 }
 
 /**
