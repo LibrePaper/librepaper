@@ -27,7 +27,7 @@
 <style>
   .mobile-presence {
     padding: 0.5rem 1rem;
-    border-bottom: 1px solid var(--color-pane-edge);
+    border-bottom: 1px solid var(--color-border-strong);
   }
 
   .chips {

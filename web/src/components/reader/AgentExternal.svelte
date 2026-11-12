@@ -140,7 +140,7 @@
   .agent-help { margin: 0; font-size: 13px; color: var(--panel-muted); }
   .agent-new { display: flex; align-items: center; justify-content: center; gap: calc(var(--spacing) * 2); width: 100%; }
   .share-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--color-divider); }
-  .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
+  .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-secondary); font-size: var(--panel-meta-size); }
   /* Phones: the share controls are finger-sized. */
   @media (max-width: 767px) {
     .agent-external :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }

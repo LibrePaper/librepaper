@@ -671,7 +671,7 @@
   .np-muted { color: var(--color-text-secondary); font-size: var(--text-sm); margin: 0; }
 
   /* An underline in the brand colour and nothing else, as in the panels. */
-  :global(.np-tabs) { display: flex; gap: calc(var(--spacing) * 6); border-bottom: 1px solid var(--color-pane-edge); margin-bottom: calc(var(--spacing) * 5); }
+  :global(.np-tabs) { display: flex; gap: calc(var(--spacing) * 6); border-bottom: 1px solid var(--color-border-strong); margin-bottom: calc(var(--spacing) * 5); }
   :global(.np-tabs > [role="tab"]) { padding: calc(var(--spacing) * 2) calc(var(--spacing)); cursor: pointer; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
   :global(.np-tabs > [role="tab"][data-selected]) { color: var(--color-link); border-color: var(--color-link); }
   :global(.np-tabs > [role="tab"]:focus-visible) { outline: 2px solid var(--color-focus); outline-offset: 2px; }
@@ -694,7 +694,7 @@
 
   .template-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
   .template-table th { text-align: left; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--color-text-secondary); font-weight: 600; padding: calc(var(--spacing) * 2); }
-  .template-table td { height: 3rem; padding: 0 calc(var(--spacing) * 2); border-top: 1px solid var(--color-pane-edge); vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .template-table td { height: 3rem; padding: 0 calc(var(--spacing) * 2); border-top: 1px solid var(--color-border-strong); vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .template-table tbody tr { cursor: pointer; }
   .template-table tbody tr:hover { background: var(--color-row-hover); }
   .template-table tbody tr.selected { background: var(--color-row-selected); }
@@ -714,7 +714,7 @@
 
   /* Stays in reach on a long catalog without covering any row: it sits in the
      flow after the table and only sticks once the table runs past the window. */
-  .np-create { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: flex-end; gap: calc(var(--spacing) * 4); padding-block: calc(var(--spacing) * 3); background: var(--color-shell); border-top: 1px solid var(--color-pane-edge); }
+  .np-create { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: flex-end; gap: calc(var(--spacing) * 4); padding-block: calc(var(--spacing) * 3); background: var(--color-shell); border-top: 1px solid var(--color-border-strong); }
   .np-selected { align-self: center; }
   .np-create :global(.new-project-create) { margin-left: auto; }
   .np-create :global(.new-project-error) { flex-basis: 100%; margin: 0; }
@@ -736,7 +736,7 @@
   .upload-tree, .upload-tree ul { list-style: none; margin: 0; padding: 0; }
   .upload-tree ul { padding-left: calc(var(--spacing) * 4); }
   .upload-tree .upload-folder-name { display: flex; align-items: center; gap: var(--spacing); padding-block: calc(var(--spacing)); font-weight: 500; }
-  .upload-file { display: flex; align-items: center; gap: calc(var(--spacing) * 3); min-height: 2rem; border-top: 1px solid var(--color-pane-edge); }
+  .upload-file { display: flex; align-items: center; gap: calc(var(--spacing) * 3); min-height: 2rem; border-top: 1px solid var(--color-border-strong); }
   .upload-file-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
   .upload-progress { width: 100%; accent-color: var(--color-focus); }
   .np-progress { display: flex; flex-direction: column; gap: calc(var(--spacing)); }
@@ -755,7 +755,7 @@
        needs a sideways scroll. */
     .template-table, .template-table tbody { display: block; }
     .template-table thead { display: none; }
-    .template-table tbody tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "pick name info" "pick say info" "pick formats info"; column-gap: calc(var(--spacing) * 2); align-items: center; padding-block: calc(var(--spacing) * 2); border-top: 1px solid var(--color-pane-edge); }
+    .template-table tbody tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "pick name info" "pick say info" "pick formats info"; column-gap: calc(var(--spacing) * 2); align-items: center; padding-block: calc(var(--spacing) * 2); border-top: 1px solid var(--color-border-strong); }
     .template-table td { display: block; width: auto; height: auto; padding: 0; border: 0; }
     .template-table .col-pick { grid-area: pick; width: auto; }
     .template-table .col-name { grid-area: name; width: auto; }

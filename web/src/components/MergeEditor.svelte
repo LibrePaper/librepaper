@@ -293,7 +293,7 @@
     background: var(--diff-add);
   }
   :global(.merge-editor .merge-host .cm-editor .cm-collapsedLines) {
-    color: var(--color-text-muted, inherit);
+    color: var(--color-text-secondary, inherit);
     background: color-mix(in srgb, currentColor 8%, transparent);
   }
   /* The change the toolbar last went to. */

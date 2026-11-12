@@ -7,7 +7,7 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-base);
   background: var(--color-subtle);
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-size: var(--text-xs);
   white-space: nowrap;
   cursor: pointer;
@@ -34,7 +34,7 @@
 
 .cm-lp-org-todo-done {
   background: var(--color-subtle);
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   text-decoration: line-through;
 }
 
@@ -67,7 +67,7 @@
   border: 1px solid var(--color-border);
   border-radius: 999px;
   background: var(--color-subtle);
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-size: var(--text-xs);
 }
 
@@ -87,18 +87,18 @@
 
 .cm-lp-org-stamp-inactive {
   background: var(--color-subtle);
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
 }
 
 /* The SCHEDULED, DEADLINE and CLOSED line under a headline. */
 .cm-lp-org-planning {
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-size: var(--text-sm);
 }
 
 /* A <<target>>: a small anchor mark. */
 .cm-lp-org-target {
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-size: var(--text-xs);
   opacity: 0.6;
   cursor: pointer;
@@ -109,7 +109,7 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-base);
   background: var(--color-subtle);
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   white-space: nowrap;

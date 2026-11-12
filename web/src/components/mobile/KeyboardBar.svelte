@@ -41,7 +41,7 @@
     z-index: 20;
     display: flex;
     height: 2.75rem;
-    border-top: 1px solid var(--color-pane-edge);
+    border-top: 1px solid var(--color-border-strong);
     background: var(--color-shell);
   }
 

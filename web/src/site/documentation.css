@@ -196,7 +196,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
 }
 .pagetoc nav {
   gap: 0;
