@@ -197,6 +197,11 @@ function main(argv) {
     );
   }
   const html = clipboard.readHtml();
+  // Captures are committed to a public repository, and a browser copying a
+  // local page turns relative links into file:// URLs that name the home folder.
+  if (/file:\/\//i.test(decodeUtf8(html))) {
+    throw new Error("the clipboard HTML contains a file:// link, which would put a local path in the repository. Open the page without relative links (see source/build.sh) and copy again.");
+  }
 
   const text = readPlainText(clipboard);
   if (text === "") {
