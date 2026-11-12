@@ -22,13 +22,7 @@ import {
 } from "./markup.ts";
 import { COMMANDS, ENVIRONMENTS } from "./languages/latex/catalog.ts";
 import { loadKatex } from "../katex.js";
-import { VISUAL_FORMATS } from "./formats.js";
 import { m } from "../paraglide/messages.js";
-// The Markdown, Quarto and Typst widgets. They import helpers back from this file.
-import "./markdown-widgets.js";
-import "./task-widgets.js";
-import "./typst-widgets.js";
-import "./org-widgets.js";
 
 export { VISUAL_FORMATS } from "./formats.js";
 
@@ -81,13 +75,13 @@ export function factsUpdate(facts) {
 // The callback that opens an included file, given its raw name. The first one wins.
 export const includeOpener = Facet.define({ combine: (values) => values[0] ?? null });
 
-/// The visual layer for one file, or nothing for a format it does not draw.
+/// The visual layer for one LaTeX file, or nothing for any other format: Markdown, Quarto, Org and Typst are drawn by the paper view (lib/paper).
 /// `path` returns the open file's project path (no leading slash), for resolving relative image paths.
 /// `imageUrl(path)` resolves a project path (no leading slash) to a URL an <img> can load, or null.
 /// `dark` picks the dark colours.
 /// `openInclude(name)` opens the file an \input, \include or \subfile names; without it the chip has no button.
 export function visualMarkup(format, { path = () => "", imageUrl = null, dark = false, openInclude = null } = {}) {
-  if (!VISUAL_FORMATS.has(format)) return [];
+  if (format !== "latex") return [];
 
   const extensions = [
     visualExtension(),
@@ -116,8 +110,7 @@ export function visualMarkup(format, { path = () => "", imageUrl = null, dark = 
     );
   }
 
-  if (format === "latex") extensions.push(preambleFold());
-  // Every format draws from document facts and opens includes the same way.
+  extensions.push(preambleFold());
   extensions.push(factsField);
   if (openInclude) extensions.push(includeOpener.of(openInclude));
 

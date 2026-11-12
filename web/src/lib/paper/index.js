@@ -1,4 +1,5 @@
-// The paper visual layer for a Markdown or Org file: each top-level block that the
+// The visual mode of Markdown, Quarto, Org and Typst files (LaTeX keeps lib/visual-markup).
+// Each top-level block that the
 // selection is not in is drawn as the HTML the preview renderer produces for
 // it, styled with the preview page's own CSS. The block holding the selection
 // shows its Markdown or Org source. The text stays the document; only the drawing differs.
