@@ -11,7 +11,7 @@
 <div class="tag-swatches" role="group" aria-label={label}>
   {#each TAG_COLOURS as colour (colour.key)}
     <button type="button" class="tag-swatch" style="--swatch: {tagColour(colour.key)}"
-            aria-label={colour.name} title={colour.name}
+            aria-label={colour.name} data-tip={colour.name}
             aria-pressed={value === colour.key}
             onclick={() => onchange?.(colour.key)}></button>
   {/each}

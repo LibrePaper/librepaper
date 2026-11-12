@@ -4026,7 +4026,7 @@
 {/snippet}
 {#snippet visualModeControl()}
   {#if sourceOpen && mayEdit && visualAvailable}
-    <label class="bar-toggle" title={m.readerd_visual_mode_hint()}>
+    <label class="bar-toggle" data-tip={m.readerd_visual_mode_hint()}>
       <button type="button" role="switch" class="switch" aria-checked={visual} aria-label={m.common_visual_mode()} data-state={visual ? "checked" : "unchecked"} onclick={() => setVisual(!visual)}>
         <span class="switch-thumb" data-state={visual ? "checked" : "unchecked"}></span>
       </button>
@@ -4036,7 +4036,7 @@
 {/snippet}
 {#snippet localExecutionControl()}
   {#if runCodeOffered}
-    <label class="bar-toggle" title={m.readerd_run_code_hint()}>
+    <label class="bar-toggle" data-tip={m.readerd_run_code_hint()}>
       <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label={m.readerd_run_code()} data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>
         <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
       </button>
@@ -4085,14 +4085,14 @@
       <!-- Shown only while tracked changes are being recorded, so a reviewer
            who has closed the Changes panel can still see that edits are tracked. -->
       {#if tracking}
-        <button type="button" class="tracking-pill" title={m.reader_tracking_open()} onclick={() => void focusPanel("changes")}>
+        <button type="button" class="tracking-pill" data-tip={m.reader_tracking_open()} onclick={() => void focusPanel("changes")}>
           <Icon name="pencil" size={14} />
           <span>{m.reader_tracking_on()}</span>
         </button>
       {/if}
-      <div class="presence" role="group" aria-label={connected ? m.readerd_people_connected({ count: peers }) : connectionNote} title={connected ? m.readerd_people_connected({ count: peers }) : connectionNote}>
+      <div class="presence" role="group" aria-label={connected ? m.readerd_people_connected({ count: peers }) : connectionNote} data-tip={connected ? m.readerd_people_connected({ count: peers }) : connectionNote}>
         {#each participants.slice(0, 3) as person (person.key)}
-          <button type="button" class="presence-jump" title={person.name} aria-label={m.common_go_to_cursor({ name: person.name })} onclick={() => jumpToPerson(person)}>
+          <button type="button" class="presence-jump" data-tip={person.name} aria-label={m.common_go_to_cursor({ name: person.name })} onclick={() => jumpToPerson(person)}>
             <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
           </button>
         {/each}
@@ -4127,7 +4127,7 @@
       </button>
     {/if}
     <span id="docTitle" class="nav-document truncate" class:mobile-title={compact} class:mobile-title-open={overlayView}
-          title={toolbarPath || doc.title || ""}>
+          data-tip-wait="long" data-tip={toolbarPath || doc.title || ""}>
       {compact ? mobileTitle : toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
     </span>
   {/snippet}
@@ -4618,12 +4618,12 @@
                a sibling rather than a child because a button inside a button
                is not a thing a browser will draw. -->
           <div class="verb highlighter">
-            <button type="button" class="verb-face" title={item.title} aria-label={item.label}
+            <button type="button" class="verb-face" data-tip={item.title} aria-label={item.label}
                     onclick={() => annotate(item.id)}>
               <Icon name={item.icon} size={18} />
             </button>
             <button type="button" class="ink" aria-expanded={palette} aria-haspopup="true"
-                    aria-label={m.readerd_choose_highlight_colour()} title={m.readerd_choose_highlight_colour()}
+                    aria-label={m.readerd_choose_highlight_colour()} data-tip={m.readerd_choose_highlight_colour()}
                     style="--ink: {highlightColor}"
                     onclick={() => (palette = !palette)}></button>
             {#if palette}
@@ -4632,7 +4632,7 @@
                   <button type="button" class:selected={highlightColor === color} class="color-swatch" style="background:{color}"
                     aria-label={m.readerd_highlight_in({ color: colorName(color) })} onclick={() => highlightWith(color)}></button>
                 {/each}
-                <label class="custom-color" title={m.readerd_choose_highlight_colour()}>
+                <label class="custom-color" data-tip={m.readerd_choose_highlight_colour()}>
                   <span class="sr-only">{m.readerd_custom_highlight_colour()}</span>
                   <input type="color" bind:value={highlightColor} onchange={() => highlightWith(highlightColor)} />
                 </label>
@@ -4640,7 +4640,7 @@
             {/if}
           </div>
         {:else}
-          <button type="button" class="verb verb-face" title={item.title} aria-label={item.label}
+          <button type="button" class="verb verb-face" data-tip={item.title} aria-label={item.label}
                   onclick={() => annotate(item.id)}>
             <Icon name={item.icon} size={18} />
           </button>

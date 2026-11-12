@@ -73,7 +73,7 @@
       data-destination="more"
       class:open={moreOpen}
       aria-label={moreLabel}
-      title={offlineNote ? moreLabel : undefined}
+      data-tip={offlineNote ? moreLabel : undefined}
       aria-haspopup="dialog"
       aria-expanded={moreOpen}
       onclick={(event) => onmore(event)}

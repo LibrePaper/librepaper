@@ -125,7 +125,7 @@ window.sharePanelCheck = async () => {
   check(/[\\u2013\\u2014]/.test(text()) === false, "no dashes in the panel text");
   check(rows().every((row) => row.getBoundingClientRect().height >= 40 && row.getBoundingClientRect().height <= 52), "rows are 44 to 48px tall: "
     + rows().map((row) => Math.round(row.getBoundingClientRect().height)).join(","));
-  check(rows()[2].querySelector(".share-name").title.startsWith("A very long name"), "the full name is in a tooltip");
+  check(rows()[2].querySelector(".share-name").getAttribute("data-tip").startsWith("A very long name"), "the full name is in a tooltip");
   check(rows()[2].querySelector(".share-name").scrollWidth > rows()[2].querySelector(".share-name").clientWidth, "and it is cut with an ellipsis");
   check(panel.scrollWidth <= panel.clientWidth + 1, "no horizontal scroll");
   const actionsOf = (row) => [...row.querySelectorAll(".share-actions button")].map((node) => node.getAttribute("aria-label"));

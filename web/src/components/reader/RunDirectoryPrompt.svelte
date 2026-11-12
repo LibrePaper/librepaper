@@ -51,7 +51,7 @@
     {variant === "missing" ? m.rundirectorycontrol_missing({ path: rd.shorten(status.path) }) : m.rundirectorycontrol_prompt_text()}
   </p>
   {#if hasBlock}
-    <div class="rd-info" title={shownPath}>
+    <div class="rd-info" data-tip-wait="long" data-tip={shownPath}>
       <span class="rd-info-icon"><Icon name="folder" size="16" /></span>
       <div class="rd-info-body">
         <span class="rd-info-caption">{caption}</span>

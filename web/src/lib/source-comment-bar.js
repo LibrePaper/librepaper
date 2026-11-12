@@ -36,7 +36,7 @@ export function sourceCommentBar({ enabled, verbs, onverb }) {
     for (const verb of verbs()) {
       const button = document.createElement("button");
       button.type = "button";
-      button.title = verb.title;
+      button.setAttribute("data-tip", verb.title);
       button.setAttribute("aria-label", verb.label);
       button.dataset.verb = verb.id;
       const svg = iconElement(verb.icon);

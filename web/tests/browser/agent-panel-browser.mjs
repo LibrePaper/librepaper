@@ -191,8 +191,8 @@ window.agentPanelCheck = async () => {
     "the row copies the connection instructions with its token: " + window.copied);
   check(labelled(anaCopy).innerHTML !== anaIcon, "the row icon changes once copied");
   check(!rowText(1).includes(existingToken) && !panel.textContent.includes(existingToken)
-    && ![...panel.querySelectorAll("[aria-label], [title]")].some((node) => (node.getAttribute("aria-label") || "").includes(existingToken)
-      || (node.getAttribute("title") || "").includes(existingToken)), "the row's text, labels and titles do not hold the token");
+    && ![...panel.querySelectorAll("[aria-label], [data-tip]")].some((node) => (node.getAttribute("aria-label") || "").includes(existingToken)
+      || (node.getAttribute("data-tip") || "").includes(existingToken)), "the row's text, labels and titles do not hold the token");
   const warning = "Pasting a token into chat lets your model provider see it.";
   const listed = text();
   check(listed.indexOf(warning) > listed.indexOf("Ana's laptop") && listed.indexOf(warning) > listed.indexOf("New token"),

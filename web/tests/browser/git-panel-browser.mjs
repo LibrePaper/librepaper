@@ -205,7 +205,7 @@ window.gitPanelCheck = async () => {
   await press("Connect");
   check(calls("connectRepository").length === 1 && calls("connectRepository")[0][1] === "https://github.com/you/paper.git", "the trimmed address is connected: " + JSON.stringify(calls("connectRepository")));
   check(headings() === "Git repository" && text().includes("Connected") && panel().querySelector(".git-name")?.textContent === "you/paper", "and the connected repository is shown by its name: " + text());
-  check(panel().querySelector(".git-name").title === "https://github.com/you/paper.git" && text().includes("main · github.com"), "with its address and branch: " + text());
+  check(panel().querySelector(".git-name").getAttribute("data-tip") === "https://github.com/you/paper.git" && text().includes("main · github.com"), "with its address and branch: " + text());
   const copy = panel().querySelector('[aria-label="Copy repository address"]');
   check(copy, "a copy button for the address");
   copy.click(); await flush();
@@ -262,7 +262,7 @@ window.gitPanelCheck = async () => {
   await mountWeb({ connection: connectedStatus, afterConnect: connectedStatus, pullAnswer: { status: connectedStatus, pushed: { files: 2 } }, pushAnswer: { status: connectedStatus, pushed: "pushed" } }, { desktop: true });
   await flush();
   check(headings() === "Git repository", "a connected project shows its repository: " + headings());
-  check(button("Get repository changes").title === "Bring changes from the Git repository into this project." && button("Send project changes").title === "Send this project's changes to the Git repository.", "and each action says what it does");
+  check(button("Get repository changes").getAttribute("data-tip") === "Bring changes from the Git repository into this project." && button("Send project changes").getAttribute("data-tip") === "Send this project's changes to the Git repository.", "and each action says what it does");
   await widths("with a connected repository");
 
   await press("Get repository changes");

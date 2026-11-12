@@ -83,7 +83,7 @@ function marksFor(state, changes, gaps, me, selected) {
       marks.push(
         Decoration.mark({
           class: `change-added${stateClasses(change, me, selected)}`,
-          attributes: { title: change.author || "", "data-change": change.id },
+          attributes: { "data-tip": change.author || "", "data-tip-wait": "long", "data-change": change.id },
         }).range(change.from, change.to),
       );
     }

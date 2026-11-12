@@ -349,7 +349,8 @@ class SwatchWidget extends WidgetType {
   toDOM(view) {
     const element = document.createElement("span");
     element.className = "cm-lp-swatch";
-    element.title = this.text;
+    element.setAttribute("data-tip", this.text);
+    element.setAttribute("data-tip-wait", "long");
 
     const chip = document.createElement("span");
     chip.className = "cm-lp-swatch-chip";

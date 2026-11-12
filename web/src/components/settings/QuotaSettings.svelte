@@ -160,7 +160,7 @@
   <div class="storage-bar {cls}" role="img" aria-label={label}>
     {#each parts as part (part.key)}
       {#if part.bytes > 0}
-        <div class="bar-segment {part.key}" title={m.quotasettings_part_tooltip({ name: part.name, size: storageBytes(part.bytes) })}
+        <div class="bar-segment {part.key}" data-tip={m.quotasettings_part_tooltip({ name: part.name, size: storageBytes(part.bytes) })}
              style:width={`${(100 * part.bytes) / base}%`}></div>
       {/if}
     {/each}
@@ -200,7 +200,7 @@
           <div role="row" class="doc-row">
             <div role="cell" class="doc-title">
               <div class="title-with-badge">
-                <a class="title-text" href="/docs/{doc.slug}" title={nameOf(doc)}>{nameOf(doc)}</a>
+                <a class="title-text" href="/docs/{doc.slug}" data-tip-wait="long" data-tip={nameOf(doc)}>{nameOf(doc)}</a>
                 {#if doc.template}<span class="badge lp-tone-neutral">{m.common_template()}</span>{/if}
               </div>
               {#if trimErrors[doc.slug]}<div class="trim-error">{trimErrors[doc.slug]}</div>{/if}

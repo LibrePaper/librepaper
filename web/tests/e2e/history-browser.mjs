@@ -98,7 +98,7 @@ async function main() {
   await until("reader preview", async () => (await reader.text()).includes("blue fox"));
   assert.equal(await reader.evaluate('!!document.querySelector(".cm-content")'), false);
   assert.equal(await reader.evaluate(`Boolean([...document.querySelectorAll('button, a')].some((item) =>
-    [item.getAttribute('aria-label'), item.title, item.textContent.trim()].includes('History')))`), false,
+    [item.getAttribute("aria-label"), item.getAttribute("data-tip"), item.textContent.trim()].includes('History')))`), false,
     "a read-link reader has no History workspace");
   assert.equal(await reader.evaluate('!!document.querySelector(".history-workspace")'), false);
   assert.equal(await reader.evaluate(`[...document.querySelectorAll('button')]

@@ -70,7 +70,7 @@ window.clickGridTile = (id) => tile(id)?.click();
 window.hasGridTile = (id) => Boolean(tile(id));
 window.firstTileId = () => document.querySelector(".grid-scroll [data-symbol]")?.dataset.symbol ?? null;
 window.gridTileCount = () => document.querySelectorAll(".grid-scroll [data-symbol]").length;
-window.gridTileTitle = (id) => tile(id)?.title ?? null;
+window.gridTileTitle = (id) => tile(id)?.getAttribute("data-tip") ?? null;
 window.insertedCount = () => inserted.length;
 window.insertedText = () => inserted.at(-1)?.text ?? null;
 window.noteText = () => document.querySelector(".symbol-palette [role=status]")?.textContent.trim() ?? null;

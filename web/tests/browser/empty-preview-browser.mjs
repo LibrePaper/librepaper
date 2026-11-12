@@ -182,8 +182,8 @@ try {
   const cover = () => tab.evaluate(`document.querySelector('.cover')?.textContent.trim() || ""`);
   const openFile = async (path) => {
     await click('.sidebar-activity [aria-label="Files"]');
-    await until(`file ${path}`, () => tab.evaluate(`Boolean(document.querySelector('.explorer-row[title=${JSON.stringify(path)}]'))`), 5000);
-    await click(`.explorer-row[title=${JSON.stringify(path)}]`);
+    await until(`file ${path}`, () => tab.evaluate(`Boolean(document.querySelector('.explorer-row[data-tip=${JSON.stringify(path)}]'))`), 5000);
+    await click(`.explorer-row[data-tip=${JSON.stringify(path)}]`);
   };
 
   await until("Reader source", () => tab.evaluate("Boolean(document.querySelector('.cm-editor'))"), 10000);

@@ -309,7 +309,8 @@ function drawFigure(data, { resolver }) {
   image.decoding = "async";
   image.loading = "lazy";
   image.alt = data.alt;
-  image.title = data.src;
+  image.setAttribute("data-tip", data.src);
+  image.setAttribute("data-tip-wait", "long");
   if (data.width) image.style.width = data.width;
   figure.append(image);
   if (data.caption) figure.append(el("figcaption", "cm-lp-md-caption", data.caption));

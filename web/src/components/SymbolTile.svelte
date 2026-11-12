@@ -63,7 +63,7 @@
 {#if large}
   <span class="symbol-tile large" aria-hidden="true">{@render face()}</span>
 {:else}
-  <button type="button" class="symbol-tile" aria-label={capitalize(symbol.name)} {title} data-symbol={symbol.id} data-kind={symbol.kind} {onclick} {...rest}>
+  <button type="button" class="symbol-tile" aria-label={capitalize(symbol.name)} data-tip={title} data-symbol={symbol.id} data-kind={symbol.kind} {onclick} {...rest}>
     {@render face()}
   </button>
 {/if}

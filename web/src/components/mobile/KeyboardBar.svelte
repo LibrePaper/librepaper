@@ -14,19 +14,19 @@
 </script>
 
 <div class="mobile-keyboard-bar" role="toolbar" aria-label={m.mobilenav_editing_tools()}>
-  <button type="button" data-action="undo" aria-label={m.common_undo()} title={m.common_undo()}
+  <button type="button" data-action="undo" aria-label={m.common_undo()} data-tip={m.common_undo()}
           onmousedown={keepFocus} onpointerdown={keepFocus} onclick={() => onundo()}>
     <Icon name="undo-2" size={20} />
   </button>
-  <button type="button" data-action="redo" aria-label={m.common_redo()} title={m.common_redo()}
+  <button type="button" data-action="redo" aria-label={m.common_redo()} data-tip={m.common_redo()}
           onmousedown={keepFocus} onpointerdown={keepFocus} onclick={() => onredo()}>
     <Icon name="redo-2" size={20} />
   </button>
-  <button type="button" data-action="insert" aria-label={m.common_insert()} title={m.common_insert()}
+  <button type="button" data-action="insert" aria-label={m.common_insert()} data-tip={m.common_insert()}
           onmousedown={keepFocus} onpointerdown={keepFocus} onclick={() => oninsert()}>
     <Icon name="plus" size={20} />
   </button>
-  <button type="button" data-action="more" aria-label={m.mobilenav_more()} title={m.mobilenav_more()}
+  <button type="button" data-action="more" aria-label={m.mobilenav_more()} data-tip={m.mobilenav_more()}
           onmousedown={keepFocus} onpointerdown={keepFocus} onclick={() => onmore()}>
     <Icon name="ellipsis" size={20} />
   </button>

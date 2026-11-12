@@ -431,7 +431,7 @@ async function runChecks() {
       check(line.scrollWidth > line.clientWidth,
         `the long name is truncated in its line: ${line.scrollWidth} wide in ${line.clientWidth}`);
       const main = q("li.hx-saved button.hx-main");
-      check(main && main.title.includes(fixtures.longName),
+      check(main && main.getAttribute("data-tip").includes(fixtures.longName),
         "the full name is in the button title");
       document.body.style.width = "";
     });

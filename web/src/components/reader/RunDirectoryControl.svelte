@@ -22,7 +22,7 @@
         class:rd-set={usable}
         class:rd-none={!status.path}
         class:rd-missing={Boolean(status.path) && !usable}
-        title={status.path || undefined}
+        data-tip-wait="long" data-tip={status.path || undefined}
         aria-label={m.rundirectorycontrol_change_aria()}
         onclick={() => onopen?.()}
       >

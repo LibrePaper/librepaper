@@ -178,9 +178,9 @@ try {
   await select(1);
   await expectDiff(sources[0], sources[1]);
   assert.equal(await switchPressed('Previous'), 'true', 'Previous is the default');
-  const endLabel = which => tab.evaluate(`document.querySelector('.history-endpoint[title="Change ${which} version"] .history-endpoint-label')?.textContent.trim() || ''`);
+  const endLabel = which => tab.evaluate(`document.querySelector('.history-endpoint[data-tip="Change ${which} version"] .history-endpoint-label')?.textContent.trim() || ''`);
   const clickedName = await endLabel('newer'), olderName = await endLabel('older');
-  const restoreTitle = await tab.evaluate(`document.querySelector('.history-restore')?.getAttribute('title') || ''`);
+  const restoreTitle = await tab.evaluate(`document.querySelector('.history-restore')?.getAttribute('data-tip') || ''`);
   assert.ok(restoreTitle.includes(clickedName) && !restoreTitle.includes(olderName), `restore names the clicked version, title: ${restoreTitle}`);
   await tab.evaluate(`${switchButton('Latest')}.click()`);
   await until('Latest is chosen', async () => (await switchPressed('Latest')) === 'true', 3000);
@@ -206,7 +206,7 @@ try {
   // Older and Newer are the two ends of the comparison. A button for each end
   // in the header starts choosing it, and the next version clicked in the
   // timeline replaces it.
-  const endpoint = which => `document.querySelector('.history-endpoint[title="Change ${which} version"]')`;
+  const endpoint = which => `document.querySelector('.history-endpoint[data-tip="Change ${which} version"]')`;
   const pressed = which => tab.evaluate(`${endpoint(which)}.getAttribute('aria-pressed')`);
   const bar = () => tab.evaluate(`document.querySelector('.hx-select')?.textContent.replace(/\\s+/g, ' ').trim() || ''`);
   // Escape from a timeline row, where the focus is while choosing a version.

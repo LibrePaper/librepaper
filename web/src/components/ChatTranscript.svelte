@@ -94,17 +94,17 @@
           {#if starts}
             <Avatar {name} {key} size={7} icon={message.role === "agent" ? "bot" : ""} />
           {:else if time}
-            <time class="chat-time chat-time-hover" datetime={message.created} title={stamp}>{time}</time>
+            <time class="chat-time chat-time-hover" datetime={message.created} data-tip-wait="long" data-tip={stamp}>{time}</time>
           {/if}
         </span>
         <div class="chat-content">
           {#if starts}
             <div class="chat-meta">
               <strong class="chat-author">{name}</strong>
-              {#if time}<time class="chat-time" datetime={message.created} title={stamp}>{time}</time>{/if}
+              {#if time}<time class="chat-time" datetime={message.created} data-tip-wait="long" data-tip={stamp}>{time}</time>{/if}
             </div>
           {/if}
-          <p class="chat-text" title={starts ? undefined : stamp}>{message.text}</p>
+          <p class="chat-text" data-tip-wait="long" data-tip={starts ? undefined : stamp}>{message.text}</p>
           {#each confirmed.filter(effect => effect.kind === "application" || effect.kind === "comment") as effect}
             <p>{effect.kind === "application" ? m.chattranscript_source_applied() : m.chattranscript_comment_confirmed({ action: effect.action })}</p>
           {/each}

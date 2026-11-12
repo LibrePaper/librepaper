@@ -332,7 +332,7 @@
                 </form>
               {:else if post.body}
                 <div class="post-row">
-                  <p class="post" title={stamp(post.created)}>{post.body}</p>
+                  <p class="post" data-tip-wait="long" data-tip={stamp(post.created)}>{post.body}</p>
                   {#if canEditPost(post)}
                     <IconButton
                       icon="pencil"
@@ -347,7 +347,7 @@
                   {/if}
                 </div>
                 {#if post.edited}
-                  <p class="panel-meta edited" title={m.commentcard_edited_title({ when: stamp(post.edited) })}>{m.commentcard_edited({ when: moment(post.edited) })}</p>
+                  <p class="panel-meta edited" data-tip-wait="long" data-tip={m.commentcard_edited_title({ when: stamp(post.edited) })}>{m.commentcard_edited({ when: moment(post.edited) })}</p>
                 {/if}
               {/if}
             {/each}
@@ -371,7 +371,7 @@
         <Row gap={2} wrap>
           <button type="button" class="btn btn-sm lp-control-tonal-brand"
             disabled={!attachable}
-            title={attachable ? m.commentcard_attach_title() : m.commentcard_attach_title_disabled()}
+            data-tip={attachable ? m.commentcard_attach_title() : m.commentcard_attach_title_disabled()}
             onclick={(e) => {
               e.stopPropagation();
               onattach?.(comment);

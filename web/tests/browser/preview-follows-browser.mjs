@@ -107,10 +107,10 @@ try {
 
   const flush = () => b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const click = async (selector) => { await b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node?.click(); })()`); await flush(); };
-  const row = (path) => `.explorer-row[title=${JSON.stringify(path)}]`;
+  const row = (path) => `.explorer-row[data-tip=${JSON.stringify(path)}]`;
   const exists = (selector) => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`);
   const chip = () => b.evaluate(`document.querySelector('.notice-chip')?.textContent.replace(/\\s+/g, ' ').trim() || ''`);
-  const shownRow = () => b.evaluate(`document.querySelector('.explorer-row[data-previewed]')?.getAttribute('title') || ''`);
+  const shownRow = () => b.evaluate(`document.querySelector('.explorer-row[data-previewed]')?.getAttribute('data-tip') || ''`);
   const cardText = () => b.evaluate(`[...document.querySelectorAll('section.latexpane .notyet p')].map(node => node.textContent.replace(/\\s+/g, ' ').trim()).join(' | ')`);
   const openFile = async (path) => {
     await until(`file ${path}`, () => exists(row(path)), 10000);
@@ -146,7 +146,7 @@ try {
   await until("the solid eye on the locked row", () => exists(`${row("summary.md")} button[aria-label="Unlock the preview"]`), 10000);
   await until("the preview on the locked file", async () => (await shownRow()) === "summary.md", 10000);
   assert.equal(await chip(), "", "a locked preview has no chip");
-  assert.equal(await b.evaluate(`document.querySelector('.explorer-row[data-selected]')?.getAttribute('title')`), "refs.bib", "locking leaves the open file alone");
+  assert.equal(await b.evaluate(`document.querySelector('.explorer-row[data-selected]')?.getAttribute('data-tip')`), "refs.bib", "locking leaves the open file alone");
 
   // The source can move and the preview stays.
   await openFile("chapters/intro.md");

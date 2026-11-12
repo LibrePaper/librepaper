@@ -174,7 +174,7 @@ try {
   await tab.evaluate('document.querySelector(".modal-back")?.click()');
   const editorClasses = () => tab.evaluate("[...document.querySelector('.cm-editor').classList].filter((name) => name !== 'cm-focused').sort().join(' ')");
   const openRow = async (path, words) => {
-    await tab.evaluate(`document.querySelector('.explorer-row[title=${JSON.stringify(path)}]').click()`);
+    await tab.evaluate(`document.querySelector('.explorer-row[data-tip=${JSON.stringify(path)}]').click()`);
     await until(`${path} shown`, () => tab.evaluate(`document.querySelector('.cm-content')?.textContent.includes(${JSON.stringify(words)})`), 5000);
   };
   const darkEditor = await editorClasses();

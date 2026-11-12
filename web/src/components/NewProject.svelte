@@ -515,7 +515,7 @@
                      checked={selectedId === template.id} onchange={() => (selectedId = template.id)} />
             </td>
             <td class="col-name">{template.name}</td>
-            <td class="col-say" title={template.description}>{template.description || (template.custom ? m.newproject_custom_template() : "")}</td>
+            <td class="col-say" data-tip-wait="long" data-tip={template.description}>{template.description || (template.custom ? m.newproject_custom_template() : "")}</td>
             <td class="col-formats">{formatSummary(template.formats)}</td>
             <td class="col-info">
               <button type="button" class="template-info" aria-label={m.newproject_details_for({ name: template.name })}

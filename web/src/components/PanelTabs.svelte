@@ -53,7 +53,7 @@
   <div class="panel-tabs-row">
     <Tabs.List class="panel-tabs {listClass}" aria-label={label ?? title}>
       {#each shownTabs as tab (tab.id)}
-        <Tabs.Trigger value={tab.id} title={tab.label}>
+        <Tabs.Trigger value={tab.id} data-tip-wait="long" data-tip={tab.label}>
           {tab.label}{#if tab.dot}<span class="unread" aria-label={tab.dot}></span>{/if}
         </Tabs.Trigger>
       {/each}

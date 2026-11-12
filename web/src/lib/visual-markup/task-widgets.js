@@ -185,7 +185,10 @@ function buildField(view, { key, value, state, warning }) {
   }
   chip.append(described.text);
   chip.setAttribute("aria-label", described.name);
-  if (described.title) chip.title = described.title;
+  if (described.title) {
+    chip.setAttribute("data-tip", described.title);
+    chip.setAttribute("data-tip-wait", "long");
+  }
   revealOnMousedown(view, chip);
   return chip;
 }

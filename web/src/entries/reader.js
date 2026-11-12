@@ -13,9 +13,12 @@ import { blockPageZoom } from "../lib/pinch.js";
 import { listenForSignOut } from "../lib/local-data.js";
 import { signedOutHref } from "../lib/api.js";
 import { markDocumentLanguage } from "../lib/locale.js";
+import { installTips } from "../lib/tip.js";
 import loroWasmUrl from "loro-crdt/web/loro_wasm_bg.wasm?url";
 
 markDocumentLanguage();
+// The one tooltip, for every element that carries data-tip.
+installTips();
 
 // The editor font URLs arrive the same way and are read first, because the
 // font is applied as soon as the editor type starts.

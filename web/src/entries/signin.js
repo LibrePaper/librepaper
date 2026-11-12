@@ -6,8 +6,11 @@ import "../styles/app.css";
 import { start as startTheme } from "../lib/theme.js";
 import SignIn from "../components/SignIn.svelte";
 import { markDocumentLanguage } from "../lib/locale.js";
+import { installTips } from "../lib/tip.js";
 
 markDocumentLanguage();
+// The one tooltip, for every element that carries data-tip.
+installTips();
 
 startTheme();
 

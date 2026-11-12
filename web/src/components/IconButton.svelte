@@ -13,8 +13,8 @@
   //
   // An icon without a word beside it has to say what it is. A title attribute
   // says it only to a mouse, after a wait the browser chooses, in a box the
-  // page has no say over; this says it to the keyboard too, promptly, in the
-  // application's own colours.
+  // page has no say over; the data-tip attributes ShortcutTip hands over say
+  // it to the keyboard too, promptly, in the application's own colours.
   let {
     icon,
     label,
@@ -55,7 +55,9 @@
 </script>
 
 <!-- The trigger is the control itself rather than a wrapper around it: an
-     element in between would break the row the controls sit in. -->
+     element in between would break the row the controls sit in. The
+     attributes are plain data-tip ones, so spreading them on either element
+     is enough. -->
 <ShortcutTip text={title} {shortcut}>
   {#snippet children(attributes)}
     {#if href}

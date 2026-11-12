@@ -17,7 +17,7 @@
 
 <li class="share-row">
   <span class="share-kind" aria-hidden="true"><Icon name={kind === "link" ? "link" : "bot"} size={15} /></span>
-  <span class="share-name" title={name}>{name}</span>
+  <span class="share-name" data-tip-wait="long" data-tip={name}>{name}</span>
   <span class="share-meta">{metaOf(kind, item)}</span>
   <div class="share-actions">
     {#if full}
