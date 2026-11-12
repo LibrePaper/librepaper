@@ -300,6 +300,9 @@
       // announced to nobody: the offer is pushed over this very socket. So
       // the way back up is where a reader asks whether they missed one.
       if (up && !mayEdit) void projection.refresh();
+      // Shared results changed or deleted while the socket was down were
+      // announced to nobody either.
+      if (up && sourceFormat === "quarto") void refreshResults();
     },
     onSession: (active) => {
       changesUnsubscribe?.();
@@ -2301,7 +2304,7 @@
         sharedResults.skip(split.reason === "no-cells" ? "none" : "unmatched");
         return;
       }
-      await sharedResults.upload(split.record);
+      await sharedResults.upload(split.record, () => !readerDisposed && shareResults && mayEdit && localExecution);
     } catch {
       sharedResults.skip("unmatched");
     }

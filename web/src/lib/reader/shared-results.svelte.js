@@ -53,8 +53,13 @@ export function createSharedResults(slug, headers = () => authHeaders("")) {
   let uploadedHash = "";
   let uploadedAt = "";
 
+  let generation = 0;
+
   async function refresh() {
+    const ticket = ++generation;
     const next = await fetchResults(slug, headers());
+    // A slower, older answer never overwrites a newer one.
+    if (ticket !== generation) return state.record;
     state.record = next;
     // Someone else's upload, or a delete, replaced what this tab sent: the
     // next run uploads even when its output equals this tab's last one.
@@ -62,11 +67,18 @@ export function createSharedResults(slug, headers = () => authHeaders("")) {
     return next;
   }
 
-  /** Uploads `record` unless it is identical to the last one this tab sent. */
-  async function upload(record) {
+  /**
+   * Uploads `record` unless it is identical to the last one this tab sent.
+   * `allowed` is asked again right before the request, so turning sharing
+   * off while the record is hashed still stops it.
+   * @param {unknown} record
+   * @param {() => boolean} [allowed]
+   */
+  async function upload(record, allowed = () => true) {
     try {
       const hash = await sha256(JSON.stringify(record));
       if (hash === uploadedHash) return state.status;
+      if (!allowed()) return state.status;
       const result = await putResults(slug, record, { ...headers(), "content-type": "application/json" });
       if (result.ok) {
         uploadedHash = hash;

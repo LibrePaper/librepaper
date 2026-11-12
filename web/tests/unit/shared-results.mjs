@@ -59,3 +59,25 @@ test("a record replaced by someone else is uploaded again; this tab's own echo i
     assert.equal(puts(), 2, "after a collaborator's upload the same output goes up again");
   });
 });
+
+test("an upload no longer allowed by the time it is hashed is not sent", async () => {
+  await withFetch(async () => new Response(JSON.stringify({ bytes: 1, updatedAt: "t" }), { status: 200 }), async (calls) => {
+    const shared = createSharedResults("paper", () => ({}));
+    await shared.upload(record, () => false);
+    assert.equal(calls.length, 0);
+  });
+});
+
+test("an older refresh that answers last does not overwrite a newer one", async () => {
+  const answers = [];
+  await withFetch((_path) => new Promise((resolve) => answers.push(resolve)), async () => {
+    const shared = createSharedResults("paper", () => ({}));
+    const older = shared.refresh();
+    const newer = shared.refresh();
+    answers[1](new Response(JSON.stringify({ error: "none" }), { status: 404 }));
+    await newer;
+    answers[0](new Response(JSON.stringify({ ...record, updatedAt: "old" }), { status: 200 }));
+    await older;
+    assert.equal(shared.state.record, null, "the deletion seen by the newer refresh stands");
+  });
+});
