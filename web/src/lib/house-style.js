@@ -84,12 +84,30 @@ function quartoThemeScript(attrs, body) {
  * @param {string} css the house stylesheet
  * @returns {string}
  */
+// Quarto's page put in the house order and wording: the contents follow the
+// title block (Quarto lays them out as a sidebar, which the house page has
+// not), and a caption's "Figure 1: " becomes the house caption label.
+function quartoMarkup(html) {
+  let out = html;
+  const toc = /<nav\b[^>]*\bid="TOC"[^>]*>[\s\S]*?<\/nav>/i.exec(out);
+  const header = /<header\b[^>]*\bid="title-block-header"[^>]*>[\s\S]*?<\/header>/i.exec(out);
+  if (toc && header && toc.index < header.index) {
+    out = out.slice(0, toc.index) + out.slice(toc.index + toc[0].length);
+    const at = out.indexOf(header[0]) + header[0].length;
+    out = out.slice(0, at) + toc[0] + out.slice(at);
+  }
+  return out.replace(
+    /(<figcaption\b[^>]*\bquarto-float-caption\b[^>]*>)\s*([\p{L}][\p{L} .]*?[\u00a0 ]\d+(?:\.\d+)*)\s*[:.]?\s*/gu,
+    (whole, open, label) => `${open}<span class="caption-label">${label.replace(/\u00a0/g, " ")}.</span> `,
+  );
+}
+
 export function quartoWithHouseStyle(html, css) {
   if (!css) return html;
   const stripped = html
     .replace(QUARTO_SCRIPT, (script, attrs, body) => (quartoThemeScript(attrs, body) ? "" : script))
     .replace(QUARTO_STYLE_LINK, (link) => (/data:text\/css|bootstrap|site_libs/i.test(link) ? "" : link));
-  const out = swap(stripped, css, (style) => QUARTO_THEME_CSS.test(style));
+  const out = quartoMarkup(swap(stripped, css, (style) => QUARTO_THEME_CSS.test(style)));
   return out.replace(/<html\b([^>]*)>/i, (tag, attrs) => {
     const cls = /\bclass\s*=\s*(["'])([\s\S]*?)\1/i.exec(attrs);
     if (!cls) return `<html${attrs} class="lp-quarto">`;

@@ -43,7 +43,20 @@ assert.equal(latexmlWithHouseStyle("<head><style data-latexml-css>a{}</style></h
   assert.ok(out.includes("mathjax@3/es5/tex-chtml-full.js"));
   assert.ok(out.includes("window.Quarto"));
   const body = (page) => page.slice(page.indexOf("<body"), page.indexOf("</body>"));
-  assert.equal(body(out).replace(/<script id="quarto-html-after-body"[\s\S]*?<\/script>\s*/, ""), body(html).replace(/<script id="quarto-html-after-body"[\s\S]*?<\/script>\s*/, ""));
+  // No content is lost: the same words, whatever the order (the contents move
+  // after the title block) and punctuation (caption labels).
+  const words = (page) => body(page).replace(/<script id="quarto-html-after-body"[\s\S]*?<\/script>/, "")
+    .replace(/<[^>]+>/g, " ").replace(/[.:\u00a0]/g, " ").split(/\s+/).filter(Boolean).sort();
+  assert.deepEqual(words(out), words(html));
   // No stylesheet to apply: the page is untouched.
   assert.equal(quartoWithHouseStyle(html, ""), html);
+}
+
+// The contents follow the title block, and Quarto's caption number becomes the house label.
+{
+  const { quartoWithHouseStyle } = await import("../../src/lib/house-style.js");
+  const page = '<html><head><style>.quarto-x{}</style></head><body><nav id="TOC"><ul></ul></nav><header id="title-block-header"><h1>T</h1></header><figure><figcaption class="quarto-float-caption quarto-float-fig"> Figure\u00a01: A plot </figcaption></figure></body></html>';
+  const out = quartoWithHouseStyle(page, ":root{--lp-ink:#000}");
+  assert.ok(out.indexOf('id="title-block-header"') < out.indexOf('id="TOC"'), out);
+  assert.ok(out.includes('<span class="caption-label">Figure 1.</span> A plot'), out);
 }
