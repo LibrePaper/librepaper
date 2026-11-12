@@ -157,6 +157,13 @@ function loaderFor(adapter) {
           style.textContent = paperStylesheet(renderer.pageCss);
           document.head.appendChild(style);
         }
+        // The Markdown page stylesheet does not cover Typst's MathML, so Typst brings its own rules.
+        if (adapter.module === "typst" && renderer.mathCss && !document.head.querySelector("style[data-librepaper-paper-typst]")) {
+          const style = document.createElement("style");
+          style.setAttribute("data-librepaper-paper-typst", "");
+          style.textContent = renderer.mathCss;
+          document.head.appendChild(style);
+        }
         view.dispatch({ effects: refreshPaper.of(null) });
       })
       .catch(() => {});

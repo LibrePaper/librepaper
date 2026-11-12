@@ -330,6 +330,9 @@ function bump(map, key) {
 export function typstFacts(texts, main, open, entries = []) {
   const focus = open == null ? null : normalize(open);
   const headingNumbers = new Map();
+  // Every numbered heading, figure and display equation of the project in
+  // reading order, for the paper layer's counter updates.
+  const numbered = [];
   // The scan of each file. Without the parser there is no tree for any file,
   // and the project reads as empty.
   const scans = new Map();
@@ -382,6 +385,7 @@ export function typstFacts(texts, main, open, entries = []) {
           const values = symbolCount(pattern) >= 2 ? counters.slice(0, event.level) : [counters[event.level - 1]];
           const number = render(pattern, values);
           if (number && path === focus) headingNumbers.set(event.at, number);
+          if (number) numbered.push({ path, at: event.at, type: "heading", level: event.level });
           if (event.label && number) labels.set(event.label, { number, kind: "section" });
           break;
         }
@@ -391,6 +395,7 @@ export function typstFacts(texts, main, open, entries = []) {
           bump(globals, event.kind);
           bump(chapters, event.kind);
           const number = render(pattern, countValues(pattern, event.kind));
+          if (number) numbered.push({ path, at: event.at, type: "figure", kind: event.kind });
           if (event.label && number) labels.set(event.label, { number, kind: event.kind });
           break;
         }
@@ -399,6 +404,7 @@ export function typstFacts(texts, main, open, entries = []) {
           bump(globals, "equation");
           bump(chapters, "equation");
           const number = render(equationPattern, countValues(equationPattern, "equation"));
+          if (number) numbered.push({ path, at: event.at, type: "equation" });
           if (event.label && number) labels.set(event.label, { number, kind: "equation" });
           break;
         }
@@ -445,6 +451,7 @@ export function typstFacts(texts, main, open, entries = []) {
     theorems: new Map(),
     environmentNumbers: new Map(),
     headingNumbers,
+    numbered,
     citeStyle: style && AUTHOR_YEAR.test(style) ? "author-year" : "numeric",
   };
 }

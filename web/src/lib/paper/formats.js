@@ -6,11 +6,13 @@
 
 import { blockSource, splitBlocks } from "./blocks.js";
 import { orgBlockSource, splitOrgBlocks } from "./org-blocks.js";
+import { splitTypstBlocks, typstBlockSource } from "./typst-blocks.js";
 import { loadOrgSyntax } from "../org-language/module.js";
+import { loadTypstSyntax } from "../typst-language/module.js";
 
 /**
  * @typedef {{
- *   module: "markdown" | "org",
+ *   module: "markdown" | "org" | "typst",
  *   splitBlocks: (text: string) => import("./blocks.js").PaperBlock[] | null,
  *   blockSource: (text: string, block: import("./blocks.js").PaperBlock, blocks: import("./blocks.js").PaperBlock[]) => string,
  *   renderedBlocks?: (text: string, renderer: import("./renderer.js").PaperRenderer, path: string) => import("./blocks.js").PaperBlock[] | null,
@@ -83,14 +85,20 @@ const formats = {
     blockSource: orgBlockSource,
     ready: () => loadOrgSyntax().then(() => {}),
   },
+  typst: {
+    module: "typst",
+    splitBlocks: splitTypstBlocks,
+    blockSource: typstBlockSource,
+    ready: () => loadTypstSyntax().then(() => {}),
+  },
 };
 
 /** The names of the formats the paper layer draws. */
-export const PAPER_FORMATS = new Set(["markdown", "quarto", "org"]);
+export const PAPER_FORMATS = new Set(["markdown", "quarto", "org", "typst"]);
 
 /**
  * The adapter for a format, or null when the paper layer does not draw it.
- * @param {string} name "markdown", "quarto" or "org"
+ * @param {string} name "markdown", "quarto", "org" or "typst"
  * @returns {PaperFormat | null}
  */
 export function paperFormat(name) {

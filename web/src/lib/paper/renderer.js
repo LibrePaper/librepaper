@@ -4,6 +4,7 @@
 // block at a time and waits for each answer.
 
 import { verifiedModuleBytes } from "../renderer-wasm.js";
+import { createTypstPaperRenderer } from "./typst-renderer.js";
 
 // Enough for a screenful of blocks and their recent edits, without holding a
 // whole long document's worth of HTML.
@@ -162,7 +163,7 @@ export async function createPaperRenderer(bytes) {
  * The renderer of one module, loaded once per key. A failed load is forgotten
  * for that key, so the next call tries again. Rejects when no module URL is
  * configured for the key.
- * @param {string} [key] the module's name in LIBREPAPER_MODULES: "markdown" or "org"
+ * @param {string} [key] the module's name in LIBREPAPER_MODULES: "markdown", "org" or "typst"
  * @returns {Promise<PaperRenderer>}
  */
 export function loadPaperRenderer(key = "markdown") {
@@ -171,7 +172,7 @@ export function loadPaperRenderer(key = "markdown") {
   const url = globalThis.LIBREPAPER_MODULES?.[key];
   if (!url) return Promise.reject(new Error(`no ${key} renderer URL`));
   const attempt = verifiedModuleBytes(url)
-    .then((bytes) => createPaperRenderer(bytes))
+    .then((bytes) => (key === "typst" ? createTypstPaperRenderer(bytes) : createPaperRenderer(bytes)))
     .then((renderer) => {
       current.set(key, renderer);
       return renderer;
