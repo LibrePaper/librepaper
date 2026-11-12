@@ -162,7 +162,7 @@ fn plan_change<'a>(
     for (from, to) in &renames {
         plan.rename.push(json!({"from": from, "to": to}));
     }
-    for path in changes.added.iter().filter(|path| !renamed_to(*path)) {
+    for path in changes.added.iter().filter(|path| !renamed_to(path)) {
         let file = &found.files[path];
         match file.kind {
             Kind::Text => plan.create.push(json!({
@@ -200,7 +200,7 @@ fn plan_change<'a>(
             }
         }
     }
-    for path in changes.deleted.iter().filter(|path| !renamed_from(*path)) {
+    for path in changes.deleted.iter().filter(|path| !renamed_from(path)) {
         let Some(before) = recorded.get(path) else {
             continue;
         };
