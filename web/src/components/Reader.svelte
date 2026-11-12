@@ -2979,7 +2979,7 @@
   // palette gives it.
   const editGroups = [
     [["undo", labelOf("undo")], ["redo", labelOf("redo")]],
-    [["cut", labelOf("cut")], ["copy", labelOf("copy")], ["paste", labelOf("paste")]],
+    [["cut", labelOf("cut")], ["copy", labelOf("copy")], ["paste", labelOf("paste")], ["paste-plain", labelOf("paste-plain")]],
     [["select-all", labelOf("select-all")]],
     [["find", labelOf("find")], ["replace", labelOf("replace")], ["word-count", labelOf("word-count")]],
     [["bold", labelOf("bold")], ["italic", labelOf("italic")]],
@@ -3886,7 +3886,7 @@
   }
 
   const EDIT_COMMANDS = [
-    "undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic",
+    "undo", "redo", "cut", "copy", "paste", "paste-plain", "select-all", "find", "replace", "bold", "italic",
     "link", "comment", "numbered-list", "bulleted-list", "heading-1", "heading-2", "heading-3", "heading-4", "heading-5", "heading-6",
   ];
   const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];

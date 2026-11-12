@@ -585,6 +585,7 @@
   "commands_org_todo_next": "Nächster TODO-Status",
   "commands_org_todo_previous": "Vorheriger TODO-Status",
   "commands_org_toggle_checkbox": "Kontrollkästchen umschalten",
+  "commands_paste_plain": "Als reinen Text einfügen",
   "commands_rename_symbol": "Label umbenennen",
   "commands_shortcuts": "Tastenkürzel anzeigen",
   "commands_tab_focus": "Fokuswechsel mit der Tab-Taste umschalten",

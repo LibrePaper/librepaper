@@ -209,6 +209,8 @@ export const COMMANDS = [
   { id: "cut", label: m.common_cut(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+X"], available: (c) => Boolean(c.edit?.cut) },
   { id: "copy", label: m.common_copy(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+C"], available: (c) => Boolean(c.edit?.copy) },
   { id: "paste", label: m.common_paste(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+V"], available: (c) => Boolean(c.edit?.paste) },
+  // Mod+Shift+V is the browser's paste-as-plain-text chord; the editor owns it (see Editor.svelte).
+  { id: "paste-plain", label: m.commands_paste_plain(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Shift+V"], available: (c) => Boolean(c.edit?.["paste-plain"]) },
   { id: "select-all", label: m.common_select_all(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+A"], available: (c) => Boolean(c.edit?.["select-all"]) },
   { id: "find", label: m.readerb_edit_find(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+F"], available: (c) => Boolean(c.edit?.find) },
   { id: "replace", label: m.readerb_edit_replace(), category: m.commands_category_editing(), scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Alt+F"], available: (c) => Boolean(c.edit?.replace) },
