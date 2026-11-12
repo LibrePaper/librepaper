@@ -70,8 +70,8 @@
      screen reader reaches has to say it is unavailable too. */
   .unavailable { opacity: .45; }
   .chord { display: inline-flex; gap: 2px; }
-  .alias { font-size: var(--text-xs); color: var(--color-text-muted); padding-inline: calc(var(--spacing) * .75); }
-  .nokeys { font-size: var(--text-xs); color: var(--color-text-muted); }
+  .alias { font-size: var(--text-xs); color: var(--color-text-secondary); padding-inline: calc(var(--spacing) * .75); }
+  .nokeys { font-size: var(--text-xs); color: var(--color-text-secondary); }
   kbd {
     display: inline-block;
     min-width: 1.6em;

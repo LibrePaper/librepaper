@@ -131,16 +131,16 @@
   }
   .outline-todo-done {
     background: var(--color-subtle);
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
     text-decoration: line-through;
   }
-  .outline-priority { flex: none; color: var(--color-text-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+  .outline-priority { flex: none; color: var(--color-text-secondary); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
   .outline-tags { display: flex; min-width: 0; flex: 0 1 auto; flex-wrap: wrap; gap: calc(var(--spacing) * .5); justify-content: flex-end; }
   .outline-tag {
     padding: 0 calc(var(--spacing) * 1.5);
     border: 1px solid var(--color-divider);
     border-radius: var(--radius-base);
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
     font-size: var(--text-xs);
     white-space: nowrap;
   }

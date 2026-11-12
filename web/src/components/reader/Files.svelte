@@ -485,7 +485,7 @@
   .explorer-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   /* Pushed to the far end by the name, which takes the free width. */
   .explorer-preview { display: flex; flex: none; align-items: center; justify-content: center; width: calc(var(--spacing) * 7); height: calc(var(--spacing) * 7); margin-inline-end: calc(var(--spacing) * -1.5); padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text-secondary); }
-  button.explorer-preview { color: var(--color-text-muted); opacity: 0.45; cursor: pointer; }
+  button.explorer-preview { color: var(--color-text-secondary); opacity: 0.45; cursor: pointer; }
   button.explorer-preview:hover, button.explorer-preview:focus-visible { opacity: 1; color: var(--color-text-secondary); background: var(--color-row-hover); }
   button.explorer-preview.shown { color: var(--color-text-secondary); opacity: 1; cursor: pointer; }
   button.explorer-preview:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }

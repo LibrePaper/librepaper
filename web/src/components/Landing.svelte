@@ -1868,7 +1868,7 @@
      as a row, because everything on this page was outlined before and the
      effect was that nothing on it was more important than anything else. */
   :global(.projects-table th) { border: 0; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--color-text-secondary); font-weight: 600; }
-  :global(.projects-table td) { border: 0; border-top: 1px solid var(--color-pane-edge); vertical-align: middle; }
+  :global(.projects-table td) { border: 0; border-top: 1px solid var(--color-border-strong); vertical-align: middle; }
   :global(.projects-table tbody tr:hover) { background: var(--color-subtle); }
 
   /* The one column that has to say more than its width allows. Every other

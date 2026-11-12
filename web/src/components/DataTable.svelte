@@ -307,7 +307,7 @@
     left: 3px;
     width: 1px;
     height: 70%;
-    background: var(--color-text-muted);
+    background: var(--color-text-secondary);
     opacity: 0;
     transition: opacity 120ms ease;
   }

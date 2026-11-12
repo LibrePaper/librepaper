@@ -7,14 +7,14 @@
 /* A done task mutes its text and strikes it through. The fields and the box set
    their own decoration, so the line-through stops at the text. */
 .cm-lp-task-done {
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
 }
 
 /* Cancelled reads as dropped, not finished: muted, with no line through it. */
 .cm-lp-task-cancelled {
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
 }
 
 .cm-lp-taskbox,
@@ -52,7 +52,7 @@
 }
 
 .cm-lp-task-progress {
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -80,7 +80,7 @@
 
 /* Created and estimate recede into the muted colour. */
 .cm-lp-task-quiet {
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
 }
 
 /* Priorities 1 and 2 are the strongest, 3 is plain, and 4 and 5 recede. */
@@ -115,7 +115,7 @@
   margin: 0 calc(var(--spacing) * 0.5);
   padding: 0 1px;
   border: 1px solid transparent;
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-size: var(--text-xs);
   line-height: 1.7;
   white-space: nowrap;
