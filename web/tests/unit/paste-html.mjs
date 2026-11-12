@@ -417,3 +417,9 @@ test("a monospace font on a list item does not make its text code (Google Docs b
   const html = '<ul><li style="font-family:\'Courier New\',monospace"><p><span style="font-family:Aptos">Check the <b>depth</b></span></p></li></ul>';
   assert.equal(source(html, "markdown"), "- Check the **depth**");
 });
+
+test("adjacent numbered lists with no start attribute each start at 1", () => {
+  const html = "<ol><li>A</li></ol><ol><li>B</li></ol>";
+  assert.equal(source(html, "markdown"), "1. A\n\n1. B");
+  assert.equal(source(html, "latex"), "\\begin{enumerate}\n  \\item A\n\\end{enumerate}\n\n\\begin{enumerate}\n  \\item B\n\\end{enumerate}");
+});

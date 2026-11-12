@@ -243,9 +243,12 @@ function flattenList(el, depth, ctx, st) {
     const own = child.children.filter((kid) => typeof kid === "string" || (kid.tag !== "ul" && kid.tag !== "ol"));
     const nested = child.children.filter((kid) => typeof kid !== "string" && (kid.tag === "ul" || kid.tag === "ol"));
     const inl = normalize(own.flatMap((kid) => inlinesOf(kid, itemCtx, st)));
-    const start = ordered && index === 0 ? Number.parseInt(el.attrs.start, 10) : Number.NaN;
+    // The first item of an <ol> records where it starts, 1 when unstated, so an
+    // adjacent list that restarts at 1 stays a list of its own (see nestEntries).
+    const given = Number.parseInt(el.attrs.start, 10);
+    const start = ordered && index === 0 ? (Number.isFinite(given) ? given : 1) : undefined;
     index += 1;
-    if (inl.length) entries.push({ level, ordered, inl, start: Number.isFinite(start) ? start : undefined });
+    if (inl.length) entries.push({ level, ordered, inl, start });
     for (const list of nested) entries.push(...flattenList(list, level + 1, itemCtx, st));
   }
   return entries;
