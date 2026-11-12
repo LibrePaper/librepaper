@@ -8,17 +8,20 @@ import { sha256 } from "../results-hash.js";
 const endpoint = (slug) => `/api/documents/${encodeURIComponent(slug)}/results`;
 
 /**
- * The record, or null when there is none (or it cannot be read).
+ * The record, null when the server says there is none, or undefined when
+ * the answer could not be had (a network or server error), so a caller can
+ * keep what it already shows.
  * @param {string} slug
  * @param {Record<string, string>} [headers]
  */
 export async function fetchResults(slug, headers = authHeaders("")) {
   try {
     const response = await fetch(endpoint(slug), { headers });
-    if (response.status === 404 || !response.ok) return null;
+    if (response.status === 404) return null;
+    if (!response.ok) return undefined;
     const body = await response.json();
     return body && Array.isArray(body.cells) ? body : null;
-  } catch { return null; }
+  } catch { return undefined; }
 }
 
 /**
@@ -60,6 +63,9 @@ export function createSharedResults(slug, headers = () => authHeaders("")) {
     const next = await fetchResults(slug, headers());
     // A slower, older answer never overwrites a newer one.
     if (ticket !== generation) return state.record;
+    // A failed fetch keeps the outputs already shown; the next notification
+    // or reconnect fetches again.
+    if (next === undefined) return state.record;
     state.record = next;
     // Someone else's upload, or a delete, replaced what this tab sent: the
     // next run uploads even when its output equals this tab's last one.

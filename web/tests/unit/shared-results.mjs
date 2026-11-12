@@ -81,3 +81,21 @@ test("an older refresh that answers last does not overwrite a newer one", async 
     assert.equal(shared.state.record, null, "the deletion seen by the newer refresh stands");
   });
 });
+
+test("a failed refresh keeps the outputs already shown; a 404 clears them", async () => {
+  let answer = () => new Response(JSON.stringify({ ...record, updatedAt: "t1" }), { status: 200 });
+  await withFetch(async () => answer(), async () => {
+    const shared = createSharedResults("paper", () => ({}));
+    await shared.refresh();
+    assert.equal(shared.state.record?.updatedAt, "t1");
+    answer = () => new Response("", { status: 503 });
+    await shared.refresh();
+    assert.equal(shared.state.record?.updatedAt, "t1", "a server error keeps the record");
+    answer = () => { throw new TypeError("offline"); };
+    await shared.refresh();
+    assert.equal(shared.state.record?.updatedAt, "t1", "a network error keeps the record");
+    answer = () => new Response(JSON.stringify({ error: "none" }), { status: 404 });
+    await shared.refresh();
+    assert.equal(shared.state.record, null, "a confirmed deletion clears it");
+  });
+});
