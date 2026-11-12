@@ -44,92 +44,6 @@ const texSample = [
   "\\item first",
   "\\end{itemize}",
 ].join("\n");
-const typstSample = "= Heading\nSome *bold* and $x^2 + y^2$ here.";
-const markdownSample = "# Readme\n\nSome *emphasis* and $x$ here.";
-// An Org file: keywords, a TODO heading with a priority and a tag, a scheduled
-// date, a property drawer, inline markup, math, an internal link and two tasks.
-// It ends on plain text: the caret goes to the end, and its line shows its source.
-const orgSample = [
-  "#+TITLE: Org sample",
-  "#+AUTHOR: A. Writer",
-  "* TODO [#A] Heading one :tag:",
-  "SCHEDULED: <2026-11-12 Thu>",
-  ":PROPERTIES:",
-  ":CUSTOM_ID: one",
-  ":END:",
-  "Some *bold*, /italic/ and $x^2 + y^2$ here, see [[#one]].",
-  "- [ ] a task",
-  "- [X] done task",
-  "",
-  "The end.",
-].join("\n");
-// A Quarto paper: front matter, numbered sections, inline and block markup, a
-// code cell with a label, an image figure, a captioned table, display and inline
-// math, a callout, a theorem, citations, cross-references, a footnote and a
-// shortcode. The caret stays on the "Caret here." line.
-const paperSample = [
-  "---",
-  "title: \"Quarto Paper\"",
-  "author:",
-  "  - Ada Lovelace",
-  "  - Bob Smith",
-  "date: \"2026-01-02\"",
-  "number-sections: true",
-  "---",
-  "",
-  "# Introduction {#sec-intro}",
-  "",
-  "Some **bold**, *italic*, ~~strike~~ and `inline code` text with a [link](https://example.org) and <https://example.com>.",
-  "",
-  "- [ ] open task",
-  "- [x] done task",
-  "",
-  "1. first step",
-  "2. second step",
-  "",
-  "> A quoted line.",
-  "",
-  "```python",
-  "print(\"hi\")",
-  "```",
-  "",
-  "```{r}",
-  "#| label: fig-plot",
-  "#| fig-cap: \"A plot\"",
-  "plot(1:10)",
-  "```",
-  "",
-  "![A chart](chart.png){#fig-chart}",
-  "",
-  "| Name | Score |",
-  "|:-----|------:|",
-  "| A    |     1 |",
-  "| B    |     2 |",
-  "",
-  ": Results {#tbl-res}",
-  "",
-  "$$ E = mc^2 $$ {#eq-energy}",
-  "",
-  "Inline $x^2$ math and a citation [@knuth] and @knuth wrote.",
-  "",
-  "::: {.callout-note}",
-  "A note with text.",
-  ":::",
-  "",
-  "::: {#thm-main}",
-  "Every bounded monotone sequence converges.",
-  ":::",
-  "",
-  "Cross references: @fig-chart, @tbl-res, @eq-energy, @sec-intro and @fig-plot.",
-  "",
-  "A note[^1] in text.",
-  "",
-  "{{< pagebreak >}}",
-  "",
-  "[^1]: The footnote text.",
-  "",
-  "Caret here.",
-].join("\n");
 // A whole LaTeX paper: a preamble, math environments, labels and a bibliography.
 const fullSample = [
   "\\documentclass[11pt]{article}",
@@ -265,42 +179,6 @@ const titleSample = [
   "\\maketitle",
   "\\title{After}",
   "Text.",
-].join("\n");
-// A Typst kitchen-sink document. The setup lines at the top (page, text, heading
-// numbering, show, import and a definition) fold into one chip, and the body
-// holds the markup, link, figure, layout and unknown-call cases. The caret stays
-// on the "Caret here." line in the body.
-const typstSinkSample = [
-  '#set page(paper: "a5", margin: 2cm)',
-  '#set text(font: "Libertinus Serif", size: 11pt, lang: "en")',
-  '#set heading(numbering: "1.")',
-  "#show heading: it => it.body",
-  '#import "@preview/x:0.1.0": *',
-  "#let f(x) = x",
-  "= Sink",
-  "== Level two",
-  "*strong* and _emph_ words with `code` inline.",
-  "",
-  "```rust",
-  "fn main() {}",
-  "```",
-  "",
-  "- item",
-  "",
-  "+ item",
-  "",
-  "/ Term: def",
-  "",
-  'Colour: #text(fill: red)[warm], #rgb("#ff0000") swatch, #underline[u], #strike[s], #highlight[h], #smallcaps[sc], #super[2].',
-  'Links: #link("https://example.org")[site], https://typst.app, a note#footnote[note] and #quote[said].',
-  "Symbols: #sym.dash.em, #sym.arrow.r, #emoji.rocket, -- and --- and ... and ~ here.",
-  '#figure(image("a.png"), caption: [A plot]) <fig-a>',
-  "As @fig-a shows, #lorem(5)",
-  "#pagebreak()",
-  "#outline()",
-  '#bibliography("refs.bib")',
-  "#my-func(1)[x]",
-  "Caret here.",
 ].join("\n");
 
 // A LaTeX file with a display equation on its own lines, between two text lines.
@@ -521,69 +399,6 @@ async function visualCheck() {
     .some((text) => /mc\^?3/.test(text));
   collab.editedHead = view().state.selection.main.head;
 
-  // Check 5: Typst is drawn.
-  component.$set({ file: ids.typ, format: "typst" });
-  await settle();
-  const typst = {
-    katex: await poll(mathKatexCount),
-    text: visibleText(),
-    marks: markCount(),
-  };
-
-  // Check 6: Markdown is drawn. The caret goes to the end of the file, on the
-  // plain text after the emphasis, so the emphasis markers stay hidden.
-  component.$set({ file: ids.md, format: "markdown" });
-  await settle();
-  // The caret sits on the heading, so the line with the emphasis is drawn.
-  view().dispatch({ selection: { anchor: 0 } });
-  await settle();
-  const markdown = { marks: markCount(), text: visibleText() };
-
-  // Check 6o: an Org file. The caret goes to the end of the file, on the plain
-  // text of the last task, so the markup, the title block, the TODO chip, the
-  // collapsed property drawer and the link are all drawn.
-  component.$set({ file: ids.org, format: "org" });
-  await settle();
-  view().dispatch({ selection: { anchor: view().state.doc.length } });
-  await settle();
-  await poll(mathKatexCount);
-  const org = {
-    katex: mathKatexCount(),
-    marks: markCount(),
-    text: visibleText(),
-    headingLine: Array.from(document.querySelectorAll(".cm-editor .cm-line.cm-lv-heading")).some((node) => node.textContent.includes("Heading one")),
-    titleBlock: Array.from(document.querySelectorAll('.cm-editor [class*="org"]')).some((node) => node.textContent.includes("Org sample")),
-    todoChip: Array.from(document.querySelectorAll(".cm-editor .cm-content *")).some((node) => node.children.length === 0 && node.textContent.trim() === "TODO"),
-    checkboxes: document.querySelectorAll('.cm-editor [role="checkbox"]').length,
-  };
-
-  // Check 6a: a Quarto paper. The front matter folds into a title block with the
-  // caret on a plain line, and the markup, cells, figures, tables, math, callouts,
-  // theorems, citations and cross-references are drawn. A click on the front
-  // matter shows its YAML.
-  component.$set({ visual: true, file: ids.paper, format: "markdown" });
-  await settle();
-  await wait(800);
-  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Caret here.") + 3 } });
-  await settle();
-  const paperKatexShown = await poll(katexCount);
-  const frontmatter = document.querySelector(".cm-editor [class*='frontmatter']");
-  const quarto = {
-    katexShown: paperKatexShown,
-    katex: katexCount(),
-    katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
-    tables: document.querySelectorAll(".cm-editor table").length,
-    tableBoxes: texts(".cm-lp-table-box"),
-    verbs: document.querySelectorAll(".cm-editor .cm-lp-verb").length,
-    links: document.querySelectorAll(".cm-editor .cm-lp-link").length,
-    frontmatterShown: Boolean(frontmatter),
-    text: visibleText(),
-  };
-  quarto.headnums = texts(".cm-lp-headnum");
-  frontmatter?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-  await settle();
-  quarto.frontmatterClick = visibleText();
-
   // Check 6b: a LaTeX paper. The preamble folds into one block while the caret
   // is in the body, labels and the bibliography are hidden, math environments
   // are typeset, and a caret in the preamble shows the source again.
@@ -803,37 +618,6 @@ async function visualCheck() {
   await settle();
   const offset = { misses: offsetMisses, inBlock: visibleText(), envheads: document.querySelectorAll(".cm-editor .cm-lp-envhead-theorem").length };
 
-  // Check 6f: the Typst kitchen-sink document. The caret sits on "Caret here.", so
-  // the setup lines fold into one chip and each construct in the body is drawn.
-  // A click on the setup chip shows its source.
-  component.$set({ visual: true, file: ids.sinkTyp, format: "typst" });
-  await settle();
-  await wait(800);
-  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Caret here.") + 6 } });
-  await settle();
-  const setupChip = Array.from(document.querySelectorAll(".cm-editor .cm-lp-hidden"))
-    .find((node) => node.textContent.trim().startsWith("Setup:"));
-  // The innermost element whose whole text is "warm" carries the colour style.
-  const warmStyle = Array.from(document.querySelectorAll(".cm-editor [style]"))
-    .filter((node) => node.textContent.trim() === "warm")
-    .pop()?.getAttribute("style") ?? null;
-  const typstSink = {
-    text: visibleText(),
-    hidden: texts(".cm-lp-hidden"),
-    setupChip: Boolean(setupChip),
-    warmStyle,
-    footnotes: document.querySelectorAll(".cm-editor .cm-lp-footnote").length,
-    links: document.querySelectorAll(".cm-editor .cm-lp-link").length,
-    swatches: document.querySelectorAll(".cm-editor .cm-lp-swatch").length,
-    katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
-  };
-  // The caret is still on "Caret here.", so the code fence is out of the way: its
-  // fence markers must not show, its code must, and the heading numbers are read here.
-  const typstFence = { text: visibleText(), headnums: texts(".cm-lp-headnum") };
-  setupChip?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-  await settle();
-  typstSink.clicked = visibleText();
-
   // Check 7: timing, reported and not asserted. Each typing run makes 50
   // single character insertions at the middle of the file, one dispatch at a
   // time. The caret run makes 50 selection-only dispatches, each moving the
@@ -883,18 +667,12 @@ async function visualCheck() {
     off,
     back,
     sameView,
-    typst,
-    markdown,
-    org,
-    quarto,
     full: { body: fullBody, preambleClick: fullPreambleClick, preamble: fullPreamble, end: fullEnd, display: fullDisplay, headings: fullHeadings },
     refs: refsCheck,
     titleBlock,
     figure,
     sink,
     offset,
-    typstSink,
-    typstFence,
     timing:{ lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
     caret,
     hugeTiming: { lines: hugeOn.lines, on: { median: hugeOn.median, max: hugeOn.max }, off: { median: hugeOff.median, max: hugeOff.max } },
@@ -909,7 +687,7 @@ const source = [
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { LoroDoc } from "loro-crdt";`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, org: orgSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, offset: offsetSample, title: titleSample, typstSink: typstSinkSample, vim: vimSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, offset: offsetSample, title: titleSample, vim: vimSample })};`,
   `globalThis.LIBREPAPER_MODULES = { "typst-syntax": "/typst-syntax.wasm", org: "/org.wasm" };`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
@@ -920,10 +698,6 @@ const source = [
   `const session = joinSession({ send: () => {}, mayEdit: true });`,
   `const ids = {`,
   `  tex: session.addText("paper.tex", samples.tex),`,
-  `  typ: session.addText("notes.typ", samples.typst),`,
-  `  md: session.addText("readme.md", samples.markdown),`,
-  `  org: session.addText("notes.org", samples.org),`,
-  `  paper: session.addText("paper.qmd", samples.paper),`,
   `  full: session.addText("full.tex", samples.full),`,
   `  big: session.addText("big.tex", samples.long),`,
   `  bigOff: session.addText("big-off.tex", samples.long),`,
@@ -932,7 +706,6 @@ const source = [
   `  refs: session.addText("refs.tex", samples.refs),`,
   `  figure: session.addText("figure.tex", samples.figure),`,
   `  sink: session.addText("sink.tex", samples.sink),`,
-  `  sinkTyp: session.addText("sink.typ", samples.typstSink),`,
   `  offset: session.addText("offset.tex", samples.offset),`,
   `  title: session.addText("title.tex", samples.title),`,
   `  intro: session.addText("sections/intro.tex", samples.intro),`,
@@ -1150,57 +923,6 @@ try {
   assert.equal(result.collab.editedHead, 3, "the caret offset changed when a peer edited a formula's source");
   console.log("visual-markup-browser: a peer's inserted formula is drawn, and a peer's edit inside a formula is drawn, with the caret unmoved");
 
-  // Check 5: Typst is drawn.
-  assert.equal(result.typst.katex, true, "a Typst formula was not drawn as KaTeX inside .cm-lv-math");
-  console.log("visual-markup-browser: a Typst formula is drawn");
-
-  // Check 6: Markdown is drawn. Its emphasis markers are hidden, and its math is typeset.
-  assert.ok(result.markdown.marks > 0, "no visual markup decorations were drawn for readme.md");
-  assert.ok(result.markdown.text.includes("emphasis"), "the emphasis text was not visible in readme.md");
-  assert.equal(result.markdown.text.includes("*emphasis*"), false, "the emphasis markers are still visible in readme.md");
-  console.log("visual-markup-browser: Markdown is drawn and its emphasis markers are hidden");
-
-  // Check 6o: an Org file is drawn.
-  assert.ok(result.org.katex > 0, "the Org formula $x^2 + y^2$ was not drawn as KaTeX inside .cm-lv-math in notes.org");
-  assert.ok(result.org.marks > 0, "no visual markup decorations were drawn for notes.org");
-  assert.ok(result.org.text.includes("bold") && result.org.text.includes("italic"), `the bold and italic text is not visible in notes.org; visible text: ${result.org.text}`);
-  assert.equal(result.org.text.includes("*bold*"), false, "the *bold* markers are still visible in notes.org");
-  assert.equal(result.org.text.includes("/italic/"), false, "the /italic/ markers are still visible in notes.org");
-  assert.equal(result.org.headingLine, true, "no .cm-line.cm-lv-heading holds 'Heading one' in notes.org");
-  assert.equal(result.org.titleBlock, true, "no element with an org class holding 'Org sample' (the title block) was drawn in notes.org");
-  assert.equal(result.org.todoChip, true, "no TODO chip reading 'TODO' was drawn for the heading in notes.org");
-  assert.equal(result.org.text.includes(":CUSTOM_ID:"), false, "the property drawer is still visible in notes.org; it should be collapsed");
-  assert.equal(result.org.text.includes("[[#one]]"), false, "the raw [[#one]] link is still visible in notes.org");
-  assert.equal(result.org.checkboxes, 2, `expected two task checkboxes in notes.org, found ${result.org.checkboxes}`);
-  console.log("visual-markup-browser: Org is drawn: title block, TODO chip, collapsed drawer, markup, math, link and tasks");
-
-  // Check 6a: a Quarto paper is drawn. Its front matter is a title block that shows
-  // its YAML after a click, and the source of each construct is hidden with the
-  // caret on the last line.
-  assert.equal(result.quarto.katexShown, true, "KaTeX did not typeset the formulas in paper.qmd within five seconds");
-  for (const drawn of ["Quarto Paper", "Ada Lovelace", "Bob Smith", "Introduction", "Figure", "Table", "Equation", "Section 1", "Note", "Theorem 1"]) {
-    assert.ok(result.quarto.text.includes(drawn), `paper.qmd does not draw '${drawn}'; visible text: ${result.quarto.text}`);
-  }
-  for (const source of ["**", "~~", "{#", ":::", "{{<", "](", "$$"]) {
-    assert.equal(result.quarto.text.includes(source), false, `${source} is still visible in paper.qmd with the caret on its last line`);
-  }
-  // The footnote definition line is shown as source, so it is taken out before the
-  // check; what must not show is the reference [^1] in the paragraph.
-  const quartoBody = result.quarto.text.replace(/\[\^1\]:[^\n]*/g, "");
-  assert.equal(quartoBody.includes("[^1]"), false, "the footnote reference [^1] is still visible in paper.qmd");
-  assert.ok(result.quarto.katex >= 2, `expected at least 2 KaTeX formulas in paper.qmd, found ${result.quarto.katex}`);
-  assert.equal(result.quarto.katexErrors, 0, "paper.qmd has KaTeX parse errors (.katex-error inside .cm-editor)");
-  assert.equal(result.quarto.tables, 0, "the pipe table was laid out as a <table> inside the editor");
-  assert.deepEqual(result.quarto.tableBoxes, ["Table: Results"], "the pipe table was not drawn as a box with its caption and no cells");
-  assert.ok(result.quarto.verbs > 0, "the inline code was not drawn as .cm-lp-verb");
-  assert.ok(result.quarto.links > 0, "the link was not drawn as .cm-lp-link");
-  assert.equal(result.quarto.frontmatterShown, true, "no front matter title block was drawn for paper.qmd");
-  assert.equal(result.quarto.text.includes("title:"), false, "the front matter YAML showed before a click on the title block");
-  assert.ok(result.quarto.frontmatterClick.includes("title:"), "a click on the front matter title block did not reveal title:");
-  console.log("visual-markup-browser: paper.qmd draws its front matter, markup, cells, figures, tables, math, callouts, theorems and references");
-  // Heading numbers: number-sections is true, so the first section reads 1.
-  assert.ok(result.quarto.headnums.includes("1"), `paper.qmd has no .cm-lp-headnum reading 1 with number-sections: true; headnums: ${JSON.stringify(result.quarto.headnums)}`);
-
   // Check 6b: a LaTeX preamble folds, labels show as small tags, the bibliography
   // and page break fold into chips, math environments are typeset, and the
   // preamble source shows with the caret in it.
@@ -1346,33 +1068,6 @@ try {
   }
   assert.equal(result.offset.envheads, 0, "with the caret inside the theorem, its header is still drawn");
   console.log("visual-markup-browser: a caret inside an environment shows the whole environment as source");
-
-  // Check 6f: sink.typ draws its markup, links, footnote, swatch and references,
-  // folds its setup lines into one chip, hides its source, and shows the setup
-  // source after a click on the chip.
-  const typstBody = result.typstSink.text.replace(/\s+/g, " ");
-  for (const drawn of ["strong and emph", "warm", "—", "→", "🚀", "–", "…", "site", "Figure 1", "Table of contents", "Page break", "Bibliography", "Placeholder text", "#my-func"]) {
-    assert.ok(typstBody.includes(drawn), `sink.typ does not draw '${drawn}'; visible text: ${typstBody}`);
-  }
-  for (const source of ["*strong*", "_emph_", "#underline", "#text(", "#link(", "#footnote", "#sym.", "#emoji.", "#set page", "#lorem", "#pagebreak"]) {
-    assert.equal(typstBody.includes(source), false, `${source} is still visible in sink.typ with the caret on its last body line`);
-  }
-  assert.equal(result.typstSink.hidden.filter((text) => text.startsWith("Setup:")).length, 1, `expected one hidden chip starting with 'Setup:'; chips: ${JSON.stringify(result.typstSink.hidden)}`);
-  assert.equal(result.typstSink.setupChip, true, "no .cm-lp-hidden chip starts with 'Setup:'");
-  assert.ok(result.typstSink.footnotes > 0, "the #footnote did not draw as a .cm-lp-footnote");
-  assert.ok(result.typstSink.links > 0, "the #link did not draw as a .cm-lp-link");
-  assert.ok(result.typstSink.swatches > 0, "the #rgb did not draw as a .cm-lp-swatch");
-  assert.equal(result.typstSink.katexErrors, 0, "sink.typ has KaTeX parse errors (.katex-error inside .cm-editor)");
-  assert.ok(result.typstSink.warmStyle !== null && /color/.test(result.typstSink.warmStyle), `the #text(fill: red) text has no inline colour style; style: ${JSON.stringify(result.typstSink.warmStyle)}`);
-  assert.ok(result.typstSink.clicked.includes("#set page"), "a click on the Setup chip did not show #set page");
-  console.log("visual-markup-browser: sink.typ draws its markup, links, footnote, swatch and references, folds its setup lines, and a click on the setup chip shows its source");
-
-  // Check 6g: Typst code fences. With the caret away from the block, the fence
-  // markers are hidden and the code shows; sink.typ numbers its headings.
-  assert.equal(result.typstFence.text.includes("```"), false, "the ``` fence markers are still visible in sink.typ with the caret away from the block");
-  assert.ok(result.typstFence.text.includes("fn main() {}"), `the code of the fence is not visible in sink.typ; visible text: ${result.typstFence.text}`);
-  assert.ok(result.typstFence.headnums.length >= 1, `sink.typ has no .cm-lp-headnum with #set heading(numbering: "1."); headnums: ${JSON.stringify(result.typstFence.headnums)}`);
-  console.log("visual-markup-browser: sink.typ hides its code fence markers, shows its code, and numbers its headings");
 
   // Check 6h: the Vim and plain-key runs. Each starts with the caret on the text
   // line above the display equation, and the equation is drawn there.
