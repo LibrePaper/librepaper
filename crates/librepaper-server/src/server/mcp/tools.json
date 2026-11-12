@@ -410,7 +410,7 @@
     },
     {
       "name": "document_files",
-      "description": "Create or delete text files, at least one of either. A created file appears in the next document_read, and an earlier read does not show it. Binary files cannot be added.",
+      "description": "Create, rename or delete text files; give at least one operation in total. A rename keeps the file's identity, so its comments and tracked changes stay attached; prefer it to deleting and creating. A created or renamed file appears in the next document_read, and an earlier read does not show it. Binary files cannot be added.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -466,6 +466,28 @@
               },
               "required": [
                 "path"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100
+          },
+          "rename": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string",
+                  "maxLength": 1024
+                },
+                "to": {
+                  "type": "string",
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "from",
+                "to"
               ],
               "additionalProperties": false
             },

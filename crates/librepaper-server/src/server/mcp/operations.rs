@@ -644,7 +644,7 @@ impl Server {
                 if !current.at_least(Role::Editor) {
                     return Err(Failure::new(
                         "permission_changed",
-                        "editor access is required to create or delete files",
+                        "editor access is required to create, rename or delete files",
                     ));
                 }
                 let consistency = serde_json::from_value(
@@ -658,6 +658,9 @@ impl Server {
                         .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
                 let delete: Vec<source_change::DeleteFile> =
                     serde_json::from_value(args.get("delete").cloned().unwrap_or(json!([])))
+                        .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
+                let rename: Vec<source_change::RenameFile> =
+                    serde_json::from_value(args.get("rename").cloned().unwrap_or(json!([])))
                         .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
                 // Without a digest the change applies to the document as it
                 // is now. Collisions and missing files are still refused.
@@ -680,6 +683,7 @@ impl Server {
                     consistency,
                     create,
                     delete,
+                    rename,
                     request_digest: digest,
                     ..Default::default()
                 };
