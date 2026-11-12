@@ -35,6 +35,8 @@
     onchange = undefined,
     listClass = "",
     children = undefined,
+    // Trailing controls on the same row. They act on the open tab only.
+    actions = undefined,
   } = $props();
 
   const SOLE = "main";
@@ -56,6 +58,7 @@
         </Tabs.Trigger>
       {/each}
     </Tabs.List>
+    {#if actions}<div class="panel-tabs-actions">{@render actions()}</div>{/if}
   </div>
   {#if title}
     <Tabs.Content value={SOLE}>{@render children?.()}</Tabs.Content>
@@ -65,8 +68,9 @@
 </Tabs>
 
 <style>
-  /* Phones: each tab is finger-sized. */
+  /* Phones: each tab and the controls beside the strip are finger-sized. */
   @media (max-width: 767px) {
     .panel-tabs-row :global([role="tab"]) { min-height: 2.75rem; display: flex; align-items: center; justify-content: center; }
+    .panel-tabs-actions :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
   }
 </style>
