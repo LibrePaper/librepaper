@@ -130,7 +130,8 @@ assert.match(outputLine(positional.markdown, "P2"), /lp-cell-output-stale/);
 // A cell with output shows Quarto-style: code only, no fence line or `#|` options.
 const styledDraft = freshDraft.markdown.split("\n");
 assert.ok(styledDraft.includes("```r"));
-assert.ok(!styledDraft.some((line) => line.startsWith("#|") || line.includes("{r}")));
+// Only cells with output change; the include: false cell keeps its verbatim source.
+assert.ok(!styledDraft.includes("#| label: first") && !styledDraft.includes("#| label: second"));
 assert.equal(freshDraft.lineMap[styledDraft.indexOf("a <- 1")], resultsParsed.cells[0].startLine + 2);
 assert.equal(freshDraft.lineMap[styledDraft.indexOf("```r")], null);
 // A cell without output keeps the verbatim rendering.
