@@ -4,11 +4,13 @@ import { createProjectSession } from "../../src/lib/project-session.js";
 import { PRESENCE_COLOURS, presenceColour } from "../../src/lib/presence-colour.js";
 
 /// Three browsers in one file, each relaying its presence to the other two.
+/// An entry may name an account as its third item, passed as `accountId`.
 function room(names, colourFor) {
   const peers = [];
-  for (const [name, tab] of names) {
+  for (const [name, tab, accountId] of names) {
     const session = createProjectSession({
       name,
+      accountId,
       presenceId: () => tab,
       presenceColour: colourFor,
       send: (message) => {
@@ -69,6 +71,22 @@ test("two people who choose the same colour do not stay that way", async () => {
       const seen = peer.session.participants().map(({ colour }) => colour);
       assert.equal(new Set(seen).size, seen.length, `${peer.name} should see no two alike`);
     }
+  } finally {
+    for (const peer of peers) peer.session.leave();
+  }
+});
+
+test("one signed-in account open in two tabs is one avatar to everyone else", async () => {
+  // Ada has the file open in two tabs under one account. Grace sees her once;
+  // Ada's first tab does not list her own second tab.
+  const peers = room([["Ada", "tab-a", "u1"], ["Ada", "tab-b", "u1"], ["Grace", "tab-c", "u2"]], presenceColour);
+  try {
+    for (const peer of peers) await peer.session.start({ protocol: "librepaper.room.v3", vector: "", durableVector: "", updates: [] });
+    await settle();
+    const grace = peers[2].session.participants().map(({ name }) => name);
+    assert.deepEqual(grace, ["Ada"], "Grace sees one Ada");
+    const ada = peers[0].session.participants().map(({ name }) => name);
+    assert.deepEqual(ada, ["Grace"], "Ada's other tab is not listed");
   } finally {
     for (const peer of peers) peer.session.leave();
   }

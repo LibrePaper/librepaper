@@ -4090,7 +4090,7 @@
           <span>{m.reader_tracking_on()}</span>
         </button>
       {/if}
-      <div class="presence" role="group" aria-label={connected ? m.readerd_people_connected({ count: peers }) : connectionNote} data-tip={connected ? m.readerd_people_connected({ count: peers }) : connectionNote}>
+      <div class="presence" role="group" aria-label={connected ? m.readerd_people_connected({ count: participants.length + 1 }) : connectionNote} data-tip={connected ? m.readerd_people_connected({ count: participants.length + 1 }) : connectionNote}>
         {#each participants.slice(0, 3) as person (person.key)}
           <button type="button" class="presence-jump" data-tip={person.name} aria-label={m.common_go_to_cursor({ name: person.name })} onclick={() => jumpToPerson(person)}>
             <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />

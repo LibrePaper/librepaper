@@ -519,6 +519,9 @@ export function createProjectSession({
     // "Anonymous" would paint every reader in a file the same colour.
     color: presenceColour(colourSeed(), takenColours()),
     tab: localTab,
+    // The account, so other browsers can show one avatar for someone open in
+    // several tabs.
+    account: accountId || "",
   });
 
   // Anything this browser changes is sent on and held until it is
@@ -1099,11 +1102,15 @@ export function createProjectSession({
 
     participants() {
       const states = store.getAllStates();
-      const result = [];
+      // One entry per person: a signed-in account open in several tabs or
+      // devices is listed once, and this browser's own other tabs are left out.
+      const byGroup = new Map();
       for (const [key, state] of Object.entries(states)) {
         if (!isPresence(key) || key === localKey) continue;
-        result.push({
-          key: state?.tab || key,
+        if (state?.account && state.account === person.accountId) continue;
+        const group = state?.account ? `account:${state.account}` : (state?.tab || key);
+        const entry = {
+          key: group,
           name: state?.name || "Anonymous",
           // The colour they are drawing their own caret in, so the badge in
           // the presence strip and the caret in the text are the same person
@@ -1112,9 +1119,12 @@ export function createProjectSession({
           // The file they said they are in, and their peer id for `caretOf`.
           file: state?.file || "",
           peer: state?.peer || "",
-        });
+        };
+        const seen = byGroup.get(group);
+        // Keep the tab that has a file, so jump-to-cursor has somewhere to go.
+        if (!seen || (!seen.file && entry.file)) byGroup.set(group, entry);
       }
-      return result;
+      return [...byGroup.values()];
     },
 
     /// Where another person's caret is: the file it is in, and the UTF-16
@@ -1351,7 +1361,7 @@ export function createProjectSession({
       // The colour follows the person: a reader who signs in part way through
       // stops being their tab's colour and becomes their own, which is the
       // one everybody else already knows them by.
-      setLocalPresence({ ...user, name: who, color: presenceColour(colourSeed(), takenColours()) });
+      setLocalPresence({ ...user, name: who, account: account || "", color: presenceColour(colourSeed(), takenColours()) });
       settleColour();
     },
 
