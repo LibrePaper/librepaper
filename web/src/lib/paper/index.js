@@ -3,8 +3,9 @@
 // it, styled with the preview page's own CSS. The block holding the selection
 // shows its Markdown or Org source. The text stays the document; only the drawing differs.
 //
-// Prototype limits: overlays (comments, tracked changes, spellcheck, remote
-// cursors) do not draw inside rendered blocks yet.
+// Overlays (comments, tracked changes, authorship, lint underlines, remote
+// carets) cannot reach inside a widget, so overlays.js paints copies into the
+// rendered DOM.
 import { Prec, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, ViewPlugin, WidgetType } from "@codemirror/view";
 import { isExternal, resolveImagePath } from "../visual-markup/markup.ts";
@@ -14,6 +15,7 @@ import { typeset, untypeset } from "../math.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
 import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
+import { paperOverlays } from "./overlays.js";
 
 const refreshPaper = StateEffect.define();
 
@@ -213,6 +215,7 @@ export function paperVisual({ format = "markdown", path = () => "", imageUrl = n
   return [
     field,
     loaderFor(adapter),
+    paperOverlays(field),
     EditorView.editorAttributes.of({
       class: dark ? "cm-lp-visual cm-lp-paper-editor lp-dark" : "cm-lp-visual cm-lp-paper-editor",
     }),
@@ -222,6 +225,15 @@ export function paperVisual({ format = "markdown", path = () => "", imageUrl = n
         if (!(target instanceof Element)) return false;
         const div = target.closest(".cm-lp-paper");
         if (!div) return false;
+        // A painted comment or tracked change answers a click as it does in the source:
+        // the same click reaches the editor's handlers. The caret stays out of the block,
+        // so the block stays drawn.
+        const painted = target.closest("[data-lp-overlay][data-comment-id], [data-lp-overlay][data-change]");
+        if (painted && div.contains(painted)) {
+          event.preventDefault();
+          painted.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: event.clientX, clientY: event.clientY, detail: 1 }));
+          return true;
+        }
         let pos;
         try {
           pos = view.posAtDOM(div);
