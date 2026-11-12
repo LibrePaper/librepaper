@@ -362,3 +362,36 @@ test("Markdown escapes @, ~ and ^ so Pandoc does not read citations or sub- and 
   // Bold, so the paste counts as formatted and is converted rather than pasted plain.
   assert.equal(source("<p><b>See</b> @ref ~5m x^2</p>", "markdown"), "**See** \\@ref \\~5m x\\^2");
 });
+
+/* ------------------------------------------------- monospace font means code */
+
+test("a monospace font on a span is inline code, in Markdown and LaTeX", () => {
+  const html = '<p>Use <span style="font-family:Consolas,sans-serif">tw_map()</span> here.</p>';
+  assert.equal(source(html, "markdown"), "Use `tw_map()` here.");
+  assert.equal(source(html, "latex"), "Use \\texttt{tw\\_map()} here.");
+});
+
+test("the first font family decides: quoted monospace is code, Aptos and a later monospace are not", () => {
+  assert.equal(source("<p>Run <span style=\"font-family:'Courier New'\">ls</span> now</p>", "markdown"), "Run `ls` now");
+  assert.equal(source('<p>Run <span style="font-family:Aptos">ls</span> now</p>', "markdown"), "Run ls now");
+  assert.equal(source('<p>Run <span style="font-family: Arial, monospace">ls</span> now</p>', "markdown"), "Run ls now");
+});
+
+test("a Google Docs code paragraph with a line break is one fenced block", () => {
+  const html = '<p><span style="font-family:Consolas">library</span><span style="font-family:Consolas">(x)</span><span style="font-family:Aptos"><br /></span><span style="font-family:Consolas">y &lt;- 1</span></p>';
+  assert.equal(source(html, "markdown"), "```\nlibrary(x)\ny <- 1\n```");
+});
+
+test("Word code paragraphs in a row merge into one fenced block and keep their spaces", () => {
+  const html = "<p><span style=\"font-family:'Courier New'\">a  = 1</span></p><p><span style=\"font-family:'Courier New'\">b = 2</span></p>";
+  assert.equal(source(html, "markdown"), "```\na  = 1\nb = 2\n```");
+});
+
+test("a paragraph with code and prose stays a paragraph with inline code", () => {
+  const html = '<p><span style="font-family:Consolas">x()</span> is code, and this is prose.</p>';
+  assert.equal(source(html, "markdown"), "`x()` is code, and this is prose.");
+});
+
+test("entities in text decode to the characters a browser shows", () => {
+  assert.equal(source("<p><b>x</b> &ldquo;q&rdquo; caf&eacute;</p>", "markdown"), "**x** “q” café");
+});

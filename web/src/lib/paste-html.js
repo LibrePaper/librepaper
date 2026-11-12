@@ -62,12 +62,19 @@ const styleValue = (style, name) => {
   return match ? match[1].trim().toLowerCase() : undefined;
 };
 
+/// Font families that mark code. Word and Google Docs mark code only by font.
+const MONO_FAMILIES = new Set(["consolas", "courier new", "courier", "menlo", "monaco", "lucida console", "source code pro", "roboto mono", "fira code", "fira mono", "jetbrains mono", "dejavu sans mono", "liberation mono", "inconsolata", "cascadia code", "cascadia mono", "sf mono", "ibm plex mono", "ubuntu mono", "noto sans mono", "andale mono", "monospace"]);
+
+/// Whether a font-family value starts with a monospace family. Only the first family counts.
+const isMonoFamily = (value) => MONO_FAMILIES.has(value.split(",")[0].trim().replace(/^["']|["']$/g, "").trim());
+
 /// The emphasis an element gives its content. Its style wins over its tag, so
 /// Google Docs' `<b style="font-weight:normal">` wrapper is not bold.
 function applyStyle(el, ctx) {
   const style = el.attrs.style ?? "";
   const weight = styleValue(style, "font-weight");
   const fontStyle = styleValue(style, "font-style");
+  const fontFamily = styleValue(style, "font-family");
   let b = ctx.b;
   if (weight !== undefined) b = /^(bold|bolder|[6-9]00)$/.test(weight);
   else if (el.tag === "b" || el.tag === "strong") b = true;
@@ -75,7 +82,8 @@ function applyStyle(el, ctx) {
   let i = ctx.i;
   if (fontStyle !== undefined) i = /^(italic|oblique)/.test(fontStyle);
   else if (el.tag === "i" || el.tag === "em" || el.tag === "cite") i = true;
-  return { b, i, c: ctx.c || CODE_TAGS.has(el.tag), noBold: ctx.noBold };
+  const mono = fontFamily !== undefined && isMonoFamily(fontFamily);
+  return { b, i, c: ctx.c || CODE_TAGS.has(el.tag) || mono, noBold: ctx.noBold };
 }
 
 const plainText = (s) => ({ kind: "text", s, b: false, i: false, c: false });
@@ -299,12 +307,40 @@ function tableBlock(el, ctx, st) {
 /// Verbatim text of a <pre>, without the first line break a browser drops.
 const preText = (el) => textRaw(el).replace(/^\n/, "").replace(/\n+$/, "");
 
+/// A paragraph is code when it has code text and every other token is whitespace
+/// or a line break, with no links. Google Docs and Word write code blocks this way.
+const isCodeParagraph = (inl) =>
+  inl.some((tok) => tok.kind === "text" && tok.c && tok.s.trim()) &&
+  inl.every((tok) => tok.kind === "br" || (tok.kind === "text" && (tok.c || !tok.s.trim())));
+
+/// The lines of a code paragraph, from its raw tokens, so that spaces are kept.
+/// Each line loses its trailing whitespace.
+const codeLines = (inl) => {
+  let text = "";
+  for (const tok of inl) {
+    if (tok.kind === "br") text += "\n";
+    else if (tok.kind === "text") text += tok.s.replace(/ /g, " ");
+  }
+  return text.split("\n").map((line) => line.replace(/\s+$/, ""));
+};
+
+/// Drops the empty lines at the start and end of a code block.
+const trimBlankEdges = (lines) => {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && !lines[start]) start++;
+  while (end > start && !lines[end - 1]) end--;
+  return lines.slice(start, end);
+};
+
 /// Converts children to blocks. Inline runs become paragraphs; Word list
-/// paragraphs in a row become one list.
+/// paragraphs in a row become one list; code paragraphs in a row become one pre block.
 function blocksFrom(nodes, ctx, st) {
   const out = [];
   let pending = [];
   let run = [];
+  // The pre block that the code paragraphs just before this node extend, with their lines.
+  let code = null;
   const flushRun = () => {
     if (!run.length) return;
     out.push(...nestEntries(run));
@@ -320,6 +356,7 @@ function blocksFrom(nodes, ctx, st) {
   for (let index = 0; index < nodes.length; index++) {
     const node = nodes[index];
     if (typeof node === "string") {
+      if (node.trim()) code = null;
       if (run.length) {
         if (!node.trim()) continue;
         flushRun();
@@ -328,6 +365,8 @@ function blocksFrom(nodes, ctx, st) {
       continue;
     }
     if (SKIP.has(node.tag)) continue;
+    const previousCode = code;
+    code = null;
     if (node.tag === "p" && /mso-list:\s*l\d/i.test(node.attrs.style ?? "")) {
       if (!run.length) flush();
       run.push(listEntry(node, ctx, st));
@@ -345,7 +384,18 @@ function blocksFrom(nodes, ctx, st) {
       out.push(...blocksFrom(node.children, inner, st));
     } else if (node.tag === "p" || node.tag === "li") {
       flush();
-      const inl = normalize(node.children.flatMap((kid) => inlinesOf(kid, inner, st)));
+      const raw = node.children.flatMap((kid) => inlinesOf(kid, inner, st));
+      if (node.tag === "p" && isCodeParagraph(raw)) {
+        const lines = previousCode ? previousCode.lines : [];
+        lines.push(...codeLines(raw));
+        const block = previousCode ? previousCode.block : { type: "pre", text: "" };
+        if (!previousCode) out.push(block);
+        block.text = trimBlankEdges(lines).join("\n");
+        st.found = true;
+        code = { block, lines };
+        continue;
+      }
+      const inl = normalize(raw);
       if (inl.length) out.push({ type: "para", inl });
     } else if (HEADING.test(node.tag)) {
       flush();
