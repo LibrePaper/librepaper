@@ -290,7 +290,14 @@ test("a table in every format", () => {
   assert.equal(source(html, "latex"), "\\begin{tabular}{l l}\nK & V \\\\\n\\hline\na|b & 2 \\\\\n\\end{tabular}");
   assert.equal(source(html, "typst"), "#table(\n  columns: 2,\n  table.header([K], [V]),\n  [a|b], [2],\n)");
   assert.equal(source(html, "markdown"), "| K | V |\n| --- | --- |\n| a\\|b | 2 |");
-  assert.equal(source(html, "org"), "| K | V |\n|---+---|\n| a|b | 2 |");
+  assert.equal(source(html, "org"), "| K | V |\n|---+---|\n| a\\vert{}b | 2 |");
+});
+
+test("an Org table cell with a bar keeps its column count", () => {
+  const html = "<table><tr><th>K</th><th>V</th></tr><tr><td>a|b</td><td>2</td></tr></table>";
+  const [header, , row] = source(html, "org").split("\n");
+  assert.ok(row.includes("a\\vert{}b"), row);
+  assert.equal(row.split("|").length, header.split("|").length);
 });
 
 test("inline code takes a longer fence when it holds backticks", () => {
@@ -353,6 +360,10 @@ test("a paragraph between two lists keeps them separate", () => {
   assert.equal(source("<ul><li><p>a</p></li></ul><p>between</p><ul><li><p>b</p></li></ul>", "markdown"), lines("- a", "", "between", "", "- b"));
 });
 
+test("adjacent numbered lists that restart numbering stay two lists", () => {
+  assert.equal(source("<ol><li>A</li></ol><ol start=\"10\"><li>B</li></ol>", "markdown"), "1. A\n\n10. B");
+});
+
 test("a bare link whose URL ends in a slash is still bare", () => {
   assert.equal(source('<p><a href="https://example.org/">https://example.org</a></p><p><i>x</i></p>', "markdown"), "<https://example.org/>\n\n*x*");
   assert.equal(source('<p><a href="https://example.org/">https://example.org</a></p><p><i>x</i></p>', "latex"), "\\url{https://example.org/}\n\n\\emph{x}");
@@ -378,6 +389,11 @@ test("the first font family decides: quoted monospace is code, Aptos and a later
   assert.equal(source('<p>Run <span style="font-family: Arial, monospace">ls</span> now</p>', "markdown"), null);
 });
 
+test("an explicit code tag is inline code even when styled monospace (Chrome copies)", () => {
+  assert.equal(source('<p><code style="font-family:monospace">x_y</code></p><p><i>z</i></p>', "markdown"), "`x_y`\n\n*z*");
+  assert.equal(source("<p><code>x_y</code></p><p><i>z</i></p>", "markdown"), "`x_y`\n\n*z*");
+});
+
 test("a Google Docs code paragraph with a line break is one fenced block", () => {
   const html = '<p><span style="font-family:Consolas">library</span><span style="font-family:Consolas">(x)</span><span style="font-family:Aptos"><br /></span><span style="font-family:Consolas">y &lt;- 1</span></p>';
   assert.equal(source(html, "markdown"), "```\nlibrary(x)\ny <- 1\n```");
@@ -400,4 +416,15 @@ test("entities in text decode to the characters a browser shows", () => {
 test("a monospace font on a list item does not make its text code (Google Docs bullet glyph)", () => {
   const html = '<ul><li style="font-family:\'Courier New\',monospace"><p><span style="font-family:Aptos">Check the <b>depth</b></span></p></li></ul>';
   assert.equal(source(html, "markdown"), "- Check the **depth**");
+});
+
+test("adjacent numbered lists with no start attribute each start at 1", () => {
+  const html = "<ol><li>A</li></ol><ol><li>B</li></ol>";
+  assert.equal(source(html, "markdown"), "1. A\n\n1. B");
+  assert.equal(source(html, "latex"), "\\begin{enumerate}\n  \\item A\n\\end{enumerate}\n\n\\begin{enumerate}\n  \\item B\n\\end{enumerate}");
+});
+
+test("a monospace span inside an explicit code tag stays inline code", () => {
+  const html = '<p><code><span style="font-family:monospace">x_y</span></code></p><p><i>z</i></p>';
+  assert.equal(source(html, "markdown"), "`x_y`\n\n*z*");
 });

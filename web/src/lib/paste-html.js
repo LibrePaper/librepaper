@@ -86,12 +86,15 @@ function applyStyle(el, ctx) {
   // `m` remembers code marked only by font, which is how word processors write
   // code blocks. A later non-monospace font ends it, as the style wins for bold:
   // Google Docs puts Courier New on a <li> for its "o" bullet and Aptos on the text.
-  let c = ctx.c;
-  let m = Boolean(ctx.m);
-  if (mono) [c, m] = [true, true];
-  else if (fontFamily !== undefined && m) [c, m] = [false, false];
-  if (CODE_TAGS.has(el.tag)) c = true;
-  return { b, i, c, m, noBold: ctx.noBold };
+  // An explicit code tag is inline code whatever its fonts, and so is everything
+  // inside it (`x`): Chrome copies monospace styles onto <code> and onto the
+  // spans of highlighted code, Firefox does not, and the paste must not depend on it.
+  const x = Boolean(ctx.x) || CODE_TAGS.has(el.tag);
+  let c = ctx.c || x;
+  let m = Boolean(ctx.m) && !x;
+  if (!x && mono) [c, m] = [true, true];
+  else if (!x && fontFamily !== undefined && m) [c, m] = [false, false];
+  return { b, i, c, m, x, noBold: ctx.noBold };
 }
 
 const plainText = (s) => ({ kind: "text", s, b: false, i: false, c: false });
@@ -241,9 +244,12 @@ function flattenList(el, depth, ctx, st) {
     const own = child.children.filter((kid) => typeof kid === "string" || (kid.tag !== "ul" && kid.tag !== "ol"));
     const nested = child.children.filter((kid) => typeof kid !== "string" && (kid.tag === "ul" || kid.tag === "ol"));
     const inl = normalize(own.flatMap((kid) => inlinesOf(kid, itemCtx, st)));
-    const start = ordered && index === 0 ? Number.parseInt(el.attrs.start, 10) : Number.NaN;
+    // The first item of an <ol> records where it starts, 1 when unstated, so an
+    // adjacent list that restarts at 1 stays a list of its own (see nestEntries).
+    const given = Number.parseInt(el.attrs.start, 10);
+    const start = ordered && index === 0 ? (Number.isFinite(given) ? given : 1) : undefined;
     index += 1;
-    if (inl.length) entries.push({ level, ordered, inl, start: Number.isFinite(start) ? start : undefined });
+    if (inl.length) entries.push({ level, ordered, inl, start });
     for (const list of nested) entries.push(...flattenList(list, level + 1, itemCtx, st));
   }
   return entries;
@@ -251,6 +257,8 @@ function flattenList(el, depth, ctx, st) {
 
 /// Nests flat entries into list blocks: an entry belongs under the last entry
 /// with a lower level, and a new list starts when the kind (bullet or number) changes.
+/// A numbered entry with its own start that is not the next number also starts a
+/// new list, so two adjacent <ol>s that restart numbering stay two lists.
 function nestEntries(entries) {
   const roots = [];
   const stack = [];
@@ -258,7 +266,8 @@ function nestEntries(entries) {
     while (stack.length && stack[stack.length - 1].level >= entry.level) stack.pop();
     const holder = stack.length ? stack[stack.length - 1].item.children : roots;
     let list = holder[holder.length - 1];
-    if (!list || list.ordered !== entry.ordered) {
+    const restarts = list && entry.ordered && entry.start !== undefined && entry.start !== (list.start ?? 1) + list.items.length;
+    if (!list || list.ordered !== entry.ordered || restarts) {
       list = { type: "list", ordered: entry.ordered, start: entry.start, items: [] };
       holder.push(list);
     }
@@ -622,7 +631,10 @@ function renderTable(table, family) {
   const rows = table.rows.map((row) => {
     const cells = row.cells.map((cell) => renderInline(cell, family, false));
     while (cells.length < width) cells.push("");
-    return family === "markdown" ? cells.map((cell) => cell.replace(/\|/g, "\\|")) : cells;
+    // A bar inside a cell would split it: Markdown escapes it, Org has no escape there, so it uses \vert{}.
+    if (family === "markdown") return cells.map((cell) => cell.replace(/\|/g, "\\|"));
+    if (family === "org") return cells.map((cell) => cell.replace(/\|/g, "\\vert{}"));
+    return cells;
   });
   const headed = table.rows[0].header;
   if (family === "latex") {
