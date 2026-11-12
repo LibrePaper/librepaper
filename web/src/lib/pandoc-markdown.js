@@ -79,13 +79,13 @@ const mathInline = {
         cx.elt("DisplayMathMark", offset + k, offset + k + 2),
       ]));
     }
-    // Pandoc's tex_math_dollars: the opening $ is followed by a non-space, the
-    // closing $ is preceded by a non-space and not followed by a digit.
+    // Pandoc's tex_math_dollars: the opening $ is followed by a non-space. The
+    // first unescaped $ after it is the only candidate closer, as in Pandoc. It
+    // closes only when preceded by a non-space and not followed by a digit.
     if (isSpace(text.charCodeAt(i + 1))) return -1;
     for (let k = i + 1; k < text.length; k++) {
       if (text[k] !== "$" || escaped(text, k)) continue;
-      if (k === i + 1 || isSpace(text.charCodeAt(k - 1))) continue;
-      if (isDigit(text.charCodeAt(k + 1))) continue;
+      if (isSpace(text.charCodeAt(k - 1)) || isDigit(text.charCodeAt(k + 1))) return -1;
       return cx.addElement(cx.elt("InlineMath", pos, offset + k + 1, [
         cx.elt("InlineMathMark", pos, pos + 1),
         cx.elt("InlineMathMark", offset + k, offset + k + 1),
