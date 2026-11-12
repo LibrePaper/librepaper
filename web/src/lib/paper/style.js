@@ -20,15 +20,23 @@ export function paperStylesheet(pageCss) {
     .replace(/(?<![\w-])\.lp-dark(?!\s*:scope)(?![\w-])/g, ".lp-dark :scope");
   // The source of the block being edited is set in the page's face too, so
   // revealing a block changes its markup and not its type.
-  const font = /(?:^|[\s,}])body\s*\{[^}]*?font:\s*([\d.]+px)\/([\d.]+)\s+([^;}]+)/.exec(pageCss);
-  const sourceType = font
-    ? `.cm-editor.cm-lp-visual.cm-lp-paper-editor {
-  --doc-font: ${font[3].trim()};
+  // The face may be a custom property (`var(--lp-serif)`), which is defined
+  // inside the scope and so not on the editor: it is resolved here.
+  const font = /(?:^|[\s,}])body\s*\{[^}]*?font:\s*([\d.]+(?:px|r?em))\/([\d.]+)\s+([^;}]+)/.exec(pageCss);
+  const family = font?.[3].trim().replace(/^var\(\s*(--[\w-]+)\s*(?:,[^)]*)?\)$/, (whole, name) => {
+    const defined = new RegExp(`${name}\\s*:\\s*([^;}]+)`).exec(pageCss);
+    return defined ? defined[1].trim() : whole;
+  });
+  const sourceType = [
+    font
+      ? `.cm-editor.cm-lp-visual.cm-lp-paper-editor {
+  --doc-font: ${family};
   --doc-font-size: ${font[1]};
   --doc-line-height: ${font[2]};
-}
-.cm-editor.cm-lp-paper-editor .cm-line { padding-inline: 0; }`
-    : "";
+}`
+      : "",
+    ".cm-editor.cm-lp-paper-editor .cm-line { padding-inline: 0; }",
+  ].join("\n");
   // The overrides sit inside the same @scope, after the page rules: a scoped
   // rule beats an unscoped one of equal specificity, so outside it they lose.
   // The rest puts back what the page leaves to the browser's defaults and the
