@@ -577,13 +577,32 @@ export function composeDraft(source, { path = "main.qmd", assets = {}, expandInc
       continue;
     }
     i = cell.endLine;
-    const cellText = cell.source.replace(/\n$/, "");
-    const { char, length } = verbatimFence(cellText);
-    const outerFence = char.repeat(length);
-    push(outerFence);
-    push(cellText, cell.startLine);
-    push(outerFence);
     const output = outputs.get(cell);
+    if (output) {
+      // A cell with saved output shows as Quarto does: the code without its
+      // fence or `#|` option lines (unless echo is off), then the output.
+      const meta = parsed.metadata?.execute;
+      const defaults = meta && typeof meta === "object" ? meta : {};
+      const echo = cell.options.echo ?? defaults.echo ?? true;
+      const code = String(cell.code ?? "");
+      if (echo !== false && echo !== "false" && code.trim()) {
+        const codeLines = code.split("\n");
+        const body = cell.source.replace(/\n$/, "").split("\n").slice(1, -1);
+        const first = cell.startLine + 1 + Math.max(0, body.length - codeLines.length);
+        const { char, length } = verbatimFence(code);
+        const codeFence = char.repeat(length);
+        push(`${codeFence}${cell.language || ""}`);
+        codeLines.forEach((line, offset) => push(line, first + offset));
+        push(codeFence);
+      }
+    } else {
+      const cellText = cell.source.replace(/\n$/, "");
+      const { char, length } = verbatimFence(cellText);
+      const outerFence = char.repeat(length);
+      push(outerFence);
+      push(cellText, cell.startLine);
+      push(outerFence);
+    }
     if (output) {
       const html = oneLine(output.html);
       pushBlock(output.stale
