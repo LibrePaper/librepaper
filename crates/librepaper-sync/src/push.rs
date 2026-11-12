@@ -66,6 +66,7 @@ struct Plan<'a> {
     create: Vec<Value>,
     delete: Vec<Value>,
     put_binary: Vec<Value>,
+    rename: Vec<Value>,
     uploads: Vec<(String, &'a Local)>,
 }
 
@@ -75,30 +76,70 @@ impl Plan<'_> {
             && self.create.is_empty()
             && self.delete.is_empty()
             && self.put_binary.is_empty()
+            && self.rename.is_empty()
     }
 
     fn body(&self, operation: &str, sync: Value) -> Value {
+        let mut change = json!({
+            "dependencies": self.dependencies,
+            "patches": self.patches,
+            "create": self.create,
+            "delete": self.delete,
+            "put_binary": self.put_binary,
+        });
+        // Only a push with a rename carries the key: an older server refuses
+        // a field it does not know, and sends without renames must keep
+        // working on it.
+        if !self.rename.is_empty() {
+            change["rename"] = json!(self.rename);
+        }
         json!({
             "operation": operation,
-            "change": {
-                "dependencies": self.dependencies,
-                "patches": self.patches,
-                "create": self.create,
-                "delete": self.delete,
-                "put_binary": self.put_binary,
-            },
+            "change": change,
             "sync": sync,
         })
     }
 }
 
+/// Pairs each deleted text file with an added text file of the same LF text,
+/// which is a rename on disk. A file that was also edited has another hash
+/// and stays a delete and a create. Each path pairs once, and a deleted path
+/// takes the first unpaired match in sorted order. Returns `(from, to)`.
+fn pair_renames(
+    recorded: &BTreeMap<String, FileRecord>,
+    found: &Scan,
+    changes: &LocalChanges,
+) -> Vec<(String, String)> {
+    let mut taken: Vec<&String> = Vec::new();
+    let mut pairs = Vec::new();
+    for from in &changes.deleted {
+        let Some(before) = recorded.get(from) else {
+            continue;
+        };
+        if before.kind != Kind::Text {
+            continue;
+        }
+        let to = changes.added.iter().find(|to| {
+            let file = &found.files[*to];
+            !taken.contains(to) && file.kind == Kind::Text && file.sha == before.sha
+        });
+        if let Some(to) = to {
+            taken.push(to);
+            pairs.push((from.clone(), to.clone()));
+        }
+    }
+    pairs
+}
+
 /// What to send for the paths that differ. `bases` holds the LF text each
-/// changed text file was last agreed on.
+/// changed text file was last agreed on. With `pair_renames` off, a rename is
+/// sent as the delete and the create it was before.
 fn plan_change<'a>(
     recorded: &BTreeMap<String, FileRecord>,
     found: &'a Scan,
     changes: &LocalChanges,
     bases: &BTreeMap<String, String>,
+    pair_renames_too: bool,
 ) -> Plan<'a> {
     let mut plan = Plan {
         dependencies: Vec::new(),
@@ -106,9 +147,22 @@ fn plan_change<'a>(
         create: Vec::new(),
         delete: Vec::new(),
         put_binary: Vec::new(),
+        rename: Vec::new(),
         uploads: Vec::new(),
     };
-    for path in &changes.added {
+    // A rename names the file by path only: the server checks its hash
+    // through the deleted file's recorded state, not a dependency here.
+    let renames = if pair_renames_too {
+        pair_renames(recorded, found, changes)
+    } else {
+        Vec::new()
+    };
+    let renamed_from = |path: &String| renames.iter().any(|(from, _)| from == path);
+    let renamed_to = |path: &String| renames.iter().any(|(_, to)| to == path);
+    for (from, to) in &renames {
+        plan.rename.push(json!({"from": from, "to": to}));
+    }
+    for path in changes.added.iter().filter(|path| !renamed_to(*path)) {
         let file = &found.files[path];
         match file.kind {
             Kind::Text => plan.create.push(json!({
@@ -146,7 +200,7 @@ fn plan_change<'a>(
             }
         }
     }
-    for path in &changes.deleted {
+    for path in changes.deleted.iter().filter(|path| !renamed_from(*path)) {
         let Some(before) = recorded.get(path) else {
             continue;
         };
@@ -261,10 +315,19 @@ async fn settle_pending(
             Ok(PushOutcome::Pushed {
                 label_sha: sha,
                 sequence,
-                files: pending.upsert_files.len() + pending.deleted_paths.len(),
+                files: (pending.upsert_files.len() + pending.deleted_paths.len())
+                    .saturating_sub(renames_in(pending)),
             })
         }
     }
+}
+
+/// How many renames a pending push carries. Each one is a file in both the
+/// upserts and the deletes, and counts once.
+fn renames_in(pending: &PendingPush) -> usize {
+    pending.request["change"]["rename"]
+        .as_array()
+        .map_or(0, Vec::len)
 }
 
 /// Sends the directory's changes to the project as one named version. A push
@@ -362,7 +425,7 @@ pub async fn push(
         }
     }
 
-    let plan = plan_change(&state.files, &found, &changes, &bases);
+    let plan = plan_change(&state.files, &found, &changes, &bases, true);
     if plan.is_empty() {
         return Ok(settled.unwrap_or(PushOutcome::Nothing));
     }
@@ -628,7 +691,7 @@ mod tests {
         let bases =
             BTreeMap::from([("edited.tex".to_string(), "alpha\nbeta\ngamma\n".to_string())]);
 
-        let plan = plan_change(&recorded, &found, &changes, &bases);
+        let plan = plan_change(&recorded, &found, &changes, &bases, true);
         assert_eq!(plan.patches.len(), 1);
         assert_eq!(plan.patches[0].exact, "beta");
         assert_eq!(plan.patches[0].replacement, "BETA");
@@ -688,7 +751,7 @@ mod tests {
         let recorded = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\ntwo\n"))]);
         let changes = compare(dir.path(), &recorded, &found);
         assert!(changes.is_empty(), "the hashes are of the LF text");
-        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
         assert!(plan.is_empty());
     }
 
@@ -698,9 +761,89 @@ mod tests {
         let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         let recorded = BTreeMap::from([("fig/a.png".to_string(), record(Kind::Asset, b"x"))]);
         let changes = compare(dir.path(), &recorded, &found);
-        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
         assert!(plan.dependencies.is_empty());
         assert_eq!(plan.delete.len(), 1);
+    }
+
+    #[test]
+    fn a_text_file_renamed_with_the_same_text_is_one_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "new.tex", b"same\n");
+        write(dir.path(), "kept.tex", b"kept\n");
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
+        let recorded = BTreeMap::from([
+            ("old.tex".to_string(), record(Kind::Text, b"same\n")),
+            ("kept.tex".to_string(), record(Kind::Text, b"kept\n")),
+        ]);
+        let changes = compare(dir.path(), &recorded, &found);
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
+        assert_eq!(plan.rename, [json!({"from": "old.tex", "to": "new.tex"})]);
+        assert!(plan.create.is_empty());
+        assert!(plan.delete.is_empty());
+        assert!(plan.dependencies.is_empty());
+        let body = plan.body("v2.1.0", json!({}));
+        assert_eq!(
+            body["change"]["rename"],
+            json!([{"from": "old.tex", "to": "new.tex"}])
+        );
+
+        // Without pairing the same change is the delete and the create.
+        let plain = plan_change(&recorded, &found, &changes, &BTreeMap::new(), false);
+        assert!(plain.rename.is_empty());
+        assert_eq!(plain.create, [json!({"path": "new.tex", "text": "same\n"})]);
+        assert_eq!(
+            plain.delete,
+            [json!({"path": "old.tex", "expect": record(Kind::Text, b"same\n").sha})]
+        );
+    }
+
+    #[test]
+    fn a_renamed_and_edited_file_is_still_a_delete_and_a_create() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "new.tex", b"alpha\nbeta\n");
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
+        let recorded = BTreeMap::from([("old.tex".to_string(), record(Kind::Text, b"alpha\n"))]);
+        let changes = compare(dir.path(), &recorded, &found);
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
+        assert!(plan.rename.is_empty());
+        assert_eq!(plan.create, [json!({"path": "new.tex", "text": "alpha\nbeta\n"})]);
+        assert_eq!(plan.dependencies, [dependency("old.tex", &record(Kind::Text, b"alpha\n").sha)]);
+        assert_eq!(plan.delete.len(), 1);
+    }
+
+    #[test]
+    fn a_rename_takes_the_first_unpaired_match_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.tex", b"same\n");
+        write(dir.path(), "b.tex", b"same\n");
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
+        let recorded = BTreeMap::from([
+            ("x.tex".to_string(), record(Kind::Text, b"same\n")),
+            ("y.tex".to_string(), record(Kind::Text, b"same\n")),
+        ]);
+        let changes = compare(dir.path(), &recorded, &found);
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
+        assert_eq!(
+            plan.rename,
+            [
+                json!({"from": "x.tex", "to": "a.tex"}),
+                json!({"from": "y.tex", "to": "b.tex"}),
+            ]
+        );
+        assert!(plan.create.is_empty() && plan.delete.is_empty());
+    }
+
+    #[test]
+    fn a_push_without_a_rename_sends_no_rename_key() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "new.tex", b"fresh\n");
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
+        let recorded = BTreeMap::new();
+        let changes = compare(dir.path(), &recorded, &found);
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
+        let body = plan.body("v2.1.0", json!({}));
+        assert!(body["change"].get("rename").is_none());
     }
 
     #[test]
@@ -719,11 +862,11 @@ mod tests {
             changes.is_empty(),
             "the file left the sync, it was not deleted"
         );
-        assert!(plan_change(&recorded, &found, &changes, &BTreeMap::new()).is_empty());
+        assert!(plan_change(&recorded, &found, &changes, &BTreeMap::new(), true).is_empty());
 
         recorded.insert("gone.tex".to_string(), record(Kind::Text, b"gone\n"));
         let changes = compare(dir.path(), &recorded, &found);
-        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
         let gone = Digest::of(b"gone\n").to_hex();
         assert_eq!(plan.delete, [json!({"path": "gone.tex", "expect": gone})]);
         assert_eq!(plan.dependencies, [dependency("gone.tex", &gone)]);
@@ -750,7 +893,7 @@ mod tests {
         let found = scan(dir.path(), &Rules::default(), None, &exclude).unwrap();
         let changes = compare(dir.path(), &recorded, &found);
         assert_eq!(changes.added, ["fig/new.png"]);
-        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
         assert!(plan.create.is_empty());
         assert_eq!(
             plan.put_binary,
