@@ -31,6 +31,7 @@ import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
 import { m } from "./paraglide/messages.js";
+import { houseStyleCss, latexmlWithHouseStyle, pageWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle } from "./house-style.js";
 
 /// This browser's identity for a render tree -- `{ main, texts, digests }`
 /// -- used only as a transient cache key: whether a local build's job
@@ -182,6 +183,13 @@ function localDiagnostics(format, result, tree) {
   return [];
 }
 
+// The page of a local HTML render. A Quarto page is shown in the house style;
+// `artifact` stays the render as it came, for whatever saves or exports it.
+async function localHtml(format, artifact) {
+  const html = new TextDecoder().decode(artifact);
+  return format === "quarto" ? quartoWithHouseStyle(html, await houseStyleCss()) : html;
+}
+
 /// Renders a document into the page a save would store, and says what the
 /// compiler had to say about it.
 ///
@@ -222,7 +230,9 @@ export async function render(tree, title, { manual = false, format: requestedFor
       notices: result.notices || [],
       artifact: result.artifact,
       artifactKind: output,
-      html: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null,
+      html: output === "html" && result.artifact ? await localHtml(format, result.artifact) : null,
+      // The render as it came, for an export; `html` is the preview's copy.
+      exportHtml: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null,
       pdf: output === "pdf" ? result.artifact : null,
       synctex: result.synctex,
       diagnostics: [
@@ -263,11 +273,15 @@ export async function render(tree, title, { manual = false, format: requestedFor
       const settings = configuration?.latex && Object.prototype.hasOwnProperty.call(configuration.latex, "settings")
         ? configuration.latex.settings
         : Object.prototype.hasOwnProperty.call(tree, "settings") ? tree.settings || {} : latex.settings();
-      return latexHtml.compile(tree, {
-        base: configuration?.latex?.base || latex.at(),
-        settings,
-        configuration: configuration?.latex,
-      });
+      const [result, css] = await Promise.all([
+        latexHtml.compile(tree, {
+          base: configuration?.latex?.base || latex.at(),
+          settings,
+          configuration: configuration?.latex,
+        }),
+        houseStyleCss(),
+      ]);
+      return result?.html ? { ...result, html: latexmlWithHouseStyle(result.html, css) } : result;
     }
     latex.ensureProject(project);
     const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok } = await latex.compile(tree, { manual });
@@ -291,36 +305,102 @@ export async function render(tree, title, { manual = false, format: requestedFor
       ok,
     };
   }
-  // Labels may be Svelte proxies, which cannot cross a worker boundary.
-  // Send only the compiler inputs, copied into ordinary maps.
-  const quartoTree = format === "quarto" ? await quarto.virtualTree(tree, {
-    expandIncludes: tree.texts || {},
-    results: tree.quartoResults ?? null,
-  }) : tree;
   const capturedSettings = configuration && Object.prototype.hasOwnProperty.call(configuration, "settings")
-    ? configuration.settings : quartoTree.settings;
+    ? configuration.settings : tree.settings;
   // Markdown and Quarto reach a PDF through Pandoc and Typst: Pandoc writes
   // a Typst source beside the document and the Typst renderer compiles it.
   // Quarto's own diagnostics describe the HTML path and are not mapped here.
   if ((format === "markdown" || format === "quarto") && buildPreferences?.output === "pdf") {
-    const pandocInput = format === "quarto" ? quarto.pandocDraft(quartoTree, source) : quartoTree;
+    let pandocInput = tree;
+    if (format === "quarto") {
+      const drafted = await quartoDraft(tree, 1, capturedModules, capturedSettings).catch((error) => ({ error }));
+      if (drafted.error) return quartoFailure(drafted.error, tree, title);
+      pandocInput = draftTree(tree, drafted.markdown);
+    }
     const typstSource = await typstTree(pandocInput, { from: "markdown" });
     return renderTypst(typstSource, title, "pdf", capturedModules, capturedSettings);
   }
-  const module = (format === "markdown" || format === "quarto") && needsBibliography({ source }) ? "citations" : format === "quarto" ? "markdown" : format;
-  if (format === "typst") return renderTypst(quartoTree, title, requestedFormat, capturedModules, capturedSettings);
+  if (format === "typst") return renderTypst(tree, title, requestedFormat, capturedModules, capturedSettings);
   // The Org renderer does not follow #+INCLUDE, so the included text goes in first.
-  if (format === "org") await orgTreeReady(quartoTree.texts?.[quartoTree.main] ?? "");
-  const renderable = format === "org" ? expandOrgIncludes(quartoTree) : quartoTree;
-  return request(module, "render", {
+  if (format === "org") await orgTreeReady(tree.texts?.[tree.main] ?? "");
+  if (format === "quarto") {
+    try {
+      return await renderQuarto(tree, title, capturedModules, capturedSettings, source);
+    } catch (error) {
+      return quartoFailure(error, tree, title);
+    }
+  }
+  const module = format === "markdown" && needsBibliography({ source }) ? "citations" : format;
+  const renderable = format === "org" ? expandOrgIncludes(tree) : tree;
+  const result = await request(module, "render", {
     tree: renderTree(renderable, capturedSettings),
     title,
-  }, capturedModules).then((result) => {
-    if (format === "quarto" && result) {
-      return { ...result, diagnostics: quarto.mapQuartoDiagnostics(result.diagnostics || [], quartoTree) };
-    }
-    return result;
-  });
+  }, capturedModules);
+  // citations.wasm and org.wasm embed the stylesheet of the wasm-helpers they
+  // were built on, which may predate the house style.
+  return module === "citations" || module === "org" ? withHouseStyle(result) : result;
+}
+
+// citations.wasm embeds the stylesheet of the wasm-helpers it was built on,
+// which may be older than the house style: the page gets the current one.
+async function withHouseStyle(result) {
+  if (!result?.html) return result;
+  return { ...result, html: pageWithHouseStyle(String(result.html), await houseStyleCss()) };
+}
+
+// Quarto cross references (@fig-x, @tbl-x, …) look like citations to
+// needsBibliography; they are the dialect's, not the bibliography's.
+const QUARTO_CROSSREF = /@(?:fig|tbl|sec|eq|lst|thm|lem|cor|prp|cnj|def|exm|exr|sol|rem)-[\p{L}\p{N}_:.-]*/gu;
+function quartoNeedsBibliography(source) {
+  return needsBibliography({ source: String(source ?? "").replace(QUARTO_CROSSREF, "") });
+}
+
+// The Markdown module renders a Quarto document itself: the .qmd is the main
+// file and the saved outputs reach it in a file beside the sources. Only a
+// document with a bibliography still goes through citations.wasm, which does
+// not know Quarto, so that one is given the module's draft as plain Markdown.
+async function renderQuarto(tree, title, moduleUrls, settings, source) {
+  const sidecar = await quarto.quartoSidecar(source, { path: tree.main, results: tree.quartoResults ?? null });
+  const withSidecar = { ...tree, texts: { ...tree.texts, [quarto.QUARTO_SIDECAR]: JSON.stringify(sidecar) } };
+  if (quartoNeedsBibliography(source)) {
+    const drafted = await quartoDraft(withSidecar, 0, moduleUrls, settings);
+    const result = await request("citations", "render", {
+      tree: renderTree(draftTree(tree, drafted.markdown), settings),
+      title,
+    }, moduleUrls);
+    const mapped = quarto.mapDraftDiagnostics(result?.diagnostics || [], drafted.line_map, tree.main);
+    return withHouseStyle({ ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] });
+  }
+  const result = await request("markdown", "render", { tree: renderTree(withSidecar, settings), title }, moduleUrls);
+  return result ? { ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) } : result;
+}
+
+// The module's Quarto draft of a tree, as Markdown with its line map.
+function quartoDraft(tree, forPandoc, moduleUrls, settings) {
+  return request("markdown", "draft", { tree: renderTree(tree, settings), forPandoc }, moduleUrls).then((drafted) => ({
+    ...drafted,
+    diagnostics: drafted.diagnostics || [],
+  }));
+}
+
+// The draft stands in for the .qmd, as a Markdown file beside it.
+function draftTree(tree, markdown) {
+  let main = tree.main.replace(/\.qmd$/i, ".md");
+  while (Object.hasOwn(tree.texts || {}, main)) main = main.replace(/\.md$/, "-draft.md");
+  const texts = { ...tree.texts, [main]: markdown };
+  delete texts[tree.main];
+  return { ...tree, main, texts };
+}
+
+// A Quarto document the module cannot draft (an older module, or a failure
+// inside it) is shown as its source, with the reason beside it.
+async function quartoFailure(error, tree, title) {
+  const reason = error?.message || String(error);
+  return {
+    html: await textPage(tree.texts?.[tree.main] ?? "", tree.main, title || tree.main),
+    pdf: null,
+    diagnostics: [{ severity: "error", message: m.renderers_quarto_failed(), hints: [reason], file: tree.main, line: 0, column: 0, end_line: 0, end_column: 0 }],
+  };
 }
 
 // Labels may be Svelte proxies, which cannot cross a worker boundary.
@@ -352,7 +432,7 @@ async function renderTypst(tree, title, requestedFormat, moduleUrls, settings) {
     const html = result?.html;
     return {
       ...result,
-      html: html == null ? null : String(html),
+      html: html == null ? null : typstWithHouseStyle(String(html), await houseStyleCss()),
       pdf: null,
       diagnostics: result?.diagnostics || [],
     };
@@ -517,7 +597,7 @@ export function warm(format, source = "") {
   const loading = [request(format === "quarto" ? "markdown" : format, "warm")];
   // A document with citations renders in citations.wasm, so it starts at the
   // same time as the Markdown module rather than at the first render.
-  if ((format === "markdown" || format === "quarto") && needsBibliography({ source })) {
+  if ((format === "markdown" && needsBibliography({ source })) || (format === "quarto" && quartoNeedsBibliography(source))) {
     loading.push(request("citations", "warm"));
   }
   return Promise.all(loading.map((load) => load.then(() => {}, () => {}))).then(() => {});

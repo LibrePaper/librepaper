@@ -10,13 +10,8 @@ import { m } from "../paraglide/messages.js";
 
 export { sha256, sha256Bytes };
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
-}
-
 const CELL_FENCE = /^ {0,3}(`{3,}|~{3,})\s*(.*?)\s*$/;
 const DIV_FENCE = /^ {0,3}(:{3,})(?:(?:\s+|\s*(?=\{))(.+?))?\s*$/;
-const INCLUDE = /\{\{<\s*include\s+([^ >]+).*?>\}\}/g;
 const INLINE_ENGINE = /^(?:r|python|julia|ojs|bash|embed)(?:\s+.+|\}.*)$/;
 
 function executableInline(line) {
@@ -294,97 +289,6 @@ export function parseQuarto(source, { path = "main.qmd" } = {}) {
   };
 }
 
-function referenceKind(id) {
-  const match = /^(fig|tbl|sec|eq|lst)-/.exec(String(id || "").split("#").pop());
-  return match?.[1] || "";
-}
-
-function referencesFor(parsed) {
-  const targets = [
-    ...(parsed.headings || []),
-    ...(parsed.divs || []),
-    ...(parsed.cells || []).filter((cell) => cell.label),
-  ].filter((item) => item?.id && referenceKind(item.id));
-  targets.sort((left, right) => left.startLine - right.startLine);
-  const counts = new Map();
-  const references = new Map();
-  for (const target of targets) {
-    const id = target.id;
-    if (references.has(id)) continue;
-    const kind = referenceKind(id);
-    const number = (counts.get(kind) || 0) + 1;
-    counts.set(kind, number);
-    references.set(id, { id, kind, number, startLine: target.startLine });
-    // Cell labels are stored without the source path, while div and heading
-    // IDs are already document-local. Resolve both spellings for callers.
-    const short = id.split("#").pop();
-    if (short && !references.has(short)) references.set(short, { id, kind, number, startLine: target.startLine });
-  }
-  return references;
-}
-
-// The draft is a rough view only; Quarto's own preview is authoritative.
-// Quarto constructs that this renderer does not understand are shown as
-// literal source blocks. This keeps them readable without accidentally
-// applying ordinary Markdown semantics to only part of the construct.
-
-function metadataMarkup(parsed) {
-  const meta = parsed.metadata || {};
-  const title = meta.title == null ? "" : String(meta.title).trim();
-  const authors = Array.isArray(meta.author) ? meta.author : Array.isArray(meta.authors) ? meta.authors : meta.author ? [meta.author] : meta.authors ? [meta.authors] : [];
-  const names = authors.map((author) => typeof author === "string" ? author : author?.name || author?.literal || "").filter(Boolean);
-  const date = meta.date == null ? "" : String(meta.date).trim();
-  const abstract = meta.abstract == null ? "" : String(meta.abstract).trim();
-  if (!title && !names.length && !date && !abstract) return "";
-  const parts = [`<header class="quarto-title-block" data-librepaper-generated="quarto">`];
-  if (title) parts.push(`<h1>${escapeHtml(title)}</h1>`);
-  if (names.length) parts.push(`<p class="quarto-author">${escapeHtml(names.join(", "))}</p>`);
-  if (date) parts.push(`<p class="quarto-date">${escapeHtml(date)}</p>`);
-  if (abstract) parts.push(`<div class="quarto-abstract"><strong>Abstract</strong><p>${escapeHtml(abstract)}</p></div>`);
-  parts.push("</header>");
-  return parts.join("");
-}
-
-function proseLine(line, labels, { lineNumber = 0, inlineRecords = [] } = {}) {
-  // Keep inline code and links opaque while making the common Quarto cross
-  // references readable.  An unresolved reference remains source text.
-  const inlineOrdinals = new Map();
-  const chunks = String(line).split(/(`[^`]*`|!?\[[^\]]*\]\([^)]*\))/g);
-  return chunks.map((chunk, index) => {
-    if (index % 2) {
-      const expression = chunk.slice(1, -1).trim();
-      const ordinal = inlineOrdinals.get(expression) || 0;
-      inlineOrdinals.set(expression, ordinal + 1);
-      const record = inlineRecords.filter((item) => item.line === lineNumber && item.expression === expression)[ordinal];
-      // Code expressions stay source text until a desktop app
-      // evaluates them. Inline results are never reused; only the output of
-      // whole cells can come from a shared run (see `results` below).
-      return chunk;
-    }
-    return chunk.replace(/@(fig|tbl|sec|eq|lst)-([A-Za-z0-9_:-]+(?:\.[A-Za-z0-9_:-]+)*)/g, (whole, kind, label) => {
-      const id = `${kind}-${label}`;
-      const target = labels instanceof Map ? labels.get(id) : null;
-      if (!target && !(labels instanceof Set && labels.has(id))) return whole;
-      const noun = kind === "fig" ? "Figure" : kind === "tbl" ? "Table" : kind === "sec" ? "Section" : kind === "eq" ? "Equation" : "Listing";
-      return `<a class="quarto-crossref" href="#${escapeHtml(id)}">${noun} ${target?.number || escapeHtml(label)}</a>`;
-    }).replace(/\[([^\]]+)\]\{#([A-Za-z][\w:.-]*)\}/g, (_, text, id) => `<span id="${escapeHtml(id)}">${text}</span>`);
-  }).join("");
-}
-
-// Pick a fence for showing a code cell verbatim (fence lines included) that
-// cannot be closed early by anything already inside the cell text: longer
-// than the longest run of backticks, or of tildes, found in it.
-function verbatimFence(text) {
-  const longestRun = (pattern) => {
-    let max = 0;
-    for (const match of String(text).matchAll(pattern)) max = Math.max(max, match[0].length);
-    return max;
-  };
-  const backtick = Math.max(3, longestRun(/`+/g) + 1);
-  const tilde = Math.max(3, longestRun(/~+/g) + 1);
-  return backtick <= tilde ? { char: "`", length: backtick } : { char: "~", length: tilde };
-}
-
 // The cells Quarto actually executes into the HTML: those not switched off by
 // `include: false`, in the cell's own options or the front matter's
 // `execute:` defaults. The shared-results splitter and the draft both count
@@ -398,7 +302,7 @@ export function executedCells(parsed) {
 // Pair saved outputs with the cells of the main file. A result whose
 // fingerprint equals the cell's is fresh; others fall back to the same label,
 // then to the same position when the cell counts agree, and are stale.
-function matchResults(results, cells) {
+export function matchResults(results, cells) {
   const matched = new Map();
   const saved = Array.isArray(results?.cells) ? results.cells : [];
   if (!saved.length) return matched;
@@ -426,240 +330,61 @@ function matchResults(results, cells) {
   return matched;
 }
 
-export function composeDraft(source, { path = "main.qmd", assets = {}, expandIncludes: includes = {}, maxIncludeDepth = 8, cellFingerprints = {}, results = null } = {}) {
+
+/// The file the Markdown module reads beside a .qmd: the saved outputs placed
+/// by the line of their cell's opening fence, the results note, and the
+/// interface strings the page needs. The matching of saved results to cells
+/// stays here, in the browser; the module only places what it is given.
+export const QUARTO_SIDECAR = ".librepaper/quarto.json";
+
+/** @param {string} source @param {{path?: string, results?: any, strings?: Record<string, string>}} [options] */
+export async function quartoSidecar(source, { path = "main.qmd", results = null, strings } = {}) {
   const parsed = parseQuarto(source, { path });
-  for (const cell of parsed.cells) {
-    cell.source_sha256 = cellFingerprints[cell.id]?.sha256 || "";
-    cell.source_ambiguous = cell.label ? false : (cellFingerprints[cell.id]?.ambiguous ?? true);
-  }
-  const lines = source.split("\n");
-  const out = [];
-  const lineMap = [];
-  const generatedDiagnostics = [];
-  const references = referencesFor(parsed);
-  const push = (text, sourceLine = null) => {
-    const value = String(text ?? "");
-    const parts = value.split("\n");
-    for (let index = 0; index < parts.length; index += 1) {
-      out.push(parts[index]);
-      lineMap.push(sourceLine == null ? null : sourceLine + index);
-    }
-  };
-  const outputs = matchResults(results, executedCells(parsed));
-  const oneLine = (html) => String(html ?? "").replace(/\r?\n/g, " ");
-  const noteText = typeof results?.note === "string" ? results.note.trim() : "";
-  const noteMarkup = noteText ? `<p class="lp-results-note">${escapeHtml(noteText)}</p>` : "";
-  let opaqueFence = null;
-  const byStart = new Map(parsed.cells.map((cell) => [cell.startLine, cell]));
-  const divByStart = new Map(parsed.divs
-    .filter((div) => div.depth === 0)
-    .map((div) => [div.startLine, div]));
-  const labels = new Set([
-    ...parsed.cells.map((cell) => cell.label),
-    ...parsed.divs.map((div) => div.id),
-  ].filter(Boolean));
-  const frontMatterText = parsed.frontMatter.end ? source.slice(0, parsed.frontMatter.end) : "";
-  const frontMatterLines = frontMatterText ? frontMatterText.split("\n").length - (frontMatterText.endsWith("\n") ? 1 : 0) : 0;
-  const defaults = parsed.metadata.execute && typeof parsed.metadata.execute === "object" ? parsed.metadata.execute : {};
-  const resolveInclude = (name, sourceName) => {
-    const requested = String(name || "").replaceAll("\\", "/");
-    if (!requested || requested.startsWith("/") || /^[A-Za-z]:/.test(requested) || requested.split("/").some((part) => !part)) return null;
-    const base = String(sourceName || path).split("/");
-    base.pop();
-    const parts = [...base, ...requested.split("/")];
-    const normalizedParts = [];
-    for (const part of parts) {
-      if (part === ".") continue;
-      if (part === "..") {
-        if (!normalizedParts.length) return null;
-        normalizedParts.pop();
-      } else normalizedParts.push(part);
-    }
-    const normalized = normalizedParts.join("/");
-    if (Object.prototype.hasOwnProperty.call(includes, normalized)) return normalized;
-    if (Object.prototype.hasOwnProperty.call(includes, requested)) return requested;
-    return null;
-  };
-  const expandedInclude = (name, depth = 0, seen = new Set(), sourceName = path, sourceLine = 0) => {
-    const normalized = resolveInclude(name, sourceName);
-    if (!normalized) {
-      generatedDiagnostics.push({ severity: "warning", generated: true, message: m.quarto_include_unauthorized({ name }), file: sourceName, line: sourceLine, column: 0 });
-      return `<span class="quarto-diagnostic">${m.quarto_include_unavailable({ name: escapeHtml(name) })}</span>`;
-    }
-    if (depth >= maxIncludeDepth || seen.has(normalized)) {
-      generatedDiagnostics.push({ severity: "warning", generated: true, message: m.quarto_include_cycle({ normalized }), file: sourceName, line: sourceLine, column: 0 });
-      return `<span class="quarto-diagnostic">${m.quarto_include_cycle({ normalized: escapeHtml(normalized) })}</span>`;
-    }
-    const value = includes[normalized];
-    const next = new Set(seen).add(normalized);
-    const includedLines = String(value).split("\n");
-    const includedParsed = parseQuarto(value, {path:normalized});
-    const includedDefaults = {...defaults, ...(includedParsed.metadata.execute || {})};
-    for (const cell of includedParsed.cells) {
-      const visibility = {...includedDefaults, ...cell.options};
-      if (visibility.include === false || visibility.echo === false) {
-        for (let line = cell.startLine; line <= cell.endLine; line++) includedLines[line] = "";
-      }
-    }
-    let includedFence = null;
-    return includedLines.map((includedLine) => {
-      if (includedFence) {
-        const close = new RegExp(`^ {0,3}${includedFence.char}{${includedFence.length},}\\s*$`);
-        if (close.test(includedLine)) includedFence = null;
-        return includedLine;
-      }
-      const opener = /^ {0,3}(`{3,}|~{3,})/.exec(includedLine);
-      if (opener) includedFence = { char: opener[1][0], length: opener[1].length };
-      return includedLine.replace(INCLUDE, (_, child) => expandedInclude(child, depth + 1, next, normalized, 0));
-    }).join("\n");
-  };
-  // Blank lines around generated HTML keep it a block of its own, so the
-  // line after it is not swallowed into the same HTML block.
-  const pushBlock = (html) => { push(""); push(html); push(""); };
-  if (!frontMatterLines && noteMarkup) pushBlock(noteMarkup);
-  for (let i = 0; i < lines.length; i += 1) {
-    if (i < frontMatterLines) {
-      if (i === frontMatterLines - 1) {
-        const header = metadataMarkup(parsed);
-        if (header) push(header);
-        if (noteMarkup) pushBlock(noteMarkup);
-      }
-      continue;
-    }
-    const cell = byStart.get(i);
-    const literalDiv = divByStart.get(i);
-    if (!cell && literalDiv) {
-      const endLine = literalDiv.endLine ?? lines.length - 1;
-      const text = lines.slice(i, endLine + 1).join("\n");
-      const { char, length } = verbatimFence(text);
-      const outerFence = char.repeat(length);
-      push(outerFence);
-      push(text, i);
-      push(outerFence);
-      i = endLine;
-      continue;
-    }
-    if (!cell && opaqueFence) {
-      push(lines[i], i);
-      if (new RegExp(`^ {0,3}${opaqueFence.char}{${opaqueFence.length},}\\s*$`).test(lines[i])) opaqueFence = null;
-      continue;
-    }
-    if (!cell) {
-      let line = lines[i];
-      const opaque = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-      if (opaque) opaqueFence = { char: opaque[1][0], length: opaque[1].length };
-      if (!opaque) {
-        const div = DIV_FENCE.exec(line);
-        const shortcodes = [...line.matchAll(/\{\{<\s*([A-Za-z][\w-]*)\b[^>]*>\}\}/g)];
-        const unsupportedShortcode = shortcodes.some((match) => match[1].toLowerCase() !== "include");
-        // An unsupported shortcode is kept together with its authored line
-        // so Markdown cannot turn fragments around it into rendered HTML.
-        if (!div && unsupportedShortcode) {
-          const { char, length } = verbatimFence(line);
-          const outerFence = char.repeat(length);
-          push(outerFence);
-          push(line, i);
-          push(outerFence);
-          continue;
-        }
-        if (!div) {
-          line = line.replace(INCLUDE, (_, name) => expandedInclude(name, 0, new Set(), path, i + 1));
-          line = proseLine(line, references, {
-            lineNumber: i + 1,
-            inlineRecords: parsed.inlineRecords,
-          });
-        }
-      }
-      // Included text has no one-to-one source line in the main qmd. Keep
-      // diagnostics generated from it unmapped instead of attaching them to
-      // the include directive or a nearby authored paragraph.
-      push(line, lines[i].includes("{{<") ? null : i);
-      continue;
-    }
-    i = cell.endLine;
-    const output = outputs.get(cell);
-    if (output) {
-      // A cell with saved output shows as Quarto does: the code without its
-      // fence or `#|` option lines (unless echo is off), then the output.
-      const meta = parsed.metadata?.execute;
-      const defaults = meta && typeof meta === "object" ? meta : {};
-      const echo = cell.options.echo ?? defaults.echo ?? true;
-      const code = String(cell.code ?? "");
-      if (echo !== false && echo !== "false" && code.trim()) {
-        const codeLines = code.split("\n");
-        const body = cell.source.replace(/\n$/, "").split("\n").slice(1, -1);
-        const first = cell.startLine + 1 + Math.max(0, body.length - codeLines.length);
-        const { char, length } = verbatimFence(code);
-        const codeFence = char.repeat(length);
-        push(`${codeFence}${cell.language || ""}`);
-        codeLines.forEach((line, offset) => push(line, first + offset));
-        push(codeFence);
-      }
-    } else {
-      const cellText = cell.source.replace(/\n$/, "");
-      const { char, length } = verbatimFence(cellText);
-      const outerFence = char.repeat(length);
-      push(outerFence);
-      push(cellText, cell.startLine);
-      push(outerFence);
-    }
-    if (output) {
-      const html = oneLine(output.html);
-      pushBlock(output.stale
-        ? `<div class="lp-cell-output lp-cell-output-stale" title="${escapeHtml(m.quarto_output_stale())}">${html}</div>`
-        : `<div class="lp-cell-output">${html}</div>`);
-    }
-  }
-  return { ...parsed, markdown: out.join("\n"), lineMap, diagnostics: [...parsed.diagnostics, ...generatedDiagnostics], source, assets };
-}
-
-export async function virtualTree(tree, options = {}) {
-  const main = tree.main || "main.qmd";
-  const source = tree.texts?.[main] || "";
-  const parsed = parseQuarto(source, { path: main });
   const hashes = await Promise.all(parsed.cells.map((cell) => cellFingerprint(cell)));
-  const counts = new Map();
-  hashes.forEach((hash) => counts.set(hash, (counts.get(hash) || 0) + 1));
-  const cellFingerprints = Object.fromEntries(parsed.cells.map((cell, index) => [cell.id, { sha256: hashes[index], ambiguous: counts.get(hashes[index]) !== 1 }]));
-  const draft = composeDraft(source, { ...options, path: main, assets: tree.urls || {}, cellFingerprints });
-  let virtualMain = main.replace(/\.qmd$/i, ".md");
-  while (Object.hasOwn(tree.texts || {}, virtualMain)) virtualMain = virtualMain.replace(/\.md$/, "-draft.md");
-  const texts = { ...(tree.texts || {}), [virtualMain]: draft.markdown };
-  if (virtualMain !== main) delete texts[main];
-  return { ...tree, main: virtualMain, texts, quarto: draft, quartoSourcePath: main, quartoLineMap: draft.lineMap };
+  parsed.cells.forEach((cell, index) => { cell.source_sha256 = hashes[index]; });
+  const matched = matchResults(results, executedCells(parsed));
+  const outputs = [];
+  for (const [cell, output] of matched) {
+    outputs.push({ line: cell.startLine + 1, html: String(output.html ?? "").replace(/\r?\n/g, " "), stale: output.stale });
+  }
+  outputs.sort((a, b) => a.line - b.line);
+  return {
+    outputs,
+    note: typeof results?.note === "string" ? results.note.trim() : "",
+    strings: strings ?? {
+      output_stale: m.quarto_output_stale(),
+      include_unavailable: m.quarto_include_unavailable({ name: "{name}" }),
+      include_cycle: m.quarto_include_cycle({ normalized: "{normalized}" }),
+      abstract: m.insert_abstract(),
+    },
+  };
 }
 
-// The draft Pandoc reads for a PDF. The browser draft swaps the front matter
-// for a generated title block, which hides `title`, `bibliography` and `csl`
-// from Pandoc, so this puts the original front matter back and drops the block.
-export function pandocDraft(virtualTree, source) {
-  const main = virtualTree.main;
-  const frontMatter = parseQuarto(source, { path: virtualTree.quartoSourcePath || main }).frontMatter.raw;
-  const body = String(virtualTree.texts[main] ?? "")
-    .replace(/<header class="quarto-title-block" data-librepaper-generated="quarto">[\s\S]*?<\/header>\n*/, "");
-  return { ...virtualTree, texts: { ...virtualTree.texts, [main]: `${frontMatter}\n${body}` } };
+/// Diagnostics whose message is a catalogue key (`quarto_*`) are translated
+/// with the arguments the module put in `hints` as `name=value`.
+export function translateQuartoDiagnostics(diagnostics) {
+  return (diagnostics || []).map((diagnostic) => {
+    const key = String(diagnostic?.message || "");
+    if (!/^quarto_[a-z_]+$/.test(key) || typeof m[key] !== "function") return diagnostic;
+    const args = {};
+    for (const hint of diagnostic.hints || []) {
+      const at = String(hint).indexOf("=");
+      if (at > 0) args[hint.slice(0, at)] = hint.slice(at + 1);
+    }
+    return { ...diagnostic, message: m[key](args), hints: [] };
+  });
 }
 
-// The Markdown worker sees the generated `.md` draft. Keep diagnostics on
-// original qmd coordinates whenever a generated line has a reliable source
-// counterpart; generated title/output/include diagnostics stay explicitly
-// unmappable instead of being attached to nearby prose.
-export function mapQuartoDiagnostics(diagnostics, virtualTree) {
-  const lineMap = virtualTree?.quartoLineMap || virtualTree?.quarto?.lineMap || [];
-  const sourcePath = virtualTree?.quartoSourcePath || virtualTree?.quarto?.path || virtualTree?.main || "main.qmd";
+/// Diagnostics of a draft that went through another module, put back on the
+/// lines of the .qmd. A generated line has no source line and is left
+/// unplaced rather than attached to nearby prose.
+export function mapDraftDiagnostics(diagnostics, lineMap, sourcePath) {
   return (diagnostics || []).map((diagnostic) => {
     const line = Number(diagnostic?.line || 0);
     const mapped = line > 0 ? lineMap[line - 1] : null;
     if (mapped == null) return { ...diagnostic, file: sourcePath, line: 0, column: 0, end_line: 0, end_column: 0, generated: true };
-    const endLine = Number(diagnostic?.end_line || line);
-    const mappedEnd = lineMap[endLine - 1];
-    return {
-      ...diagnostic,
-      file: sourcePath,
-      line: mapped + 1,
-      end_line: mappedEnd == null ? mapped + 1 : mappedEnd + 1,
-      generated: false,
-    };
+    const endMapped = lineMap[Number(diagnostic?.end_line || line) - 1];
+    return { ...diagnostic, file: sourcePath, line: mapped, end_line: endMapped == null ? mapped : endMapped, generated: false };
   });
 }
 
@@ -748,4 +473,3 @@ export async function contextId({ format = "html", profiles = [], parameters = {
   return `ctx-${digest.slice(0, 16)}`;
 }
 
-export { escapeHtml };

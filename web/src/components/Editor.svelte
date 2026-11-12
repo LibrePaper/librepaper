@@ -1747,10 +1747,10 @@
 
   // The visual layer for a file, or nothing where it draws no such format. The
   // colours depend on the page's mode, so this is read again on a theme change.
-  // With the paper setting on, a Markdown or Org file is drawn by the paper layer instead. .qmd stays on the existing layer.
+  // With the paper setting on, a Markdown, Quarto, Org or Typst file is drawn by the paper layer instead.
   function visualOn(on, path) {
-    if (on && untrack(() => paper) && /\.(md|markdown|org)$/i.test(path)) {
-      const format = /\.org$/i.test(path) ? "org" : "markdown";
+    if (on && untrack(() => paper) && /\.(md|markdown|qmd|org|typ)$/i.test(path)) {
+      const format = /\.org$/i.test(path) ? "org" : /\.qmd$/i.test(path) ? "quarto" : /\.typ$/i.test(path) ? "typst" : "markdown";
       return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark" });
     }
     return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) }) : [];

@@ -89,7 +89,16 @@ function build(state, path, imageUrl, adapter) {
   const renderer = currentPaperRenderer(adapter.module);
   if (!renderer) return { decorations: Decoration.none, rendered: [] };
   const text = state.doc.toString();
-  const blocks = adapter.splitBlocks(text);
+  // The whole document rendered at once when the format can; null falls back to drawing each block alone.
+  let whole = null;
+  if (adapter.renderedBlocks) {
+    try {
+      whole = adapter.renderedBlocks(text, renderer, path());
+    } catch {
+      whole = null;
+    }
+  }
+  const blocks = whole ?? adapter.splitBlocks(text);
   if (!blocks) return { decorations: Decoration.none, rendered: [] };
   const ranges = state.selection.ranges;
   const marks = [];
@@ -97,10 +106,14 @@ function build(state, path, imageUrl, adapter) {
   for (const block of blocks) {
     if (!block.render || touches(ranges, block)) continue;
     let html = "";
-    try {
-      html = renderer.render(adapter.blockSource(text, block, blocks));
-    } catch {
-      continue;
+    if (whole) {
+      html = block.html ?? "";
+    } else {
+      try {
+        html = renderer.render(adapter.blockSource(text, block, blocks));
+      } catch {
+        continue;
+      }
     }
     if (!html.trim()) continue;
     rendered.push(block);
@@ -135,13 +148,24 @@ function paperField(path, imageUrl, adapter) {
 function loaderFor(adapter) {
   return ViewPlugin.define((view) => {
     const plugin = { destroyed: false, destroy() { plugin.destroyed = true; } };
-    Promise.all([loadPaperRenderer(adapter.module), adapter.ready()])
-      .then(([renderer]) => {
+    // The page stylesheet is always the Markdown renderer's: it is the house
+    // style every format shares, whichever renderer draws this file.
+    const house = adapter.module === "markdown" ? null : loadPaperRenderer("markdown").catch(() => null);
+    Promise.all([loadPaperRenderer(adapter.module), adapter.ready(), house])
+      .then(([renderer, , markdown]) => {
         if (plugin.destroyed) return;
-        if (!document.head.querySelector("style[data-librepaper-paper]")) {
+        const pageCss = (adapter.module === "markdown" ? renderer : markdown)?.pageCss;
+        if (pageCss && !document.head.querySelector("style[data-librepaper-paper]")) {
           const style = document.createElement("style");
           style.setAttribute("data-librepaper-paper", "");
-          style.textContent = paperStylesheet(renderer.pageCss);
+          style.textContent = paperStylesheet(pageCss);
+          document.head.appendChild(style);
+        }
+        // The Markdown page stylesheet does not cover Typst's MathML, so Typst brings its own rules.
+        if (adapter.module === "typst" && renderer.mathCss && !document.head.querySelector("style[data-librepaper-paper-typst]")) {
+          const style = document.createElement("style");
+          style.setAttribute("data-librepaper-paper-typst", "");
+          style.textContent = renderer.mathCss;
           document.head.appendChild(style);
         }
         view.dispatch({ effects: refreshPaper.of(null) });
@@ -181,7 +205,7 @@ function stepInto(field, direction) {
 /// The paper visual layer for a Markdown or Org file. `format` names the file's format ("markdown" or "org").
 /// `path` returns the open file's project path (no leading slash).
 /// `imageUrl(path)` resolves a project path to a URL for an <img>, or null; it may be async.
-/// `dark` picks the dark rules.
+/// `dark` puts `lp-dark` on the editor, which the house stylesheet answers.
 export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false } = {}) {
   const adapter = paperFormat(format);
   if (!adapter) return [];
@@ -190,7 +214,7 @@ export function paperVisual({ format = "markdown", path = () => "", imageUrl = n
     field,
     loaderFor(adapter),
     EditorView.editorAttributes.of({
-      class: dark ? "cm-lp-visual cm-lp-paper-editor cm-lp-paper-dark" : "cm-lp-visual cm-lp-paper-editor",
+      class: dark ? "cm-lp-visual cm-lp-paper-editor lp-dark" : "cm-lp-visual cm-lp-paper-editor",
     }),
     EditorView.domEventHandlers({
       mousedown(event, view) {
