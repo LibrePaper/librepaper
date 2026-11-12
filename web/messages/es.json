@@ -1026,6 +1026,8 @@
   "editorsettings_line_height_compact": "Compacto",
   "editorsettings_line_height_normal": "Normal",
   "editorsettings_line_height_wide": "Amplio",
+  "editorsettings_paper_description": "En el modo visual, dibuja los archivos Markdown con el renderizador y los estilos de la vista previa. Experimental.",
+  "editorsettings_paper_title": "Vista de papel para Markdown",
   "editorsettings_proofing_description_browser": "El navegador subraya las palabras mal escritas en la prosa, omitiendo comandos, código, matemáticas y claves de cita. Su idioma y su diccionario deciden qué cuenta como palabra.",
   "editorsettings_proofing_description_harper": "Harper revisa la ortografía y la gramática del inglés en la prosa. Descarga 7 MB la primera vez y usa unos 300 MB de memoria mientras hay un documento abierto. Los documentos que declaran otro idioma usan en su lugar el corrector ortográfico del navegador.",
   "editorsettings_proofing_description_off": "No se subraya nada.",

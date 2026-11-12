@@ -71,6 +71,8 @@ export const EDITOR_CHECK = "librepaper-editor-check";
 // Whether a source opens in visual mode. Each open starts from this choice, and
 // the top-bar switch changes it for that session only.
 export const EDITOR_VISUAL = "librepaper-editor-visual";
+// Whether visual mode draws Markdown with the preview's renderer and stylesheet. Off by default while it is a prototype.
+export const EDITOR_PAPER = "librepaper-editor-paper";
 // Whether the pages are light, dark, or follow the computer: "system", "light"
 // or "dark". Like the keymap, a habit of the person looking at the screen.
 export const THEME = "librepaper-theme";

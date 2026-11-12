@@ -2823,6 +2823,7 @@
   const proofing = $derived(prefs.proofing);
   const dialect = $derived(prefs.dialect);
   const check = $derived(prefs.check);
+  const paper = $derived(prefs.paper);
   const sizes = $derived(prefs.sizes);
 
   // Settings open as a dialog from the navbar menu or the sidebar. Every entry
@@ -3108,6 +3109,7 @@
   const setProofing = (value) => preferences.setProofing(value);
   const setDialect = (value) => preferences.setDialect(value);
   const setCheck = (on) => preferences.setCheck(on);
+  const setPaper = (on) => preferences.setPaper(on);
   // The Editor setting also sets the session value, so the change shows at once.
   const setVisualDefault = (on) => { preferences.setVisual(on); visual = on; };
 
@@ -4441,7 +4443,7 @@
           <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
                          onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} />
         {/if}
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
+        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} {paper} imageUrl={figureUrlFor} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
@@ -4778,6 +4780,7 @@
                   {keys} onkeys={setKeys}
                   {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {latexAssist} onlatexassist={setLatexAssist} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}
                   visual={prefs.visual} onvisual={setVisualDefault}
+                  {paper} onpaper={setPaper}
                   commands={commandContext}
                   userId={buildUserId}
                   onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
