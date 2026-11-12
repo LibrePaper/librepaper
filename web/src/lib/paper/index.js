@@ -1,7 +1,7 @@
-// The paper visual layer for a Markdown file: each top-level block that the
+// The paper visual layer for a Markdown or Org file: each top-level block that the
 // selection is not in is drawn as the HTML the preview renderer produces for
 // it, styled with the preview page's own CSS. The block holding the selection
-// shows its Markdown source. The text stays the document; only the drawing differs.
+// shows its Markdown or Org source. The text stays the document; only the drawing differs.
 //
 // Prototype limits: overlays (comments, tracked changes, spellcheck, remote
 // cursors) do not draw inside rendered blocks yet.
@@ -12,7 +12,7 @@ import "../visual-markup/visual-markup.css";
 import { loadKatex } from "../katex.js";
 import { typeset, untypeset } from "../math.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
-import { blockSource, splitBlocks } from "./blocks.js";
+import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
 
 const refreshPaper = StateEffect.define();
@@ -85,11 +85,12 @@ function touches(ranges, block) {
   return ranges.some((range) => range.from <= block.to && range.to >= block.from);
 }
 
-function build(state, path, imageUrl) {
-  const renderer = currentPaperRenderer();
+function build(state, path, imageUrl, adapter) {
+  const renderer = currentPaperRenderer(adapter.module);
   if (!renderer) return { decorations: Decoration.none, rendered: [] };
   const text = state.doc.toString();
-  const blocks = splitBlocks(text);
+  const blocks = adapter.splitBlocks(text);
+  if (!blocks) return { decorations: Decoration.none, rendered: [] };
   const ranges = state.selection.ranges;
   const marks = [];
   const rendered = [];
@@ -97,7 +98,7 @@ function build(state, path, imageUrl) {
     if (!block.render || touches(ranges, block)) continue;
     let html = "";
     try {
-      html = renderer.render(blockSource(text, block, blocks));
+      html = renderer.render(adapter.blockSource(text, block, blocks));
     } catch {
       continue;
     }
@@ -113,16 +114,16 @@ function build(state, path, imageUrl) {
   return { decorations: Decoration.set(marks), rendered };
 }
 
-function paperField(path, imageUrl) {
+function paperField(path, imageUrl, adapter) {
   return StateField.define({
-    create: (state) => build(state, path, imageUrl),
+    create: (state) => build(state, path, imageUrl, adapter),
     update(value, transaction) {
       if (
         transaction.docChanged ||
         transaction.selection ||
         transaction.effects.some((effect) => effect.is(refreshPaper))
       ) {
-        return build(transaction.state, path, imageUrl);
+        return build(transaction.state, path, imageUrl, adapter);
       }
       return value;
     },
@@ -130,23 +131,25 @@ function paperField(path, imageUrl) {
   });
 }
 
-// Loads the renderer once per view, injects the page CSS once per document, and redraws.
-const loader = ViewPlugin.define((view) => {
-  const plugin = { destroyed: false, destroy() { plugin.destroyed = true; } };
-  loadPaperRenderer()
-    .then((renderer) => {
-      if (plugin.destroyed) return;
-      if (!document.head.querySelector("style[data-librepaper-paper]")) {
-        const style = document.createElement("style");
-        style.setAttribute("data-librepaper-paper", "");
-        style.textContent = paperStylesheet(renderer.pageCss);
-        document.head.appendChild(style);
-      }
-      view.dispatch({ effects: refreshPaper.of(null) });
-    })
-    .catch(() => {});
-  return plugin;
-});
+// Loads the renderer and the format's syntax tree once per view, injects the page CSS once per document, and redraws.
+function loaderFor(adapter) {
+  return ViewPlugin.define((view) => {
+    const plugin = { destroyed: false, destroy() { plugin.destroyed = true; } };
+    Promise.all([loadPaperRenderer(adapter.module), adapter.ready()])
+      .then(([renderer]) => {
+        if (plugin.destroyed) return;
+        if (!document.head.querySelector("style[data-librepaper-paper]")) {
+          const style = document.createElement("style");
+          style.setAttribute("data-librepaper-paper", "");
+          style.textContent = paperStylesheet(renderer.pageCss);
+          document.head.appendChild(style);
+        }
+        view.dispatch({ effects: refreshPaper.of(null) });
+      })
+      .catch(() => {});
+    return plugin;
+  });
+}
 
 function stepInto(field, direction) {
   return (view) => {
@@ -175,15 +178,17 @@ function stepInto(field, direction) {
   };
 }
 
-/// The paper visual layer for a Markdown file.
+/// The paper visual layer for a Markdown or Org file. `format` names the file's format ("markdown" or "org").
 /// `path` returns the open file's project path (no leading slash).
 /// `imageUrl(path)` resolves a project path to a URL for an <img>, or null; it may be async.
 /// `dark` picks the dark rules.
-export function paperVisual({ path = () => "", imageUrl = null, dark = false } = {}) {
-  const field = paperField(path, imageUrl);
+export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false } = {}) {
+  const adapter = paperFormat(format);
+  if (!adapter) return [];
+  const field = paperField(path, imageUrl, adapter);
   return [
     field,
-    loader,
+    loaderFor(adapter),
     EditorView.editorAttributes.of({
       class: dark ? "cm-lp-visual cm-lp-paper-editor cm-lp-paper-dark" : "cm-lp-visual cm-lp-paper-editor",
     }),
