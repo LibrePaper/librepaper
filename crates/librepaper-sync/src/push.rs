@@ -837,8 +837,14 @@ mod tests {
         let changes = compare(dir.path(), &recorded, &found);
         let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new(), true);
         assert!(plan.rename.is_empty());
-        assert_eq!(plan.create, [json!({"path": "new.tex", "text": "alpha\nbeta\n"})]);
-        assert_eq!(plan.dependencies, [dependency("old.tex", &record(Kind::Text, b"alpha\n").sha)]);
+        assert_eq!(
+            plan.create,
+            [json!({"path": "new.tex", "text": "alpha\nbeta\n"})]
+        );
+        assert_eq!(
+            plan.dependencies,
+            [dependency("old.tex", &record(Kind::Text, b"alpha\n").sha)]
+        );
         assert_eq!(plan.delete.len(), 1);
     }
 
@@ -1295,10 +1301,7 @@ mod tests {
     async fn a_server_that_refuses_the_rename_key_gets_the_push_once_more_without_it() {
         let server = Fake::start().await;
         server.script(vec![
-            Answer::Reply(
-                400,
-                json!({"error": "the change is malformed"}),
-            ),
+            Answer::Reply(400, json!({"error": "the change is malformed"})),
             accepted("l1", 1),
         ]);
         let Some((dir, _git, store)) = on_main(server.link(), Some("main")) else {
