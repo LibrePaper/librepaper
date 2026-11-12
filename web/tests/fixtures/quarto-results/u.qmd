@@ -1,0 +1,38 @@
+---
+title: Spike
+format: html
+---
+
+Intro text, mean is `r round(mean(mtcars$mpg), 2)`.
+
+```{r}
+#| label: setup
+#| include: false
+library(stats)
+```
+
+```{r}
+#| label: tbl-head
+head(mtcars[, 1:3], 3)
+```
+
+```{r}
+x <- 1:3
+print(x)
+```
+
+```{r}
+#| label: fig-plot
+#| fig-cap: A plot
+plot(mtcars$wt, mtcars$mpg)
+```
+
+```{r}
+#| echo: false
+cat("hidden code\n\nwith blank line\n")
+```
+
+```{r}
+#| code-fold: true
+summary(1:10)
+```

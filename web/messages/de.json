@@ -2239,6 +2239,7 @@
   "quarto_include_cycle": "Include-Zyklus oder Tiefenlimit: {normalized}",
   "quarto_include_unauthorized": "Include nicht verfügbar oder nicht berechtigt: {name}",
   "quarto_include_unavailable": "Include nicht verfügbar: {name}",
+  "quarto_output_stale": "Der Code wurde geändert, nachdem diese Ausgabe erzeugt wurde.",
   "quarto_yaml_nesting": "nicht unterstützte YAML-Verschachtelung",
   "quarto_yaml_parse_failed": "YAML-Frontmatter konnte nicht verarbeitet werden",
   "quarto_yaml_unfinished": "nicht abgeschlossenes YAML-Frontmatter",

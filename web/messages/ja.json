@@ -2224,6 +2224,7 @@
   "quarto_include_cycle": "インクルードが循環しているか、深さの上限を超えています：{normalized}",
   "quarto_include_unauthorized": "インクルードを利用できないか、権限がありません：{name}",
   "quarto_include_unavailable": "インクルードを利用できません：{name}",
+  "quarto_output_stale": "この出力の作成後にコードが変更されました。",
   "quarto_yaml_nesting": "非対応のYAMLのネストです",
   "quarto_yaml_parse_failed": "YAMLフロントマターを解析できませんでした",
   "quarto_yaml_unfinished": "YAMLフロントマターが閉じられていません",
