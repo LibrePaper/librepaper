@@ -34,11 +34,9 @@
   $effect(() => { scope = ids.length ? "task" : "all"; });
   const idSet = $derived(new Set(ids));
   let feedback = $state("");
-  // Ticking changes is a mode you enter, not the state the queue sits in. A
-  // review is one change at a time; answering several at once is the rarer
-  // thing, so it waits behind the Select button and the bar of verbs takes the
-  // place of the header's toolbar while it lasts.
-  let selecting = $state(false);
+  // Every answerable row carries a checkbox, so several changes can be answered
+  // at once without a mode to enter. The bar of verbs takes the place of the
+  // header's toolbar while any box is ticked.
   // A bulk verb held for one confirmation: the action, the rows it answers for,
   // and whether those are every pending change or only the ticked ones.
   let confirming = $state(null);
@@ -160,10 +158,9 @@
       requestAnimationFrame(() => document.getElementById(`change-${id}`)?.scrollIntoView({ block: "nearest" }));
     });
   });
-  $effect(() => { if (selecting && (!canReview || !filteredRows.length)) stopSelecting(); });
+  $effect(() => { if (!canReview && checked.size) clearChecked(); });
 
-  function startSelecting() { selecting = true; confirming = null; }
-  function stopSelecting() { selecting = false; checked = new Set(); }
+  function clearChecked() { checked = new Set(); }
   function focusRow(id) { requestAnimationFrame(() => document.getElementById(`change-${id}`)?.focus({ preventScroll: true })); }
   function activate(item, { focus = false } = {}) {
     if (!item) return;
@@ -211,7 +208,7 @@
     // queue re-sorts as answers arrive, so this is a list and not a filter
     // that keeps being asked.
     const captured = [...rows].filter((item) => canAnswer(item, action)); if (!captured.length) return;
-    captured.forEach((item) => addBusy(item.id)); stopSelecting(); confirming = null;
+    captured.forEach((item) => addBusy(item.id)); clearChecked(); confirming = null;
     try {
       // A bulk reject goes through one call, because rejecting a change that
       // swallowed others can split its owner and the order matters.
@@ -256,9 +253,9 @@
   function keydown(event) {
     if (event.defaultPrevented || event.isComposing || event.target.closest("input,select,textarea,[contenteditable=true],details,[data-scope='menu']")) return;
     const item = rowFor(active); const key = event.key.toLowerCase();
-    // The bar closes first; a second Escape leaves the selection it came from.
+    // The bar closes first; a second Escape clears the ticks it came from.
     if (event.key === "Escape" && confirming) { event.preventDefault(); confirming = null; return; }
-    if (event.key === "Escape" && selecting) { event.preventDefault(); stopSelecting(); return; }
+    if (event.key === "Escape" && checked.size) { event.preventDefault(); clearChecked(); return; }
     if (event.key === "ArrowDown" || key === "j") { event.preventDefault(); move(1); }
     else if (event.key === "ArrowUp" || key === "k") { event.preventDefault(); move(-1); }
     else if (item && key === "a" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); void decide(item, "accept"); }
@@ -303,12 +300,12 @@
           <button type="button" class="bar-action confirm {confirming.action}" disabled={busy} onclick={() => bulk(confirming.action, confirming.rows)}>{confirmLabel(confirming)}</button>
         </div>
       </div>
-      {:else if selecting}<div class="select-bar" role="toolbar" aria-label={m.changes_selected_label()}>
+      {:else if checked.size}<div class="select-bar" role="toolbar" aria-label={m.changes_selected_label()}>
         <div class="bar-row">
           <span class="select-count" aria-live="polite">{m.changes_selected_count({ count: checked.size })}</span>
           <div class="bar-end">
             <button type="button" class="text-action select-all" disabled={filteredRows.filter(answerable).every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.filter(answerable).map((item) => item.id))}>{m.common_select_all()}</button>
-            <button type="button" class="text-action cancel" onclick={stopSelecting}>{m.common_cancel()}</button>
+            <button type="button" class="text-action cancel" onclick={clearChecked}>{m.changes_clear_selection()}</button>
           </div>
         </div>
         <div class="bar-buttons">
@@ -340,7 +337,7 @@
         </Menu>{:else}<span class="scope-label scope-static">{m.changes_all_changes()}</span>{/if}
         <div class="toolbar-end">
           <span class="changes-count">{m.changes_pending_count({ count: filteredRows.length })}</span>
-          {#if canReview && filteredRows.length}<button type="button" class="text-action select-start" onclick={startSelecting}>{m.changes_select()}</button>{/if}
+          {#if canReview && filteredRows.length}<button type="button" class="text-action select-start" onclick={() => checked = new Set(filteredRows.filter(answerable).map((item) => item.id))}>{m.common_select_all()}</button>{/if}
         </div>
       </div>{/if}
       <span class="changes-live sr-only" aria-live="polite">{m.changes_pending_count({ count: filteredRows.length })}</span>
@@ -359,11 +356,11 @@
       {#each filteredRows as item (item.id)}
         {@const isActive = active === item.id}
         <article class="change-row" class:lp-selected={isActive || checked.has(item.id)} aria-current={isActive ? "true" : undefined} role="listitem">
-          {#if selecting && answerable(item)}<div class="row-head"><label class="row-pick-hit"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} /></label>{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
+          {#if canReview && answerable(item)}<div class="row-head"><label class="row-pick-hit"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} /></label>{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
           {#if isLong(item)}<button type="button" class="row-more" aria-expanded={expandedText.has(item.id)} onclick={() => toggleText(item)}>{expandedText.has(item.id) ? m.changes_show_less() : m.changes_show_more()}</button>{/if}
           <!-- Every change offers its answer, so a reviewer can act on any row
-               without first selecting it. -->
-          {#if canReview && !selecting && answerable(item)}<div class="row-actions">
+               even while other rows are ticked. -->
+          {#if canReview && answerable(item)}<div class="row-actions">
             <button type="button" class="row-action reject" aria-label={rejectKind(item)} title={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? m.changes_rejecting() : m.common_reject()}</button>
             {#if !suggestOnly}<button type="button" class="row-action accept" aria-label={acceptKind(item)} title={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? m.changes_accepting() : m.changes_accept()}</button>{/if}
           </div>{/if}
@@ -398,7 +395,7 @@
   .scope-static { font-size: var(--panel-font-size); }
   .toolbar-end, .bar-end { display: inline-flex; align-items: center; gap: .75rem; flex: none; white-space: nowrap; }
   .changes-count { color: var(--panel-muted); font-size: var(--panel-meta-size); }
-  /* In a column this narrow the scope name and Select keep the room and the
+  /* In a column this narrow the scope name and Select all keep the room and the
      count gives it up; the live region still reads it out. */
   @container (max-width: 16.5rem) { .changes-count { display: none; } }
   .select-count { font-size: var(--panel-font-size); font-weight: 500; }

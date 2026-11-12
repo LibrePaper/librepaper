@@ -320,6 +320,7 @@
   "changes_accepting": "Acceptation…",
   "changes_all_changes": "Toutes les modifications",
   "changes_author_you": "{author} (vous)",
+  "changes_clear_selection": "Désélectionner",
   "changes_confirm_accept_all": [
     {
       "declarations": [
@@ -439,7 +440,6 @@
   "changes_rejecting": "Refus…",
   "changes_review_label": "Révision des modifications",
   "changes_run": "Exécution {id}",
-  "changes_select": "Sélectionner",
   "changes_select_addition": "Sélectionner l’ajout de {who}",
   "changes_select_deletion": "Sélectionner la suppression de {who}",
   "changes_select_replacement": "Sélectionner le remplacement de {who}",

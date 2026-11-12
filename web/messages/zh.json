@@ -320,6 +320,7 @@
   "changes_accepting": "正在接受…",
   "changes_all_changes": "所有修改",
   "changes_author_you": "{author}（你）",
+  "changes_clear_selection": "清除",
   "changes_confirm_accept_all": [
     {
       "declarations": [
@@ -439,7 +440,6 @@
   "changes_rejecting": "正在拒绝…",
   "changes_review_label": "修改审阅",
   "changes_run": "运行 {id}",
-  "changes_select": "选择",
   "changes_select_addition": "选择 {who} 的新增",
   "changes_select_deletion": "选择 {who} 的删除",
   "changes_select_replacement": "选择 {who} 的替换",
