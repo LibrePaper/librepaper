@@ -67,5 +67,8 @@ const renderer = await createPaperRenderer(bytes);
   assert.match(css, /\.lp-dark :scope img \{/);
   assert.doesNotMatch(css, /cm-lp-paper-dark/);
   const both = paperStylesheet(":root.lp-dark { --ink: #fff }\n.lp-dark :root { --a: 1 }");
-  assert.equal(both.match(/\.lp-dark :scope \{/g).length, 2);
+  // Both spellings of the dark root are rewritten (the stylesheet also adds
+  // its own `.lp-dark :scope` editor-colour rule).
+  assert.match(both, /\.lp-dark :scope \{ --ink: #fff \}/);
+  assert.match(both, /\.lp-dark :scope \{ --a: 1 \}/);
 }
