@@ -453,12 +453,15 @@ const OLD_OWNER_SUM: &str = r#"SELECT COALESCE(sum(bytes),0)::bigint FROM (
        WHERE d.owner_id=$1
      UNION ALL SELECT r.bytes FROM pending_log_reservations r
        JOIN documents d ON d.id=r.document_id WHERE d.owner_id=$1
+     UNION ALL SELECT x.byte_length FROM document_results x
+       JOIN documents d ON d.id=x.document_id WHERE d.owner_id=$1
    ) usage"#;
 
 const OLD_DEPLOYMENT_SUM: &str = "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
      + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
      + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
-     + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)";
+     + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0) \
+     + COALESCE((SELECT sum(byte_length)::bigint FROM document_results),0)";
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
@@ -496,7 +499,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
     }
     // Owner 0 holds 10 archive, 20 asset, 30 current base, 40 uncompacted,
     // 5 chat and 7 reserved bytes, plus a superseded base that is not charged.
-    // Owner 1 holds 100, 200, 300, 400, 0 and 70.
+    // Owner 1 holds 100, 200, 300, 400, 0 and 70. Results add 3 and 30.
     let rows = [
         (documents[0], 10_i64, 20_i64, 30_i64, 40_i64, 5_i64, 7_i64),
         (documents[1], 100, 200, 300, 400, 0, 70),
@@ -565,6 +568,19 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
     .await
     .unwrap();
 
+    // Shared results: 3 bytes for owner 0, 30 for owner 1.
+    for (document, bytes) in [(documents[0], 3_i64), (documents[1], 30)] {
+        sqlx::query(
+            "INSERT INTO document_results(document_id,body,byte_length,uploader_name)
+             VALUES($1,'x',$2,'Usage test')",
+        )
+        .bind(document)
+        .bind(bytes)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     let mut conn = pool.acquire().await.unwrap();
     let old_owner: i64 = sqlx::query_scalar(OLD_OWNER_SUM)
         .bind(owners[0])
@@ -579,7 +595,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
     let owner = UsageScope::Owner(owners[0]);
     assert_eq!(
         usage_bytes(&mut conn, owner, Sources::ALL).await.unwrap(),
-        112
+        115
     );
     assert_eq!(
         usage_bytes(&mut conn, owner, Sources::ALL).await.unwrap(),
@@ -589,7 +605,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
         usage_bytes(&mut conn, owner, Sources::DURABLE)
             .await
             .unwrap(),
-        105
+        108
     );
     assert_eq!(
         usage_bytes(&mut conn, owner, Sources::ARCHIVES | Sources::RESERVATIONS)
@@ -601,7 +617,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
         usage_bytes(&mut conn, UsageScope::Owner(owners[1]), Sources::ALL)
             .await
             .unwrap(),
-        1070
+        1100
     );
 
     let deployment = UsageScope::Deployment;
@@ -609,7 +625,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
         usage_bytes(&mut conn, deployment, Sources::ALL)
             .await
             .unwrap(),
-        1182
+        1215
     );
     assert_eq!(
         usage_bytes(&mut conn, deployment, Sources::ALL)
@@ -621,7 +637,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
         usage_bytes(&mut conn, deployment, Sources::DURABLE)
             .await
             .unwrap(),
-        1105
+        1138
     );
     assert_eq!(
         usage_bytes(&mut conn, deployment, Sources::RESERVATIONS)

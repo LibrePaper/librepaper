@@ -30,9 +30,11 @@ impl Sources {
     pub(super) const SNAPSHOTS: Self = Self(1 << 2);
     pub(super) const UNCOMPACTED_AND_CHAT: Self = Self(1 << 3);
     pub(super) const RESERVATIONS: Self = Self(1 << 4);
-    pub(super) const ALL: Self = Self(0b1_1111);
+    /// The shared Quarto results record of a project.
+    pub(super) const RESULTS: Self = Self(1 << 5);
+    pub(super) const ALL: Self = Self(0b11_1111);
     /// Everything but pending source reservations.
-    pub(super) const DURABLE: Self = Self(0b0_1111);
+    pub(super) const DURABLE: Self = Self(0b10_1111);
 
     fn contains(self, other: Self) -> bool {
         self.0 & other.0 != 0
@@ -92,6 +94,9 @@ fn deployment_sql(sources: Sources) -> Option<String> {
             "COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0)",
         );
     }
+    if sources.contains(Sources::RESULTS) {
+        terms.push("COALESCE((SELECT sum(byte_length)::bigint FROM document_results),0)");
+    }
     if sources.contains(Sources::RESERVATIONS) {
         terms.push("COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)");
     }
@@ -126,6 +131,12 @@ fn owner_sql(sources: Sources) -> Option<String> {
         parts.push(
             "SELECT d.uncompacted_update_bytes + d.chat_bytes AS bytes FROM documents d \
              WHERE d.owner_id=$1",
+        );
+    }
+    if sources.contains(Sources::RESULTS) {
+        parts.push(
+            "SELECT r.byte_length AS bytes FROM document_results r \
+             JOIN documents d ON d.id=r.document_id WHERE d.owner_id=$1",
         );
     }
     if sources.contains(Sources::RESERVATIONS) {
