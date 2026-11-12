@@ -205,7 +205,7 @@ function stepInto(field, direction) {
 /// The paper visual layer for a Markdown or Org file. `format` names the file's format ("markdown" or "org").
 /// `path` returns the open file's project path (no leading slash).
 /// `imageUrl(path)` resolves a project path to a URL for an <img>, or null; it may be async.
-/// `dark` picks the dark rules.
+/// `dark` puts `lp-dark` on the editor, which the house stylesheet answers.
 export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false } = {}) {
   const adapter = paperFormat(format);
   if (!adapter) return [];
@@ -214,7 +214,7 @@ export function paperVisual({ format = "markdown", path = () => "", imageUrl = n
     field,
     loaderFor(adapter),
     EditorView.editorAttributes.of({
-      class: dark ? "cm-lp-visual cm-lp-paper-editor cm-lp-paper-dark" : "cm-lp-visual cm-lp-paper-editor",
+      class: dark ? "cm-lp-visual cm-lp-paper-editor lp-dark" : "cm-lp-visual cm-lp-paper-editor",
     }),
     EditorView.domEventHandlers({
       mousedown(event, view) {

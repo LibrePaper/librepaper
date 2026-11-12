@@ -65,6 +65,8 @@ import { morphChildren } from "./morph.js";
   function applyPaper() {
     const root = document.documentElement;
     root.classList.toggle("librepaper-dark", paper === "dark");
+    // The house stylesheet redefines its colour variables under .lp-dark.
+    root.classList.toggle("lp-dark", paper === "dark");
     if (themeSetByFrame) root.dataset.theme = paper;
   }
   function setPaper(next) {
@@ -104,21 +106,25 @@ import { morphChildren } from "./morph.js";
         padding: 24px 20px;
       }
     }
+    /* Documents in the house style (librepaper-house: the root carries the
+       house variables) colour themselves, and go dark through .lp-dark. The
+       rules below are for documents with styles of their own, such as a
+       Quarto page rendered by the paired app. */
     /* Light paper, the default. Its ink is set here too, so a dark reader does
        not hand the body light text on the white page. */
     html.librepaper-preview:not(.librepaper-dark) { color-scheme: light; background-color: #fff; color: #000; }
-    html.librepaper-preview:not(.librepaper-dark).librepaper-flow body { color: #000; background: #fff; }
+    html.librepaper-preview:not(.librepaper-dark):not(.librepaper-house).librepaper-flow body { color: #000; background: #fff; }
     /* Dark paper. Flow images stay white, so a transparent plot drawn for white
        paper remains readable, and Typst's paged SVG output is pages of paper. */
     html.librepaper-preview.librepaper-dark { color-scheme: dark; background-color: #1c1f1e; color: #e4e7e5; }
-    html.librepaper-preview.librepaper-dark.librepaper-flow body { color: #e4e7e5; background: #1c1f1e; }
-    html.librepaper-preview.librepaper-dark.librepaper-flow img { background-color: #fff; }
+    html.librepaper-preview.librepaper-dark:not(.librepaper-house).librepaper-flow body { color: #e4e7e5; background: #1c1f1e; }
+    html.librepaper-preview.librepaper-dark:not(.librepaper-house).librepaper-flow img { background-color: #fff; }
     html.librepaper-preview.librepaper-dark svg.typst-doc { background-color: #fff; }
     /* Code is coloured by the document for white paper. Blocks stay light, like
        images, so their syntax colours keep their contrast. Inline code takes
        the paper's ink on a faint chip, whatever colours the document gave it. */
-    html.librepaper-preview.librepaper-dark.librepaper-flow :is(pre, div.sourceCode) { background-color: #f2f4f7; color: #1a1d21; }
-    html.librepaper-preview.librepaper-dark.librepaper-flow :not(pre) > code { background-color: rgb(255 255 255 / 0.1); color: inherit; }
+    html.librepaper-preview.librepaper-dark:not(.librepaper-house).librepaper-flow :is(pre, div.sourceCode) { background-color: #f2f4f7; color: #1a1d21; }
+    html.librepaper-preview.librepaper-dark:not(.librepaper-house).librepaper-flow :not(pre) > code { background-color: rgb(255 255 255 / 0.1); color: inherit; }
     /* Shared Quarto results: the saved output of a collaborator's run under
        each code cell of the draft. Output whose code changed since is faded
        and marked on its left, so it never passes for current output. */
@@ -219,6 +225,7 @@ import { morphChildren } from "./morph.js";
         return document.head.appendChild(clone);
       });
     }
+    document.documentElement.classList.toggle("librepaper-house", wanted.some((node) => node.localName === "style" && node.textContent.includes("--lp-ink")));
     const title = parsed.head.querySelector("title");
     if (title) document.title = title.textContent || "";
     // Re-append after replacing document styles, and also on the fast path

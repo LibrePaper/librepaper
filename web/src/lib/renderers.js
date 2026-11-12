@@ -31,6 +31,7 @@ import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
 import { m } from "./paraglide/messages.js";
+import { houseStyleCss, latexmlWithHouseStyle, typstWithHouseStyle } from "./house-style.js";
 
 /// This browser's identity for a render tree -- `{ main, texts, digests }`
 /// -- used only as a transient cache key: whether a local build's job
@@ -263,11 +264,15 @@ export async function render(tree, title, { manual = false, format: requestedFor
       const settings = configuration?.latex && Object.prototype.hasOwnProperty.call(configuration.latex, "settings")
         ? configuration.latex.settings
         : Object.prototype.hasOwnProperty.call(tree, "settings") ? tree.settings || {} : latex.settings();
-      return latexHtml.compile(tree, {
-        base: configuration?.latex?.base || latex.at(),
-        settings,
-        configuration: configuration?.latex,
-      });
+      const [result, css] = await Promise.all([
+        latexHtml.compile(tree, {
+          base: configuration?.latex?.base || latex.at(),
+          settings,
+          configuration: configuration?.latex,
+        }),
+        houseStyleCss(),
+      ]);
+      return result?.html ? { ...result, html: latexmlWithHouseStyle(result.html, css) } : result;
     }
     latex.ensureProject(project);
     const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok } = await latex.compile(tree, { manual });
@@ -401,7 +406,7 @@ async function renderTypst(tree, title, requestedFormat, moduleUrls, settings) {
     const html = result?.html;
     return {
       ...result,
-      html: html == null ? null : String(html),
+      html: html == null ? null : typstWithHouseStyle(String(html), await houseStyleCss()),
       pdf: null,
       diagnostics: result?.diagnostics || [],
     };
