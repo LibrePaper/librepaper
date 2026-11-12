@@ -1089,6 +1089,16 @@ impl Store {
             .map_err(|error| ModifyError::Storage(error.to_string()))
     }
 
+    /// Remove this account's own access to a document, a direct grant or a
+    /// guest pin. Returns false when there was nothing to remove.
+    pub async fn leave_document(&self, slug: &str, account_id: &str) -> Result<bool, ModifyError> {
+        let (document_id, account_id) = self.mark_target(slug, account_id).await?;
+        self.catalog
+            .leave_document(document_id, account_id)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))
+    }
+
     /// Note that this account has just opened this document.
     pub async fn mark_opened(&self, slug: &str, account_id: &str) -> Result<(), ModifyError> {
         let (document_id, account_id) = self.mark_target(slug, account_id).await?;

@@ -1828,6 +1828,52 @@ mod tests {
         catalog.close().await;
     }
 
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn leaving_removes_only_the_callers_own_grant_once() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        truncate(&catalog).await;
+
+        let owner = seed_account(&catalog, "leave-owner").await;
+        let document = seed_document(&catalog, owner.id, "leave").await;
+        let collaborator = seed_account(&catalog, "leave-collaborator").await;
+        catalog
+            .set_grant(document.id, collaborator.id, Role::Editor)
+            .await
+            .unwrap();
+
+        assert!(catalog
+            .leave_document(document.id, collaborator.id)
+            .await
+            .unwrap());
+        assert!(!catalog
+            .grants(document.id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|grant| grant.account_id == collaborator.id));
+        assert_eq!(
+            catalog
+                .access_role(document.id, Some(collaborator.id), None)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(!catalog
+            .leave_document(document.id, collaborator.id)
+            .await
+            .unwrap());
+
+        drop(_writer);
+        catalog.close().await;
+    }
+
     /// A label names a state by its vector, its frontier and its projection
     /// digest (§8.2), and a retry with the same `request_id` returns the row
     /// a previous attempt already wrote rather than a second one (§7.2).

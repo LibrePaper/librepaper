@@ -2137,6 +2137,50 @@ impl Server {
         }
     }
 
+    /// Remove the caller's own access to a project shared with them. The
+    /// share link stays live, so opening it again makes them a guest again.
+    pub(super) async fn handle_leave_project(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Reply {
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
+        };
+        let who = self.viewer(&entry, headers, arrival, None).await;
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        if !who.id.is_signed_in() {
+            return write_json(401, &json!({"error": "sign in first"}));
+        }
+        if entry.owned_by(&who.id.id) {
+            return write_json(
+                403,
+                &json!({"error": "the owner cannot leave their own project"}),
+            );
+        }
+        match self.store.leave_document(slug, &who.id.id).await {
+            Ok(left) => write_json(200, &json!({"slug": slug, "left": left})),
+            Err(error) => {
+                tracing::warn!("could not leave {slug}: {error:?}");
+                write_json(500, &json!({"error": "could not leave that project"}))
+            }
+        }
+    }
+
     /// Note that this account has just opened a document. Sent by the reader
     /// on open, and the only thing behind the Recent destination.
     pub(super) async fn handle_opened(

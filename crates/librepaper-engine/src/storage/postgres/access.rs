@@ -320,6 +320,27 @@ impl PostgresCatalog {
         Ok(changed)
     }
 
+    /// The person removes their own access to a document, whether it is a
+    /// direct grant or a guest pin to a share link. The share link itself is
+    /// untouched, so opening it again joins again.
+    pub async fn leave_document(&self, document_id: Uuid, account_id: Uuid) -> Result<bool> {
+        let mut tx = self
+            .begin_write(
+                Fence::Required,
+                &[Lock::Account(account_id), Lock::Document(document_id)],
+            )
+            .await?;
+        let changed = sqlx::query("DELETE FROM grants WHERE document_id=$1 AND account_id=$2")
+            .bind(document_id)
+            .bind(account_id)
+            .execute(&mut **tx)
+            .await?
+            .rows_affected()
+            == 1;
+        tx.commit().await?;
+        Ok(changed)
+    }
+
     /// Every grant on each of `document_ids`, in one round trip. The rows carry
     /// their own `document_id`, so the caller groups them without a query per
     /// document. Ordered so that grouping preserves the per-document order

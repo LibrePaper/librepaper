@@ -54,6 +54,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
             "/api/documents/{slug}/shared",
             post(shared_hidden).delete(shared_hidden),
         )
+        .route("/api/documents/{slug}/leave", post(leave_project))
         .route("/api/documents/{slug}/opened", post(opened))
         .route("/api/documents/{slug}/chat", any(chat_root))
         .route("/api/documents/{slug}/chat/{*tail}", any(chat))
@@ -461,6 +462,17 @@ async fn shared_hidden(
     let hidden = request.method() != Method::POST;
     server
         .handle_shared_hidden(request.headers(), &ctx.arrival, &slug, hidden)
+        .await
+}
+
+async fn leave_project(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_leave_project(request.headers(), &ctx.arrival, &slug)
         .await
 }
 
