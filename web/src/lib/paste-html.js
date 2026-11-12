@@ -90,7 +90,9 @@ function applyStyle(el, ctx) {
   let m = Boolean(ctx.m);
   if (mono) [c, m] = [true, true];
   else if (fontFamily !== undefined && m) [c, m] = [false, false];
-  if (CODE_TAGS.has(el.tag)) c = true;
+  // An explicit code tag is inline code whatever its font: browsers put monospace
+  // styles on <code> when copying, and Firefox does not, so the paste must not depend on it.
+  if (CODE_TAGS.has(el.tag)) [c, m] = [true, false];
   return { b, i, c, m, noBold: ctx.noBold };
 }
 
@@ -251,6 +253,8 @@ function flattenList(el, depth, ctx, st) {
 
 /// Nests flat entries into list blocks: an entry belongs under the last entry
 /// with a lower level, and a new list starts when the kind (bullet or number) changes.
+/// A numbered entry with its own start that is not the next number also starts a
+/// new list, so two adjacent <ol>s that restart numbering stay two lists.
 function nestEntries(entries) {
   const roots = [];
   const stack = [];
@@ -258,7 +262,8 @@ function nestEntries(entries) {
     while (stack.length && stack[stack.length - 1].level >= entry.level) stack.pop();
     const holder = stack.length ? stack[stack.length - 1].item.children : roots;
     let list = holder[holder.length - 1];
-    if (!list || list.ordered !== entry.ordered) {
+    const restarts = list && entry.ordered && entry.start !== undefined && entry.start !== (list.start ?? 1) + list.items.length;
+    if (!list || list.ordered !== entry.ordered || restarts) {
       list = { type: "list", ordered: entry.ordered, start: entry.start, items: [] };
       holder.push(list);
     }

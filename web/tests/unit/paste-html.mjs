@@ -353,6 +353,10 @@ test("a paragraph between two lists keeps them separate", () => {
   assert.equal(source("<ul><li><p>a</p></li></ul><p>between</p><ul><li><p>b</p></li></ul>", "markdown"), lines("- a", "", "between", "", "- b"));
 });
 
+test("adjacent numbered lists that restart numbering stay two lists", () => {
+  assert.equal(source("<ol><li>A</li></ol><ol start=\"10\"><li>B</li></ol>", "markdown"), "1. A\n\n10. B");
+});
+
 test("a bare link whose URL ends in a slash is still bare", () => {
   assert.equal(source('<p><a href="https://example.org/">https://example.org</a></p><p><i>x</i></p>', "markdown"), "<https://example.org/>\n\n*x*");
   assert.equal(source('<p><a href="https://example.org/">https://example.org</a></p><p><i>x</i></p>', "latex"), "\\url{https://example.org/}\n\n\\emph{x}");
@@ -376,6 +380,11 @@ test("the first font family decides: quoted monospace is code, Aptos and a later
   // Not code, so nothing is formatted and the paste falls back to plain text.
   assert.equal(source('<p>Run <span style="font-family:Aptos">ls</span> now</p>', "markdown"), null);
   assert.equal(source('<p>Run <span style="font-family: Arial, monospace">ls</span> now</p>', "markdown"), null);
+});
+
+test("an explicit code tag is inline code even when styled monospace (Chrome copies)", () => {
+  assert.equal(source('<p><code style="font-family:monospace">x_y</code></p><p><i>z</i></p>', "markdown"), "`x_y`\n\n*z*");
+  assert.equal(source("<p><code>x_y</code></p><p><i>z</i></p>", "markdown"), "`x_y`\n\n*z*");
 });
 
 test("a Google Docs code paragraph with a line break is one fenced block", () => {
