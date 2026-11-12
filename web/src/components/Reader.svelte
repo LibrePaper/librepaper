@@ -96,8 +96,7 @@
   import Grip from "./Grip.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
-  import RunDirectoryControl from "./reader/RunDirectoryControl.svelte";
-  import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
+    import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
   import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
   import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { locale } from "../lib/locale.js";
@@ -477,6 +476,8 @@
   function toggleLocalExecution() {
     localExecution = !localExecution;
     if (localExecution) runDirectory = "";
+    // Turning Run code on is the moment to pick, or confirm, the folder.
+    if (localExecution && sourceFormat === "quarto") runDirPageOpen = true;
     stopRendering();
     void paintPreview();
   }
@@ -2784,11 +2785,6 @@
   const width = $derived(arrangement.state.width);
   const unit = $derived(arrangement.state.unit);
   const compact = $derived(arrangement.compact);
-  // The phone's strip with the Run directory chip stands above the workspace,
-  // so its height comes off the workspace's, as the demo banner's does.
-  const runStripShown = $derived(compact && runCodeOffered && localExecution && sourceFormat === "quarto");
-  let runStripMeasured = $state(0);
-  const runStripHeight = $derived(runStripShown ? runStripMeasured : 0);
   const sourceOpen = $derived(arrangement.sourceOpen);
   const activeMobileView = $derived(arrangement.activeMobileView);
   const splitTight = $derived(arrangement.splitTight);
@@ -4129,9 +4125,6 @@
       </button>
       <span class="bar-toggle-label">{m.readerd_run_code()}</span>
     </label>
-    {#if localExecution && sourceFormat === "quarto"}
-      <RunDirectoryControl directory={runDir} onopen={openRunDirPage} />
-    {/if}
   {/if}
 {/snippet}
 
@@ -4148,12 +4141,6 @@
 <!-- The top of the page, above the top bar. Renders nothing unless the
      desktop app and this page disagree. -->
 <DesktopMismatch />
-
-<!-- The phone has no tools in its header, so the Run directory is asked for
-     here while Run code is on. -->
-{#if runStripShown}
-  <div class="run-directory-strip" bind:offsetHeight={runStripMeasured}><RunDirectoryControl directory={runDir} onopen={openRunDirPage} /></div>
-{/if}
 
 <Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
   {#snippet tools()}
@@ -4245,7 +4232,7 @@
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:phone-tabs={tabsShown} class:bar-hidden={barHidden && !compact}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - {demoBannerHeight + shareIntroOffset + runStripHeight}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - {demoBannerHeight + shareIntroOffset}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
@@ -4783,6 +4770,7 @@
                   {paper} onpaper={setPaper}
                   commands={commandContext}
                   userId={buildUserId}
+                  runDirectory={runDir} onchooserundirectory={openRunDirPage}
                   onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
                   account={me} />
 {/if}
@@ -4874,6 +4862,5 @@
   .color-swatch.selected { border-color:var(--color-text); box-shadow:0 0 0 1px var(--color-brand); }
   .custom-color { display:grid; place-items:center; width:1.5rem; height:1.5rem; }
   .custom-color input { width:1.5rem; height:1.5rem; padding:0; border:0; background:transparent; }
-  .run-directory-strip { padding: 0.25rem 0.75rem; border-bottom: 1px solid var(--color-border); background: var(--color-subtle); }
   .pending-recovery { flex-shrink: 0; max-height: 35%; overflow-y: auto; border-top: 1px solid var(--color-border); background: var(--color-subtle); }
 </style>

@@ -2827,6 +2827,8 @@
   "toolssettings_minutes": "{minutes} 分 {seconds} 秒",
   "toolssettings_not_checked": "未检查",
   "toolssettings_rescan": "重新扫描",
+  "toolssettings_run_directory_change": "更改",
+  "toolssettings_run_directory_none": "尚未选择文件夹。",
   "toolssettings_running": "运行中",
   "toolssettings_scan_complete": "工具扫描完成。",
   "toolssettings_scanning": "正在扫描…",

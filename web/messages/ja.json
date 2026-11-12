@@ -2827,6 +2827,8 @@
   "toolssettings_minutes": "{minutes}分{seconds}秒",
   "toolssettings_not_checked": "未確認",
   "toolssettings_rescan": "再スキャン",
+  "toolssettings_run_directory_change": "変更",
+  "toolssettings_run_directory_none": "フォルダーはまだ選択されていません。",
   "toolssettings_running": "実行中",
   "toolssettings_scan_complete": "ツールのスキャンが完了しました。",
   "toolssettings_scanning": "スキャン中…",

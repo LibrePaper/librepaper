@@ -103,3 +103,11 @@ assert.match(statusPill, /role="status" aria-label=\{accessibleLabel \|\| label\
 assert.match(statusPill, /aria-hidden="true"/);
 
 console.log("settings-quarto: Rendering page shows one section per format; where it renders and its commands sit in each");
+
+// Tools shows the Run directory of the open document, with a button that asks
+// the reader to open the Run directory dialog.
+assert.match(dialog, /<ToolsSettings \{view\} \{runDirectory\} \{onchooserundirectory\} \/>/);
+assert.match(toolsSettings, /id="tools-run-directory"/);
+assert.match(toolsSettings, /runDirectory\?\.loaded \? runDirectory\.status : null/);
+assert.match(toolsSettings, /onclick=\{\(\) => onchooserundirectory\?\.\(\)\}/);
+assert.match(toolsSettings, /Your Run directory \{path\} is missing\./);
