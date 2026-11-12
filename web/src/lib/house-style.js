@@ -53,6 +53,50 @@ export function typstWithHouseStyle(html, css) {
   return swap(html, css, (style) => !MATH_RULES.test(style));
 }
 
+// Quarto's HTML page, as the paired app renders it, carries Bootstrap and the
+// scripts that serve it: Bootstrap, Popper, Tippy, AnchorJS, clipboard.js, the
+// tabset persistence and the polyfills. MathJax (its loader and typesetMath)
+// is the page's own and stays, because the math is shown by it.
+const QUARTO_SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+const QUARTO_THEME_JS = /clipboard\.js v|@popperjs\/core|Bootstrap v\d|AnchorJS - v|Polyfill service|\btippy\b|quarto-html-after-body/;
+const QUARTO_STYLE_LINK = /<link\b[^>]*\brel\s*=\s*["']?stylesheet[^>]*>/gi;
+const QUARTO_THEME_CSS = /\.tippy-box|bootstrap-icons|--bs-|\.quarto-/;
+
+function quartoThemeScript(attrs, body) {
+  const data = /\bsrc\s*=\s*["']data:[^,]*;base64,([^"']{0,400})/i.exec(attrs);
+  if (data) {
+    try {
+      return /tabsets/.test(atob(data[1].slice(0, data[1].length - (data[1].length % 4))));
+    } catch {
+      return false;
+    }
+  }
+  return QUARTO_THEME_JS.test(attrs) || QUARTO_THEME_JS.test(body.slice(0, 600));
+}
+
+/**
+ * Quarto's page, as the paired app renders it, shown in the house style: the
+ * Bootstrap theme and the scripts that only serve it are removed, the house
+ * stylesheet takes the place of the first of them, and the root takes the
+ * class `lp-quarto` for the Quarto adapter rules. Only the preview takes this
+ * copy; the stored page and exports keep the render as it came.
+ * @param {string} html
+ * @param {string} css the house stylesheet
+ * @returns {string}
+ */
+export function quartoWithHouseStyle(html, css) {
+  if (!css) return html;
+  const stripped = html
+    .replace(QUARTO_SCRIPT, (script, attrs, body) => (quartoThemeScript(attrs, body) ? "" : script))
+    .replace(QUARTO_STYLE_LINK, (link) => (/data:text\/css|bootstrap|site_libs/i.test(link) ? "" : link));
+  const out = swap(stripped, css, (style) => QUARTO_THEME_CSS.test(style));
+  return out.replace(/<html\b([^>]*)>/i, (tag, attrs) => {
+    const cls = /\bclass\s*=\s*(["'])([\s\S]*?)\1/i.exec(attrs);
+    if (!cls) return `<html${attrs} class="lp-quarto">`;
+    return `<html${attrs.replace(cls[0], `class=${cls[1]}${cls[2]} lp-quarto${cls[1]}`)}>`;
+  });
+}
+
 /**
  * The house stylesheet as the Markdown module embeds it, or "" when this
  * deployment has no Markdown module (the page then keeps its own styles).

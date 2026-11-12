@@ -150,8 +150,9 @@ export async function exportFile({ target, format, tree, title, slug, project = 
       return { blob: new Blob([result.pdf], { type: "application/pdf" }), name: `${slug}.pdf` };
     }
     if (target === "html") {
-      if (typeof result?.html !== "string") throw failure(result, target);
-      return { blob: new Blob([await inlineBlobUrls(result.html)], { type: "text/html" }), name: `${slug}.html` };
+      const page = result?.exportHtml ?? result?.html;
+      if (typeof page !== "string") throw failure(result, target);
+      return { blob: new Blob([await inlineBlobUrls(page)], { type: "text/html" }), name: `${slug}.html` };
     }
     if (result?.artifactKind !== "docx" || !result.artifact) throw failure(result, target);
     return docxFile(result.artifact, slug);
