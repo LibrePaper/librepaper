@@ -99,7 +99,10 @@
   import RunDirectoryControl from "./reader/RunDirectoryControl.svelte";
   import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
   import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
-  import { buildPreferenceUser, readLiveCompile, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import { locale } from "../lib/locale.js";
+  import { createSharedResults } from "../lib/reader/shared-results.svelte.js";
+  import { splitResults } from "../lib/quarto-results.js";
   import Avatar from "./Avatar.svelte";
   import { presenceJumpTarget } from "../lib/presence-jump.js";
   import { extractOutline } from "../lib/outline.js";
@@ -1448,6 +1451,10 @@
     }
 
     if (lifecycle.receive(event)) return;
+    if (event.type === "results-changed") {
+      if (sourceFormat === "quarto") void refreshResults();
+      return;
+    }
     if (event.type === "source-changed") {
       // Readers and commenters never join CRDT sync (§2.1), so this frame is
       // the only way this browser learns the head moved: refetch the
@@ -2240,6 +2247,66 @@
     if (format) untrack(() => buildSettings.follow({ format, user }));
   });
   const setBuildPreferences = (next) => buildSettings.choose(next, sourceFormat);
+  const shareProps = $derived({
+    share: shareResults,
+    onshare: setShareResults,
+    shareStatus: sharedResults.state.status,
+    pdfOutput: buildPreferences.output === "pdf",
+  });
+
+  // Shared results: the output of the last local run of a Quarto document,
+  // kept by the server for collaborators who have no data of their own. Every
+  // role fetches it; only a run on this computer uploads it.
+  const sharedResults = createSharedResults(SLUG, () => authHeaders(KEY));
+  let shareResults = $state(true);
+  $effect(() => {
+    void buildUserId;
+    untrack(() => { shareResults = readShareResults(buildScope(), SLUG); });
+  });
+  function setShareResults(on) {
+    shareResults = writeShareResults(buildScope(), SLUG, on);
+  }
+  async function refreshResults() {
+    const before = sharedResults.state.record?.updatedAt;
+    const next = await sharedResults.refresh();
+    // A run on this computer draws its own output, so it never re-runs
+    // because its own upload came back.
+    if (readerDisposed || localExecution || (next?.updatedAt ?? "") === (before ?? "")) return;
+    stopRendering();
+    void paintPreview();
+  }
+  $effect(() => {
+    if (sourceFormat === "quarto") untrack(() => { void refreshResults(); });
+  });
+  // The saved output as the draft shows it, with the line that says whose
+  // run it is and when. Null while this computer draws the real output.
+  const quartoResults = $derived.by(() => {
+    const record = sharedResults.state.record;
+    if (!record || sourceFormat !== "quarto" || localExecution) return null;
+    const when = new Date(record.updatedAt);
+    const date = Number.isNaN(when.getTime()) ? "" : new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" }).format(when);
+    return {
+      cells: record.cells,
+      updatedAt: String(record.updatedAt || ""),
+      note: m.readerd_results_note({ name: record.uploaderName || "", date }),
+    };
+  });
+  // Called with the HTML of a finished run on this computer. Nothing here may
+  // throw into the preview.
+  async function shareRun({ html, source }) {
+    try {
+      const split = await splitResults(html, source.texts?.[source.main] ?? "", { path: source.main });
+      if (readerDisposed) return;
+      if (!split.ok) {
+        // A document without code cells has nothing to share and nothing to complain about.
+        sharedResults.skip(split.reason === "no-cells" ? "none" : "unmatched");
+        return;
+      }
+      await sharedResults.upload(split.record);
+    } catch {
+      sharedResults.skip("unmatched");
+    }
+  }
   const stopLatex = () => buildSettings.stopLatex();
 
   const configureLatex = (format, owner = session) => buildSettings.configureLatex(format, owner, buildUserId);
@@ -2470,6 +2537,8 @@
       localExecution,
       runDirectoryReady: sourceFormat === "quarto" ? runDirectoryReady : true,
       runDirectory,
+      shareResults: shareResults && mayEdit,
+      quartoResults,
       latexContinuous: latexContinuous(),
       projectDigest: mayEdit ? "" : projection.state.project?.project_digest || "",
     }),
@@ -2484,6 +2553,7 @@
     manualPending: () => manualCompile,
     onsynctex: (parsed) => { painted.synctex = parsed; },
     send: (message) => tell(message),
+    shareRun: (run) => shareRun(run),
     clearDebounce: () => {
       schedule.cancel();
     },
@@ -4043,7 +4113,7 @@
       <span class="bar-toggle-label">{m.readerd_run_code()}</span>
     </label>
     {#if localExecution && sourceFormat === "quarto"}
-      <RunDirectoryControl directory={runDir} onopen={openRunDirPage} />
+      <RunDirectoryControl directory={runDir} onopen={openRunDirPage} {...shareProps} />
     {/if}
   {/if}
 {/snippet}
@@ -4065,7 +4135,7 @@
 <!-- The phone has no tools in its header, so the Run directory is asked for
      here while Run code is on. -->
 {#if runStripShown}
-  <div class="run-directory-strip" bind:offsetHeight={runStripMeasured}><RunDirectoryControl directory={runDir} onopen={openRunDirPage} /></div>
+  <div class="run-directory-strip" bind:offsetHeight={runStripMeasured}><RunDirectoryControl directory={runDir} onopen={openRunDirPage} {...shareProps} /></div>
 {/if}
 
 <Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>

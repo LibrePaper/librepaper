@@ -210,3 +210,19 @@ test("a live-compile preference written for an account is read back with the sam
     assert.equal(readLiveCompile({ ...scope, user: "github:bob" }, "latex"), false);
   } finally { globalThis.localStorage = previous; }
 });
+
+test("share results is on unless turned off, per document", async () => {
+  const { readShareResults, writeShareResults } = await import("../../src/lib/build-preferences.js");
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = store();
+  try {
+    const scope = { origin: "https://a.test", user: "github:alice" };
+    assert.equal(readShareResults(scope, "paper"), true);
+    assert.equal(writeShareResults(scope, "paper", false), false);
+    assert.equal(readShareResults(scope, "paper"), false);
+    assert.equal(readShareResults(scope, "other"), true);
+    assert.equal(readShareResults({ ...scope, user: "github:bob" }, "paper"), true);
+    assert.equal(writeShareResults(scope, "paper", true), true);
+    assert.equal(readShareResults(scope, "paper"), true);
+  } finally { globalThis.localStorage = previous; }
+});

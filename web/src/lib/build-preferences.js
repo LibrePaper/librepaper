@@ -82,6 +82,22 @@ export function writeLiveCompile(scope, format, value) {
   return on;
 }
 
+// Share results: whether this person's local Quarto runs upload their output
+// for collaborators. On unless this person turns it off, per document.
+const sharingResults = (slug) => `share-results:${slug}`;
+
+export function readShareResults(scope, slug = "") {
+  try {
+    return JSON.parse(storage()?.getItem(key(scope, sharingResults(slug))) || "null") !== false;
+  } catch { return true; }
+}
+
+export function writeShareResults(scope, slug, value) {
+  const on = value !== false;
+  try { storage()?.setItem(key(scope, sharingResults(slug)), JSON.stringify(on)); } catch { /* private mode/quota */ }
+  return on;
+}
+
 export function read(scope, format = "") {
   const output = readDefaultPreview(scope, format);
   const fallback = { ...defaults(format), output };

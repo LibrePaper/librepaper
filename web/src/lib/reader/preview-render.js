@@ -24,7 +24,7 @@ import { m } from "../paraglide/messages.js";
 // arguments now, and the guards are gone with them.
 
 /** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string> }} PreviewTree */
-/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectoryReady?: boolean, runDirectory?: string, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectoryReady?: boolean, runDirectory?: string, shareResults?: boolean, quartoResults?: { cells: unknown[], note?: string, updatedAt?: string } | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
 /** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
@@ -45,6 +45,7 @@ import { m } from "../paraglide/messages.js";
  * gather: (digests: Record<string, string>) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string> }, missing: string[] }>,
  * heading: (tree: PreviewTree) => Promise<string>, takeManual?: () => boolean, manualPending?: () => boolean,
  * onsynctex?: (map: unknown | null) => void, send?: (message: { type: string, html?: string }) => void,
+ * shareRun?: (run: { html: string, source: PreviewTree }) => Promise<void>,
  * clearDebounce?: () => void, refreshFrame?: () => void, debug?: (message: string, ...details: unknown[]) => void,
  * }} options
  */
@@ -93,6 +94,9 @@ export function createPreviewRenderer({
   clearDebounce = () => {},
   /// The frame is showing something this render does not own.
   refreshFrame = () => {},
+  /// A finished render on this computer whose HTML can be shared as results.
+  /// It is fire-and-forget: the render does not wait for it.
+  shareRun = async (_run) => {},
   debug = () => {},
 }) {
   /// The renders that finished during this visit, by entry path, newest last.
@@ -151,6 +155,11 @@ export function createPreviewRenderer({
     const capturedProjectDigest = start.projectDigest || "";
     let identity = "";
     const format = renderers.previewFormatOf(source.main);
+    // The saved output of a collaborator's run, for the draft to show under
+    // its code cells. Set on every render so a stale one never lingers.
+    source.quartoResults = format === "quarto" && start.quartoResults
+      ? { cells: start.quartoResults.cells, note: start.quartoResults.note }
+      : null;
     debug("preview: tree", source.main, format, Object.keys(source.texts || {}).length);
     // The collaboration session exists before its first document state arrives.
     // Rendering that placeholder used to call the renderer registry with an
@@ -205,7 +214,7 @@ export function createPreviewRenderer({
       // the shortcut below. It is only looked at here; the compile takes it.
       const manualWaiting = manualPending();
       /** @param {string} id */
-      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution, start.runDirectory ?? ""]);
+      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution, start.runDirectory ?? "", start.quartoResults?.updatedAt ?? ""]);
       const held = finished.get(source.main);
       if (held && !manualWaiting) {
         // The identity depends on the texts, their digests and the main path,
@@ -269,7 +278,8 @@ export function createPreviewRenderer({
         source.urls = { ...(source.urls || {}), ...held.urls };
       }
       // Keep a transient source identity for diagnostics and race checks. It
-      // is never sent to the server as a rendering name or persisted result.
+      // is never sent to the server as a rendering name; shared results are a
+      // separate upload of a local run's output, which this person can turn off.
       identity = await snapshotDigest(source);
       debug("preview: rendering", format, identity);
       if (facts().disposed) return;
@@ -341,6 +351,12 @@ export function createPreviewRenderer({
         };
         show(done, { identity, capturedProjectDigest, capturedSource });
         if (rendered.ok !== false) keep(source.main, done, identity);
+        // The output of a run on this computer goes up as shared results:
+        // HTML only, and only when this person has not opted out.
+        if (rendered.ok !== false && format === "quarto" && !markdownPdf && !pdf && typeof html === "string"
+            && rendered.provenance?.backend === "local" && current.localExecution && current.shareResults) {
+          void Promise.resolve().then(() => shareRun({ html, source })).catch(() => {});
+        }
         // SyncTeX is navigation metadata, not part of the rendered page.
         // Large maps can take long enough to decompress and index that
         // awaiting them here left a finished PDF behind the placeholder.
