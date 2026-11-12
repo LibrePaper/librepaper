@@ -86,14 +86,15 @@ function applyStyle(el, ctx) {
   // `m` remembers code marked only by font, which is how word processors write
   // code blocks. A later non-monospace font ends it, as the style wins for bold:
   // Google Docs puts Courier New on a <li> for its "o" bullet and Aptos on the text.
-  let c = ctx.c;
-  let m = Boolean(ctx.m);
-  if (mono) [c, m] = [true, true];
-  else if (fontFamily !== undefined && m) [c, m] = [false, false];
-  // An explicit code tag is inline code whatever its font: browsers put monospace
-  // styles on <code> when copying, and Firefox does not, so the paste must not depend on it.
-  if (CODE_TAGS.has(el.tag)) [c, m] = [true, false];
-  return { b, i, c, m, noBold: ctx.noBold };
+  // An explicit code tag is inline code whatever its fonts, and so is everything
+  // inside it (`x`): Chrome copies monospace styles onto <code> and onto the
+  // spans of highlighted code, Firefox does not, and the paste must not depend on it.
+  const x = Boolean(ctx.x) || CODE_TAGS.has(el.tag);
+  let c = ctx.c || x;
+  let m = Boolean(ctx.m) && !x;
+  if (!x && mono) [c, m] = [true, true];
+  else if (!x && fontFamily !== undefined && m) [c, m] = [false, false];
+  return { b, i, c, m, x, noBold: ctx.noBold };
 }
 
 const plainText = (s) => ({ kind: "text", s, b: false, i: false, c: false });

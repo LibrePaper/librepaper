@@ -423,3 +423,8 @@ test("adjacent numbered lists with no start attribute each start at 1", () => {
   assert.equal(source(html, "markdown"), "1. A\n\n1. B");
   assert.equal(source(html, "latex"), "\\begin{enumerate}\n  \\item A\n\\end{enumerate}\n\n\\begin{enumerate}\n  \\item B\n\\end{enumerate}");
 });
+
+test("a monospace span inside an explicit code tag stays inline code", () => {
+  const html = '<p><code><span style="font-family:monospace">x_y</span></code></p><p><i>z</i></p>';
+  assert.equal(source(html, "markdown"), "`x_y`\n\n*z*");
+});
