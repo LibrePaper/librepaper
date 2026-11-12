@@ -21,6 +21,8 @@ const decoder = new TextDecoder();
  *   render: (markdown: string) => string,
  *   renderBlocks?: (source: string, main: string) => RenderedBlock[] | null,
  *   mathCss?: string,
+ *   setProject?: (project: any) => void,
+ *   prepare?: (project: any, preamble: string, onUpdate: () => void) => Promise<boolean>,
  *   pageCss: string,
  * }} PaperRenderer
  */

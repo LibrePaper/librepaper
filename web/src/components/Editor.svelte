@@ -1751,7 +1751,7 @@
   function visualOn(on, path) {
     if (on && untrack(() => paper) && /\.(md|markdown|qmd|org|typ)$/i.test(path)) {
       const format = /\.org$/i.test(path) ? "org" : /\.qmd$/i.test(path) ? "quarto" : /\.typ$/i.test(path) ? "typst" : "markdown";
-      return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark" });
+      return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", project: format === "typst" ? () => paperProject(path) : null });
     }
     return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) }) : [];
   }
@@ -1871,6 +1871,14 @@
       }
     }
     return { texts, files, digests };
+  }
+  // The project as the Typst paper view compiles in it: the same texts and
+  // asset digests the preview's tree is made of, and the figure resolver.
+  function paperProject(path) {
+    const tree = session.doc ? treeForDoc(session.doc) : { texts: {}, digests: {} };
+    const texts = {};
+    for (const [file, text] of Object.entries(tree.texts)) texts[file] = String(text ?? "");
+    return { main: path, texts, assets: { ...tree.digests }, assetUrl: (file) => untrack(() => imageUrl)?.(file) ?? null };
   }
   function addTextToDoc(doc, path, body = "") {
     const files = doc.getMap("files"), paths = doc.getMap("paths");
