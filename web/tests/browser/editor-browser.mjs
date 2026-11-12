@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
 import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
@@ -58,6 +58,7 @@ import { rememberProject, localProject } from ${JSON.stringify(join(root, "web/s
 import { durableProjectPersistence } from ${JSON.stringify(join(root, "web/src/lib/offline-persistence.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 import { setSize, setFont, setLineHeight, start as startEditorType } from ${JSON.stringify(join(root, "web/src/lib/editor-type.js"))};
+import { htmlToSource, parseClipboardHtml } from ${JSON.stringify(join(root, "web/src/lib/paste-html.js"))};
 
 const session = joinSession({ send: () => {}, mayEdit: true });
 const firstFile = session.addText("a.md", "alpha");
@@ -414,6 +415,8 @@ window.editorPasteCheck = async () => {
   value.leave();
   return result;
 };
+// Real clipboards from the browser's own DOMParser, in each output format.
+window.pasteCapturedCheck = (captures) => captures.map(({ name, html, text }) => ({ name, outputs: Object.fromEntries(["latex", "typst", "markdown", "org"].map((format) => [format, htmlToSource(parseClipboardHtml(html), format) ?? text])) }));
 window.editorTypeCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("type.md", "alpha");
@@ -1370,6 +1373,28 @@ try {
   assert.equal(pasteResult.chordDefault, true, "Ctrl+Shift+V must not cancel the browser's own paste");
   assert.ok(pasteResult.plain.endsWith("40\\%Z"), `Ctrl+Shift+V did not paste plain text: ${pasteResult.plain}`);
   console.log("editor-browser: pasted HTML becomes LaTeX, stays plain inside math and after Ctrl+Shift+V");
+  // Captured clipboards are checked against their goldens by the unit test too;
+  // this run adds the browser's DOMParser. No captures or goldens means no check.
+  const capturedDir = join(root, "web/tests/fixtures/paste/captured");
+  const capturedFiles = existsSync(capturedDir) ? readdirSync(capturedDir).filter((file) => file.endsWith(".html")).sort() : [];
+  const captures = capturedFiles.map((file) => {
+    const name = file.slice(0, -".html".length);
+    return { name, html: readFileSync(join(capturedDir, file), "utf8"), text: readFileSync(join(capturedDir, `${name}.txt`), "utf8") };
+  });
+  if (captures.length > 0) {
+    const converted = await evaluate(`pasteCapturedCheck(${JSON.stringify(captures)})`);
+    const goldenExtensions = { latex: "tex", typst: "typ", markdown: "md", org: "org" };
+    // Goldens end with one newline that the converter output does not have.
+    const trimOneNewline = (text) => (text.endsWith("\n") ? text.slice(0, -1) : text);
+    for (const { name, outputs } of converted) {
+      for (const [format, extension] of Object.entries(goldenExtensions)) {
+        const goldenPath = join(capturedDir, `${name}.expected.${extension}`);
+        if (!existsSync(goldenPath)) continue;
+        assert.equal(trimOneNewline(outputs[format]), trimOneNewline(readFileSync(goldenPath, "utf8")), `real DOMParser output differs from the golden for ${name} (${format})`);
+      }
+    }
+    console.log(`editor-browser: captured clipboards convert to their goldens with the browser's DOMParser (${captures.length} captures)`);
+  }
   const type = await evaluate("editorTypeCheck()");
   assert.equal(type.sized, "20px", "setSize did not resize the open editor");
   assert.ok(parseFloat(type.pinched) > 20, `a pinch started from ${type.pinched}, not from the chosen size of 20px`);
