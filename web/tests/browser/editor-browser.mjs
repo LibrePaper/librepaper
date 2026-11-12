@@ -367,6 +367,53 @@ window.editorZoomCheck = async () => {
   localStorage.removeItem("librepaper-editor-size");
   return { before, prevented, grown, storedGrown, shrunk, storedShrunk };
 };
+window.editorPasteCheck = async () => {
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const textId = value.addText("paste.tex", "Text $x$ end");
+  const host = document.createElement("section");
+  document.body.append(host);
+  const pasted = createClassComponent({
+    component: Editor, target: host,
+    props: { session: value, format: "latex", file: textId },
+  });
+  for (let attempt = 0; attempt < 100 && !host.querySelector(".cm-content"); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const content = host.querySelector(".cm-content");
+  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  const text = () => view.state.doc.toString();
+  const paste = (html, plain) => {
+    const data = new DataTransfer();
+    data.setData("text/html", html);
+    data.setData("text/plain", plain);
+    content.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+  };
+  const caret = (at) => { view.focus(); view.dispatch({ selection: { anchor: at } }); };
+  const result = {};
+  const html = '<meta charset="utf-8"><b style="font-weight:normal" id="docs-internal-guid-1"><span style="font-weight:700">Bold</span><span> costs $5 and ~40%</span></b>';
+  caret(text().length);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  paste(html, "Bold costs $5 and ~40%");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  result.converted = text();
+  caret(7);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  paste("<b>y</b>", "y");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  result.inMath = text();
+  caret(text().length);
+  // CodeMirror reads keyCode for a shifted letter, which a constructed event leaves at 0.
+  const chord = new KeyboardEvent("keydown", { key: "V", code: "KeyV", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+  Object.defineProperty(chord, "keyCode", { get: () => 86 });
+  result.chordDefault = content.dispatchEvent(chord);
+  paste("<b>Z</b>", "Z");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  result.plain = text();
+  pasted.$destroy();
+  host.remove();
+  value.leave();
+  return result;
+};
 window.editorTypeCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("type.md", "alpha");
@@ -1317,6 +1364,12 @@ try {
   const zoom = await evaluate("editorZoomCheck()");
   assert.deepEqual(zoom, { before: "14px", prevented: true, grown: "28px", storedGrown: "28", shrunk: "10px", storedShrunk: "10" }, "ctrl+wheel over the source sizes its text and remembers it");
   console.log("editor-browser: ctrl+wheel over the source sizes its text and remembers it");
+  const pasteResult = await evaluate("editorPasteCheck()");
+  assert.equal(pasteResult.converted, "Text $x$ end\\textbf{Bold} costs \\$5 and \\textasciitilde{}40\\%", "clipboard HTML was not converted to LaTeX on paste");
+  assert.ok(pasteResult.inMath.startsWith("Text $xy$"), `a paste inside math was not plain: ${pasteResult.inMath}`);
+  assert.equal(pasteResult.chordDefault, true, "Ctrl+Shift+V must not cancel the browser's own paste");
+  assert.ok(pasteResult.plain.endsWith("40\\%Z"), `Ctrl+Shift+V did not paste plain text: ${pasteResult.plain}`);
+  console.log("editor-browser: pasted HTML becomes LaTeX, stays plain inside math and after Ctrl+Shift+V");
   const type = await evaluate("editorTypeCheck()");
   assert.equal(type.sized, "20px", "setSize did not resize the open editor");
   assert.ok(parseFloat(type.pinched) > 20, `a pinch started from ${type.pinched}, not from the chosen size of 20px`);

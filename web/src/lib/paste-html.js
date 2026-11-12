@@ -36,6 +36,7 @@ export function domToTree(node) {
   if (node.nodeType !== 1) return null;
   const tag = node.nodeName.toLowerCase();
   if (["script", "style", "template", "noscript", "head", "meta", "title", "link"].includes(tag)) return null;
+  /** @type {Record<string, string>} */
   const attrs = {};
   for (const attr of Array.from(node.attributes ?? [])) attrs[attr.name.toLowerCase()] = attr.value;
   const children = [];
@@ -49,7 +50,7 @@ export function domToTree(node) {
 /// Parses clipboard HTML in a detached document. Nothing is inserted into the page.
 /** @returns {Element} */
 export function parseClipboardHtml(html, DOMParserImpl = globalThis.DOMParser) {
-  return domToTree(new DOMParserImpl().parseFromString(html, "text/html").body);
+  return /** @type {Element} */ (domToTree(new DOMParserImpl().parseFromString(html, "text/html").body));
 }
 
 /* ----------------------------------------------------- style and inline text */
@@ -121,6 +122,7 @@ function inlinesOf(node, ctx, st) {
 /// empty markup. Edge spaces of an emphasis run are moved out by `normalize`.
 /** @returns {Inline[]} */
 function collapse(inl) {
+  /** @type {Inline[]} */
   const out = [];
   const endsSpace = () => {
     const last = out[out.length - 1];
@@ -425,9 +427,9 @@ const escapeText = (s, family, lineStart) => {
 /// Emphasis around already-escaped text. Bold outside italic.
 function wrap(text, tok, family) {
   if (family === "latex") {
-    if (tok.b && tok.i) return `\\textbf{\\textit{${text}}}`;
+    if (tok.b && tok.i) return `\\textbf{\\emph{${text}}}`;
     if (tok.b) return `\\textbf{${text}}`;
-    return tok.i ? `\\textit{${text}}` : text;
+    return tok.i ? `\\emph{${text}}` : text;
   }
   if (family === "typst") {
     if (tok.b && tok.i) return `*_${text}_*`;

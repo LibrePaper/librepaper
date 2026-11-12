@@ -18,7 +18,7 @@ const lines = (...rows) => rows.join("\n");
 const GOOGLE_LATEX = lines(
   "\\section{Quarterly notes}",
   "",
-  "\\textbf{Revenue} rose to \\$150,000 in Q3, about \\textasciitilde{}40\\% of the \\textit{forecast}. Details \\href{https://example.com/report}{here}.",
+  "\\textbf{Revenue} rose to \\$150,000 in Q3, about \\textasciitilde{}40\\% of the \\emph{forecast}. Details \\href{https://example.com/report}{here}.",
   "",
   "\\textbf{Net margin} was flat.",
   "",
@@ -82,7 +82,7 @@ test("Google Docs outer <b style=font-weight:normal> does not bold the page", ()
 const BROWSER_LATEX = lines(
   "\\subsection{Install the tool}",
   "",
-  "Run \\texttt{npm install} then \\textbf{restart} your \\textit{shell}. See \\href{https://example.com/docs}{the docs}.",
+  "Run \\texttt{npm install} then \\textbf{restart} your \\emph{shell}. See \\href{https://example.com/docs}{the docs}.",
   "",
   "\\begin{itemize}",
   "  \\item Linux",
@@ -179,7 +179,7 @@ test("LibreOffice fixture: real nesting, bold and italic, font tags dropped", ()
   const tokens = parseHtmlTree(fixture("libreoffice.html"));
   const latex = htmlToSource(tokens, "latex");
   assert.ok(latex.includes("\\subsection{Status}"), latex);
-  assert.ok(latex.includes("\\textbf{Bold} and \\textit{italic} with a font tag."), latex);
+  assert.ok(latex.includes("\\textbf{Bold} and \\emph{italic} with a font tag."), latex);
   assert.ok(latex.includes("\\begin{itemize}\n  \\item Alpha\n  \\begin{itemize}\n    \\item Beta\n  \\end{itemize}\n  \\item Gamma\n\\end{itemize}"), latex);
   assert.ok(latex.includes("\\begin{enumerate}\n  \\item One\n  \\item Two\n\\end{enumerate}"), latex);
   assert.ok(latex.includes("Ends with 50\\% \\& more. Costs \\$5, snake\\_case, \\textasciitilde{}2 and x\\textasciicircum{}2."), latex);
@@ -260,12 +260,12 @@ test("pasteText runs the converter with an injected parser", () => {
 
 test("an empty bold run produces no markup", () => {
   const html = "<p>a<b> </b>b</p><p><i>x</i></p>";
-  assert.equal(source(html, "latex"), "a b\n\n\\textit{x}");
+  assert.equal(source(html, "latex"), "a b\n\n\\emph{x}");
 });
 
 test("adjacent bold spans merge into one run", () => {
   const html = "<p><b>Mar</b><b>gin</b> is up</p><p><i>x</i></p>";
-  assert.equal(source(html, "latex"), "\\textbf{Margin} is up\n\n\\textit{x}");
+  assert.equal(source(html, "latex"), "\\textbf{Margin} is up\n\n\\emph{x}");
 });
 
 test("bold content moves its edge spaces outside the markup", () => {
@@ -274,7 +274,7 @@ test("bold content moves its edge spaces outside the markup", () => {
 
 test("nested lists in every format", () => {
   const html = "<ul><li>A<ul><li>B</li></ul></li></ul><p><i>x</i></p>";
-  assert.equal(source(html, "latex"), "\\begin{itemize}\n  \\item A\n  \\begin{itemize}\n    \\item B\n  \\end{itemize}\n\\end{itemize}\n\n\\textit{x}");
+  assert.equal(source(html, "latex"), "\\begin{itemize}\n  \\item A\n  \\begin{itemize}\n    \\item B\n  \\end{itemize}\n\\end{itemize}\n\n\\emph{x}");
   assert.equal(source(html, "typst"), "- A\n  - B\n\n_x_");
   assert.equal(source(html, "markdown"), "- A\n  - B\n\n*x*");
   assert.equal(source(html, "org"), "- A\n  - B\n\n/x/");
@@ -306,7 +306,7 @@ test("blockquote in Markdown prefixes every line", () => {
 });
 
 test("links: bare URL, text link and a fragment link", () => {
-  assert.equal(source('<p><a href="https://a.test">https://a.test</a></p><p><i>x</i></p>', "latex"), "\\url{https://a.test}\n\n\\textit{x}");
+  assert.equal(source('<p><a href="https://a.test">https://a.test</a></p><p><i>x</i></p>', "latex"), "\\url{https://a.test}\n\n\\emph{x}");
   assert.equal(source('<p><a href="#top">top</a> <a href="javascript:x()">go</a></p><p><i>x</i></p>', "markdown"), "top go\n\n*x*");
 });
 
