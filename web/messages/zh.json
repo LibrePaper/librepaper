@@ -585,6 +585,7 @@
   "commands_org_todo_next": "下一个 TODO 状态",
   "commands_org_todo_previous": "上一个 TODO 状态",
   "commands_org_toggle_checkbox": "切换复选框",
+  "commands_paste_plain": "粘贴为纯文本",
   "commands_rename_symbol": "重命名标签",
   "commands_shortcuts": "显示快捷键",
   "commands_tab_focus": "切换 Tab 键移动焦点",

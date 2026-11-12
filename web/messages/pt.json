@@ -585,6 +585,7 @@
   "commands_org_todo_next": "Próximo estado TODO",
   "commands_org_todo_previous": "Estado TODO anterior",
   "commands_org_toggle_checkbox": "Marcar ou desmarcar a caixa",
+  "commands_paste_plain": "Colar como texto simples",
   "commands_rename_symbol": "Renomear rótulo",
   "commands_shortcuts": "Mostrar atalhos de teclado",
   "commands_tab_focus": "Alternar se a tecla Tab move o foco",

@@ -585,6 +585,7 @@
   "commands_org_todo_next": "Next TODO state",
   "commands_org_todo_previous": "Previous TODO state",
   "commands_org_toggle_checkbox": "Toggle checkbox",
+  "commands_paste_plain": "Paste as plain text",
   "commands_rename_symbol": "Rename label",
   "commands_shortcuts": "Show keyboard shortcuts",
   "commands_tab_focus": "Toggle Tab key moves focus",

@@ -585,6 +585,7 @@
   "commands_org_todo_next": "État TODO suivant",
   "commands_org_todo_previous": "État TODO précédent",
   "commands_org_toggle_checkbox": "Cocher ou décocher la case",
+  "commands_paste_plain": "Coller en texte brut",
   "commands_rename_symbol": "Renommer l’étiquette",
   "commands_shortcuts": "Afficher les raccourcis clavier",
   "commands_tab_focus": "Basculer le déplacement du focus avec la touche Tab",

@@ -232,6 +232,8 @@
   import { emphasisCommand } from "../lib/emphasis.js";
   import { canHeading, canLink, canList, headingEdit, linkEdit, listEdit } from "../lib/editing-shortcuts.js";
   import { ORG_COMMANDS } from "../lib/org-editing.js";
+  import { pasteText } from "../lib/paste-html.js";
+  import { pastesPlainAt } from "../lib/paste-context.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
@@ -1123,6 +1125,11 @@
   // while it does not: the probe runs when the editor starts and again when a
   // source menu opens, and a read that is refused turns it off.
   let pasteReadable = $state(true);
+  // Set by Mod+Shift+V just before the browser's paste event, so that paste
+  // inserts the text/plain it carries and not the converted HTML. Cleared by
+  // that paste, or by the timer if no paste comes.
+  let plainNext = false;
+  let plainTimer = null;
   // Read once: whether the pointer is a finger. Decides whether the source has
   // a right-click menu at all, and cannot change without remounting the editor.
   const coarsePointer = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
@@ -1169,7 +1176,7 @@
       undo: editable && (manager?.canUndo?.() ?? false),
       redo: editable && (manager?.canRedo?.() ?? false),
       cut: editable && selected, copy: selected,
-      paste: editable && pasteReadable, "select-all": true, find: true, replace: editable,
+      paste: editable && pasteReadable, "paste-plain": editable && pasteReadable, "select-all": true, find: true, replace: editable,
       "go-to-definition": true, "find-references": true, "rename-symbol": editable,
       bold: editable, italic: editable,
       link: editable && canLink(format),
@@ -1207,6 +1214,35 @@
     return true;
   }
 
+  // Inserts clipboard content the way every paste does: as source for the
+  // file's format (lib/paste-html.js), or as plain text where the caret is in
+  // math or code, or where the person asked for plain text. Dispatched like the
+  // plain paste was, so tracked changes and Loro cursors see it as one.
+  function insertPaste(target, { html, text, plain }) {
+    const format = formatHere();
+    const { from } = target.state.selection.main;
+    const asPlain = plain || pastesPlainAt(target.state.doc.toString(), from, format);
+    const insert = pasteText({ html, text, format, plain: asPlain });
+    target.dispatch({ ...target.state.replaceSelection(insert), annotations: Transaction.userEvent.of("input.paste"), scrollIntoView: true });
+  }
+
+  // The Edit menu's paste reads the clipboard itself, so it can reach the HTML
+  // the browser holds. Where read() is missing or refused, readText() gives the
+  // plain text as before, and a refusal of that is left to the caller.
+  async function readClipboard() {
+    let items;
+    try {
+      items = await navigator.clipboard.read();
+    } catch {
+      return { html: "", text: await navigator.clipboard.readText() };
+    }
+    const item = items.find((entry) => entry.types.includes("text/html"));
+    if (!item) return { html: "", text: await navigator.clipboard.readText() };
+    const html = await (await item.getType("text/html")).text();
+    const text = item.types.includes("text/plain") ? await (await item.getType("text/plain")).text() : "";
+    return { html, text };
+  }
+
   export async function editCommand(command) {
     if (!editAvailability()[command]) return;
     const target = view;
@@ -1234,17 +1270,18 @@
         if (view !== target || target.state !== state || !editable) throw new Error(m.editor_cut_changed());
         target.dispatch({ changes: { from, to }, selection: { anchor: from }, annotations: Transaction.userEvent.of("delete.cut") });
       }
-    } else if (command === "paste") {
-      let text;
+    } else if (command === "paste" || command === "paste-plain") {
+      let clip;
       try {
-        text = await navigator.clipboard.readText();
+        // Paste as plain text reads only text/plain, so no HTML is converted.
+        clip = command === "paste" ? await readClipboard() : { html: "", text: await navigator.clipboard.readText() };
       } catch (error) {
         // A refused read: Paste is greyed from now on, and the error still goes to the caller.
         pasteReadable = false;
         throw error;
       }
       if (view !== target || target.state !== state || !editable) throw new Error(m.editor_paste_changed());
-      target.dispatch({ ...state.replaceSelection(text), annotations: Transaction.userEvent.of("input.paste"), scrollIntoView: true });
+      insertPaste(target, { ...clip, plain: command === "paste-plain" });
     }
   }
 
@@ -1548,6 +1585,9 @@
           { key: "Mod-Alt-6", preventDefault: true, run: () => runStructure("heading-6") },
           { key: "Mod-Shift-7", preventDefault: true, run: () => runStructure("numbered-list") },
           { key: "Mod-Shift-8", preventDefault: true, run: () => runStructure("bulleted-list") },
+          // Paste as plain text. Not preventDefault and returns false: the browser
+          // still sends its paste event, and the paste handler below sees plainNext.
+          { key: "Mod-Shift-v", run: () => { plainNext = true; clearTimeout(plainTimer); plainTimer = setTimeout(() => { plainNext = false; }, 500); return false; } },
           { key: "Mod-Alt-m", preventDefault: true, run: () => (void editCommand("comment"), true) },
           // The source menu from the keyboard: the menu key and Shift+F10.
           { key: "ContextMenu", preventDefault: true, run: openSourceMenuAtCaret },
@@ -1566,6 +1606,24 @@
           // Ctrl-Shift-M opens the list of what the compiler said.
           ...lintKeymap,
         ]),
+        // Native paste (Mod+V, middle click, the browser's menu). Rich text on the
+        // clipboard is converted for the file's format; anything else is left to
+        // CodeMirror, which keeps its multi-cursor and line-wise paste.
+        EditorView.domEventHandlers({
+          paste(event, view) {
+            if (!editable || view.state.readOnly) return false;
+            const html = event.clipboardData?.getData("text/html") ?? "";
+            if (!html) return false;
+            if (plainNext) {
+              plainNext = false;
+              clearTimeout(plainTimer);
+              return false;
+            }
+            event.preventDefault();
+            insertPaste(view, { html, text: event.clipboardData.getData("text/plain"), plain: false });
+            return true;
+          },
+        }),
         // Undo and redo are ours, not the binding's. The binding binds Mod-z
         // at Prec.high from inside LoroExtensions, so ours has to outrank it
         // to be the one that runs; `undoManagerField` hands it the same

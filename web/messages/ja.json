@@ -585,6 +585,7 @@
   "commands_org_todo_next": "次のTODO状態",
   "commands_org_todo_previous": "前のTODO状態",
   "commands_org_toggle_checkbox": "チェックボックスを切り替える",
+  "commands_paste_plain": "プレーンテキストとして貼り付け",
   "commands_rename_symbol": "ラベルの名前を変更",
   "commands_shortcuts": "キーボードショートカットを表示",
   "commands_tab_focus": "Tabキーでフォーカスを移動する設定を切り替え",

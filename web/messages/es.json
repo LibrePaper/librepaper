@@ -585,6 +585,7 @@
   "commands_org_todo_next": "Siguiente estado TODO",
   "commands_org_todo_previous": "Estado TODO anterior",
   "commands_org_toggle_checkbox": "Marcar o desmarcar la casilla",
+  "commands_paste_plain": "Pegar como texto sin formato",
   "commands_rename_symbol": "Renombrar etiqueta",
   "commands_shortcuts": "Mostrar atajos de teclado",
   "commands_tab_focus": "Alternar que la tecla Tab mueva el foco",
