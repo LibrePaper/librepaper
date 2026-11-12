@@ -64,7 +64,7 @@ const component = createClassComponent({ component: Files, target: document.body
 session.onFiles(() => component.$set({ files: session.list(), folders: session.folders() }));
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 80)); await tick(); };
 const button = (label) => document.querySelector('[aria-label="' + label + '"]');
-const row = (path) => document.querySelector('.explorer-row[title="' + path + '"]');
+const row = (path) => document.querySelector('.explorer-row[data-tip="' + path + '"]');
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const key = (target, key) => target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
 const name = async (label, value) => { const input = button(label); check(input, 'missing input ' + label + ' inputs: ' + [...document.querySelectorAll('input')].map(x=>x.outerHTML).join(' ') + ' menus: ' + [...document.querySelectorAll('[role=menu][data-state=open]')].map(x=>x.outerHTML).join(' ')); input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })); key(input, 'Enter'); await flush(); };
@@ -137,7 +137,7 @@ window.filesCheck = async () => {
   check(lockOne, 'a file that renders alone offers its eye as a button');
   lockOne.click(); await flush();
   check(window.locked === 'chapters/one.tex', 'the eye locks the preview on its file');
-  check(document.querySelector('.explorer-open')?.getAttribute('title') !== 'chapters/one.tex', 'the eye does not open the file');
+  check(document.querySelector('.explorer-open')?.getAttribute('data-tip') !== 'chapters/one.tex', 'the eye does not open the file');
   const unlockOne = row('chapters/one.tex').querySelector('button[aria-label="Unlock the preview"]');
   check(unlockOne, 'the locked row shows the solid eye as a button that unlocks');
   check(!row('chapters/one.tex').querySelector('[aria-label="Lock preview on one.tex"]'), 'a locked row does not also offer the lock');

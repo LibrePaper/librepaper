@@ -287,7 +287,8 @@ class RefWidget extends WidgetType {
   toDOM(view) {
     const element = document.createElement("span");
     element.className = "cm-lp-ref";
-    element.title = this.raw;
+    element.setAttribute("data-tip", this.raw);
+    element.setAttribute("data-tip-wait", "long");
     element.textContent = this.text;
     revealOnMousedown(view, element);
     return element;
@@ -410,7 +411,8 @@ function linkPart(view, block, element, part) {
   if (part.from === null) return;
   element.dataset.part = part.kind;
   element.dataset.index = String(part.index);
-  element.title = m.index_edit_in_source();
+  element.setAttribute("data-tip", m.index_edit_in_source());
+  element.setAttribute("data-tip-wait", "long");
   element.addEventListener("mousedown", (event) => {
     // The offset from build time may be stale, so the part is found again in the current text.
     const current = titleParts(view.state.doc.toString(), view.posAtDOM(block)).find(
@@ -536,7 +538,10 @@ export class ElementWidget extends WidgetType {
   toDOM(view) {
     const element = document.createElement(this.tag);
     element.className = this.className;
-    if (this.title) element.title = this.title;
+    if (this.title) {
+      element.setAttribute("data-tip", this.title);
+      element.setAttribute("data-tip-wait", "long");
+    }
     appendParts(element, this.content);
 
     if (this.openUrl) {

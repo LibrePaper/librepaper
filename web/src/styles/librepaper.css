@@ -1489,6 +1489,68 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   border-radius: var(--radius-base);
 }
 
+/* The one tooltip (lib/tip.js). It is a popover so it sits in the top layer
+   above any open dialog, and the browser's popover defaults (centred, inset,
+   clipped) are reset here because the script places it by hand. The border,
+   background and colour come from the card and lp-control-neutral classes it
+   carries. It never takes the pointer, so the hover rule of lp-control-neutral
+   cannot fire and the tip cannot get between a person and what is beneath it. */
+.lp-tip {
+  position: fixed;
+  inset: auto;
+  top: 0;
+  left: 0;
+  margin: 0;
+  overflow: visible;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: calc(100vw - 16px);
+}
+.lp-tip[hidden] { display: none; }
+/* A long path is cut with an ellipsis rather than leaving the screen. */
+.lp-tip .tip-text {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+.lp-tip .tip-key {
+  margin-left: calc(var(--spacing) * 2);
+  padding: 0 calc(var(--spacing) * 1);
+  border: 1px solid var(--color-border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-base);
+  background: var(--color-raised);
+  color: inherit;
+  font-family: inherit;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.lp-tip .tip-key[hidden] { display: none; }
+
+/* The cards the editor shows over a citation, a label, a formula or a flagged
+   word sit in CodeMirror's own tooltip frame, which is a grey bordered box in
+   the editor's typeface. The frame takes the look of the tooltip above
+   instead, so every small overlay is the same card. The text cards take its
+   type size too; a formula keeps the size it was typeset at. */
+.cm-editor .cm-tooltip.cm-tooltip-hover,
+.cm-editor .cm-tooltip:has(> .cm-harper-card) {
+  border: 0;
+  border-radius: var(--radius-container);
+  background: var(--color-subtle);
+  color: var(--color-text);
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  font-family: var(--typo-base--font-family);
+}
+.cm-editor .cm-tooltip-hover .cm-tooltip-section:not(:first-child) { border-top-color: var(--color-border); }
+.cm-editor :is(.cm-citation-card, .cm-harper-card, .cm-index-hover) { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+.cm-editor .cm-index-hover { padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2); }
+/* The formula's own frame would be a box inside the card. */
+.cm-editor .cm-lv-math-tooltip { border: 0; background: none; }
+
 /* Shared control and status classes used by application components. */
 .lp-control-brand { background: var(--color-brand); color: var(--color-on-brand); border-color: var(--color-brand); }
 .lp-control-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-brand-hover); }

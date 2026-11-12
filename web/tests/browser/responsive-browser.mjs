@@ -280,7 +280,7 @@ try {
     return b.evaluate(`(() => { const bar = document.querySelector(".collab-tabs");
       const tabs = [...bar.querySelectorAll('[role="tab"]')];
       return { overflow: bar.scrollWidth - bar.clientWidth, rows: new Set(tabs.map(t => t.offsetTop)).size,
-        tabs: tabs.map(t => ({ label: t.textContent.trim(), title: t.title, clipped: t.scrollWidth > t.clientWidth })) }; })()`);
+        tabs: tabs.map(t => ({ label: t.textContent.trim(), title: t.getAttribute("data-tip"), clipped: t.scrollWidth > t.clientWidth })) }; })()`);
   };
   const narrowTabs = await tabRow(240);
   assert.ok(narrowTabs.overflow <= 1, 'the tab row fits the narrowest sidebar: ' + JSON.stringify(narrowTabs));
@@ -674,13 +674,13 @@ try {
   await nav('Files');
   assert.equal(await visible('.filelist'),true);
   assert.equal(await visible('.editorpane'),false);
-  await click('.explorer-row[title="chapter-1.html"]');
+  await click('.explorer-row[data-tip="chapter-1.html"]');
   assert.equal(await visible('.viewport'),true, 'choosing a file on a phone shows its preview');
   assert.equal(await visible('.editorpane'),false, 'choosing a file on a phone does not open its source');
   assert.equal(await b.evaluate('document.querySelector(".viewport iframe") === window.savedFrame'), true);
   // The frame stays mounted, and the preview has followed the source to the
   // file just opened.
-  await until('the preview follows the opened file', () => b.evaluate(`document.querySelector('.explorer-row[title="chapter-1.html"][data-previewed]') !== null`), 5000);
+  await until('the preview follows the opened file', () => b.evaluate(`document.querySelector('.explorer-row[data-tip="chapter-1.html"][data-previewed]') !== null`), 5000);
 
   // In the desktop app the panel opens on the built-in agent, so the tasks are
   // reached through their tab. The tab is chosen after each open, since a

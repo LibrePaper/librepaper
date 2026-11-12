@@ -2098,7 +2098,7 @@
     {#each SOURCE_MENU as group, index}
       {#if index}<hr class="hr my-1" />{/if}
       {#each group as command (command)}
-        <Menu.Item value={command} class="menuitem" disabled={!sourceMenuAvailable[command]} title={command === "paste" && !pasteReadable ? m.editor_paste_blocked() : undefined}>
+        <Menu.Item value={command} class="menuitem" disabled={!sourceMenuAvailable[command]} data-tip={command === "paste" && !pasteReadable ? m.editor_paste_blocked() : undefined} data-tip-place="right">
           <span class="menuitem-label">{labelOf(command)}</span>{#if sourceMenuKeys[command]}<span class="menuitem-keys">{sourceMenuKeys[command]}</span>{/if}
         </Menu.Item>
       {/each}

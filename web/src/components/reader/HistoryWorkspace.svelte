@@ -122,7 +122,7 @@
     <div class="history-source-bar history-endpoints">
       <button type="button" class="history-endpoint" bind:this={olderButton}
               aria-pressed={source.mode === "select-older"}
-              title={m.historyworkspace_change_older()}
+              data-tip={m.historyworkspace_change_older()}
               aria-label={m.historyworkspace_change_older_aria({ version: olderLabel })}
               onclick={() => source.beginSelect("older")}>
         <span class="history-endpoint-side panel-muted">{m.historyworkspace_older()}</span>
@@ -132,7 +132,7 @@
       <span class="history-arrow panel-muted"><Icon name="arrow-right" size={16} /></span>
       <button type="button" class="history-endpoint" bind:this={newerButton}
               aria-pressed={source.mode === "select-newer"}
-              title={m.historyworkspace_change_newer()}
+              data-tip={m.historyworkspace_change_newer()}
               aria-label={m.historyworkspace_change_newer_aria({ version: newerLabel })}
               onclick={() => source.beginSelect("newer")}>
         <span class="history-endpoint-side panel-muted">{m.historyworkspace_newer()}</span>
@@ -214,21 +214,21 @@
       <div class="history-footer">
         {#if stored(source.older)}
           <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={downloading === source.older}
-                  title={m.historyworkspace_download_title({ version: olderLabel })}
+                  data-tip={m.historyworkspace_download_title({ version: olderLabel })}
                   onclick={() => ondownload?.(source.older)}>
             {downloading === source.older ? m.historyworkspace_downloading() : m.historyworkspace_download_older()}
           </button>
         {/if}
         {#if stored(source.newer)}
           <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={downloading === source.newer}
-                  title={m.historyworkspace_download_title({ version: newerLabel })}
+                  data-tip={m.historyworkspace_download_title({ version: newerLabel })}
                   onclick={() => ondownload?.(source.newer)}>
             {downloading === source.newer ? m.historyworkspace_downloading() : m.historyworkspace_download_newer()}
           </button>
         {/if}
         {#if stored(source.target)}
           <button type="button" class="btn btn-sm lp-control-tonal-brand history-restore"
-                  title={m.historyworkspace_restore_title({ version: targetLabel })}
+                  data-tip={m.historyworkspace_restore_title({ version: targetLabel })}
                   onclick={() => onrestore?.(source.target)}>{m.history_restore_this_version()}</button>
         {/if}
       </div>

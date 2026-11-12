@@ -23,7 +23,7 @@
   const seed = $derived(key || name);
 </script>
 
-<span class="avatar" style:background={colour || hue(seed)} style:--avatar-size={`calc(var(--spacing) * ${size})`} title={title || name} aria-label={title || name} role="img">
+<span class="avatar" style:background={colour || hue(seed)} style:--avatar-size={`calc(var(--spacing) * ${size})`} data-tip={title || name} aria-label={title || name} role="img">
   {#if icon}<Icon name={icon} />{:else}{initials(name)}{/if}
 </span>
 

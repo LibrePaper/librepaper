@@ -99,7 +99,8 @@ export class ImageWidget extends WidgetType {
     image.decoding = 'async';
     image.loading = 'lazy';
     image.alt = this.alt;
-    image.title = this.src;
+    image.setAttribute('data-tip', this.src);
+    image.setAttribute('data-tip-wait', 'long');
     if (this.style) image.setAttribute('style', this.style);
     container.appendChild(image);
 
@@ -110,7 +111,8 @@ export class ImageWidget extends WidgetType {
       container.classList.add('cm-lv-image-missing');
       const note = document.createElement('span');
       note.className = 'cm-lv-image-note';
-      note.title = this.src;
+      note.setAttribute('data-tip', this.src);
+      note.setAttribute('data-tip-wait', 'long');
       note.append(iconElement('image-off'));
       note.append(m.widgets_image_missing({ name: this.alt || this.src }));
       container.replaceChildren(note);
@@ -226,7 +228,8 @@ export class FigureWidget extends WidgetType {
     image.decoding = 'async';
     image.loading = 'lazy';
     image.alt = alt;
-    image.title = src;
+    image.setAttribute('data-tip', src);
+    image.setAttribute('data-tip-wait', 'long');
     image.addEventListener('load', () => view.requestMeasure());
     image.addEventListener('error', () => view.requestMeasure());
     if (style) image.setAttribute('style', style);
@@ -282,7 +285,8 @@ function figureCaption(
 
   if (!editable) {
     caption.classList.add('cm-lv-caption-source');
-    caption.title = m.widgets_click_edit_caption_source();
+    caption.setAttribute('data-tip', m.widgets_click_edit_caption_source());
+    caption.setAttribute('data-tip-wait', 'long');
     caption.addEventListener('mousedown', event => {
       event.preventDefault();
       event.stopPropagation();
@@ -411,7 +415,8 @@ export class PillWidget extends WidgetType {
     gap.className = 'cm-lp-pill-gap';
     const box = document.createElement('div');
     box.className = this.kind ? `cm-lp-pill ${this.kind}` : 'cm-lp-pill';
-    box.title = this.title;
+    box.setAttribute('data-tip', this.title);
+    box.setAttribute('data-tip-wait', 'long');
     box.textContent = this.text;
     gap.append(box);
     revealOnMousedown(view, gap);
@@ -447,7 +452,7 @@ export class DisclosureWidget extends WidgetType {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = this.kind ? `cm-lp-disclosure ${this.kind}` : 'cm-lp-disclosure';
-    button.title = this.title;
+    button.setAttribute('data-tip', this.title);
     button.setAttribute('aria-label', this.title);
     button.setAttribute('aria-expanded', 'false');
     button.append(iconElement('chevron-right'));

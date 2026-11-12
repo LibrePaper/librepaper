@@ -556,7 +556,7 @@ async function run() {
   // visited -- an editor's default panel is Files -- so open it before the
   // comment is queued, or the queued draft is never in the DOM to find.
   await editor.eval(`
-    const tab = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.title, b.textContent.trim()].includes("Collaboration"));
+    const tab = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.getAttribute("data-tip"), b.textContent.trim()].includes("Collaboration"));
     if (!tab) throw new Error("no Collaboration tab");
     tab.click();
     return true;
@@ -928,9 +928,9 @@ async function run() {
 
   // Import it from the document's first file, document.typ. Choosing a name
   // in the list is what opens it, exactly as a person would.
-  await requiredUntil("the document.typ row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[title="document.typ"]'))`));
+  await requiredUntil("the document.typ row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[data-tip="document.typ"]'))`));
   await author.eval(`
-    document.querySelector('.explorer-row[title="document.typ"]').click();
+    document.querySelector('.explorer-row[data-tip="document.typ"]').click();
     return true;
   `);
   await wait(300);
@@ -945,9 +945,9 @@ async function run() {
 
   // An error in the imported file is an error in *that* file, and choosing it
   // opens the file it is in rather than pointing at a line of document.typ.
-  await requiredUntil("the imported file row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[title="lib.typ"]'))`));
+  await requiredUntil("the imported file row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[data-tip="lib.typ"]'))`));
   await author.eval(`
-    document.querySelector('.explorer-row[title="lib.typ"]').click();
+    document.querySelector('.explorer-row[data-tip="lib.typ"]').click();
     return true;
   `);
   await wait(300);
@@ -974,14 +974,14 @@ async function run() {
   );
   await author.eval(`document.querySelector('button[aria-label="Files"]')?.click(); return true;`);
   await requiredUntil("the Files panel after diagnostics", () =>
-    author.eval(`return Boolean(document.querySelector('.explorer-row[title="lib.typ"]'))`),
+    author.eval(`return Boolean(document.querySelector('.explorer-row[data-tip="lib.typ"]'))`),
   );
 
   // Renaming keeps the words: the name moves and the text stays where it is.
   // A double-click on the row starts the rename, the way a person does it --
   // there is no per-row button any more, only a context menu and this.
   await author.eval(`
-    const row = document.querySelector('.explorer-row[title="lib.typ"]');
+    const row = document.querySelector('.explorer-row[data-tip="lib.typ"]');
     if (!row) throw new Error("no lib.typ row to rename");
     row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     return true;

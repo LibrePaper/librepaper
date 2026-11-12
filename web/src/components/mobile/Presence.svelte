@@ -14,7 +14,7 @@
     <ul class="chips">
       {#each participants as participant (participant.key)}
         <li class="chip">
-          <button type="button" class="jump" title={participant.name} aria-label={m.common_go_to_cursor({ name: participant.name })} onclick={() => onjump(participant)}>
+          <button type="button" class="jump" data-tip={participant.name} aria-label={m.common_go_to_cursor({ name: participant.name })} onclick={() => onjump(participant)}>
             <Avatar name={participant.name} key={participant.key} colour={participant.colour} size={6} />
           </button>
           <span class="name">{participant.name}</span>

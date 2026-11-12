@@ -156,18 +156,18 @@
           <div class="bulk flex gap-1" role="group" aria-label={partial ? m.comments_group_loaded() : m.comments_group_all()}>
             {#if resolvable.length}
               <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                title={partial ? m.comments_resolve_loaded_title() : m.comments_resolve_all_title()}
+                data-tip={partial ? m.comments_resolve_loaded_title() : m.comments_resolve_all_title()}
                 onclick={resolveAll}>{partial ? m.comments_resolve_loaded() : m.comments_resolve_all()}</button>
             {/if}
             {#if clearable.length}
               <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                title={partial ? m.comments_clear_loaded_title() : m.comments_clear_all_title()}
+                data-tip={partial ? m.comments_clear_loaded_title() : m.comments_clear_all_title()}
                 disabled={!ondeletemany}
                 onclick={() => ondeletemany?.(clearable)}>{m.comments_clear()}</button>
             {/if}
             {#if canModerate && deletable.length}
               <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                title={partial ? m.comments_delete_loaded_title() : m.comments_delete_all_title()}
+                data-tip={partial ? m.comments_delete_loaded_title() : m.comments_delete_all_title()}
                 disabled={!ondeletemany}
                 onclick={() => ondeletemany?.(deletable)}>{partial ? m.comments_delete_loaded() : m.comments_delete_all()}</button>
             {/if}

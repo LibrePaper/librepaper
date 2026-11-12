@@ -148,8 +148,8 @@ try {
   const press = async (selector) => { await b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node.click(); })()`); await flush(); };
   await press('.mobile-tab-bar [data-destination="files"]');
   await until('files column shows the files', () => visible('.sidebar .explorer'), 5000);
-  await until('chapter-1.html is listed', () => b.evaluate(`Boolean(document.querySelector('.explorer-row[title="chapter-1.html"]'))`), 5000);
-  await b.evaluate(`document.querySelector('.explorer-row[title="chapter-1.html"]').click()`);
+  await until('chapter-1.html is listed', () => b.evaluate(`Boolean(document.querySelector('.explorer-row[data-tip="chapter-1.html"]'))`), 5000);
+  await b.evaluate(`document.querySelector('.explorer-row[data-tip="chapter-1.html"]').click()`);
   await until('a tapped file opens on the preview', async () => !(await visible('.sidebar')) && await b.evaluate(phoneDocument), 5000);
   await until('a tapped file shows the preview frame', () => visible('.viewport'), 5000);
   await flush();
@@ -210,11 +210,11 @@ try {
   await b.resize(1280, 900); await flush();
   await until('reader files column', () => visible('.sidebar:not(.collapsed) .explorer'), 5000);
   assert.equal(await b.evaluate(`Boolean(document.querySelector('.sidebar-activity [aria-label="Files"]'))`), true, 'a reader is offered the Files panel');
-  assert.deepEqual(await b.evaluate(`[...document.querySelectorAll('.explorer-row')].map((node) => node.getAttribute('title'))`), ['main.html', 'notes.ini'], 'the reader sees every file of the project');
+  assert.deepEqual(await b.evaluate(`[...document.querySelectorAll('.explorer-row')].map((node) => node.getAttribute('data-tip'))`), ['main.html', 'notes.ini'], 'the reader sees every file of the project');
   assert.equal(await b.evaluate(`Boolean(document.querySelector('.explorer [aria-label="New file"], .explorer [aria-label="New folder"], .explorer [aria-label="Upload files"], .explorer input[type="file"]'))`), false, 'the reader list has no add or upload controls');
   // A text that does not render is shown as text, where the preview was, and
   // the editor is never loaded for it.
-  await b.evaluate(`document.querySelector('.explorer-row[title="notes.ini"]').click()`);
+  await b.evaluate(`document.querySelector('.explorer-row[data-tip="notes.ini"]').click()`);
   await until('reader file text', () => visible('.fileview-text'), 5000);
   assert.equal(await b.evaluate(`document.querySelector('.fileview-text').textContent`), 'key = value', 'the reader sees the file text read only');
   assert.equal(await visible('.viewport'), false, 'the preview is hidden while the file is shown');

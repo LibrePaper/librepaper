@@ -226,9 +226,9 @@
     <div class="git-identity-text">
       <div class="git-name-row">
         {#if identity.href}
-          <a class="git-name" href={identity.href} title={identity.full} target="_blank" rel="noopener noreferrer">{identity.name}</a>
+          <a class="git-name" href={identity.href} data-tip-wait="long" data-tip={identity.full} target="_blank" rel="noopener noreferrer">{identity.name}</a>
         {:else}
-          <span class="git-name" title={identity.full}>{identity.name}</span>
+          <span class="git-name" data-tip-wait="long" data-tip={identity.full}>{identity.name}</span>
         {/if}
         <IconButton icon="copy" size="btn-icon-sm"
                     label={copied ? m.tokenreveal_copied() : local ? m.gitweb_copy_path() : m.gitweb_copy_address()}
@@ -236,7 +236,7 @@
       </div>
       <p class="panel-meta git-detail">
         <Icon name="git-branch" size={12} />
-        <span class="git-detail-text" title={branchLine}>{branchLine}</span>
+        <span class="git-detail-text" data-tip-wait="long" data-tip={branchLine}>{branchLine}</span>
       </p>
     </div>
   </div>
@@ -252,12 +252,12 @@
     {:else}
       <div class="git-row">
         <button type="button" class="btn btn-sm lp-control-tonal-brand git-transfer" disabled={busy || merging}
-                title={m.gitweb_get_tip()} onclick={() => connection.pull()}>
+                data-tip={m.gitweb_get_tip()} onclick={() => connection.pull()}>
           <Icon name="arrow-down" size={14} />
           {link.busy === "pull" ? m.gitweb_get_changes_busy() : m.gitweb_get_changes()}
         </button>
         <button type="button" class="btn btn-sm lp-control-tonal-brand git-transfer" disabled={busy || merging}
-                title={m.gitweb_send_tip()} onclick={() => connection.push()}>
+                data-tip={m.gitweb_send_tip()} onclick={() => connection.push()}>
           <Icon name="arrow-up" size={14} />
           {link.busy === "push" ? m.gitweb_send_changes_busy() : m.gitweb_send_changes()}
         </button>
@@ -320,7 +320,7 @@
         <ul class="git-conflicts" aria-label={m.gitweb_conflict_files()}>
           {#each status.merging.conflicts as path (path)}
             <li class="git-conflict">
-              <span class="git-path" title={path}>{path}</span>
+              <span class="git-path" data-tip-wait="long" data-tip={path}>{path}</span>
               <span class="git-choices">
                 <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "project")}>{m.gitweb_keep_project()}</button>
                 <button type="button" class="git-action" disabled={busy} onclick={() => connection.resolve(path, "repository")}>{m.gitweb_take_repository()}</button>
@@ -346,9 +346,9 @@
     {#if view.pushProblem}
       <p class="panel-meta git-activity-meta">{m.gitweb_push_problem()}</p>
     {:else}
-      <p class="git-activity-subject" title={activity.label}>{activity.subject}</p>
+      <p class="git-activity-subject" data-tip-wait="long" data-tip={activity.label}>{activity.subject}</p>
       <p class="panel-meta git-activity-meta">
-        {#each activity.parts as part, index (index)}{#if index > 0}{" · "}{/if}<span title={part.title}>{part.text}</span>{/each}
+        {#each activity.parts as part, index (index)}{#if index > 0}{" · "}{/if}<span data-tip-wait="long" data-tip={part.title}>{part.text}</span>{/each}
       </p>
     {/if}
   </section>

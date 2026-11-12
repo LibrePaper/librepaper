@@ -72,7 +72,7 @@
           if (chosen.value === "signout") void signOut();
           else if (chosen.value === "switchserver") switching = true;
         }}>
-          <Menu.Trigger class="account icon-control" aria-label={label ? m.nav_account_menu_label_provider({ shown, provider: label }) : m.nav_account_menu_label({ shown })} title={label ? `${shown} · ${label}` : shown}>
+          <Menu.Trigger class="account icon-control" aria-label={label ? m.nav_account_menu_label_provider({ shown, provider: label }) : m.nav_account_menu_label({ shown })} data-tip={label ? `${shown} · ${label}` : shown}>
             <span class="account-avatar">
               <Avatar name={me.name} key={me.handle || me.name} size={7} title="" />
               {#if provider}

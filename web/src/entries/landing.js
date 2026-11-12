@@ -11,8 +11,11 @@ import { intake } from "../lib/desktop/client.js";
 import { listenForSignOut } from "../lib/local-data.js";
 import { signedOutHref } from "../lib/api.js";
 import { markDocumentLanguage } from "../lib/locale.js";
+import { installTips } from "../lib/tip.js";
 
 markDocumentLanguage();
+// The one tooltip, for every element that carries data-tip.
+installTips();
 
 startTheme();
 // The settings can be open before any editor is, and still follow another tab.

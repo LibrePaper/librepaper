@@ -374,12 +374,12 @@
        being previewed without a lock is the open file, which its row already
        marks. -->
   {#if node.kind !== "folder" && locked && node.path === locked}
-    <button type="button" class="explorer-preview shown" aria-label={m.common_unlock_the_preview()} title={m.common_unlock_the_preview()}
+    <button type="button" class="explorer-preview shown" aria-label={m.common_unlock_the_preview()} data-tip={m.common_unlock_the_preview()}
       onclick={(event) => { event.stopPropagation(); onunlock?.(); }}
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
   {:else if node.kind === "text" && previewable(node.path)}
-    <button type="button" class="explorer-preview" aria-label={m.common_lock_preview_on({ name: node.name })} title={m.common_lock_preview_on_file()}
+    <button type="button" class="explorer-preview" aria-label={m.common_lock_preview_on({ name: node.name })} data-tip={m.common_lock_preview_on_file()}
       onclick={(event) => { event.stopPropagation(); const entry = entryOf(node); if (entry) onlock?.(entry); }}
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
@@ -411,7 +411,7 @@
           <Menu.ContextTrigger>
             {#snippet element(attributes)}
               <div {...retargetElementAttributes(attributes)}>
-                <TreeView.BranchControl class="explorer-row {hover === node.path ? 'drop-target' : ''}" title={node.path}
+                <TreeView.BranchControl class="explorer-row {hover === node.path ? 'drop-target' : ''}" data-tip-wait="long" data-tip={node.path}
                   {...dragAttrs(node, node.path)}>
                   {@render row(node)}
                 </TreeView.BranchControl>
@@ -433,7 +433,7 @@
         <Menu.ContextTrigger>
           {#snippet element(attributes)}
             <div {...retargetElementAttributes(attributes)}>
-              <TreeView.Item class="explorer-row {open === node.fileId ? 'explorer-open' : ''} {hover === parentPath(node.path) ? 'drop-target' : ''}" title={node.path}
+              <TreeView.Item class="explorer-row {open === node.fileId ? 'explorer-open' : ''} {hover === parentPath(node.path) ? 'drop-target' : ''}" data-tip-wait="long" data-tip={node.path}
                 data-previewed={node.path === preview ? "" : undefined}
                 {...dragAttrs(node, parentPath(node.path))}>
                 {@render row(node)}

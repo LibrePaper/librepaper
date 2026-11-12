@@ -68,13 +68,15 @@ function stampText(raw) {
 
 function drawStamp(data) {
   const chip = el("span", `cm-lp-org-stamp ${data.active ? "cm-lp-org-stamp-active" : "cm-lp-org-stamp-inactive"}`, stampText(data.text));
-  chip.title = data.text;
+  chip.setAttribute("data-tip", data.text);
+  chip.setAttribute("data-tip-wait", "long");
   return chip;
 }
 
 function drawTarget(data) {
   const mark = el("span", "cm-lp-org-target", "⚓");
-  mark.title = data.key;
+  mark.setAttribute("data-tip", data.key);
+  mark.setAttribute("data-tip-wait", "long");
   return mark;
 }
 

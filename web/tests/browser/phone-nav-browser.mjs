@@ -397,8 +397,8 @@ try {
 
   // An Insert dialog opens from the list, though the header it was built in is hidden by then.
   await click('.mobile-tab-bar [data-destination="files"]');
-  await until('notes.md is listed', () => visible('.explorer-row[title="notes.md"]'), 5000);
-  await b.evaluate(`document.querySelector('.explorer-row[title="notes.md"]').click()`);
+  await until('notes.md is listed', () => visible('.explorer-row[data-tip="notes.md"]'), 5000);
+  await b.evaluate(`document.querySelector('.explorer-row[data-tip="notes.md"]').click()`);
   await until('notes.md leaves the file list', async () => (await modeOf()) !== 'mobile-sidebar', 5000);
   await toMode('source');
   await until('notes.md in the source', () => b.evaluate(`document.querySelector('.cm-content')?.textContent.includes('Notes')`), 5000);

@@ -71,7 +71,7 @@
             class:outline-heading-context={row.context}
             style="--outline-indent: {Math.max(0, heading.level - firstLevel)}"
             aria-current={activeHeading === heading.from ? "location" : undefined}
-            title={heading.title}
+            data-tip-wait="long" data-tip={heading.title}
             onclick={() => choose(heading)}
           >
             {#if heading.todo}<span class="outline-todo" class:outline-todo-done={heading.done}>{heading.todo}</span>{/if}

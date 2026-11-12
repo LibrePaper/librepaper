@@ -729,7 +729,7 @@
   <!-- The context choice sits inside the composer, as a quiet trigger. -->
   {#snippet chatContext()}
     <Menu onSelect={({ value }) => chooseContext(value)}>
-      <Menu.Trigger class="context-trigger" aria-label={m.agent_context_label({ label: contextLabel })} title={contextLabel}>
+      <Menu.Trigger class="context-trigger" aria-label={m.agent_context_label({ label: contextLabel })} data-tip={contextLabel}>
         <span class="context-label">{contextLabel}</span><Icon name="chevron-down" size="0.875rem" />
       </Menu.Trigger>
       <ExplorerMenu>
@@ -766,9 +766,9 @@
         <h3 class="task-title">{chosen.label}</h3>
       </div>
       <p class="panel-muted task-description">{chosen.description}</p>
-      {#if commentTarget}<p class="panel-meta task-target" title={commentContext.body || commentContext.exact || ""}>{commentTarget}</p>{/if}
+      {#if commentTarget}<p class="panel-meta task-target" data-tip-wait="long" data-tip={commentContext.body || commentContext.exact || ""}>{commentTarget}</p>{/if}
       {#if diagnostic}
-        <p class="panel-meta task-target" title={diagnosticTarget}>{diagnosticTarget}</p>
+        <p class="panel-meta task-target" data-tip-wait="long" data-tip={diagnosticTarget}>{diagnosticTarget}</p>
         {#if !contextTask}<div class="attachment-actions"><button class="btn btn-sm" onclick={() => { diagnostic = null; diagnosticRevision = ""; }}>{m.agent_remove_diagnostic()}</button></div>{/if}
       {/if}
       {#if !contextTask && taskScopes(chosen).length > 1}
@@ -783,7 +783,7 @@
       {#if scope === "selection" && attachment && !commentTarget}
         <div class="attachment">
           <strong>{m.agent_attachment_summary({ kind: attachment.anchored ? m.agent_selected_text() : m.agent_quoted_text(), count: selectedWords, path: attachment.path || path || m.agent_document_word() })}</strong>
-          <blockquote title={selectedText}>{selectedText}</blockquote>
+          <blockquote data-tip-wait="long" data-tip={selectedText}>{selectedText}</blockquote>
           <div class="attachment-actions"><button class="btn btn-sm" onclick={removeSelection}>{m.common_remove()}</button><button class="btn btn-sm" disabled={!selection?.exact} onclick={replaceSelection}>{m.agent_replace_selection()}</button></div>
           {#if !attachment.anchored}<p class="panel-muted" role="alert">{m.agent_preview_passage_note()}</p>{/if}
         </div>

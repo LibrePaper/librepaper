@@ -1381,7 +1381,7 @@
         {#if narrow && ["projects", "shared", "favorites", "templates", "tag"].includes(place)}
           <span class="compact-sort">
             <Icon name="arrow-up-down" />
-            <select id="project-sort" class="select" value={compactSort} aria-label={m.common_sort()} title={m.common_sort()}
+            <select id="project-sort" class="select" value={compactSort} aria-label={m.common_sort()} data-tip={m.common_sort()}
                     onchange={(event) => chooseCompactSort(event.currentTarget.value)}>
               <option value="updated:desc">{m.landing_sort_updated_desc()}</option>
               <option value="updated:asc">{m.landing_sort_updated_asc()}</option>
@@ -1525,7 +1525,7 @@
               {#if chips.length}
                 <span class="tag-chips" class:compact={narrow}>
                   {#each chipsShown as tag (tag.id)}
-                    <button type="button" class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}" title={tag.name}
+                    <button type="button" class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}" data-tip-wait="long" data-tip={tag.name}
                             aria-label={m.landing_show_tagged_aria({ name: tag.name })} onclick={() => goToTag(tag.id)}><span class="tag-chip-name">{tag.name}</span></button>
                   {/each}
                   {#if chips.length > chipsShown.length}
@@ -1560,7 +1560,7 @@
             <!-- Relative, with the date itself in the tooltip. Six copies of
                  today's date answer nothing; "12 min ago" answers the
                  question the column is here for. -->
-            <span title={isoDay(place === "recent" ? doc.opened_at : doc.updated_at)}>
+            <span data-tip-wait="long" data-tip={isoDay(place === "recent" ? doc.opened_at : doc.updated_at)}>
               {since(place === "recent" ? doc.opened_at : doc.updated_at)}
             </span>
           {:else if column.key === "actions"}

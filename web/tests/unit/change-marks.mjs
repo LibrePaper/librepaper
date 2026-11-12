@@ -18,7 +18,7 @@ function found(state) {
       tag: value.widget?.kind,
       text: value.widget?.text,
       cls: value.spec?.class || value.widget?.className || "",
-      title: value.spec?.attributes?.title,
+      title: value.spec?.attributes?.["data-tip"],
     });
   });
   return marks;

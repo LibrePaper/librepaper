@@ -588,7 +588,7 @@
                   class="hx-main hx-author"
                   class:lp-selected={pressed}
                   aria-pressed={pressed}
-                  title={named}
+                  data-tip-wait="long" data-tip={named}
                   onclick={() => onisolate?.(pressed ? null : row.key)}
                 >
                   <span class="hx-swatch" class:hx-swatch-unknown={row.unknown}
@@ -669,7 +669,7 @@
           class:hx-holds={holds && !expanded}
           data-nav
           aria-expanded={expanded}
-          title={m.history_row_tip({ what: primaryOf(event), detail: eventMeta(event) })}
+          data-tip-wait="long" data-tip={m.history_row_tip({ what: primaryOf(event), detail: eventMeta(event) })}
           aria-label={m.history_row_tip({ what: primaryOf(event), detail: eventMeta(event) })}
           onclick={() => setEvent(event.key, !expanded)}
           onkeydown={(keyed) => arrow(keyed, expanded, (want) => setEvent(event.key, want))}
@@ -716,13 +716,13 @@
           data-nav
           class:lp-selected={here}
           aria-current={here ? "true" : undefined}
-          title={describe(what, detail, first.sha)}
+          data-tip-wait="long" data-tip={describe(what, detail, first.sha)}
           aria-label={describe(what, detail, first.sha)}
           onclick={() => onview?.(first.sha)}
         >
           {#if plain}
             <span class="hx-when">{clock(first.at)}</span>
-            {#if who}<span class="hx-who panel-meta" title={who}>{who}</span>{/if}
+            {#if who}<span class="hx-who panel-meta" data-tip-wait="long" data-tip={who}>{who}</span>{/if}
           {:else}
             {@render eventText(event, titleOf(event), soloLine(event))}
           {/if}
@@ -779,13 +779,13 @@
           class:lp-selected={here}
           data-nav
           aria-current={here ? "true" : undefined}
-          title={m.history_row_tip({ what: told(point), detail: stamp(point.at) || shortSha(point.sha) })}
+          data-tip-wait="long" data-tip={m.history_row_tip({ what: told(point), detail: stamp(point.at) || shortSha(point.sha) })}
           aria-label={[m.history_version_at({ time: clock(point.at) }), who ? m.history_by({ who }) : "", why, endpointWord(point.sha)].filter(Boolean).join(", ")}
           onclick={() => onview?.(point.sha)}
           onkeydown={toSession}
         >
           <span class="hx-when">{clock(point.at)}</span>
-          {#if showWho}<span class="hx-who panel-meta" title={who}>{who}</span>{/if}
+          {#if showWho}<span class="hx-who panel-meta" data-tip-wait="long" data-tip={who}>{who}</span>{/if}
           {@render trail(point.sha)}
         </button>
         {@render rowTools(point)}
@@ -823,7 +823,7 @@
           data-nav
           class:lp-selected={viewing === point.sha}
           aria-current={viewing === point.sha ? "true" : undefined}
-          title={m.history_row_tip({ what: point.label, detail: savedWhen(point.at) })}
+          data-tip-wait="long" data-tip={m.history_row_tip({ what: point.label, detail: savedWhen(point.at) })}
           aria-label={tipWith(point.label, savedWhen(point.at), end)}
           onclick={() => onview?.(point.sha)}
         >

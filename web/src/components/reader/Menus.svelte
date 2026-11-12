@@ -95,13 +95,13 @@
 
 {#snippet layoutItems()}
   {#each [["source", labelOf("layout-source")], ["document", labelOf("layout-document")], ["split", labelOf("layout-split")]] as [value, label]}
-    <Menu.Item value="layout-{value}" class="menuitem" disabled={view.compact && value === "split"} title={view.compact && value === "split" ? noteOf("layout-split") : undefined}>
+    <Menu.Item value="layout-{value}" class="menuitem" disabled={view.compact && value === "split"} data-tip-place="right" data-tip={view.compact && value === "split" ? noteOf("layout-split") : undefined}>
       <span class="menuitem-check">{(view.compact ? view.activeMobileView === value : view.layout === value) ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
   <hr class="hr my-1" />
   {#each [["left", labelOf("side-left")], ["right", labelOf("side-right")]] as [side, label]}
-    <Menu.Item value="side-{side}" class="menuitem" disabled={view.compact} title={view.compact ? noteOf("side-left") : undefined}>
+    <Menu.Item value="side-{side}" class="menuitem" disabled={view.compact} data-tip-place="right" data-tip={view.compact ? noteOf("side-left") : undefined}>
       <span class="menuitem-check">{view.sourceSide === side ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
@@ -142,7 +142,7 @@
 {/snippet}
 
 {#snippet viewItems()}
-  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]} title={tipFor("lock-preview")}>{labelOf("lock-preview")}</Menu.Item>
+  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]} data-tip-place="right" data-tip={tipFor("lock-preview")}>{labelOf("lock-preview")}</Menu.Item>
   {#if can["unlock-preview"]}<Menu.Item value="unlock-preview" class="menuitem">{labelOf("unlock-preview")}</Menu.Item>{/if}
   <hr class="hr my-1" />
   {@render previewItems()}
@@ -164,7 +164,7 @@
     {#each editGroups as group, index}
       {#if index}<hr class="hr my-1" />{/if}
       {#each group as [command, label]}
-        <Menu.Item value={command} class="menuitem" disabled={!can[command]} title={tipFor(command)}>
+        <Menu.Item value={command} class="menuitem" disabled={!can[command]} data-tip-place="right" data-tip={tipFor(command)}>
           <span class="menuitem-label">{label}</span>{#if keys[command]}<span class="menuitem-keys">{keys[command]}</span>{/if}
         </Menu.Item>
       {/each}

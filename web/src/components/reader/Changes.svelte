@@ -361,8 +361,8 @@
           <!-- Every change offers its answer, so a reviewer can act on any row
                even while other rows are ticked. -->
           {#if canReview && answerable(item)}<div class="row-actions">
-            <button type="button" class="row-action reject" aria-label={rejectKind(item)} title={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? m.changes_rejecting() : m.common_reject()}</button>
-            {#if !suggestOnly}<button type="button" class="row-action accept" aria-label={acceptKind(item)} title={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? m.changes_accepting() : m.changes_accept()}</button>{/if}
+            <button type="button" class="row-action reject" aria-label={rejectKind(item)} data-tip={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? m.changes_rejecting() : m.common_reject()}</button>
+            {#if !suggestOnly}<button type="button" class="row-action accept" aria-label={acceptKind(item)} data-tip={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? m.changes_accepting() : m.changes_accept()}</button>{/if}
           </div>{/if}
         </article>
       {/each}
