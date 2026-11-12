@@ -37,18 +37,20 @@ pub(super) async fn issue(
         );
     }
 
-    let entry = match server
+    let (entry, viewer) = match server
         .authorize::<access::rung::Read>(&context, headers, &slug, None)
         .await
     {
-        Ok(auth) => auth.entry,
+        Ok(auth) => (auth.entry, auth.viewer),
         Err(refusal) => return access::deny(&refusal),
     };
 
-    // A grant must name one live link capability. A bare owner page may read
-    // the document, but cannot delegate that wider account authority to an
-    // automation process.
-    let link_hash = server.link_hash(headers, None);
+    // A grant must name one live link capability. That is the link the access
+    // check resolved: the key this request carried, or a signed-in guest's
+    // pinned live link. A bare owner page may read the document, but has no
+    // link and cannot delegate that wider account authority to an automation
+    // process.
+    let link_hash = viewer.link.clone();
     if link_hash.is_empty()
         || entry
             .link_role(&link_hash, librepaper_base::util::now_unix())

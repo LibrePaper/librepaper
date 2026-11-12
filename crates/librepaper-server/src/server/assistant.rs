@@ -67,7 +67,12 @@ impl Server {
             Ok(auth) => (auth.entry, auth.viewer),
             Err(refusal) => return access::deny(&refusal),
         };
-        let link_hash = self.link_hash(headers, None);
+        // The link is the one the access check resolved: the key this request
+        // carried, or, for a signed-in guest, the live link they were pinned to
+        // on their first visit. Reading only the request header would miss the
+        // pinned link and report "not found" for a guest opening the document
+        // from the project list.
+        let link_hash = who.link.clone();
         let Some(role) = assistant_link_role(
             &entry,
             &who,
