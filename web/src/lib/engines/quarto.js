@@ -357,7 +357,8 @@ function proseLine(line, labels, { lineNumber = 0, inlineRecords = [] } = {}) {
       inlineOrdinals.set(expression, ordinal + 1);
       const record = inlineRecords.filter((item) => item.line === lineNumber && item.expression === expression)[ordinal];
       // Code expressions stay source text until a desktop app
-      // evaluates them. No prior computation is reused in this draft.
+      // evaluates them. Inline results are never reused; only the output of
+      // whole cells can come from a shared run (see `results` below).
       return chunk;
     }
     return chunk.replace(/@(fig|tbl|sec|eq|lst)-([A-Za-z0-9_:-]+(?:\.[A-Za-z0-9_:-]+)*)/g, (whole, kind, label) => {
@@ -384,7 +385,48 @@ function verbatimFence(text) {
   return backtick <= tilde ? { char: "`", length: backtick } : { char: "~", length: tilde };
 }
 
-export function composeDraft(source, { path = "main.qmd", assets = {}, expandIncludes: includes = {}, maxIncludeDepth = 8, cellFingerprints = {} } = {}) {
+// The cells Quarto actually executes into the HTML: those not switched off by
+// `include: false`, in the cell's own options or the front matter's
+// `execute:` defaults. The shared-results splitter and the draft both count
+// cells this way, so they agree on which output belongs to which cell.
+export function executedCells(parsed) {
+  const meta = parsed.metadata?.execute;
+  const defaults = meta && typeof meta === "object" ? meta : {};
+  return parsed.cells.filter((cell) => ({ ...defaults, ...cell.options }).include !== false);
+}
+
+// Pair saved outputs with the cells of the main file. A result whose
+// fingerprint equals the cell's is fresh; others fall back to the same label,
+// then to the same position when the cell counts agree, and are stale.
+function matchResults(results, cells) {
+  const matched = new Map();
+  const saved = Array.isArray(results?.cells) ? results.cells : [];
+  if (!saved.length) return matched;
+  const used = new Set();
+  const queues = new Map();
+  saved.forEach((entry, index) => {
+    if (!queues.has(entry.fingerprint)) queues.set(entry.fingerprint, []);
+    queues.get(entry.fingerprint).push(index);
+  });
+  for (const cell of cells) {
+    const queue = cell.source_sha256 ? queues.get(cell.source_sha256) : null;
+    if (!queue?.length) continue;
+    const index = queue.shift();
+    used.add(index);
+    matched.set(cell, { html: saved[index].html, stale: false });
+  }
+  cells.forEach((cell, position) => {
+    if (matched.has(cell)) return;
+    let index = cell.label ? saved.findIndex((entry, at) => !used.has(at) && entry.label === cell.label) : -1;
+    if (index < 0 && saved.length === cells.length && !used.has(position)) index = position;
+    if (index < 0) return;
+    used.add(index);
+    matched.set(cell, { html: saved[index].html, stale: true });
+  });
+  return matched;
+}
+
+export function composeDraft(source, { path = "main.qmd", assets = {}, expandIncludes: includes = {}, maxIncludeDepth = 8, cellFingerprints = {}, results = null } = {}) {
   const parsed = parseQuarto(source, { path });
   for (const cell of parsed.cells) {
     cell.source_sha256 = cellFingerprints[cell.id]?.sha256 || "";
@@ -403,6 +445,10 @@ export function composeDraft(source, { path = "main.qmd", assets = {}, expandInc
       lineMap.push(sourceLine == null ? null : sourceLine + index);
     }
   };
+  const outputs = matchResults(results, executedCells(parsed));
+  const oneLine = (html) => String(html ?? "").replace(/\r?\n/g, " ");
+  const noteText = typeof results?.note === "string" ? results.note.trim() : "";
+  const noteMarkup = noteText ? `<p class="lp-results-note">${escapeHtml(noteText)}</p>` : "";
   let opaqueFence = null;
   const byStart = new Map(parsed.cells.map((cell) => [cell.startLine, cell]));
   const divByStart = new Map(parsed.divs
@@ -467,11 +513,16 @@ export function composeDraft(source, { path = "main.qmd", assets = {}, expandInc
       return includedLine.replace(INCLUDE, (_, child) => expandedInclude(child, depth + 1, next, normalized, 0));
     }).join("\n");
   };
+  // Blank lines around generated HTML keep it a block of its own, so the
+  // line after it is not swallowed into the same HTML block.
+  const pushBlock = (html) => { push(""); push(html); push(""); };
+  if (!frontMatterLines && noteMarkup) pushBlock(noteMarkup);
   for (let i = 0; i < lines.length; i += 1) {
     if (i < frontMatterLines) {
       if (i === frontMatterLines - 1) {
         const header = metadataMarkup(parsed);
         if (header) push(header);
+        if (noteMarkup) pushBlock(noteMarkup);
       }
       continue;
     }
@@ -532,6 +583,13 @@ export function composeDraft(source, { path = "main.qmd", assets = {}, expandInc
     push(outerFence);
     push(cellText, cell.startLine);
     push(outerFence);
+    const output = outputs.get(cell);
+    if (output) {
+      const html = oneLine(output.html);
+      pushBlock(output.stale
+        ? `<div class="lp-cell-output lp-cell-output-stale" title="${escapeHtml(m.quarto_output_stale())}">${html}</div>`
+        : `<div class="lp-cell-output">${html}</div>`);
+    }
   }
   return { ...parsed, markdown: out.join("\n"), lineMap, diagnostics: [...parsed.diagnostics, ...generatedDiagnostics], source, assets };
 }

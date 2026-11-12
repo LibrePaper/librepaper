@@ -11,7 +11,9 @@ import { parse as parseTypstLog } from "./typst-log.js";
 // The modules come from the same pinned renderer releases as the native
 // command line tools, so the preview follows the document source. Rendering
 // stays in this browser or the desktop app and is never stored by
-// the deployment.
+// the deployment. The one exception: when the author turns on Share results,
+// the output of a local Quarto HTML run is stored per document and shown in
+// the draft of collaborators.
 //
 // They are plain WebAssembly with a handful of exports rather than
 // wasm-bindgen, so this is the whole of the glue: reserve memory in the
@@ -293,6 +295,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
   // Send only the compiler inputs, copied into ordinary maps.
   const quartoTree = format === "quarto" ? await quarto.virtualTree(tree, {
     expandIncludes: tree.texts || {},
+    results: tree.quartoResults ?? null,
   }) : tree;
   const capturedSettings = configuration && Object.prototype.hasOwnProperty.call(configuration, "settings")
     ? configuration.settings : quartoTree.settings;
