@@ -4548,8 +4548,6 @@
         {/if}
       </div>
     </section>
-  <!-- The Run directory page takes the pane while it is open; the failure
-       comes back when it closes. -->
   {:else if shown.document && failedBeforeRender}
     <section class="latexpane">
       <div class="notyet">
