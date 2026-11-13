@@ -600,3 +600,45 @@
   width: 1em;
   height: 1em;
 }
+
+/* A shared fold: the pill's frame around a label button, an optional muted
+   detail that is cut to one line, and an Open button for an include. */
+.cm-lp-fold {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--spacing) * 2);
+}
+
+.cm-lp-fold-label {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.cm-lp-fold-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The look of .cm-lp-include-open, so an include's Open button is unchanged. */
+.cm-lp-fold-open {
+  padding: 0 calc(var(--spacing) * 2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-raised);
+  color: var(--color-link);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.cm-lp-fold-open:hover {
+  background: var(--color-row-hover);
+}

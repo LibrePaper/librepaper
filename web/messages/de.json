@@ -1111,6 +1111,10 @@
       }
     }
   ],
+  "folds_comment": "Kommentar",
+  "folds_definitions": "Definitionen",
+  "folds_include": "Einbindung",
+  "folds_preamble": "Präambel",
   "formatting_heading_1": "Überschrift 1",
   "formatting_heading_2": "Überschrift 2",
   "formatting_heading_3": "Überschrift 3",
@@ -2176,9 +2180,6 @@
       }
     }
   ],
-  "preamble_more": "Weitere Präambel",
-  "preamble_show": "Präambel anzeigen",
-  "preamble_summary_label": "Präambel",
   "preview_notes_shown_inside": "{name} wird in {path} angezeigt.",
   "preview_render_could_not_render": "konnte nicht gerendert werden",
   "preview_render_missing_figures": [
