@@ -7,8 +7,9 @@ import { AGENT_SESSION_PREFIX, KEYS, LINKED, SHARE_INTRO, VIEWED } from "./stora
 
 export const OFFLINE_DATABASE = "librepaper-offline-v2";
 export const PREVIEW_DATABASE = "librepaper-preview-v1";
+export const ASSET_DATABASE = "librepaper-assets-v1";
 
-const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE];
+const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE, ASSET_DATABASE];
 // Reading localStorage can itself throw when storage is blocked.
 function safeLocalStorage() {
   try {

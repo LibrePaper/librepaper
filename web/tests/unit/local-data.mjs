@@ -3,6 +3,7 @@
 // that a delete which never finishes cannot hold the sign-out up.
 import assert from "node:assert/strict";
 import {
+  ASSET_DATABASE as ASSETS,
   OFFLINE_DATABASE as OFFLINE,
   PREVIEW_DATABASE as PREVIEW,
   forgetLocalData,
@@ -34,6 +35,7 @@ function fakeIndexedDB(databases) {
   const databases = new Map([
     [OFFLINE, { projects: ["paper"] }],
     [PREVIEW, { pages: ["paper"] }],
+    [ASSETS, { assets: ["digest"] }],
     ["unrelated", { keep: true }],
   ]);
   await forgetLocalData(fakeIndexedDB(databases), 1000);
