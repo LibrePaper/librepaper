@@ -2349,6 +2349,10 @@
     // still in flight from painting over it.
     const showRunPage = (tree, page) => {
       if (navigation === target.navigation && source === schedule.generation && tree.main === previewPath) {
+        // The frame now shows something newer than any draft that is
+        // scheduled, running or queued, so they must not paint over it.
+        schedule.cancel();
+        renderCoordinator.claim();
         target.bump();
         framePreview?.publish(page);
       }
@@ -2371,7 +2375,7 @@
       });
       if (gone()) return;
       // The run's log is what Diagnostics shows, whether it worked or not.
-      runLog = rendered?.log || "";
+      runLog = rendered?.log || rendered?.failure?.message || "";
       runDiagnostics = rendered?.diagnostics || [];
       if (toPdf) {
         if (rendered?.ok === false || !rendered?.pdf) {
@@ -2416,13 +2420,12 @@
       }
       runPhase = "idle";
       if (split.reason === "no-cells") {
-        // A document without code cells has nothing to share and nothing to complain about.
+        // Nothing to share. The cells may live in included files, whose
+        // outputs cannot be paired with the main file, so the run's own page
+        // is kept until the next edit rather than thrown away; a document
+        // with no code at all loses nothing by showing it.
         sharedResults.skip("none");
-        if (hasInline) showRunPage(tree, { kind: "html", html: rendered.html });
-        else {
-          stopRendering();
-          void paintPreview();
-        }
+        showRunPage(tree, { kind: "html", html: rendered.html });
         return;
       }
       // The output could not be matched to the cells, so it cannot be spliced
