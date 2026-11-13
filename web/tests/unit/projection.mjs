@@ -192,8 +192,8 @@ for (const testCase of corpus.cases) {
     paths.set(id, path);
   };
   const fileFirst = new LoroDoc();
-  add(fileFirst.getMap("files"), fileFirst.getMap("paths"), "aaa", "a", "file");
-  add(fileFirst.getMap("files"), fileFirst.getMap("paths"), "bbb", "a/b.md", "under");
+  add(fileFirst.getMap("files"), fileFirst.getMap("paths"), "aaa", "a.md", "file");
+  add(fileFirst.getMap("files"), fileFirst.getMap("paths"), "bbb", "a.md/b.md", "under");
   const one = await project(fileFirst, retainRules);
   const twice = await project(fileFirst, retainRules);
   assert.deepEqual(normalise(actualOf(one, "")), normalise(actualOf(twice, "")), "collisions are deterministic");
@@ -208,8 +208,8 @@ for (const testCase of corpus.cases) {
   }
 
   const dirFirst = new LoroDoc();
-  add(dirFirst.getMap("files"), dirFirst.getMap("paths"), "aaa", "x/y.md", "under");
-  add(dirFirst.getMap("files"), dirFirst.getMap("paths"), "bbb", "x", "file");
+  add(dirFirst.getMap("files"), dirFirst.getMap("paths"), "aaa", "x.md/y.md", "under");
+  add(dirFirst.getMap("files"), dirFirst.getMap("paths"), "bbb", "x.md", "file");
   const dirResult = await project(dirFirst, retainRules);
   assert.ok(dirResult.diagnostics.some((d) => d.kind === "moved" || d.kind === "dropped"), "x taken then x/y.md collides");
   for (const path of dirResult.files.keys()) {
