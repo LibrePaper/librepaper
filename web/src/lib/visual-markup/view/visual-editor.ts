@@ -240,11 +240,13 @@ const arrowKeymap = Prec.high(
 // from a program's, so the sign of a keyboard move is a key pressed just before it.
 const KEY_WINDOW = 250;
 
-// `enabled(state)` says whether the layer is on; `hidden(state, line)` says whether a
-// line that is drawn as text is in fact invisible.
+// `enabled(state)` says whether the layer is on; `hidden(state, line, before)` says
+// whether a line drawn as text after the move was not seen before it: a collapsed
+// line, or a line of a block that the move itself revealed (`before` is the state
+// the move started from).
 export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => false }: {
   enabled?: (state: EditorState) => boolean;
-  hidden?: (state: EditorState, line: { from: number }) => boolean;
+  hidden?: (state: EditorState, line: { from: number }, before: EditorState) => boolean;
 } = {}) {
   return ViewPlugin.fromClass(
     class {
@@ -278,7 +280,7 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
         const forward = to > from;
         for (let n = forward ? from + 1 : from - 1; n !== to; n += forward ? 1 : -1) {
           const line = doc.line(n);
-          if (hidden(update.state, line)) continue;
+          if (hidden(update.state, line, update.startState)) continue;
           // A drawn line is a text block that starts at the line itself.
           const block = this.view.lineBlockAt(line.from);
           if (block.type === BlockType.Text && block.from === line.from) return;

@@ -308,7 +308,12 @@ export function paperVisual({ format = "markdown", path = () => "", imageUrl = n
     ...foldLayer(adapter.folds, { openInclude }),
     field,
     // Vim's j and k bypass the keymap below; this puts the caret on the first line of a skipped block.
-    stepIntoBlocksPlugin({ hidden: (state, line) => state.field(field).gaps.has(line.from) }),
+    // A line counts as unseen when it is a collapsed gap, or when it was drawn as part of a block before the move.
+    stepIntoBlocksPlugin({
+      hidden: (state, line, before) =>
+        state.field(field).gaps.has(line.from) ||
+        before.field(field).rendered.some((block) => block.from <= line.from && line.from <= block.to),
+    }),
     loaderFor(adapter, project),
     paperOverlays(field),
     EditorView.editorAttributes.of({
