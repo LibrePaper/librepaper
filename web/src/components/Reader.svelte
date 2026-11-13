@@ -2323,9 +2323,9 @@
     // shown if the reader is still looking at the same document.
     const navigation = target.navigation;
     const source = schedule.generation;
-    const tree = capturePreviewTree(treeNow());
     const gone = () => mine !== runGeneration || readerDisposed;
     try {
+      const tree = capturePreviewTree(treeNow());
       if (Object.keys(tree.digests || {}).length) {
         const { held } = await gatherFigures(tree.digests);
         if (gone()) return;
