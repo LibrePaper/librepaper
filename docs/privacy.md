@@ -59,6 +59,7 @@ Administrators are able to read every account and document. They open a document
 ## What leaves librepaper.org
 
 - **Hosting:** OVHcloud runs the machines and the storage that hold librepaper.org, your files and the backups, all in Canada.
+- **Object storage:** Your browser downloads project images and other binary files directly from OVHcloud's object storage, through links that expire after five minutes. That storage sees your IP address and the time of each download.
 - **Sign-in:** GitHub or Google sees your sign-in and tells librepaper.org who you are. Neither one sees your documents.
 - **LaTeX mirror:** Your browser downloads the typesetting engines, LaTeX packages and optional editor fonts from the LibrePaper mirror. The mirror sees your IP address and the files you request, which can reveal the packages a document uses. It never sees the source.
 - **Desktop app:** The [desktop app](desktop-app.html) runs on your computer. Inside the desktop app, the page asks the app for local features such as backups and Git. An ordinary browser cannot use them.

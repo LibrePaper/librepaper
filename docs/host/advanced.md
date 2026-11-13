@@ -248,6 +248,15 @@ secret_access_key = "..."
 
 `allow_http = true` exists only for a local test endpoint.
 
+With object storage, browsers fetch files through links signed for five minutes, straight from the bucket, when the bucket allows your app's origin through CORS for `GET`. Set the rule once, with your own app origin from `[origins]` in `librepaper.toml`:
+
+```sh
+aws s3api put-bucket-cors --bucket your-bucket --endpoint-url https://s3.region.provider.example \
+  --cors-configuration '{"CORSRules":[{"AllowedOrigins":["https://app.example.org"],"AllowedMethods":["GET"],"AllowedHeaders":[],"MaxAgeSeconds":3600}]}'
+```
+
+Without the rule everything still works, through the server, only slower. The server's clock must be correct, because signed links are time-stamped and the bucket refuses a signature dated outside its tolerance.
+
 Requirements:
 
 - A private bucket used only for this.
