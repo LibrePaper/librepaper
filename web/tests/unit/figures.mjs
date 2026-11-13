@@ -1,5 +1,133 @@
 import assert from "node:assert/strict";
-import { gather, release } from "../../src/lib/figures.js";
+import {
+  __resetAssetTestState,
+  __setAssetTestHooks,
+  gather,
+  release,
+} from "../../src/lib/figures.js";
+import { ASSET_DATABASE } from "../../src/lib/local-data.js";
+import { markSignedOut } from "../../src/lib/signed-out.js";
+
+const hex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+const digestOf = async (bytes) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
+const tick = () => new Promise((resolve) => setTimeout(resolve, 15));
+const linkUrl = (sha) => `/api/documents/doc/assets/${sha}/link`;
+const bytesUrl = (sha) => `/api/documents/doc/assets/${sha}`;
+const isLink = (url) => url.endsWith("/link");
+const isBucket = (url) => url.startsWith("https://bucket.example/");
+
+function reply(status, { bytes, json, headers = {} } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers(headers),
+    arrayBuffer: async () => (bytes ?? new Uint8Array()).slice().buffer,
+    json: async () => json,
+  };
+}
+
+const noLink = () => reply(200, { json: { url: null } });
+
+// An in-memory IndexedDB: enough of the API for the store, with requests
+// answered on the next turn. Stores are plain Maps keyed by digest.
+function fakeIndexedDB() {
+  const databases = new Map(); // name -> Map<store name, Map<key, value>>
+  const storeOf = (stores, name) => {
+    const records = stores.get(name);
+    const answer = (run) => {
+      const request = {};
+      let result;
+      let error = null;
+      try {
+        result = run();
+      } catch (thrown) {
+        error = thrown;
+      }
+      setTimeout(() => {
+        if (error) {
+          request.error = error;
+          request.onerror?.();
+        } else {
+          request.result = result;
+          request.onsuccess?.();
+        }
+      });
+      return request;
+    };
+    return {
+      get: (key) => answer(() => structuredClone(records.get(key))),
+      put: (value, key) => answer(() => records.set(key, structuredClone(value)) && key),
+      delete: (key) => answer(() => records.delete(key)),
+      index() {
+        return {
+          openCursor() {
+            const rows = [...records].sort(([ak, av], [bk, bv]) => av.used - bv.used || (ak < bk ? -1 : 1));
+            const request = {};
+            let at = 0;
+            const step = () => {
+              const i = at;
+              request.result = i < rows.length
+                ? { primaryKey: rows[i][0], value: rows[i][1], continue() { at = i + 1; setTimeout(step); } }
+                : null;
+              request.onsuccess?.();
+            };
+            setTimeout(step);
+            return request;
+          },
+        };
+      },
+    };
+  };
+  const api = {
+    databases,
+    opens: 0,
+    open(name) {
+      api.opens++;
+      const request = {};
+      setTimeout(() => {
+        const fresh = !databases.has(name);
+        if (fresh) databases.set(name, new Map());
+        const stores = databases.get(name);
+        request.result = {
+          objectStoreNames: { contains: (n) => stores.has(n) },
+          createObjectStore(n) {
+            stores.set(n, new Map());
+            return storeOf(stores, n);
+          },
+          transaction: (n) => ({ objectStore: (s) => storeOf(stores, s ?? n) }),
+          close() {},
+        };
+        if (fresh) request.onupgradeneeded?.();
+        request.onsuccess?.();
+      });
+      return request;
+    },
+  };
+  return api;
+}
+
+const sleeps = [];
+// Runs `run` with `route` answering every fetch, and restores everything after.
+async function scenario(route, run, hooks = {}) {
+  const realFetch = globalThis.fetch;
+  const calls = [];
+  sleeps.length = 0;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return route(String(url), init);
+  };
+  __resetAssetTestState();
+  __setAssetTestHooks({ sleep: async (ms) => { sleeps.push(ms); }, random: () => 0, ...hooks });
+  try {
+    await run(calls);
+  } finally {
+    globalThis.fetch = realFetch;
+    __setAssetTestHooks({ sleep: undefined, random: undefined, indexedDB: undefined, capBytes: undefined });
+    __resetAssetTestState();
+  }
+}
+
+__resetAssetTestState();
 
 // Test that gather() creates data URLs for images and blob URLs for PDFs.
 {
@@ -10,24 +138,10 @@ import { gather, release } from "../../src/lib/figures.js";
   // Stub fetch to return the bytes for each figure.
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    if (url.endsWith("/assets/a")) {
-      return {
-        ok: true,
-        arrayBuffer: async () => pngBytes.buffer,
-      };
-    }
-    if (url.endsWith("/assets/b")) {
-      return {
-        ok: true,
-        arrayBuffer: async () => svgBytes.buffer,
-      };
-    }
-    if (url.endsWith("/assets/c")) {
-      return {
-        ok: true,
-        arrayBuffer: async () => pdfBytes.buffer,
-      };
-    }
+    if (url.endsWith("/link")) return noLink();
+    if (url.endsWith("/assets/a")) return reply(200, { bytes: pngBytes });
+    if (url.endsWith("/assets/b")) return reply(200, { bytes: svgBytes });
+    if (url.endsWith("/assets/c")) return reply(200, { bytes: pdfBytes });
     throw new Error(`Unexpected fetch: ${url}`);
   };
 
@@ -73,4 +187,237 @@ import { gather, release } from "../../src/lib/figures.js";
   }
 }
 
-console.log("figures: data URLs for images, blob URLs for PDFs");
+// A link is asked for, and the bucket is fetched with no credentials and no
+// custom headers. The byte route is not used.
+{
+  const body = Uint8Array.of(1, 2, 3, 4);
+  const sha = await digestOf(body);
+  await scenario((url) => {
+    if (isLink(url)) return reply(200, { json: { url: "https://bucket.example/o?sig=1" } });
+    if (isBucket(url)) return reply(200, { bytes: body });
+    throw new Error(`unexpected ${url}`);
+  }, async (calls) => {
+    const result = await gather("doc", { "fig.png": sha }, { Authorization: "x" });
+    assert.deepEqual([...result.assets["fig.png"]], [...body]);
+    assert.deepEqual(calls.map((call) => call.url), [linkUrl(sha), "https://bucket.example/o?sig=1"]);
+    assert.equal(calls[1].init.credentials, "omit");
+    assert.equal(calls[1].init.headers, undefined);
+  });
+}
+
+// A null link sends the tab to the byte route, and a later asset in the same
+// tab does not ask for a link at all.
+{
+  const a = Uint8Array.of(1);
+  const b = Uint8Array.of(2);
+  const shaA = await digestOf(a);
+  const shaB = await digestOf(b);
+  const served = { [shaA]: a, [shaB]: b };
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    return reply(200, { bytes: served[url.split("/").pop()] });
+  }, async (calls) => {
+    const first = await gather("doc", { "a.png": shaA });
+    const second = await gather("doc", { "b.png": shaB });
+    assert.deepEqual([...first.assets["a.png"]], [...a]);
+    assert.deepEqual([...second.assets["b.png"]], [...b]);
+    assert.equal(calls.filter((call) => isLink(call.url)).length, 1);
+    assert.deepEqual(calls.slice(1).map((call) => call.url), [bytesUrl(shaA), bytesUrl(shaB)]);
+  });
+}
+
+// A bucket that fails as a network error falls back to the byte route, and
+// the tab keeps using that route.
+{
+  const body = Uint8Array.of(5, 6);
+  const sha = await digestOf(body);
+  const other = Uint8Array.of(7);
+  const shaOther = await digestOf(other);
+  const served = { [sha]: body, [shaOther]: other };
+  await scenario((url) => {
+    if (isLink(url)) return reply(200, { json: { url: `https://bucket.example/${url.split("/").pop()}` } });
+    if (isBucket(url)) throw new TypeError("Failed to fetch");
+    return reply(200, { bytes: served[url.split("/").pop()] });
+  }, async (calls) => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual([...result.assets["fig.png"]], [...body]);
+    await gather("doc", { "other.png": shaOther });
+    assert.equal(calls.filter((call) => isBucket(call.url)).length, 1);
+    assert.equal(calls.filter((call) => isLink(call.url)).length, 1);
+  });
+}
+
+// A bucket 403 asks for one new link and retries once; if that fails too the
+// byte route serves the figure, and the tab still asks for links afterwards.
+{
+  const body = Uint8Array.of(8);
+  const sha = await digestOf(body);
+  const other = Uint8Array.of(9);
+  const shaOther = await digestOf(other);
+  const served = { [sha]: body, [shaOther]: other };
+  let links = 0;
+  await scenario((url) => {
+    if (isLink(url)) {
+      links++;
+      return reply(200, { json: { url: `https://bucket.example/link${links}` } });
+    }
+    if (isBucket(url)) return reply(403);
+    return reply(200, { bytes: served[url.split("/").pop()] });
+  }, async (calls) => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual([...result.assets["fig.png"]], [...body]);
+    assert.equal(calls.filter((call) => isLink(call.url)).length, 2);
+    assert.equal(calls.filter((call) => isBucket(call.url)).length, 2);
+    await gather("doc", { "other.png": shaOther });
+    // Each asset asks for a link and reissues once; a 403 never switches the tab.
+    assert.equal(calls.filter((call) => isLink(call.url)).length, 4, "a 403 does not switch the tab to the byte route");
+    assert.equal(calls.filter((call) => isBucket(call.url)).length, 4);
+  });
+}
+
+// A 429 for transfer permits is retried after Retry-After, plus jitter.
+{
+  const body = Uint8Array.of(10);
+  const sha = await digestOf(body);
+  let links = 0;
+  await scenario((url) => {
+    if (isLink(url)) {
+      links++;
+      if (links === 1) return reply(429, { json: { reason: "transfer_concurrency" }, headers: { "Retry-After": "2" } });
+      return noLink();
+    }
+    return reply(200, { bytes: body });
+  }, async () => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual(result.missing, []);
+    assert.deepEqual(sleeps, [2000]);
+    assert.equal(links, 2);
+  });
+}
+
+// Five transfer refusals in a row are given up on, and the figure is missing.
+{
+  const sha = await digestOf(Uint8Array.of(11));
+  await scenario((url) => {
+    if (isLink(url)) return reply(429, { json: { reason: "transfer_concurrency" }, headers: { "Retry-After": "1" } });
+    throw new Error(`unexpected ${url}`);
+  }, async (calls) => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual(result.missing, ["fig.png"]);
+    assert.equal(calls.length, 6, "one request and five retries");
+    assert.deepEqual(sleeps, [1000, 1000, 1000, 1000, 1000]);
+  });
+}
+
+// A request_budget refusal is not retried.
+{
+  const sha = await digestOf(Uint8Array.of(12));
+  await scenario((url) => {
+    if (isLink(url)) return reply(429, { json: { reason: "request_budget" }, headers: { "Retry-After": "60" } });
+    throw new Error(`unexpected ${url}`);
+  }, async (calls) => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual(result.missing, ["fig.png"]);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(sleeps, []);
+  });
+}
+
+// A digest mismatch is not retried.
+{
+  const sha = await digestOf(Uint8Array.of(13));
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    return reply(200, { bytes: Uint8Array.of(99) });
+  }, async (calls) => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual(result.missing, ["fig.png"]);
+    assert.equal(calls.filter((call) => !isLink(call.url)).length, 1);
+    assert.deepEqual(sleeps, []);
+  });
+}
+
+// A stored entry that fails its digest is deleted, and the figure is fetched
+// and stored again.
+{
+  const body = Uint8Array.of(14, 15);
+  const sha = await digestOf(body);
+  const fake = fakeIndexedDB();
+  fake.databases.set(ASSET_DATABASE, new Map([["assets", new Map([[sha, { bytes: Uint8Array.of(0), size: 1, used: 1 }]])]]));
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    return reply(200, { bytes: body });
+  }, async (calls) => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual([...result.assets["fig.png"]], [...body]);
+    assert.equal(calls.filter((call) => !isLink(call.url)).length, 1, "fetched again");
+    await tick();
+    const stored = fake.databases.get(ASSET_DATABASE).get("assets").get(sha);
+    assert.deepEqual([...stored.bytes], [...body]);
+  }, { indexedDB: fake });
+}
+
+// The persistent store stays under its cap: the least recently used entries
+// go first, and an asset larger than the cap is never stored.
+{
+  const make = (fill) => Uint8Array.of(...new Array(40).fill(fill));
+  const first = make(1);
+  const second = make(2);
+  const third = make(3);
+  const huge = new Uint8Array(200).fill(4);
+  const all = [first, second, third, huge];
+  const shas = await Promise.all(all.map(digestOf));
+  const served = Object.fromEntries(shas.map((sha, i) => [sha, all[i]]));
+  const fake = fakeIndexedDB();
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    return reply(200, { bytes: served[url.split("/").pop()] });
+  }, async () => {
+    const store = () => fake.databases.get(ASSET_DATABASE).get("assets");
+    await gather("doc", { "1.png": shas[0] });
+    await tick();
+    await gather("doc", { "2.png": shas[1] });
+    await tick();
+    await gather("doc", { "3.png": shas[2] });
+    await tick();
+    assert.deepEqual([...store().keys()].sort(), [shas[1], shas[2]].sort(), "the oldest entry was evicted");
+    await gather("doc", { "huge.png": shas[3] });
+    await tick();
+    assert.equal(store().has(shas[3]), false, "an asset over the cap is not stored");
+  }, { indexedDB: fake, capBytes: 100 });
+}
+
+// With no IndexedDB at all the figures are still fetched.
+{
+  const body = Uint8Array.of(16);
+  const sha = await digestOf(body);
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    return reply(200, { bytes: body });
+  }, async () => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual([...result.assets["fig.png"]], [...body]);
+    assert.deepEqual(result.missing, []);
+  }, { indexedDB: null });
+}
+
+// After a sign-out nothing is written, and the store is not even opened. This
+// must stay the last test: the sign-out is for the rest of this process.
+{
+  const body = Uint8Array.of(17);
+  const sha = await digestOf(body);
+  const fake = fakeIndexedDB();
+  markSignedOut();
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    return reply(200, { bytes: body });
+  }, async () => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual([...result.assets["fig.png"]], [...body]);
+    await tick();
+    assert.equal(fake.opens, 0);
+    assert.equal(fake.databases.size, 0);
+  }, { indexedDB: fake });
+}
+
+console.log("figures: data URLs for images, blob URLs for PDFs, store, retries and fallbacks");
