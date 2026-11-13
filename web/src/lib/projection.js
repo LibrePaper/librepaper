@@ -93,6 +93,7 @@ function free(taken, path) {
 /// constrains upload, creation and rename, not what a download holds). It is
 /// in neither `files` nor the digest, and the `invalid-path` diagnostic is
 /// unchanged; only downloads read it. Ordered by path.
+/** @param {any} doc @param {any} rules @param {{ bodies?: boolean, bodyCache?: Map<string, { text: string, bytes: number }> }} [options] */
 export function projectDirectory(doc, rules, { bodies = true, bodyCache } = {}) {
   const diagnostics = [];
   const candidates = [];
