@@ -70,6 +70,10 @@ function free(taken, path) {
 /// The steps of §4.4, in order. `doc` is a `LoroDoc`; `rules` is the
 /// deployment's path rules as `/api/config` serves them.
 ///
+/// `bodyCache`, when given, maps a file id to `{ text, bytes }` and is read
+/// and filled for every text body. The caller must delete an id's entry
+/// whenever that text changes; see `project-session.js`.
+///
 /// Returns `{ files, diagnostics, texts, retained }`, where `files` maps
 /// a path to `{ kind, id, digest, bytes }` in UTF-8 path order and `texts`
 /// maps a path to its body. `retained` maps a path to the body of a text that
@@ -77,7 +81,7 @@ function free(taken, path) {
 /// constrains upload, creation and rename, not what a download holds). It is
 /// in neither `files` nor the digest, and the `invalid-path` diagnostic is
 /// unchanged; only downloads read it. Ordered by path.
-export function projectDirectory(doc, rules, { bodies = true } = {}) {
+export function projectDirectory(doc, rules, { bodies = true, bodyCache } = {}) {
   const diagnostics = [];
   const candidates = [];
 
@@ -106,14 +110,24 @@ export function projectDirectory(doc, rules, { bodies = true } = {}) {
       diagnostics.push({ kind: "unnamed", id });
       continue;
     }
-    const body = bodies ? value.toString() : null;
+    // A caller that keeps `bodyCache` across builds vouches that an entry is
+    // current for this id, so the body is not re-read and re-encoded.
+    let body = null;
+    let bytes = 0;
+    if (bodies && bodyCache?.has(id)) {
+      ({ text: body, bytes } = bodyCache.get(id));
+    } else if (bodies) {
+      body = value.toString();
+      bytes = encoder.encode(body).length;
+      bodyCache?.set(id, { text: body, bytes });
+    }
     candidates.push({
       asset: false,
       key: id,
       id,
       requested: named.get(id),
       digest: "",
-      bytes: bodies ? encoder.encode(body).length : 0,
+      bytes,
       text: body,
     });
   }

@@ -231,11 +231,40 @@ export function createProjectSession({
   // The last tree() build with the document version and rules it came from;
   // calls between changes reuse it.
   let treeCache = null;
+  // Each text's body and UTF-8 size, keyed by file id, for tree() builds. Both
+  // are O(file size) to produce, and a build made for every edit re-read every
+  // text in the project: on a 704-note project that was ~25 ms after a
+  // one-character edit, though only one text had changed. The subscription
+  // below drops the entry of each text an event names, and clears everything
+  // for an event it cannot attribute to one file (a file added or removed).
+  // tree() builds without the cache while a transaction is pending: its
+  // uncommitted edits are in the text but emit no event until committed, so
+  // they must not be stored here.
+  const bodyCache = new Map();
   // The four maps that are the directory itself. A change to any of them is a
   // change to the file list; a change under one of them is not, because a
   // file's text sits inside `files`.
   /** @type {Set<import("loro-crdt").ContainerID>} */
   const directory = new Set([files.id, paths.id, assets.id, meta.id]);
+  // Keeps `bodyCache` correct for the life of the session. An event whose path
+  // starts at `files` with a file id names the one text that changed. Anything
+  // else under `files` (the map itself, a key without an id) and any event
+  // without a path clears the cache.
+  const unsubscribeBodies = doc.subscribe((batch) => {
+    for (const event of batch.events) {
+      const path = event.path;
+      if (event.target === files.id || !Array.isArray(path)) {
+        bodyCache.clear();
+        return;
+      }
+      if (path[0] !== "files") continue;
+      if (typeof path[1] === "string") bodyCache.delete(path[1]);
+      else {
+        bodyCache.clear();
+        return;
+      }
+    }
+  });
   /** @type {EphemeralStore<{ [key: string]: PresenceState }>} */
   const store = new EphemeralStore(30000);
   // One presence key per person, not one key everybody writes to. The store is
@@ -825,6 +854,7 @@ export function createProjectSession({
     setRules(rules) {
       projectionRules = rules || {};
       treeCache = null;
+      bodyCache.clear();
     },
 
     /* --------------------------------------------------------- the directory */
@@ -922,7 +952,7 @@ export function createProjectSession({
       const pending = doc.getPendingTxnLength() > 0;
       if (pending || !treeCache || treeCache.rules !== projectionRules || treeCache.version.compare(version) !== 0) {
         const build = () => {
-          const projection = projectDirectory(doc, projectionRules);
+          const projection = projectDirectory(doc, projectionRules, { bodyCache: pending ? undefined : bodyCache });
           const texts = Object.create(null);
           const entries = Object.create(null);
           const digests = Object.create(null);
@@ -1373,6 +1403,8 @@ export function createProjectSession({
 
     leave() {
       stopHeartbeat();
+      unsubscribeBodies();
+      bodyCache.clear();
       clearPresenceTimer();
       clearPressureTimer();
       pendingPresence.clear();
