@@ -236,10 +236,10 @@ What it changes for privacy: the bucket's operator sees the reader's address and
 
 Where the server relays bytes (the byte route, and `/published/` and `/assets/`), a request that finds no transfer permit free waits for one instead of being refused:
 
-- **Transfer before work.** The transfer permit is acquired before the work permit, so a waiting request holds nothing but its task. Today's order (`cost.rs:425` then `513`) would let waiting requests sit on work permits and starve unrelated routes.
+- **Admitted first, then waiting without a work permit.** Authentication and the request budget run before the wait, so the budget counts every request that may wait. For the wait itself the request gives its work permit back, and takes one again once it holds a transfer permit. Waiting with a work permit held would let waiting requests starve unrelated routes; waiting before the budget would let requests queue without being counted (found by review, 2026-11-13).
 - **First come, first served.** `tokio::sync::Semaphore` hands permits out in order.
 - **A deadline, not a cap.** A request that has waited 10 seconds is refused with `transfer_concurrency`. The deadline is a policy about how long a page may wait for one file, not a guess at anybody's capacity.
-- **Bounded without another limit.** The deadline bounds how long each waiter lives, and the request budget (6000 a minute per principal) bounds how many arrive.
+- **Bounded without another limit.** The deadline bounds how long each waiter lives, and the request budget (6000 a minute per principal or network), charged before the wait, bounds how many arrive.
 
 One large project's burst now delays another reader's request by the time it takes to drain, instead of getting it refused. A fair share per principal would remove even that, and stays deferred (10.4).
 
