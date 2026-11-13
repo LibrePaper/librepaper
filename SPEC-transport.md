@@ -284,9 +284,24 @@ In the order they are expected to matter:
 3. **Data: URLs are made when asked for.** The store encodes a URL the first time a caller wants one for that asset, not for every asset it holds.
 4. **Include lookups are remembered per text.** `includersOf` keeps each text's list of names and parses a text again only when it differs.
 
+### 7.2a What the profile showed (2026-11-13)
+
+A project shaped like PR 94's (704 Markdown notes, 2 MiB of text; 84 figures, 12 MiB), timed in Node on `dev` for one render after a one-character edit:
+
+| Step | Before | After | Change |
+|---|---|---|---|
+| `session.tree()` | 25.6 ms | 8.6 ms | Text bodies re-read only for texts an event names (`bodyCache`); `compareUtf8` compares code points without encoding; path collisions checked through a prefix set instead of a scan of every taken path |
+| `previewTarget` | 1.6 ms | 1.8 ms | Unchanged: under the line |
+| `snapshotDigest`, per call (up to three per render) | 24 ms | 2.5 ms | Each path remembers its last text and digest |
+| Message to the worker | 32 ms | 0.7 ms | The worker keeps the render tree; the page sends what changed (`treeDelta`, `applyTree`) |
+| Hand-over into the module | 25–29 ms | 1.4 ms | `add_file` only for what changed; a removed path still clears and re-adds (`handOverChanged`) |
+| Compile of the note | 0.1 ms | 0.1 ms | |
+
+Outputs are unchanged: the digest and projection tests, the shared projection fixtures, and a comparison of the old and new `projectDirectory` on 800 random projects agree. Completion requests keep sending a whole tree of their own, outside the worker's copy.
+
 ### 7.3 LaTeX staging is left alone
 
-LaTeX flushes and rewrites its file systems on every compile because `flushCache` is the only way to remove a file, and a stale `.aux` left behind can break the next compile (`latex/worker.js:318-330`). Writing only what changed would need an engine command that removes one file, which is a change to `wasm-latex`. It is proposed only if the profile shows LaTeX staging above the 50 ms line, and then as its own decision.
+LaTeX flushes and rewrites its file systems on every compile because `flushCache` is the only way to remove a file, and a stale `.aux` left behind can break the next compile (`latex/worker.js:318-330`). Writing only what changed would need an engine command that removes one file, which is a change to `wasm-latex`. It is proposed only if the profile shows LaTeX staging above the 50 ms line, and then as its own decision. Measured in Chromium on the same project with pdfLaTeX: staging takes 108 ms per compile (0.8 ms for a two-file project), against 1.6 s for one TeX pass. It is above the line and about 7% of a compile, so it is left for that separate decision.
 
 ### 7.4 Identity
 
