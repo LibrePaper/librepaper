@@ -221,14 +221,53 @@ impl Server {
     }
 }
 
+/// How long a refused client is told to wait, in seconds. A concurrency
+/// refusal clears within a second or two of a burst draining; a budget or
+/// memory refusal is pacing over a minute or more.
+fn refusal_wait(reason: &str) -> u64 {
+    match reason {
+        "transfer_concurrency" | "work_concurrency" => 1,
+        _ => 60,
+    }
+}
+
 pub(super) fn refusal(reason: &str, scope: &str) -> Reply {
+    let wait = refusal_wait(reason);
     let mut response = write_json(
         429,
-        &json!({"error":"deployment resource allowance exhausted", "reason":reason, "scope":scope, "retryable":true, "retry_after":60}),
+        &json!({"error":"deployment resource allowance exhausted", "reason":reason, "scope":scope, "retryable":true, "retry_after":wait}),
     );
-    set(&mut response, "retry-after", "60");
+    set(&mut response, "retry-after", &wait.to_string());
     set(&mut response, "cache-control", "no-store");
     response
+}
+
+/// Whether a request's bytes are relayed by this server, and so take a
+/// transfer permit. A signed link (`/api/.../assets/{sha}/link`) does no byte
+/// work, so it is not a transfer path.
+fn transfer_path(path: &str) -> bool {
+    if path.starts_with("/published/") || path.starts_with("/assets/") {
+        return true;
+    }
+    path.starts_with("/api/") && path.contains("/assets/") && !path.ends_with("/link")
+}
+
+/// How long a page may wait for one relayed file before it is refused. A
+/// policy about how long a page may wait, not a guess at anybody's capacity.
+/// The wait happens before the work permit is taken, so a waiting request
+/// holds nothing but its own task.
+const TRANSFER_WAIT: Duration = Duration::from_secs(10);
+
+/// Waits up to `wait` for a transfer permit, first come first served. `None`
+/// means the deadline passed or the semaphore was closed.
+async fn acquire_transfer(
+    transfers: Arc<tokio::sync::Semaphore>,
+    wait: Duration,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    match tokio::time::timeout(wait, transfers.acquire_owned()).await {
+        Ok(Ok(permit)) => Some(permit),
+        _ => None,
+    }
 }
 
 fn control(path: &str, method: &Method) -> bool {
@@ -421,6 +460,20 @@ async fn middleware_inner(
     } else {
         None
     };
+    // The transfer permit comes before the work permit: a request waiting for
+    // a relayed file holds no work slot, so a burst of files cannot starve
+    // unrelated routes. It is held until the response body has streamed.
+    let permit = if transfer_path(&path) {
+        match acquire_transfer(server.cost.transfers.clone(), TRANSFER_WAIT).await {
+            Some(permit) => Some(permit),
+            None => {
+                server.metrics.record_refusal("transfer_concurrency");
+                return refusal("transfer_concurrency", "deployment");
+            }
+        }
+    } else {
+        None
+    };
     let is_control = control(&path, &method);
     let _work = match server.cost.work.clone().try_acquire_owned() {
         Ok(permit) => permit,
@@ -506,20 +559,6 @@ async fn middleware_inner(
         };
         return refusal("request_budget", scope);
     }
-    let permit = if path.starts_with("/published/")
-        || path.starts_with("/assets/")
-        || (path.starts_with("/api/") && path.contains("/assets/"))
-    {
-        match server.cost.transfers.clone().try_acquire_owned() {
-            Ok(permit) => Some(permit),
-            Err(_) => {
-                server.metrics.record_refusal("transfer_concurrency");
-                return refusal("transfer_concurrency", "deployment");
-            }
-        }
-    } else {
-        None
-    };
     request.extensions_mut().insert(RequestContext {
         arrival,
         peer,
@@ -1094,5 +1133,59 @@ mod comment_budget_tests {
         assert!(budgets.take("a", 1, 10));
         budgets.housekeep(11);
         assert!(budgets.spent.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod transfer_admission_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn refusals_say_how_long_to_wait() {
+        for (reason, wait) in [
+            ("transfer_concurrency", 1_u64),
+            ("work_concurrency", 1),
+            ("request_budget", 60),
+            ("request_memory", 60),
+        ] {
+            let reply = refusal(reason, "deployment");
+            assert_eq!(reply.headers()["retry-after"], wait.to_string(), "{reason}");
+            let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["retry_after"], wait, "{reason}");
+        }
+    }
+
+    #[test]
+    fn transfer_paths_are_the_relayed_ones_and_not_signed_links() {
+        assert!(transfer_path("/assets/app.js"));
+        assert!(transfer_path("/published/x"));
+        let digest = "a".repeat(64);
+        assert!(transfer_path(&format!("/api/documents/abc/assets/{digest}")));
+        assert!(!transfer_path(&format!(
+            "/api/documents/abc/assets/{digest}/link"
+        )));
+        assert!(!transfer_path("/api/documents/abc"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_waiting_transfer_gets_the_permit_when_one_frees() {
+        let transfers = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = transfers.clone().acquire_owned().await.unwrap();
+        let waiting = tokio::spawn(acquire_transfer(transfers.clone(), TRANSFER_WAIT));
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        drop(held);
+        assert!(waiting.await.unwrap().is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_transfer_still_waiting_after_the_deadline_is_refused() {
+        let transfers = Arc::new(tokio::sync::Semaphore::new(1));
+        let _held = transfers.clone().acquire_owned().await.unwrap();
+        let started = tokio::time::Instant::now();
+        assert!(acquire_transfer(transfers, TRANSFER_WAIT).await.is_none());
+        assert!(started.elapsed() >= TRANSFER_WAIT);
     }
 }
