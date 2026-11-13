@@ -2347,6 +2347,9 @@
   "readerb_preparing_export": "正在准备 {format}。",
   "readerb_quit_failed": "桌面应用无法退出。",
   "readerb_run_code_for_render": "开启“运行代码”以在这台电脑上渲染。",
+  "readerb_run_failed": "运行失败。请在“诊断”中查看日志。",
+  "readerb_run_quarto_hint": "此文档的代码尚未运行。点击“运行”即可在这台电脑上运行。",
+  "readerb_run_unmatched": "无法将运行输出与代码单元格对应。在下一次编辑之前，将按渲染结果显示。",
   "readerb_version_download_failed": "无法下载该版本。",
   "readerb_version_history": "版本历史",
   "readerc_cells_not_run": "代码单元格未运行。请在 LibrePaper 桌面应用中开启“运行代码”，以包含其结果。",
@@ -2990,7 +2993,31 @@
   "rundirectorycontrol_not_shared_unmatched": "结果未共享：无法将输出与代码单元格匹配。",
   "rundirectorycontrol_not_shared_failed": "结果未共享：上传失败。",
   "rundirectorycontrol_html_only": "仅共享 HTML 输出的结果。",
+  "runbutton_run": "运行",
+  "runbutton_stop": "停止",
+  "runbutton_run_hint": "在这台电脑上运行此文档的代码",
+  "runbutton_run_all": "运行所有单元格",
+  "runbutton_options": "运行选项",
+  "runbutton_directory": "运行文件夹和共享…",
+  "runbutton_last_run": "上次运行：{time}",
+  "runbutton_failed": "上次运行失败",
+  "runbutton_stale": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} 个代码单元格自上次运行后已更改",
+        "countPlural=*": "{count} 个代码单元格自上次运行后已更改"
+      }
+    }
+  ],
   "readerd_results_note": "来自 {name} 运行的代码输出，{date}。",
+  "readerd_results_note_own": "您的运行输出，{date}",
   "preview_render_run_directory_clash": "{path} 同时存在于 LibrePaper 和您的运行文件夹中。Markdown 使用 LibrePaper 中的副本；代码读取运行文件夹中的副本。",
   "preview_render_run_directory_not_linked": "运行文件夹中的 {path} 无法提供给 Quarto。",
   "preview_render_run_directory_missing_file": "代码会在您的运行文件夹中查找文件：{path}。",

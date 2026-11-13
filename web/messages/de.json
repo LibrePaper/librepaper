@@ -2362,6 +2362,9 @@
   "readerb_preparing_export": "{format} wird vorbereitet.",
   "readerb_quit_failed": "Die Desktop-App konnte nicht beendet werden.",
   "readerb_run_code_for_render": "Aktivieren Sie „Code ausführen“, um auf diesem Computer zu rendern.",
+  "readerb_run_failed": "Der Lauf ist fehlgeschlagen. Das Protokoll finden Sie unter Diagnose.",
+  "readerb_run_quarto_hint": "Der Code dieses Dokuments wurde noch nicht ausgeführt. Klicken Sie auf „Ausführen“, um ihn auf diesem Computer auszuführen.",
+  "readerb_run_unmatched": "Die Ausgabe des Laufs ließ sich keinen Codezellen zuordnen. Bis zur nächsten Änderung wird sie so angezeigt, wie sie gerendert wurde.",
   "readerb_version_download_failed": "Diese Version konnte nicht heruntergeladen werden.",
   "readerb_version_history": "Versionsverlauf",
   "readerc_cells_not_run": "Codezellen wurden nicht ausgeführt. Aktivieren Sie „Code ausführen“ in der LibrePaper-Desktop-App, um ihre Ergebnisse einzubeziehen.",
@@ -3005,7 +3008,31 @@
   "rundirectorycontrol_not_shared_unmatched": "Ergebnisse nicht geteilt: Die Ausgabe konnte den Code-Zellen nicht zugeordnet werden.",
   "rundirectorycontrol_not_shared_failed": "Ergebnisse nicht geteilt: Das Hochladen ist fehlgeschlagen.",
   "rundirectorycontrol_html_only": "Ergebnisse werden nur aus der HTML-Ausgabe geteilt.",
+  "runbutton_run": "Ausführen",
+  "runbutton_stop": "Stoppen",
+  "runbutton_run_hint": "Den Code dieses Dokuments auf diesem Computer ausführen",
+  "runbutton_run_all": "Alle Zellen ausführen",
+  "runbutton_options": "Ausführungsoptionen",
+  "runbutton_directory": "Ausführungsordner und Freigabe…",
+  "runbutton_last_run": "Letzter Lauf: {time}",
+  "runbutton_failed": "Der letzte Lauf ist fehlgeschlagen",
+  "runbutton_stale": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} Codezelle seit dem letzten Lauf geändert",
+        "countPlural=*": "{count} Codezellen seit dem letzten Lauf geändert"
+      }
+    }
+  ],
   "readerd_results_note": "Code-Ausgabe aus dem Lauf von {name}, {date}.",
+  "readerd_results_note_own": "Ausgabe Ihres Laufs, {date}",
   "preview_render_run_directory_clash": "{path} liegt in LibrePaper und in Ihrem Ausführungsordner. Markdown verwendet die Kopie aus LibrePaper; Code liest die Datei aus Ihrem Ausführungsordner.",
   "preview_render_run_directory_not_linked": "{path} aus Ihrem Ausführungsordner konnte Quarto nicht bereitgestellt werden.",
   "preview_render_run_directory_missing_file": "Der Code sucht Dateien in Ihrem Ausführungsordner: {path}.",

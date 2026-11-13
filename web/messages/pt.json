@@ -2362,6 +2362,9 @@
   "readerb_preparing_export": "Preparando o {format}.",
   "readerb_quit_failed": "Não foi possível encerrar o aplicativo de desktop.",
   "readerb_run_code_for_render": "Ative “Executar código” para renderizar neste computador.",
+  "readerb_run_failed": "A execução falhou. Veja o registro em Diagnósticos.",
+  "readerb_run_quarto_hint": "O código deste documento ainda não foi executado. Clique em “Executar” para executá-lo neste computador.",
+  "readerb_run_unmatched": "A saída da execução não pôde ser associada às células de código. Ela continua exibida como renderizada até a próxima edição.",
   "readerb_version_download_failed": "Não foi possível baixar essa versão.",
   "readerb_version_history": "Histórico de versões",
   "readerc_cells_not_run": "As células de código não foram executadas. Ative “Executar código” no aplicativo de desktop do LibrePaper para incluir os resultados delas.",
@@ -3005,7 +3008,31 @@
   "rundirectorycontrol_not_shared_unmatched": "Resultados não compartilhados: não foi possível associar a saída às células de código.",
   "rundirectorycontrol_not_shared_failed": "Resultados não compartilhados: o envio falhou.",
   "rundirectorycontrol_html_only": "Os resultados são compartilhados apenas a partir da saída HTML.",
+  "runbutton_run": "Executar",
+  "runbutton_stop": "Parar",
+  "runbutton_run_hint": "Executar o código deste documento neste computador",
+  "runbutton_run_all": "Executar todas as células",
+  "runbutton_options": "Opções de execução",
+  "runbutton_directory": "Pasta de execução e compartilhamento…",
+  "runbutton_last_run": "Última execução: {time}",
+  "runbutton_failed": "A última execução falhou",
+  "runbutton_stale": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} célula de código alterada desde a última execução",
+        "countPlural=*": "{count} células de código alteradas desde a última execução"
+      }
+    }
+  ],
   "readerd_results_note": "Resultado do código da execução de {name}, {date}.",
+  "readerd_results_note_own": "Resultado da sua execução, {date}",
   "preview_render_run_directory_clash": "{path} está no LibrePaper e na sua pasta de execução. O Markdown usa a cópia do LibrePaper; o código lê a da sua pasta de execução.",
   "preview_render_run_directory_not_linked": "Não foi possível disponibilizar {path}, da sua pasta de execução, ao Quarto.",
   "preview_render_run_directory_missing_file": "O código procura arquivos na sua pasta de execução: {path}.",

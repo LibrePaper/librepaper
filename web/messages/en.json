@@ -2362,6 +2362,9 @@
   "readerb_preparing_export": "Preparing the {format}.",
   "readerb_quit_failed": "The desktop app could not quit.",
   "readerb_run_code_for_render": "Turn on Run code to render on this computer.",
+  "readerb_run_failed": "The run failed. See the log in Diagnostics.",
+  "readerb_run_quarto_hint": "This document's code has not been run. Press Run to run it on this computer.",
+  "readerb_run_unmatched": "The run's output could not be matched to the code cells. It is shown as rendered until the next edit.",
   "readerb_version_download_failed": "That version could not be downloaded.",
   "readerb_version_history": "Version history",
   "readerc_cells_not_run": "Code cells were not run. Turn on Run code in the LibrePaper desktop app to include their results.",
@@ -3005,7 +3008,31 @@
   "rundirectorycontrol_not_shared_unmatched": "Results not shared: the output could not be matched to the code cells.",
   "rundirectorycontrol_not_shared_failed": "Results not shared: the upload failed.",
   "rundirectorycontrol_html_only": "Results are shared from HTML output only.",
+  "runbutton_run": "Run",
+  "runbutton_stop": "Stop",
+  "runbutton_run_hint": "Run this document's code on this computer",
+  "runbutton_run_all": "Run all cells",
+  "runbutton_options": "Run options",
+  "runbutton_directory": "Run directory and sharing…",
+  "runbutton_last_run": "Last run {time}",
+  "runbutton_failed": "The last run failed",
+  "runbutton_stale": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} code cell changed since the last run",
+        "countPlural=*": "{count} code cells changed since the last run"
+      }
+    }
+  ],
   "readerd_results_note": "Code output from {name}’s run, {date}.",
+  "readerd_results_note_own": "Output of your run, {date}",
   "preview_render_run_directory_clash": "{path} is in LibrePaper and in your Run directory. Markdown uses the LibrePaper copy; code reads the one in your Run directory.",
   "preview_render_run_directory_not_linked": "{path} in your Run directory could not be made available to Quarto.",
   "preview_render_run_directory_missing_file": "Code looks for files in your Run directory: {path}.",

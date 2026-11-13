@@ -2347,6 +2347,9 @@
   "readerb_preparing_export": "{format}を準備中です。",
   "readerb_quit_failed": "デスクトップアプリを終了できませんでした。",
   "readerb_run_code_for_render": "このコンピューターでレンダリングするには、「コードを実行」をオンにしてください。",
+  "readerb_run_failed": "実行に失敗しました。診断のログを確認してください。",
+  "readerb_run_quarto_hint": "このドキュメントのコードはまだ実行されていません。「実行」を押すと、このコンピューターで実行されます。",
+  "readerb_run_unmatched": "実行結果をコードセルに対応付けられませんでした。次の編集まで、レンダリングされたとおりに表示されます。",
   "readerb_version_download_failed": "そのバージョンをダウンロードできませんでした。",
   "readerb_version_history": "バージョン履歴",
   "readerc_cells_not_run": "コードセルは実行されませんでした。結果を含めるには、LibrePaperデスクトップアプリで「コードを実行」をオンにしてください。",
@@ -2990,7 +2993,31 @@
   "rundirectorycontrol_not_shared_unmatched": "結果は共有されていません: 出力をコードセルに対応付けられませんでした。",
   "rundirectorycontrol_not_shared_failed": "結果は共有されていません: アップロードに失敗しました。",
   "rundirectorycontrol_html_only": "結果は HTML 出力からのみ共有されます。",
+  "runbutton_run": "実行",
+  "runbutton_stop": "停止",
+  "runbutton_run_hint": "このドキュメントのコードをこのコンピューターで実行",
+  "runbutton_run_all": "すべてのセルを実行",
+  "runbutton_options": "実行オプション",
+  "runbutton_directory": "実行フォルダーと共有…",
+  "runbutton_last_run": "前回の実行：{time}",
+  "runbutton_failed": "前回の実行は失敗しました",
+  "runbutton_stale": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "前回の実行以降に変更されたコードセルが{count}件あります",
+        "countPlural=*": "前回の実行以降に変更されたコードセルが{count}件あります"
+      }
+    }
+  ],
   "readerd_results_note": "{name} の実行によるコードの出力、{date}。",
+  "readerd_results_note_own": "あなたの実行による出力、{date}",
   "preview_render_run_directory_clash": "{path} は LibrePaper と実行フォルダーの両方にあります。Markdown は LibrePaper のコピーを使い、コードは実行フォルダーのものを読み込みます。",
   "preview_render_run_directory_not_linked": "実行フォルダー内の {path} を Quarto で利用できるようにできませんでした。",
   "preview_render_run_directory_missing_file": "コードは実行フォルダー内のファイルを探しています: {path}。",
