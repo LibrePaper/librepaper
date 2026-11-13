@@ -53,16 +53,28 @@ function compareKeys(left, right) {
   return 0;
 }
 
+/// The collision keys taken so far. `keys` holds every taken key; `ancestors`
+/// holds every proper directory prefix of every taken key, so a key is a
+/// directory of something taken exactly when it is in `ancestors`.
+function createTaken() {
+  return { keys: new Set(), ancestors: new Set() };
+}
+
+function addTaken(taken, key) {
+  taken.keys.add(key);
+  for (let at = key.indexOf("/"); at !== -1; at = key.indexOf("/", at + 1)) {
+    taken.ancestors.add(key.slice(0, at));
+  }
+}
+
 /// Whether `path` may be taken: not already a file, not a directory prefix of
-/// a file already taken, and not under one. `taken` is a Set of collision
-/// keys.
+/// a file already taken, and not under one.
 function free(taken, path) {
   const key = collisionKey(path);
-  if (taken.has(key)) return false;
-  const under = `${key}/`;
-  for (const existing of taken) {
-    if (existing.startsWith(under)) return false;
-    if (key.startsWith(`${existing}/`)) return false;
+  if (taken.keys.has(key)) return false;
+  if (taken.ancestors.has(key)) return false;
+  for (let at = key.indexOf("/"); at !== -1; at = key.indexOf("/", at + 1)) {
+    if (taken.keys.has(key.slice(0, at))) return false;
   }
   return true;
 }
@@ -195,13 +207,13 @@ export function projectDirectory(doc, rules, { bodies = true, bodyCache } = {}) 
   });
 
   // 4. Reserve.
-  const taken = new Set();
+  const taken = createTaken();
   const placed = [];
   const deferred = [];
   for (const candidate of valid) {
     const normalised = normalisePath(candidate.requested);
     if (free(taken, normalised)) {
-      taken.add(collisionKey(normalised));
+      addTaken(taken, collisionKey(normalised));
       placed.push([candidate, normalised]);
     } else {
       deferred.push(candidate);
@@ -223,7 +235,7 @@ export function projectDirectory(doc, rules, { bodies = true, bodyCache } = {}) 
       diagnostics.push({ kind: "dropped", id: candidate.key, path: requested });
       continue;
     }
-    taken.add(collisionKey(chosen));
+    addTaken(taken, collisionKey(chosen));
     diagnostics.push({ kind: "moved", id: candidate.key, from: requested, to: chosen });
     placed.push([candidate, chosen]);
   }
@@ -269,7 +281,7 @@ export function projectDirectory(doc, rules, { bodies = true, bodyCache } = {}) 
       }
     }
     if (chosen === null) continue;
-    taken.add(collisionKey(chosen));
+    addTaken(taken, collisionKey(chosen));
     retainedList.push([chosen, candidate.text]);
   }
   retainedList.sort((left, right) => compareUtf8(left[0], right[0]));

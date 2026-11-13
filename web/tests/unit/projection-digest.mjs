@@ -20,7 +20,7 @@
 import { createHash } from "node:crypto";
 import { snapshotDigest } from "../../src/lib/renderers.js";
 import { canonicalBytes } from "../../src/lib/projection.js";
-import { __resetTextDigests } from "../../src/lib/projection-digest.js";
+import { __resetTextDigests, compareUtf8 } from "../../src/lib/projection-digest.js";
 
 function sha(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -133,6 +133,54 @@ const expectedB = sha(canonicalBytes({ main: "main.tex", files: [["a.tex", { kin
 for (let round = 0; round < 3; round += 1) {
   check("alternating trees: first tree keeps its own digest", (await snapshotDigest(treeA)) === expectedA, `round ${round}`);
   check("alternating trees: second tree keeps its own digest", (await snapshotDigest(treeB)) === expectedB, `round ${round}`);
+}
+
+// compareUtf8 must agree in sign with the byte-wise reference it replaced.
+const encoder = new TextEncoder();
+function referenceCompare(left, right) {
+  const a = encoder.encode(left);
+  const b = encoder.encode(right);
+  const length = Math.min(a.length, b.length);
+  for (let at = 0; at < length; at += 1) {
+    if (a[at] !== b[at]) return a[at] - b[at];
+  }
+  return a.length - b.length;
+}
+const orderPairs = [
+  ["a", "b"],
+  ["a", "ab"],
+  ["ab", "a"],
+  ["", "a"],
+  ["same", "same"],
+  ["café.tex", "cafe.tex"],
+  ["é", "z"],
+  ["图.png", "图.pdf"],
+  ["中", "a"],
+  ["😀.md", ".md"],
+  ["😀.md", "�.md"],
+  ["￿", "😀"],
+  ["", "😀"],
+  ["😀", "ﬀ"],
+  ["x\uD800", "x"],
+  ["x\uDC00y", "x😀"],
+  ["\uD800", ""],
+  ["\uDC00", "￿"],
+  ["\uD800\uD800", "𐀀"],
+];
+for (const [left, right] of orderPairs) {
+  const expected = Math.sign(referenceCompare(left, right));
+  const actual = Math.sign(compareUtf8(left, right));
+  check(
+    `compareUtf8 sign agrees with the byte order for ${JSON.stringify([left, right])}`,
+    actual === expected,
+    `expected ${expected}, got ${actual}`,
+  );
+  const reversed = Math.sign(compareUtf8(right, left));
+  check(
+    `compareUtf8 is antisymmetric for ${JSON.stringify([left, right])}`,
+    reversed === -expected,
+    `expected ${-expected}, got ${reversed}`,
+  );
 }
 
 if (!process.exitCode) console.log("projection-digest: all checks passed");

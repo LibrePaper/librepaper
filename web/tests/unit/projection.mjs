@@ -181,3 +181,63 @@ for (const testCase of corpus.cases) {
     "retained texts do not move the digest",
   );
 }
+
+// Directory and file collisions, both orders: a taken file blocks a directory
+// of the same name, and a taken directory blocks a file under it.
+{
+  const retainRules = { ...rules, text_extensions: [".md"], asset_extensions: [], derived_extensions: [] };
+  const add = (files, paths, id, path, body) => {
+    const text = files.setContainer(id, new LoroText());
+    text.insert(0, body);
+    paths.set(id, path);
+  };
+  const fileFirst = new LoroDoc();
+  add(fileFirst.getMap("files"), fileFirst.getMap("paths"), "aaa", "a", "file");
+  add(fileFirst.getMap("files"), fileFirst.getMap("paths"), "bbb", "a/b.md", "under");
+  const one = await project(fileFirst, retainRules);
+  const twice = await project(fileFirst, retainRules);
+  assert.deepEqual(normalise(actualOf(one, "")), normalise(actualOf(twice, "")), "collisions are deterministic");
+  assert.ok(one.diagnostics.some((d) => d.kind === "moved" || d.kind === "dropped"), "a file and a directory of the same name collide");
+  for (const path of one.files.keys()) {
+    for (const other of one.files.keys()) {
+      assert.ok(
+        path === other || !other.startsWith(`${path}/`),
+        `${path} and ${other} are both placed, one under the other`,
+      );
+    }
+  }
+
+  const dirFirst = new LoroDoc();
+  add(dirFirst.getMap("files"), dirFirst.getMap("paths"), "aaa", "x/y.md", "under");
+  add(dirFirst.getMap("files"), dirFirst.getMap("paths"), "bbb", "x", "file");
+  const dirResult = await project(dirFirst, retainRules);
+  assert.ok(dirResult.diagnostics.some((d) => d.kind === "moved" || d.kind === "dropped"), "x taken then x/y.md collides");
+  for (const path of dirResult.files.keys()) {
+    for (const other of dirResult.files.keys()) {
+      assert.ok(path === other || !other.startsWith(`${path}/`), `${path} and ${other} are both placed, one under the other`);
+    }
+  }
+}
+
+// A larger project is placed deterministically and without collisions.
+{
+  const retainRules = { ...rules, text_extensions: [".md"], asset_extensions: [], derived_extensions: [] };
+  const build300 = () => {
+    const doc = new LoroDoc();
+    const files = doc.getMap("files");
+    const paths = doc.getMap("paths");
+    for (let i = 0; i < 300; i += 1) {
+      const id = `f${String(i).padStart(3, "0")}`;
+      const text = files.setContainer(id, new LoroText());
+      text.insert(0, `body ${i}`);
+      const dir = `d${i % 7}`;
+      paths.set(id, i % 3 === 0 ? `${dir}/n${i}.md` : `${dir}/sub/n${i}.md`);
+    }
+    return doc;
+  };
+  const first = await project(build300(), retainRules);
+  const second = await project(build300(), retainRules);
+  assert.deepEqual(normalise(actualOf(first, "")), normalise(actualOf(second, "")), "300 files project deterministically");
+  assert.equal(first.files.size, 300);
+  assert.deepEqual(first.diagnostics, []);
+}
