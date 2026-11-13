@@ -11,7 +11,7 @@
 // URL (see `cache.js`); the second document that imports cetz costs nothing.
 
 import { cached } from "./cache.js";
-import { call, handOver, needsOf } from "./renderer-wasm.js";
+import { call, handOverChanged, needsOf } from "./renderer-wasm.js";
 
 /// How many fetch-and-compile rounds one render may take. Dependencies nest a
 /// few levels deep at most; a document that still needs something after this
@@ -84,7 +84,7 @@ export async function renderResolving(wasm, tree, title, fetched, options = {}) 
     throw new Error("Typst HTML rendering is unavailable: this renderer module does not export compile_html");
   }
   for (let round = 0; ; round++) {
-    handOver(wasm, tree);
+    handOverChanged(wasm, tree);
     for (const [path, bytes] of fetched) {
       if (path in (tree.texts || {}) || path in (tree.assets || {})) continue;
       call(wasm, "add_file", path, bytes);

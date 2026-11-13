@@ -1,4 +1,4 @@
-import { load, call, handOver } from "./renderer-wasm.js";
+import { load, call, handOverChanged, applyTree, emptyMirror } from "./renderer-wasm.js";
 import { renderResolving } from "./needs.js";
 
 // What earlier compiles fetched -- packages -- for the life of this worker.
@@ -16,7 +16,7 @@ const rendererScope = /** @type {RendererWorkerScope} */ (/** @type {unknown} */
 /** @param {import("./renderer-wasm.js").RendererWasm} wasm @param {RendererArgs} args */
 function complete(wasm, { tree, path = "", source = "", offset = 0, explicit = false }) {
   if (typeof wasm.complete !== "function") return null;
-  handOver(wasm, tree);
+  handOverChanged(wasm, tree);
   // A fresh module has none of the packages fetched by earlier renders.
   for (const [file, bytes] of fetched) {
     if (file in (tree.texts || {}) || file in (tree.assets || {})) continue;
@@ -33,7 +33,7 @@ function complete(wasm, { tree, path = "", source = "", offset = 0, explicit = f
 // fall back from.
 function draft(wasm, tree, forPandoc) {
   if (typeof wasm.draft !== "function") throw new Error("this renderer module has no Quarto support");
-  handOver(wasm, tree);
+  handOverChanged(wasm, tree);
   const { bytes, diagnostics } = call(wasm, "draft", tree.texts?.[tree.main] ?? "", forPandoc ? 1 : 0);
   const text = new TextDecoder().decode(bytes);
   const parsed = text ? JSON.parse(text) : { markdown: "", line_map: [] };
@@ -55,11 +55,21 @@ async function render(wasm, tree, title, format) {
   return { html: null, pdf: null, diagnostics: said };
 }
 
+// What the page last sent for this worker's tree. Deltas are applied inside the
+// queue, so they land in the order the page sent them.
+let mirror = emptyMirror();
+
 // Keep ABI operations ordered even while the module is downloading.
 let queue = Promise.resolve();
-rendererScope.onmessage = ({ data: { id, url, operation, args } }) => {
+rendererScope.onmessage = ({ data: { id, url, operation, args: incoming } }) => {
   queue = queue.then(async () => {
     try {
+      let args = incoming;
+      if (incoming?.tree) {
+        const applied = applyTree(mirror, incoming.tree);
+        mirror = applied.mirror;
+        args = { ...incoming, tree: applied.tree };
+      }
       const wasm = await load(url);
       let result;
       if (operation === "render") result = await render(wasm, args.tree, args.title, args.format);

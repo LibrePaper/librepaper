@@ -168,6 +168,81 @@ export function handOver(wasm, tree) {
   call(wasm, "set_main", tree.main || "");
 }
 
+// What each module holds from the page's tree, as of its last hand-over. A
+// package fetched by `needs.js` is not recorded: it is not in the tree, and a
+// full hand-over (which clears the map) drops it. See `renderResolving`.
+const held = new WeakMap();
+
+function recordOf(texts, assets, urls) {
+  return {
+    files: new Map([...Object.entries(texts), ...Object.entries(assets)]),
+    urls: new Map(Object.entries(urls)),
+  };
+}
+
+/// As `handOver`, but sends only what differs from what this module already
+/// holds. Any path the module holds that the tree no longer has, or a new
+/// worker, means a full hand-over. A failed hand-over leaves no record, so the
+/// next one is full.
+/** @param {RendererWasm} wasm @param {{main?: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array>, urls?: Record<string, string>}} tree */
+export function handOverChanged(wasm, tree) {
+  const texts = tree.texts || {};
+  const assets = tree.assets || {};
+  const urls = tree.urls || {};
+  const record = held.get(wasm);
+  held.delete(wasm);
+  const covered = record
+    && [...record.files.keys()].every((path) => Object.hasOwn(texts, path) || Object.hasOwn(assets, path))
+    && [...record.urls.keys()].every((path) => Object.hasOwn(urls, path));
+  if (!covered) {
+    handOver(wasm, tree);
+    held.set(wasm, recordOf(texts, assets, urls));
+    return;
+  }
+  for (const [path, body] of Object.entries(texts)) {
+    if (record.files.get(path) !== body) call(wasm, "add_file", path, body);
+  }
+  for (const [path, bytes] of Object.entries(assets)) {
+    if (record.files.get(path) !== bytes) call(wasm, "add_file", path, bytes);
+  }
+  for (const [path, url] of Object.entries(urls)) {
+    if (record.urls.get(path) !== url) call(wasm, "set_asset_url", path, url);
+  }
+  call(wasm, "set_main", tree.main || "");
+  held.set(wasm, recordOf(texts, assets, urls));
+}
+
+/// The worker's copy of the page's tree. Null-prototype maps, so a path such
+/// as `__proto__` is an ordinary key.
+export function emptyMirror() {
+  return { texts: Object.create(null), assets: Object.create(null), urls: Object.create(null) };
+}
+
+/// Applies one delta from the page (see `treeDelta` in `renderer-client.js`)
+/// to the mirror and returns the new mirror and the full tree it stands for.
+/** @param {{texts: Record<string, string>, assets: Record<string, Uint8Array>, urls: Record<string, string>}} mirror @param {{full: boolean, main?: string, settings?: object, texts?: Record<string, string>, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, removed?: {texts?: string[], assets?: string[], urls?: string[]}}} delta */
+export function applyTree(mirror, delta) {
+  let next = mirror;
+  if (delta.full) {
+    next = {
+      texts: Object.assign(Object.create(null), delta.texts),
+      assets: Object.assign(Object.create(null), delta.assets),
+      urls: Object.assign(Object.create(null), delta.urls),
+    };
+  } else {
+    Object.assign(next.texts, delta.texts || {});
+    Object.assign(next.assets, delta.assets || {});
+    Object.assign(next.urls, delta.urls || {});
+    for (const path of delta.removed?.texts || []) delete next.texts[path];
+    for (const path of delta.removed?.assets || []) delete next.assets[path];
+    for (const path of delta.removed?.urls || []) delete next.urls[path];
+  }
+  return {
+    mirror: next,
+    tree: { main: delta.main, settings: delta.settings, texts: next.texts, assets: next.assets, urls: next.urls },
+  };
+}
+
 /// What the last compile went looking for and did not find -- packages and
 /// font families -- from a module that says so, or `null` from one that has
 /// no such export (markdown) or has compiled nothing yet. See `needs.js`.
