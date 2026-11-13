@@ -206,7 +206,11 @@ async function localHtml(format, artifact) {
 /// A render carries `html` or `pdf`, never both, and the caller posts
 /// whichever it has: flow documents are painted into the shell and paged
 /// documents into the PDF frame, and that is the whole difference here.
-export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "" } = {}) {
+///
+/// An optional `signal` stops a render on this computer: one already aborted
+/// when the job would start throws an `AbortError` without starting it, and
+/// one that fires later cancels the job in flight.
+export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "", signal = null } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = previewFormatOf(tree.main);
   // A format set to this computer renders there, through the command Settings
@@ -216,9 +220,13 @@ export async function render(tree, title, { manual = false, format: requestedFor
   if (output && buildPreferences?.backend === "local") {
     localBridge.configure({ project, origin: globalThis.location?.origin || "" });
     const digest = await snapshotDigest(tree);
+    // Stop pressed while the snapshot was being hashed: nothing has started,
+    // so the job in flight (if any) is not another render's to cancel.
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const job = { snapshot: digest, generation: Date.now() };
     activeLocalAbort?.abort();
     const abort = new AbortController();
+    signal?.addEventListener("abort", () => abort.abort(), { once: true });
     activeLocalAbort = abort;
     const result = await localBridge.runRender({ job, tree, format, output, entrypoint: tree.main }, { signal: abort.signal });
     // A Quarto run that could not find a file is told where its code looks.

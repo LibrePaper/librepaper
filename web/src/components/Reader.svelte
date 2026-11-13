@@ -453,7 +453,14 @@
   // code reads from the Run directory that is missing. Kept here for the same
   // reason as the log: the next draft render would otherwise erase it.
   let runDiagnostics = $state.raw([]);
-  const lastRunAt = $derived(ownResults?.updatedAt ?? "");
+  // A Run to PDF keeps no per-cell results, so its time is kept on its own.
+  let lastPdfRunAt = $state("");
+  const lastRunAt = $derived(
+    (ownResults?.updatedAt ?? "") > lastPdfRunAt ? ownResults?.updatedAt ?? "" : lastPdfRunAt,
+  );
+  // The running Run's controller, so Stop can end the job before it starts as
+  // well as while it runs. Not reactive: nothing renders from it.
+  let runAbort = null;
   // A Quarto document needs a folder to run its code in. Its code never runs
   // on this computer until Run is pressed and a folder is set.
   let runDirectory = $state("");
@@ -2328,6 +2335,17 @@
     const navigation = target.navigation;
     const source = schedule.generation;
     const gone = () => mine !== runGeneration || readerDisposed;
+    const controller = new AbortController();
+    runAbort = controller;
+    // The run's own page replaces the draft, unless the reader moved to
+    // another file or edited since. Bumping the target keeps a draft that is
+    // still in flight from painting over it.
+    const showRunPage = (tree, page) => {
+      if (navigation === target.navigation && source === schedule.generation && tree.main === previewPath) {
+        target.bump();
+        framePreview?.publish(page);
+      }
+    };
     try {
       const tree = capturePreviewTree(treeNow());
       if (Object.keys(tree.digests || {}).length) {
@@ -2338,25 +2356,50 @@
       }
       const heading = await headingOf(tree);
       if (gone()) return;
+      const toPdf = buildPreferences.output === "pdf";
       const rendered = await renderers.render(tree, heading, {
-        buildPreferences: { ...buildPreferences, backend: "local", output: "html" },
+        buildPreferences: { ...buildPreferences, backend: "local", output: toPdf ? "pdf" : "html" },
         project: SLUG,
+        signal: controller.signal,
       });
       if (gone()) return;
       // The run's log is what Diagnostics shows, whether it worked or not.
       runLog = rendered?.log || "";
       runDiagnostics = rendered?.diagnostics || [];
+      if (toPdf) {
+        if (rendered?.ok === false || !rendered?.pdf) {
+          runPhase = "failed";
+          return;
+        }
+        // The PDF is the run's page as it came, with the code's output in it;
+        // there is nothing to split. The next edit repaints the browser PDF
+        // draft as usual, which is intended: the draft cannot show outputs.
+        const digest = await renderers.snapshotDigest(tree);
+        if (gone()) return;
+        runPhase = "idle";
+        lastPdfRunAt = new Date().toISOString();
+        showRunPage(tree, { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() });
+        return;
+      }
       if (rendered?.ok === false || typeof rendered?.html !== "string") {
         runPhase = "failed";
         return;
       }
+      // Inline expressions have no cell to be spliced under, so a document
+      // with any shows the run's own page until the next edit.
+      const hasInline = quarto.parseQuarto(tree.texts[tree.main] ?? "", { path: tree.main }).inlineRecords.length > 0;
       const split = await splitResults(rendered.html, tree.texts[tree.main] ?? "", { path: tree.main });
       if (gone()) return;
       if (split.ok) {
         ownResults = { cells: split.record.cells, path: tree.main, updatedAt: new Date().toISOString() };
         runPhase = "idle";
-        stopRendering();
-        void paintPreview();
+        // The next edit's draft carries the outputs either way (ownResults);
+        // a repaint now would replace the page that shows the inline results.
+        if (hasInline) showRunPage(tree, { kind: "html", html: rendered.html });
+        else {
+          stopRendering();
+          void paintPreview();
+        }
         // Sharing may have been turned off, or edit access lost, while the
         // run was being split: the choice at upload time is the one that counts.
         if (shareResults && mayEdit) {
@@ -2368,19 +2411,17 @@
       if (split.reason === "no-cells") {
         // A document without code cells has nothing to share and nothing to complain about.
         sharedResults.skip("none");
-        stopRendering();
-        void paintPreview();
+        if (hasInline) showRunPage(tree, { kind: "html", html: rendered.html });
+        else {
+          stopRendering();
+          void paintPreview();
+        }
         return;
       }
       // The output could not be matched to the cells, so it cannot be spliced
-      // into the draft: show the run's own page instead, unless the reader
-      // moved to another file or edited since. Bumping the target keeps a
-      // draft that is still in flight from painting over it.
+      // into the draft: show the run's own page instead.
       sharedResults.skip("unmatched");
-      if (navigation === target.navigation && source === schedule.generation && tree.main === previewPath) {
-        target.bump();
-        framePreview?.publish({ kind: "html", html: rendered.html });
-      }
+      showRunPage(tree, { kind: "html", html: rendered.html });
       say(m.readerb_run_unmatched());
     } catch (error) {
       // A run that threw (the desktop app went away, say) leaves its reason
@@ -2389,10 +2430,15 @@
       runPhase = "failed";
       runLog = error?.message || String(error);
       runDiagnostics = [];
+    } finally {
+      if (runAbort === controller) runAbort = null;
     }
   }
   function stopRun() {
     runGeneration++;
+    // The signal also stops a run that has not started its job yet, which
+    // cancelPreview alone cannot reach.
+    runAbort?.abort();
     renderers.cancelPreview({ keepWarm: true });
     runPhase = "idle";
   }
