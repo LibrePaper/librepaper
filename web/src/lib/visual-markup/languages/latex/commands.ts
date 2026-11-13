@@ -43,8 +43,6 @@ export const REF_COMMANDS = new Set([
   'ref', 'eqref', 'autoref', 'cref', 'Cref', 'pageref', 'nameref'
 ]);
 
-export const INCLUDE_COMMANDS = new Set(['input', 'include', 'subfile']);
-
 // Commands whose arguments are literal (URLs), so markup such as `~` inside them is not parsed.
 export const LITERAL_ARGUMENT_COMMANDS = new Set(['url', 'href']);
 

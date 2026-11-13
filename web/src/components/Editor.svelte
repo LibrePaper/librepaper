@@ -262,7 +262,7 @@
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
   import { FLASH_MS, flashPresence, presenceFlash } from "../lib/presence-flash.js";
-  import { formatOf as documentFormat } from "../lib/formats.js";
+  import { formatOf as documentFormat, sourceFormatOf } from "../lib/formats.js";
   import { spellcheckExtension } from "../lib/spellcheck/extension.js";
   import { harperExtension } from "../lib/harper/extension.js";
   import { harperAvailable } from "../lib/harper/client.js";
@@ -1749,7 +1749,7 @@
     if (!on) return [];
     if (/\.(md|markdown|qmd|org|typ)$/i.test(path)) {
       const format = /\.org$/i.test(path) ? "org" : /\.qmd$/i.test(path) ? "quarto" : /\.typ$/i.test(path) ? "typst" : "markdown";
-      return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", project: format === "typst" ? () => paperProject(path) : null });
+      return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", project: format === "typst" ? () => paperProject(path) : null, openInclude: (name) => openIncluded(path, name) });
     }
     return visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) });
   }
@@ -1763,7 +1763,9 @@
   function openIncluded(from, name) {
     const doc = session?.doc;
     if (!doc) return;
-    const id = textIdForPath(doc, resolveInclude("latex", from, name, treeForDoc(doc).texts));
+    // The file's own format decides how its include names resolve: LaTeX adds .tex and looks at the root,
+    // Typst reads a leading slash, Markdown, Quarto and Org read the name beside the file.
+    const id = textIdForPath(doc, resolveInclude(sourceFormatOf(from), from, name, treeForDoc(doc).texts));
     if (id) openAt(id, 1);
   }
 

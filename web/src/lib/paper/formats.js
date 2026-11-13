@@ -9,6 +9,7 @@ import { orgBlockSource, splitOrgBlocks } from "./org-blocks.js";
 import { splitTypstBlocks, typstBlockSource, typstPreamble } from "./typst-blocks.js";
 import { loadOrgSyntax } from "../org-language/module.js";
 import { loadTypstSyntax } from "../typst-language/module.js";
+import { markdownFolds, orgFolds, typstFolds } from "../visual/fold-finders.js";
 
 /**
  * @typedef {{
@@ -18,6 +19,7 @@ import { loadTypstSyntax } from "../typst-language/module.js";
  *   renderedBlocks?: (text: string, renderer: import("./renderer.js").PaperRenderer, path: string) => import("./blocks.js").PaperBlock[] | null,
  *   ready: () => Promise<void>,
  *   prepare?: (text: string, renderer: any, project: any, onUpdate: () => void) => void,
+ *   folds: (text: string) => import("../visual/folds.js").Fold[],
  * }} PaperFormat
  */
 
@@ -71,6 +73,7 @@ const formats = {
     blockSource,
     renderedBlocks: renderedBlocksOf,
     ready: () => Promise.resolve(),
+    folds: markdownFolds,
   },
   quarto: {
     module: "markdown",
@@ -79,18 +82,21 @@ const formats = {
     blockSource: () => "",
     renderedBlocks: renderedBlocksOf,
     ready: () => Promise.resolve(),
+    folds: markdownFolds,
   },
   org: {
     module: "org",
     splitBlocks: splitOrgBlocks,
     blockSource: orgBlockSource,
     ready: () => loadOrgSyntax().then(() => {}),
+    folds: orgFolds,
   },
   typst: {
     module: "typst",
     splitBlocks: splitTypstBlocks,
     blockSource: typstBlockSource,
     ready: () => loadTypstSyntax().then(() => {}),
+    folds: typstFolds,
     // Fetches the images and packages the project needs, then asks for a redraw.
     prepare(text, renderer, project, onUpdate) {
       const blocks = splitTypstBlocks(text);

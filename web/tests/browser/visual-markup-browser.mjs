@@ -410,13 +410,13 @@ async function visualCheck() {
   const parked = {
     editor: document.querySelector(".cm-editor")?.classList.contains("cm-lv-parked") ?? false,
     cursor: getComputedStyle(document.querySelector(".cm-editor .cm-cursorLayer")).visibility,
-    preambles: document.querySelectorAll(".cm-editor .cm-lp-preamble").length,
+    preambles: document.querySelectorAll(".cm-editor .cm-lp-fold-preamble").length,
     documentclass: visibleText().includes("\\documentclass"),
   };
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\section{Results}") + 2 } });
   await settle();
   parked.afterMove = document.querySelector(".cm-editor")?.classList.contains("cm-lv-parked") ?? false;
-  const fullPreambles = document.querySelectorAll(".cm-editor .cm-lp-preamble");
+  const fullPreambles = document.querySelectorAll(".cm-editor .cm-lp-fold-preamble");
   const fullBody = {
     parked,
     katexShown: fullKatexShown,
@@ -430,18 +430,18 @@ async function visualCheck() {
     text: visibleText(),
   };
   // A click on the folded preamble shows its source, with the caret still in the body.
-  const preambleBlock = document.querySelector(".cm-editor .cm-lp-preamble");
+  const preambleBlock = document.querySelector(".cm-editor .cm-lp-fold-preamble");
   preambleBlock?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
   await settle();
   const fullPreambleClick = {
     found: Boolean(preambleBlock),
-    preambleCount: document.querySelectorAll(".cm-editor .cm-lp-preamble").length,
+    preambleCount: document.querySelectorAll(".cm-editor .cm-lp-fold-preamble").length,
     text: visibleText(),
   };
   view().dispatch({ selection: { anchor: 5 } });
   await settle();
   const fullPreamble = {
-    preambleCount: document.querySelectorAll(".cm-editor .cm-lp-preamble").length,
+    preambleCount: document.querySelectorAll(".cm-editor .cm-lp-fold-preamble").length,
     text: visibleText(),
   };
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\end{document}") + 2 } });
@@ -477,7 +477,7 @@ async function visualCheck() {
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Method") + 2 } });
   await settle();
   const textOf = (selector) => document.querySelector(`.cm-editor ${selector}`)?.textContent.trim() ?? null;
-  const include = document.querySelector(".cm-editor .cm-lp-include");
+  const include = document.querySelector(".cm-editor .cm-lp-fold-include");
   const refsCheck = {
     title: {
       main: textOf(".cm-lp-title-main"),
@@ -486,7 +486,7 @@ async function visualCheck() {
     },
     include: {
       text: include?.textContent ?? null,
-      open: Boolean(include?.querySelector(".cm-lp-include-open")),
+      open: Boolean(include?.querySelector(".cm-lp-fold-open")),
     },
     refTexts: Array.from(document.querySelectorAll(".cm-editor .cm-lp-ref"), (node) => node.textContent.trim()),
     katexTexts: Array.from(document.querySelectorAll(".cm-editor .katex"), (node) => node.textContent),
@@ -506,7 +506,7 @@ async function visualCheck() {
   const titleClick = {
     head: view().state.selection.main.head,
     text: visibleText(),
-    chips: texts(".cm-lp-preamble"),
+    chips: texts(".cm-lp-fold-preamble"),
     main: textOf(".cm-lp-title-main"),
   };
   const titleEnd = refsSource.indexOf("A Study") + "A Study".length;
@@ -522,7 +522,7 @@ async function visualCheck() {
   const dateClick = { head: view().state.selection.main.head };
   view().dispatch({ selection: { anchor: 5 } });
   await settle();
-  const preambleAt5 = { chips: texts(".cm-lp-preamble"), text: visibleText() };
+  const preambleAt5 = { chips: texts(".cm-lp-fold-preamble"), text: visibleText() };
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\maketitle") + 2 } });
   await settle();
   const maketitleText = visibleText();
@@ -542,7 +542,7 @@ async function visualCheck() {
     affils: texts(".cm-lp-title-affil"),
   };
   await partClick(".cm-lp-title-main");
-  sample.click = { head: view().state.selection.main.head, preambles: texts(".cm-lp-preamble").length };
+  sample.click = { head: view().state.selection.main.head, preambles: texts(".cm-lp-fold-preamble").length };
 
   const titleBlock = { titleClick, liveTitle, restored, authorClick, dateClick, preambleAt5, maketitleText, sample };
 
@@ -927,7 +927,7 @@ try {
   // and page break fold into chips, math environments are typeset, and the
   // preamble source shows with the caret in it.
   assert.equal(result.full.body.katexShown, true, "KaTeX did not typeset the math environments in full.tex within five seconds");
-  assert.equal(result.full.body.preambleCount, 1, "the LaTeX preamble did not fold into exactly one .cm-lp-preamble block with the caret in the body");
+  assert.equal(result.full.body.preambleCount, 1, "the LaTeX preamble did not fold into exactly one .cm-lp-fold-preamble block with the caret in the body");
   assert.match(result.full.body.preambleText, /Preamble\s*article · 4 packages/, "the preamble disclosure did not read as 'Preamble' then 'article · 4 packages'");
   // The label keys show as tags now, so only the command names are hidden here.
   // The bibliography chip names its style and database, so "references" is not
@@ -961,7 +961,7 @@ try {
   assert.equal(result.full.preamble.preambleCount, 0, "the preamble block stayed when the caret moved into the preamble");
   assert.ok(result.full.preamble.text.includes("\\documentclass"), "the preamble source did not show with the caret in the preamble");
   assert.ok(result.full.end.text.includes("\\end{document}"), "\\end{document} did not show with the caret on that line");
-  assert.equal(result.full.preambleClick.found, true, "no .cm-lp-preamble block to click with the caret in the body");
+  assert.equal(result.full.preambleClick.found, true, "no .cm-lp-fold-preamble block to click with the caret in the body");
   assert.ok(result.full.preambleClick.text.includes("\\documentclass"), "a click on the preamble block did not show its source");
   assert.equal(result.full.preambleClick.preambleCount, 0, "the preamble block stayed after a click on it");
   assert.equal(result.full.display.shown, true, "no .cm-lv-math-display was drawn in full.tex");
@@ -977,8 +977,8 @@ try {
   assert.equal(result.refs.title.main, "A Study", "the \\title text was not drawn in .cm-lp-title-main");
   assert.ok(result.refs.title.author.includes("Ada") && result.refs.title.author.includes("Bob"), "the \\author names were not drawn in .cm-lp-title-author");
   assert.equal(result.refs.title.date, "2020", "the \\date text was not drawn in .cm-lp-title-date");
-  assert.ok(result.refs.include.text.includes("sections/intro"), "the \\input name was not drawn in .cm-lp-include");
-  assert.equal(result.refs.include.open, true, "the \\input widget has no .cm-lp-include-open button");
+  assert.ok(result.refs.include.text.includes("sections/intro"), "the \\input name was not drawn in .cm-lp-fold-include");
+  assert.equal(result.refs.include.open, true, "the \\input widget has no .cm-lp-fold-open button");
   assert.ok(result.refs.refTexts.includes("(1)"), `the \\eqref did not show (1); .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
   assert.ok(result.refs.refTexts.includes("2"), `the \\ref to Method did not show 2; .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
   assert.ok(result.refs.refTexts.includes("??"), `the \\ref to a missing label did not show ??; .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
@@ -1005,7 +1005,10 @@ try {
   for (const source of ["\\documentclass", "\\author", "\\maketitle"]) {
     assert.equal(tb.titleClick.text.includes(source), false, `${source} is still visible after a click on the title`);
   }
-  assert.deepEqual(tb.titleClick.chips, [refsSummary, "More preamble"], `the preamble chips after a click on the title were ${JSON.stringify(tb.titleClick.chips)}`);
+  // The preamble splits around the title's line: the first piece reads its summary, the second is a fold of its own.
+  // Whitespace is left out of the comparison, since the pill's label and detail are separate elements.
+  assert.equal(tb.titleClick.chips.length, 2, `the preamble folds after a click on the title were ${JSON.stringify(tb.titleClick.chips)}`);
+  assert.equal(tb.titleClick.chips[0].replace(/\s+/g, ""), refsSummary.replace(/\s+/g, ""), `the first preamble fold after a click on the title was ${JSON.stringify(tb.titleClick.chips[0])}`);
   assert.equal(tb.titleClick.main, "A Study", "the title block changed after a click on the title");
   assert.equal(tb.liveTitle, "A Study II", "an edit to the title did not draw in the title block within 300 ms");
   assert.equal(tb.restored, true, "the title edit was not taken out of refs.tex");
