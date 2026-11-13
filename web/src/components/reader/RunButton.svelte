@@ -13,7 +13,7 @@
 
   let {
     phase = "idle", stale = 0, lastRunAt = "", onrun = () => {}, onstop = () => {}, ondirectory = () => {},
-    share = true, onshare = () => {}, shareLine = "", directoryName = "", directoryPath = "", directoryMissing = false,
+    share = true, onshare = () => {}, directoryName = "", directoryPath = "", directoryMissing = false,
   } = $props();
 
   const running = $derived(phase === "running");
@@ -59,12 +59,11 @@
       {/if}
       {#if running}<Menu.Separator class="hr my-1" />{/if}
       <Menu.OptionItem type="checkbox" value="share" checked={share} onCheckedChange={(on) => onshare(on)} class="menuitem">
-        <span class="menuitem-check" aria-hidden="true">{share ? "✓" : ""}</span>
+        <span class="menuitem-check" aria-hidden="true">
+          <input type="checkbox" checked={share} tabindex="-1" aria-hidden="true" class="run-tick" />
+        </span>
         <span class="menuitem-label">{m.rundirectorycontrol_share_results()}</span>
       </Menu.OptionItem>
-      {#if shareLine}
-        <div class="run-note" role="status">{shareLine}</div>
-      {/if}
       <Menu.Item value="directory" class="menuitem" data-tip={directoryPath || undefined} data-tip-place="left">
         <span class="menuitem-check" aria-hidden="true"><Icon name={directoryMissing ? "triangle-alert" : "folder"} size="0.875rem" /></span>
         <span class="menuitem-label">{directoryName ? m.runbutton_directory_named({ name: directoryName }) : m.runbutton_choose_directory()}</span>
@@ -144,6 +143,11 @@
     height: .4rem;
     border-radius: 50%;
     background: var(--color-error-solid);
+  }
+  /* The tick box is drawn only; the menu item takes the click. */
+  .run-tick {
+    pointer-events: none;
+    margin: 0;
   }
   .run-note {
     padding: .25rem .75rem;

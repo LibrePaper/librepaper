@@ -97,7 +97,7 @@
   import DesktopOnly from "./DesktopOnly.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
     import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
-  import { leaf, shareLineOf } from "../lib/reader/run-directory.js";
+  import { leaf } from "../lib/reader/run-directory.js";
   import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
   import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { locale } from "../lib/locale.js";
@@ -2479,7 +2479,6 @@
     shareStatus: sharedResults.state.status,
     pdfOutput: ["pdf", "docx"].includes(buildPreferences.output),
   });
-  const runShareLine = $derived(shareLineOf(shareProps));
   const stopLatex = () => buildSettings.stopLatex();
 
   const configureLatex = (format, owner = session) => buildSettings.configureLatex(format, owner, buildUserId);
@@ -4285,7 +4284,7 @@
 {#snippet localExecutionControl()}
   {#if runCodeOffered && sourceFormat === "quarto"}
     <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun}
-      share={shareResults} onshare={setShareResults} shareLine={runShareLine}
+      share={shareResults} onshare={setShareResults}
       directoryName={runDir.status?.path ? leaf(runDir.status.path) : ""}
       directoryPath={runDir.status?.path ? runDir.shorten(runDir.status.path) : ""}
       directoryMissing={Boolean(runDir.status?.path) && !runDir.usable}
