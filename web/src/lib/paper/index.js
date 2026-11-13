@@ -9,7 +9,7 @@
 // rendered DOM.
 import { Prec, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, ViewPlugin, WidgetType } from "@codemirror/view";
-import { caretParked, isExternal, resolveImagePath, revealingSelection } from "../visual-markup/markup.ts";
+import { caretParked, isExternal, resolveImagePath, revealingSelection, stepIntoBlocksPlugin } from "../visual-markup/markup.ts";
 import "../visual-markup/visual-markup.css";
 import { loadKatex } from "../katex.js";
 import { applyNumbering, displaySources, typeset, untypeset } from "../math.js";
@@ -126,7 +126,7 @@ function touches(ranges, block) {
 
 function build(state, path, imageUrl, adapter, project) {
   const renderer = currentPaperRenderer(adapter.module);
-  if (!renderer) return { decorations: Decoration.none, rendered: [] };
+  if (!renderer) return { decorations: Decoration.none, rendered: [], gaps: new Set() };
   // A renderer that compiles in the project (Typst) is told which one before it draws.
   if (project && renderer.setProject) renderer.setProject(project());
   const text = state.doc.toString();
@@ -140,7 +140,7 @@ function build(state, path, imageUrl, adapter, project) {
     }
   }
   const blocks = whole ?? adapter.splitBlocks(text);
-  if (!blocks) return { decorations: Decoration.none, rendered: [] };
+  if (!blocks) return { decorations: Decoration.none, rendered: [], gaps: new Set() };
   // Every block the renderer draws, the selected ones too, so that numbers do not move when the caret enters an equation.
   const htmls = new Map();
   for (const block of blocks) {
@@ -179,7 +179,9 @@ function build(state, path, imageUrl, adapter, project) {
     );
   }
   // Blank source lines between two drawn blocks would add a full line to the preview's spacing, so they are collapsed.
+  // The collapsed lines are kept too: a keyboard move passes over them as if they were not there.
   const drawn = new Set(rendered);
+  const gaps = new Set();
   for (let i = 0; i + 1 < blocks.length; i++) {
     if (!drawn.has(blocks[i]) || !drawn.has(blocks[i + 1])) continue;
     const last = state.doc.lineAt(blocks[i + 1].from).number;
@@ -187,10 +189,11 @@ function build(state, path, imageUrl, adapter, project) {
       const line = state.doc.line(number);
       if (/^\s*$/.test(line.text) && !touches(ranges, line)) {
         marks.push(Decoration.line({ class: "cm-lp-paper-gap" }).range(line.from));
+        gaps.add(line.from);
       }
     }
   }
-  return { decorations: Decoration.set(marks, true), rendered };
+  return { decorations: Decoration.set(marks, true), rendered, gaps };
 }
 
 function paperField(path, imageUrl, adapter, project) {
@@ -304,6 +307,8 @@ export function paperVisual({ format = "markdown", path = () => "", imageUrl = n
     caretParked,
     ...foldLayer(adapter.folds, { openInclude }),
     field,
+    // Vim's j and k bypass the keymap below; this puts the caret on the first line of a skipped block.
+    stepIntoBlocksPlugin({ hidden: (state, line) => state.field(field).gaps.has(line.from) }),
     loaderFor(adapter, project),
     paperOverlays(field),
     EditorView.editorAttributes.of({

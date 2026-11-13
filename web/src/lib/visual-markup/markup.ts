@@ -54,7 +54,7 @@ export type { ImageFetcher, ImageResolver } from './view/images';
 export { createEditableMath, preloadMath } from './view/math-field';
 export { applyVariables, createTheme, cssVariables } from './view/theme';
 
-export { refreshVisual, setVisualState, visualDefaults, visualExtension, visualTokens, VisualCodeMirrorEditor } from './view/visual-editor';
+export { refreshVisual, setVisualState, stepIntoBlocksPlugin, visualDefaults, visualExtension, visualTokens, VisualCodeMirrorEditor } from './view/visual-editor';
 export type { VisualEditorOptions } from './view/visual-editor';
 
 export { createMathHoverExtension, mathHover, MathHoverManager, setMathHoverEnabled } from './view/math-hover';
