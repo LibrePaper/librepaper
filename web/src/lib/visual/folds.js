@@ -1,4 +1,4 @@
-import { Facet, StateField } from "@codemirror/state";
+import { Facet, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 import { m } from "../paraglide/messages.js";
 import { revealingSelection } from "../visual-markup/markup.ts";
@@ -12,13 +12,19 @@ export { mergeFolds };
 // call. The first configuration wins.
 const finderFacet = Facet.define({ combine: (values) => values[0] ?? null });
 
+/// Dispatched when a finder's syntax arrives, so the folds are found again for
+/// the same text. A finder that was not ready returned nothing, and nothing was kept.
+export const refreshFolds = StateEffect.define();
+
 // A block replacement has to come from a state field, not a view plugin. The
-// folds are found only when the text changes; a selection change only redraws.
+// folds are found only when the text changes or refreshFolds arrives; a
+// selection change only redraws.
 const foldField = StateField.define({
   create: (state) => foldState(state, findIn(state)),
   update(value, tr) {
-    if (!tr.docChanged && !tr.selection) return value;
-    return foldState(tr.state, tr.docChanged ? findIn(tr.state) : value.folds);
+    const refresh = tr.effects.some((effect) => effect.is(refreshFolds));
+    if (!tr.docChanged && !tr.selection && !refresh) return value;
+    return foldState(tr.state, tr.docChanged || refresh ? findIn(tr.state) : value.folds);
   },
   provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
 });

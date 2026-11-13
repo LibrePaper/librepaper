@@ -5,6 +5,7 @@ import { ConfigService, DEFAULT_CONFIG, EditorConfig } from '../core/config';
 import { getLanguage } from '../core/language';
 import { Token } from '../core/tokens';
 import { onOrgSyntax, onTypstSyntax } from '../../source-trees.js';
+import { refreshFolds } from '../../visual/folds.js';
 import { buildDecorations, caretParked, revealRanges } from './decorations';
 import { createTheme } from './theme';
 import './widgets';
@@ -233,57 +234,72 @@ const arrowKeymap = Prec.high(
 // Motions that bypass the keymap (Vim's j and k, for one) can still jump over a
 // rendered block. When a keyboard move crosses only lines this view does not
 // draw as text, the caret is put on the first of them instead, which shows its
-// source. A move that also crosses drawn lines (a page down, 5j, a search) and a
-// pointer click are left alone, and so is a move made in code: Vim labels its
-// moves no differently from a program's, so the sign of a keyboard move is a
-// key pressed just before it.
+// source. A line the view draws as text but hides (a blank line collapsed
+// between two rendered blocks) does not count as drawn. A move that also
+// crosses drawn lines (a page down, 5j, a search) and a pointer click are left
+// alone, and so is a move made in code: Vim labels its moves no differently
+// from a program's, so the sign of a keyboard move is a key pressed just before it.
 const KEY_WINDOW = 250;
-const stepIntoBlocks = ViewPlugin.fromClass(
-  class {
-    keyAt = 0;
-    // Capture phase: Vim handles its keys before CodeMirror's own handlers run.
-    private onKey = () => {
-      this.keyAt = Date.now();
-    };
 
-    constructor(private view: EditorView) {
-      view.contentDOM.addEventListener('keydown', this.onKey, true);
-    }
+// `enabled(state)` says whether the layer is on; `hidden(state, line, before)` says
+// whether a line drawn as text after the move was not seen before it: a collapsed
+// line, or a line of a block that the move itself revealed (`before` is the state
+// the move started from).
+export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => false }: {
+  enabled?: (state: EditorState) => boolean;
+  hidden?: (state: EditorState, line: { from: number }, before: EditorState) => boolean;
+} = {}) {
+  return ViewPlugin.fromClass(
+    class {
+      keyAt = 0;
+      // Capture phase: Vim handles its keys before CodeMirror's own handlers run.
+      private onKey = () => {
+        this.keyAt = Date.now();
+      };
 
-    destroy(): void {
-      this.view.contentDOM.removeEventListener('keydown', this.onKey, true);
-    }
-
-    update(update: ViewUpdate): void {
-      if (!update.selectionSet || update.docChanged) return;
-      if (!update.state.field(visualState).enabled) return;
-      if (Date.now() - this.keyAt > KEY_WINDOW) return;
-      if (update.transactions.some(tr => tr.isUserEvent('select.pointer'))) return;
-      const before = update.startState.selection;
-      const after = update.state.selection;
-      if (after.ranges.length !== 1 || !after.main.empty || before.ranges.length !== 1) return;
-
-      const doc = update.state.doc;
-      const from = doc.lineAt(before.main.head).number;
-      const to = doc.lineAt(after.main.head).number;
-      if (Math.abs(to - from) < 2) return;
-      const forward = to > from;
-      for (let n = forward ? from + 1 : from - 1; n !== to; n += forward ? 1 : -1) {
-        const line = doc.line(n);
-        // A drawn line is a text block that starts at the line itself.
-        const block = this.view.lineBlockAt(line.from);
-        if (block.type === BlockType.Text && block.from === line.from) return;
+      constructor(private view: EditorView) {
+        view.contentDOM.addEventListener('keydown', this.onKey, true);
       }
-      const first = doc.line(forward ? from + 1 : from - 1);
-      const anchor = forward ? first.from : first.to;
-      // Dispatching inside an update is not allowed; the step follows at once.
-      queueMicrotask(() => {
-        if (this.view.state.selection.main.head !== after.main.head) return;
-        this.view.dispatch({ selection: { anchor }, scrollIntoView: true, userEvent: 'select' });
-      });
+
+      destroy(): void {
+        this.view.contentDOM.removeEventListener('keydown', this.onKey, true);
+      }
+
+      update(update: ViewUpdate): void {
+        if (!update.selectionSet || update.docChanged) return;
+        if (!enabled(update.state)) return;
+        if (Date.now() - this.keyAt > KEY_WINDOW) return;
+        // A pointer click is the person's own choice, and a step of this plugin is its answer to a move already made.
+        if (update.transactions.some(tr => tr.isUserEvent('select.pointer') || tr.isUserEvent('select.step'))) return;
+        const before = update.startState.selection;
+        const after = update.state.selection;
+        if (after.ranges.length !== 1 || !after.main.empty || before.ranges.length !== 1) return;
+
+        const doc = update.state.doc;
+        const from = doc.lineAt(before.main.head).number;
+        const to = doc.lineAt(after.main.head).number;
+        if (Math.abs(to - from) < 2) return;
+        const forward = to > from;
+        for (let n = forward ? from + 1 : from - 1; n !== to; n += forward ? 1 : -1) {
+          const line = doc.line(n);
+          if (hidden(update.state, line, update.startState)) continue;
+          // A drawn line is a text block that starts at the line itself.
+          const block = this.view.lineBlockAt(line.from);
+          if (block.type === BlockType.Text && block.from === line.from) return;
+        }
+        const first = doc.line(forward ? from + 1 : from - 1);
+        const anchor = forward ? first.from : first.to;
+        // Dispatching inside an update is not allowed; the step follows at once.
+        queueMicrotask(() => {
+          if (this.view.state.selection.main.head !== after.main.head) return;
+          this.view.dispatch({ selection: { anchor }, scrollIntoView: true, userEvent: 'select.step' });
+        });
+      }
     }
-  }
-);
+  );
+}
+
+const stepIntoBlocks = stepIntoBlocksPlugin({ enabled: (state) => state.field(visualState).enabled });
 
 // Typst and Org tokens come from wasm modules (typst-syntax.wasm, org.wasm), which load on the
 // first parse. Until then such a file draws nothing; when the module arrives, the layer is
@@ -297,7 +313,7 @@ const syntaxArrival = ViewPlugin.fromClass(
       if (language !== 'typst' && language !== 'org') return;
       this.stop = (language === 'typst' ? onTypstSyntax : onOrgSyntax)(() => {
         this.stop = null;
-        view.dispatch({ effects: refreshVisual.of(null) });
+        view.dispatch({ effects: [refreshVisual.of(null), refreshFolds.of(null)] });
       });
     }
 

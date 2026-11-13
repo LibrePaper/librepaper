@@ -23,6 +23,7 @@ import {
 } from "./markup.ts";
 import { COMMANDS, ENVIRONMENTS } from "./languages/latex/catalog.ts";
 import { loadKatex } from "../katex.js";
+import { rewriteDisplay } from "../math-numbering.js";
 import { m } from "../paraglide/messages.js";
 
 export { VISUAL_FORMATS } from "./formats.js";
@@ -124,29 +125,19 @@ async function resolveImage(imageUrl, file) {
   return null;
 }
 
-// KaTeX lacks some math environments and has no \label. The environment is
-// rebuilt in a form KaTeX accepts. Display labels with a number become a \tag
-// of that number; the rest of the labels are removed.
+// KaTeX lacks some math environments and has no \label, so the formula is
+// rewritten by the shared rewrite (math-numbering.js, as the preview and the
+// paper layer use it). A numbered equation or row becomes a \tag of its
+// number, and the other labels are removed.
 function latexMath(body, environment, numbers) {
-  let tex;
-  if (!environment || environment === "equation" || environment === "equation*") {
-    tex = body;
-  } else if (environment === "multline" || environment === "multline*") {
-    tex = `\\begin{gather*}${body}\\end{gather*}`;
-  } else if (environment === "eqnarray" || environment === "eqnarray*") {
-    tex = `\\begin{array}{rcl}${body}\\end{array}`;
-  } else {
-    // align, align*, gather and gather* are KaTeX's own environments.
-    tex = `\\begin{${environment}}${body}\\end{${environment}}`;
-  }
-  // A formula with its own \tag keeps it; KaTeX rejects a second one.
-  if (numbers && !/\\tag\s*\{/.test(tex)) {
-    tex = tex.replace(/\\label\s*\{([^{}]*)\}/g, (match, key) => {
-      const found = numbers.get(key.trim());
-      return found ? `\\tag{${found.number}}` : "";
-    });
-  }
-  return tex.replace(/\\label\s*\{[^{}]*\}/g, "");
+  const source = environment ? `\\begin{${environment}}${body}\\end{${environment}}` : body;
+  return rewriteDisplay(source, (keys) => {
+    for (const key of keys) {
+      const number = numbers?.get(key)?.number;
+      if (number) return number;
+    }
+    return null;
+  }).tex;
 }
 
 // Typst source is converted to TeX, and on failure the raw text stays.

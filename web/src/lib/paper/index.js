@@ -9,11 +9,12 @@
 // rendered DOM.
 import { Prec, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, ViewPlugin, WidgetType } from "@codemirror/view";
-import { caretParked, isExternal, resolveImagePath, revealingSelection } from "../visual-markup/markup.ts";
+import { caretParked, isExternal, resolveImagePath, revealingSelection, stepIntoBlocksPlugin } from "../visual-markup/markup.ts";
 import "../visual-markup/visual-markup.css";
 import { loadKatex } from "../katex.js";
-import { typeset, untypeset } from "../math.js";
-import { foldLayer, foldsOf } from "../visual/folds.js";
+import { applyNumbering, displaySources, typeset, untypeset } from "../math.js";
+import { numberDisplays } from "../math-numbering.js";
+import { foldLayer, foldsOf, refreshFolds } from "../visual/folds.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
 import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
@@ -33,27 +34,61 @@ async function resolveImage(imageUrl, file) {
   return null;
 }
 
+// The TeX of a block's display formulas, by the HTML the block was drawn as, so a selection change does not parse every block again.
+const sourcesByHtml = new Map();
+
+function displaySourcesOf(html) {
+  let sources = sourcesByHtml.get(html);
+  if (!sources) {
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    sources = displaySources(template.content);
+    if (sourcesByHtml.size >= 1000) sourcesByHtml.clear();
+    sourcesByHtml.set(html, sources);
+  }
+  return sources;
+}
+
+// Numbers the display formulas of every drawn block together, so a counter runs down the document, and returns each block's share.
+function numberBlocks(htmls) {
+  const entries = [...htmls].map(([block, html]) => ({ block, sources: displaySourcesOf(html) }));
+  const { tex, keys, labels } = numberDisplays(entries.flatMap((entry) => entry.sources));
+  const shares = new Map();
+  let offset = 0;
+  for (const { block, sources } of entries) {
+    const end = offset + sources.length;
+    shares.set(block, { tex: tex.slice(offset, end), keys: keys.slice(offset, end), labels });
+    offset = end;
+  }
+  return shares;
+}
+
 class PaperWidget extends WidgetType {
-  constructor(html, from, path, imageUrl) {
+  constructor(html, from, path, imageUrl, math = null) {
     super();
     this.html = html;
     this.from = from;
     this.path = path;
     this.imageUrl = imageUrl;
+    this.math = math;
+    // Compared as text, so that a renumbering redraws the block.
+    this.mathKey = math ? JSON.stringify([math.tex, math.keys, [...math.labels]]) : "";
   }
 
   eq(other) {
-    return other.html === this.html;
+    return other.html === this.html && other.mathKey === this.mathKey;
   }
 
   toDOM() {
     const div = document.createElement("div");
     div.className = "cm-lp-paper";
     div.innerHTML = this.html;
+    // The numbers go in before KaTeX is here, so a link to an equation reads its number at once.
+    const numbering = this.math ? applyNumbering(div, document, this.math) : null;
 
     if (untypeset(div).length) {
       loadKatex()
-        .then((katex) => typeset(katex, untypeset(div), null))
+        .then((katex) => typeset(katex, untypeset(div), numbering))
         .catch(() => {});
     }
 
@@ -91,7 +126,7 @@ function touches(ranges, block) {
 
 function build(state, path, imageUrl, adapter, project) {
   const renderer = currentPaperRenderer(adapter.module);
-  if (!renderer) return { decorations: Decoration.none, rendered: [] };
+  if (!renderer) return { decorations: Decoration.none, rendered: [], gaps: new Set() };
   // A renderer that compiles in the project (Typst) is told which one before it draws.
   if (project && renderer.setProject) renderer.setProject(project());
   const text = state.doc.toString();
@@ -105,16 +140,11 @@ function build(state, path, imageUrl, adapter, project) {
     }
   }
   const blocks = whole ?? adapter.splitBlocks(text);
-  if (!blocks) return { decorations: Decoration.none, rendered: [] };
-  // A parked caret (the layer just turned on) reveals nothing, as in the LaTeX layer.
-  const ranges = revealingSelection(state);
-  // A block that overlaps a fold stays source: the fold layer draws that line, or shows the source when revealed.
-  const folds = foldsOf(state);
-  const marks = [];
-  const rendered = [];
+  if (!blocks) return { decorations: Decoration.none, rendered: [], gaps: new Set() };
+  // Every block the renderer draws, the selected ones too, so that numbers do not move when the caret enters an equation.
+  const htmls = new Map();
   for (const block of blocks) {
-    if (!block.render || touches(ranges, block)) continue;
-    if (folds.some((fold) => block.from <= fold.to && block.to >= fold.from)) continue;
+    if (!block.render) continue;
     let html = "";
     if (whole) {
       html = block.html ?? "";
@@ -125,17 +155,33 @@ function build(state, path, imageUrl, adapter, project) {
         continue;
       }
     }
+    htmls.set(block, html);
+  }
+  // Display math is numbered across the document as the preview numbers it. Typst's math is not KaTeX's, so it is left alone.
+  const numbering = adapter.module !== "typst" ? numberBlocks(htmls) : null;
+  // A parked caret (the layer just turned on) reveals nothing, as in the LaTeX layer.
+  const ranges = revealingSelection(state);
+  // A block that overlaps a fold stays source: the fold layer draws that line, or shows the source when revealed.
+  const folds = foldsOf(state);
+  const marks = [];
+  const rendered = [];
+  for (const block of blocks) {
+    if (!htmls.has(block) || touches(ranges, block)) continue;
+    if (folds.some((fold) => block.from <= fold.to && block.to >= fold.from)) continue;
+    const html = htmls.get(block);
     if (!html.trim()) continue;
     rendered.push(block);
     marks.push(
-      Decoration.replace({ widget: new PaperWidget(html, block.from, path, imageUrl), block: true }).range(
-        block.from,
-        block.to,
-      ),
+      Decoration.replace({
+        widget: new PaperWidget(html, block.from, path, imageUrl, numbering?.get(block) ?? null),
+        block: true,
+      }).range(block.from, block.to),
     );
   }
   // Blank source lines between two drawn blocks would add a full line to the preview's spacing, so they are collapsed.
+  // The collapsed lines are kept too: a keyboard move passes over them as if they were not there.
   const drawn = new Set(rendered);
+  const gaps = new Set();
   for (let i = 0; i + 1 < blocks.length; i++) {
     if (!drawn.has(blocks[i]) || !drawn.has(blocks[i + 1])) continue;
     const last = state.doc.lineAt(blocks[i + 1].from).number;
@@ -143,10 +189,11 @@ function build(state, path, imageUrl, adapter, project) {
       const line = state.doc.line(number);
       if (/^\s*$/.test(line.text) && !touches(ranges, line)) {
         marks.push(Decoration.line({ class: "cm-lp-paper-gap" }).range(line.from));
+        gaps.add(line.from);
       }
     }
   }
-  return { decorations: Decoration.set(marks, true), rendered };
+  return { decorations: Decoration.set(marks, true), rendered, gaps };
 }
 
 function paperField(path, imageUrl, adapter, project) {
@@ -209,7 +256,7 @@ function loaderFor(adapter, project) {
           document.head.appendChild(style);
         }
         prepare();
-        view.dispatch({ effects: refreshPaper.of(null) });
+        view.dispatch({ effects: [refreshPaper.of(null), refreshFolds.of(null)] });
       })
       .catch(() => {});
     return plugin;
@@ -260,6 +307,14 @@ export function paperVisual({ format = "markdown", path = () => "", imageUrl = n
     caretParked,
     ...foldLayer(adapter.folds, { openInclude }),
     field,
+    // Vim's j and k bypass the keymap below; this puts the caret on the first line of a skipped block.
+    // A line counts as unseen when it is a collapsed gap before or after the move, or when it was drawn as part of a block before the move.
+    stepIntoBlocksPlugin({
+      hidden: (state, line, before) =>
+        state.field(field).gaps.has(line.from) ||
+        before.field(field).gaps.has(line.from) ||
+        before.field(field).rendered.some((block) => block.from <= line.from && line.from <= block.to),
+    }),
     loaderFor(adapter, project),
     paperOverlays(field),
     EditorView.editorAttributes.of({

@@ -1,7 +1,9 @@
 // The source that visual mode folds, per format. Each finder reads a document's
 // text and returns the ranges to hide behind a pill: the preamble, includes,
 // comments, and definitions that the editor never draws. Pure functions of the
-// text, so they run on the main thread and never touch CodeMirror.
+// text, so they run on the main thread and never touch CodeMirror. The Org and
+// Typst finders read a syntax tree from a wasm module that loads asynchronously:
+// until it is loaded they return null, not an empty list.
 
 import { latexCommands, readArguments } from "../latex-language/args.js";
 import { m } from "../paraglide/messages.js";
@@ -39,8 +41,10 @@ function firstContent(text, clean) {
 
 /**
  * Wraps a finder so that it returns the same array for the same text, as the
- * block splitters do: the last text is remembered.
- * @param {(text: string) => Fold[]} compute
+ * block splitters do: the last text is remembered. A null result means the
+ * finder is not ready (its syntax module is still loading): the caller gets
+ * [], and nothing is remembered, so the next call computes again.
+ * @param {(text: string) => Fold[] | null} compute
  * @returns {(text: string) => Fold[]}
  */
 function memoize(compute) {
@@ -49,6 +53,7 @@ function memoize(compute) {
   return (text) => {
     if (last && last.text === text) return last.folds;
     const folds = compute(text);
+    if (folds === null) return [];
     last = { text, folds };
     return folds;
   };
@@ -270,10 +275,14 @@ function orgIncludeTarget(value) {
   return file && !file.includes("://") ? file : null;
 }
 
-/** @param {string} text @returns {Fold[]} */
+/**
+ * The folds of an Org source, or null while the Org syntax module is not loaded.
+ * @param {string} text
+ * @returns {Fold[] | null}
+ */
 function orgFoldsOf(text) {
   const blocks = splitOrgBlocks(text);
-  if (!blocks) return [];
+  if (!blocks) return null;
   const keywords = keywordsOf(text);
   const title = keywords.find((keyword) => keyword.key === "title");
   const documentTitle = cut(title ? title.value.trim() : "");
@@ -352,10 +361,14 @@ function directivesOf(blocks) {
   return seen.join(" · ");
 }
 
-/** @param {string} text @returns {Fold[]} */
+/**
+ * The folds of a Typst source, or null while typst-syntax.wasm is not loaded.
+ * @param {string} text
+ * @returns {Fold[] | null}
+ */
 function typstFoldsOf(text) {
   const blocks = splitTypstBlocks(text);
-  if (!blocks) return [];
+  if (!blocks) return null;
 
   // The leading run: setup rules and comments from the start of the document.
   let run = 0;
