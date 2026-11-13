@@ -13,7 +13,7 @@ const digestOf = async (bytes) => hex(new Uint8Array(await crypto.subtle.digest(
 const tick = () => new Promise((resolve) => setTimeout(resolve, 15));
 const linkUrl = (sha) => `/api/documents/doc/assets/${sha}/link`;
 const bytesUrl = (sha) => `/api/documents/doc/assets/${sha}`;
-const isLink = (url) => url.endsWith("/link");
+const isLink = (url) => url.startsWith("/api/") && url.endsWith("/link");
 const isBucket = (url) => url.startsWith("https://bucket.example/");
 
 function reply(status, { bytes, json, headers = {} } = {}) {
@@ -58,6 +58,7 @@ function fakeIndexedDB() {
       get: (key) => answer(() => structuredClone(records.get(key))),
       put: (value, key) => answer(() => records.set(key, structuredClone(value)) && key),
       delete: (key) => answer(() => records.delete(key)),
+      createIndex() {},
       index() {
         return {
           openCursor() {
@@ -94,7 +95,8 @@ function fakeIndexedDB() {
             stores.set(n, new Map());
             return storeOf(stores, n);
           },
-          transaction: (n) => ({ objectStore: (s) => storeOf(stores, s ?? n) }),
+          // Accepts one store name or a list; the store is named per objectStore call.
+          transaction: () => ({ objectStore: (s) => storeOf(stores, s) }),
           close() {},
         };
         if (fresh) request.onupgradeneeded?.();
@@ -226,6 +228,29 @@ __resetAssetTestState();
   });
 }
 
+// A link route that answers 404 sends the asset to the byte route, does not
+// fail it, and a server without the route is not asked again in this tab.
+{
+  const a = Uint8Array.of(21);
+  const b = Uint8Array.of(22);
+  const shaA = await digestOf(a);
+  const shaB = await digestOf(b);
+  const served = { [shaA]: a, [shaB]: b };
+  await scenario((url) => {
+    if (isLink(url)) return reply(404);
+    return reply(200, { bytes: served[url.split("/").pop()] });
+  }, async (calls) => {
+    const first = await gather("doc", { "a.png": shaA });
+    const second = await gather("doc", { "b.png": shaB });
+    assert.deepEqual([...first.assets["a.png"]], [...a]);
+    assert.deepEqual([...second.assets["b.png"]], [...b]);
+    assert.deepEqual(first.missing, []);
+    assert.deepEqual(second.missing, []);
+    assert.equal(calls.filter((call) => isLink(call.url)).length, 1, "the second asset skips the link request");
+    assert.deepEqual(calls.slice(1).map((call) => call.url), [bytesUrl(shaA), bytesUrl(shaB)]);
+  });
+}
+
 // A bucket that fails as a network error falls back to the byte route, and
 // the tab keeps using that route.
 {
@@ -235,7 +260,7 @@ __resetAssetTestState();
   const shaOther = await digestOf(other);
   const served = { [sha]: body, [shaOther]: other };
   await scenario((url) => {
-    if (isLink(url)) return reply(200, { json: { url: `https://bucket.example/${url.split("/").pop()}` } });
+    if (isLink(url)) return reply(200, { json: { url: `https://bucket.example/object/${url.split("/")[5]}` } });
     if (isBucket(url)) throw new TypeError("Failed to fetch");
     return reply(200, { bytes: served[url.split("/").pop()] });
   }, async (calls) => {
@@ -259,7 +284,7 @@ __resetAssetTestState();
   await scenario((url) => {
     if (isLink(url)) {
       links++;
-      return reply(200, { json: { url: `https://bucket.example/link${links}` } });
+      return reply(200, { json: { url: `https://bucket.example/object${links}` } });
     }
     if (isBucket(url)) return reply(403);
     return reply(200, { bytes: served[url.split("/").pop()] });
@@ -343,7 +368,10 @@ __resetAssetTestState();
   const body = Uint8Array.of(14, 15);
   const sha = await digestOf(body);
   const fake = fakeIndexedDB();
-  fake.databases.set(ASSET_DATABASE, new Map([["assets", new Map([[sha, { bytes: Uint8Array.of(0), size: 1, used: 1 }]])]]));
+  fake.databases.set(ASSET_DATABASE, new Map([
+    ["bytes", new Map([[sha, Uint8Array.of(0)]])],
+    ["meta", new Map([[sha, { size: 1, used: 1 }]])],
+  ]));
   await scenario((url) => {
     if (isLink(url)) return noLink();
     return reply(200, { bytes: body });
@@ -352,8 +380,9 @@ __resetAssetTestState();
     assert.deepEqual([...result.assets["fig.png"]], [...body]);
     assert.equal(calls.filter((call) => !isLink(call.url)).length, 1, "fetched again");
     await tick();
-    const stored = fake.databases.get(ASSET_DATABASE).get("assets").get(sha);
-    assert.deepEqual([...stored.bytes], [...body]);
+    const stored = fake.databases.get(ASSET_DATABASE).get("bytes").get(sha);
+    assert.deepEqual([...stored], [...body]);
+    assert.equal(fake.databases.get(ASSET_DATABASE).get("meta").get(sha).size, body.byteLength);
   }, { indexedDB: fake });
 }
 
@@ -373,17 +402,20 @@ __resetAssetTestState();
     if (isLink(url)) return noLink();
     return reply(200, { bytes: served[url.split("/").pop()] });
   }, async () => {
-    const store = () => fake.databases.get(ASSET_DATABASE).get("assets");
+    const bytesStore = () => fake.databases.get(ASSET_DATABASE).get("bytes");
+    const metaStore = () => fake.databases.get(ASSET_DATABASE).get("meta");
     await gather("doc", { "1.png": shas[0] });
     await tick();
     await gather("doc", { "2.png": shas[1] });
     await tick();
     await gather("doc", { "3.png": shas[2] });
     await tick();
-    assert.deepEqual([...store().keys()].sort(), [shas[1], shas[2]].sort(), "the oldest entry was evicted");
+    const expected = [shas[1], shas[2]].sort();
+    assert.deepEqual([...metaStore().keys()].sort(), expected, "the oldest entry was evicted from meta");
+    assert.deepEqual([...bytesStore().keys()].sort(), expected, "and from bytes");
     await gather("doc", { "huge.png": shas[3] });
     await tick();
-    assert.equal(store().has(shas[3]), false, "an asset over the cap is not stored");
+    assert.equal(bytesStore().has(shas[3]), false, "an asset over the cap is not stored");
   }, { indexedDB: fake, capBytes: 100 });
 }
 

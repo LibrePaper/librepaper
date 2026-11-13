@@ -25,7 +25,10 @@ import { ASSET_DATABASE, localDataForgotten } from "./local-data.js";
 
 /// How much the persistent store may hold, least recently used evicted first.
 const ASSET_STORE_BYTES = 256 * 1024 * 1024;
-const ASSET_STORE = "assets";
+// Two object stores, so that eviction reads only the small metadata and never
+// the bytes: `bytes` (digest -> Uint8Array) and `meta` (digest -> {size, used}).
+const BYTES = "bytes";
+const META = "meta";
 /// Retries for network errors and 5xx from our server.
 const BACKOFF = [500, 1000, 2000];
 /// Retries for a 429 that says the server is out of transfer or work permits.
@@ -118,9 +121,8 @@ function openStore() {
     const open = factory.open(ASSET_DATABASE, 1);
     open.onupgradeneeded = () => {
       const db = open.result;
-      if (!db.objectStoreNames.contains(ASSET_STORE)) {
-        db.createObjectStore(ASSET_STORE).createIndex("used", "used");
-      }
+      if (!db.objectStoreNames.contains(BYTES)) db.createObjectStore(BYTES);
+      if (!db.objectStoreNames.contains(META)) db.createObjectStore(META).createIndex("used", "used");
     };
     open.onsuccess = () => {
       const db = open.result;
@@ -142,14 +144,14 @@ function openStore() {
 async function readStored(sha) {
   const db = await openStore();
   if (!db) return null;
-  let record;
+  let stored;
   try {
-    record = await requestResult(db.transaction(ASSET_STORE, "readonly").objectStore(ASSET_STORE).get(sha));
+    stored = await requestResult(db.transaction(BYTES, "readonly").objectStore(BYTES).get(sha));
   } catch {
     return null;
   }
-  if (!record?.bytes) return null;
-  const body = new Uint8Array(record.bytes);
+  if (!stored) return null;
+  const body = new Uint8Array(stored);
   let actual;
   try {
     actual = await digestOf(body);
@@ -168,7 +170,9 @@ async function deleteStored(sha) {
   const db = await openStore();
   if (!db || localDataForgotten()) return;
   try {
-    db.transaction(ASSET_STORE, "readwrite").objectStore(ASSET_STORE).delete(sha);
+    const tx = db.transaction([BYTES, META], "readwrite");
+    tx.objectStore(BYTES).delete(sha);
+    tx.objectStore(META).delete(sha);
   } catch {
     /* the entry stays; the next read will check it again */
   }
@@ -181,9 +185,9 @@ async function touch(sha) {
   const db = await openStore();
   if (!db || localDataForgotten()) return;
   try {
-    const store = db.transaction(ASSET_STORE, "readwrite").objectStore(ASSET_STORE);
-    const record = await requestResult(store.get(sha));
-    if (record) store.put({ ...record, used: Date.now() }, sha);
+    const meta = db.transaction(META, "readwrite").objectStore(META);
+    const record = await requestResult(meta.get(sha));
+    if (record) meta.put({ ...record, used: Date.now() }, sha);
   } catch {
     /* the entry keeps its old place in the order */
   }
@@ -196,14 +200,17 @@ async function writeStored(sha, body) {
   const db = await openStore();
   if (!db || localDataForgotten()) return;
   try {
-    const store = db.transaction(ASSET_STORE, "readwrite").objectStore(ASSET_STORE);
-    store.put({ bytes: body, size: body.byteLength, used: Date.now() }, sha);
+    const tx = db.transaction([BYTES, META], "readwrite");
+    tx.objectStore(BYTES).put(body, sha);
+    const meta = tx.objectStore(META);
+    meta.put({ size: body.byteLength, used: Date.now() }, sha);
     touched.add(sha);
-    const rows = await collectRows(store.index("used").openCursor());
+    const rows = await collectRows(meta.index("used").openCursor());
     let total = rows.reduce((sum, row) => sum + row.size, 0);
     for (const row of rows) {
       if (total <= storeCap()) break;
-      store.delete(row.key);
+      tx.objectStore(BYTES).delete(row.key);
+      meta.delete(row.key);
       total -= row.size;
     }
   } catch {
@@ -257,21 +264,33 @@ async function askServer(url, init) {
   }
 }
 
-/// The signed link for a digest, or null when the server offers none.
+/// The signed link for a digest: `{ url }`, where url is null when the server
+/// offers none, or `{ failed: true }` when the link route did not answer. A
+/// failed link sends this asset to the byte route; a 404 or 405 means a server
+/// without the route at all, so this tab uses the byte route from now on.
 async function requestLink(slug, sha, headers) {
-  const response = await askServer(`/api/documents/${slug}/assets/${sha}/link`, { credentials: "same-origin", headers, cache: "no-store" });
-  if (!response.ok) throw new Error(`could not fetch a figure link (${response.status})`);
-  const { url } = await response.json();
-  return url ?? null;
+  try {
+    const response = await askServer(`/api/documents/${slug}/assets/${sha}/link`, { credentials: "same-origin", headers, cache: "no-store" });
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 405) useByteRoute = true;
+      return { failed: true };
+    }
+    const { url } = await response.json();
+    return { url: url ?? null };
+  } catch {
+    return { failed: true };
+  }
 }
 
 /// The bytes from the bucket, or null when the byte route should be used.
 async function fetchFromBucket(slug, sha, headers) {
-  let link = await requestLink(slug, sha, headers);
-  if (link === null) {
+  const first = await requestLink(slug, sha, headers);
+  if (first.failed) return null;
+  if (first.url === null) {
     useByteRoute = true;
     return null;
   }
+  let link = first.url;
   let reissued = false;
   for (;;) {
     let response;
@@ -285,15 +304,13 @@ async function fetchFromBucket(slug, sha, headers) {
     }
     if (response.status !== 403 || reissued) return null;
     reissued = true;
-    try {
-      link = await requestLink(slug, sha, headers);
-    } catch {
-      return null;
-    }
-    if (link === null) {
+    const again = await requestLink(slug, sha, headers);
+    if (again.failed) return null;
+    if (again.url === null) {
       useByteRoute = true;
       return null;
     }
+    link = again.url;
   }
 }
 
