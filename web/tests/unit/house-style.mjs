@@ -47,7 +47,7 @@ assert.equal(latexmlWithHouseStyle("<head><style data-latexml-css>a{}</style></h
   // after the title block) and punctuation (caption labels).
   const words = (page) => body(page).replace(/<script id="quarto-html-after-body"[\s\S]*?<\/script>/, "")
     .replace(/<[^>]+>/g, " ").replace(/[.:\u00a0]/g, " ").split(/\s+/).filter(Boolean).sort();
-  assert.deepEqual(words(out), words(html));
+  assert.deepEqual(words(out), words(html.replace(">Table of contents<", ">Contents<")));
   // No stylesheet to apply: the page is untouched.
   assert.equal(quartoWithHouseStyle(html, ""), html);
 }
@@ -59,6 +59,14 @@ assert.equal(latexmlWithHouseStyle("<head><style data-latexml-css>a{}</style></h
   const out = quartoWithHouseStyle(page, ":root{--lp-ink:#000}");
   assert.ok(out.indexOf('id="title-block-header"') < out.indexOf('id="TOC"'), out);
   assert.ok(out.includes('<span class="caption-label">Figure 1.</span> A plot'), out);
+}
+
+// The default contents title takes the house wording; an author's own title stays.
+{
+  const { quartoWithHouseStyle } = await import("../../src/lib/house-style.js");
+  const page = (title) => `<html><head><style>.quarto-x{}</style></head><body><nav id="TOC"><h2 id="toc-title">${title}</h2></nav></body></html>`;
+  assert.ok(quartoWithHouseStyle(page("Table of contents"), ":root{--lp-ink:#000}").includes('id="toc-title">Contents</h2>'));
+  assert.ok(quartoWithHouseStyle(page("Inhalt"), ":root{--lp-ink:#000}").includes('id="toc-title">Inhalt</h2>'));
 }
 
 // An older embedded stylesheet is replaced by the house one; a house page is left alone.

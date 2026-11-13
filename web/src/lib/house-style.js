@@ -89,7 +89,11 @@ function quartoThemeScript(attrs, body) {
 
 // Quarto's page put in the house order and wording: the contents follow the
 // title block (Quarto lays them out as a sidebar, which the house page has
-// not), and a caption's "Figure 1: " becomes the house caption label.
+// not), a caption's "Figure 1: " becomes the house caption label, and the
+// contents' default title becomes the offline renderer's. Appendix headings
+// need no rewrite: Quarto numbers them with the letter alone (`A`), as the
+// offline renderer does.
+const HOUSE_TOC_TITLE = "Contents";
 function quartoMarkup(html) {
   let out = html;
   const toc = /<nav\b[^>]*\bid="TOC"[^>]*>[\s\S]*?<\/nav>/i.exec(out);
@@ -99,6 +103,11 @@ function quartoMarkup(html) {
     const at = out.indexOf(header[0]) + header[0].length;
     out = out.slice(0, at) + toc[0] + out.slice(at);
   }
+  // Only Quarto's own English default: a title the author set is kept.
+  out = out.replace(
+    /(<h2\b[^>]*\bid="toc-title"[^>]*>)\s*Table of contents\s*(<\/h2>)/i,
+    (whole, open, close) => `${open}${HOUSE_TOC_TITLE}${close}`,
+  );
   return out.replace(
     /(<figcaption\b[^>]*\bquarto-float-caption\b[^>]*>)\s*([\p{L}][\p{L} .]*?[\u00a0 ]\d+(?:\.\d+)*)\s*[:.]?\s*/gu,
     (whole, open, label) => `${open}<span class="caption-label">${label.replace(/\u00a0/g, " ")}.</span> `,
