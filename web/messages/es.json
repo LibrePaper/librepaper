@@ -3010,7 +3010,6 @@
   "runbutton_run": "Ejecutar",
   "runbutton_stop": "Detener",
   "runbutton_run_hint": "Ejecutar el código de este documento en este equipo",
-  "runbutton_run_all": "Ejecutar todas las celdas",
   "runbutton_options": "Opciones de ejecución",
   "runbutton_directory": "Carpeta de ejecución y uso compartido…",
   "runbutton_last_run": "Última ejecución : {time}",

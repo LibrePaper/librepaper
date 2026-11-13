@@ -3010,7 +3010,6 @@
   "runbutton_run": "Ausführen",
   "runbutton_stop": "Stoppen",
   "runbutton_run_hint": "Den Code dieses Dokuments auf diesem Computer ausführen",
-  "runbutton_run_all": "Alle Zellen ausführen",
   "runbutton_options": "Ausführungsoptionen",
   "runbutton_directory": "Ausführungsordner und Freigabe…",
   "runbutton_last_run": "Letzter Lauf: {time}",

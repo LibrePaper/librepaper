@@ -2995,7 +2995,6 @@
   "runbutton_run": "运行",
   "runbutton_stop": "停止",
   "runbutton_run_hint": "在这台电脑上运行此文档的代码",
-  "runbutton_run_all": "运行所有单元格",
   "runbutton_options": "运行选项",
   "runbutton_directory": "运行文件夹和共享…",
   "runbutton_last_run": "上次运行：{time}",

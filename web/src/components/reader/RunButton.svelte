@@ -1,9 +1,9 @@
 <script>
   // The Run control for a Quarto document: one split button. The main half
   // runs the document, or stops a run that is going. The chevron opens the
-  // rarer actions and the state of the last run, so the top bar keeps a single
-  // control whatever happened. The two halves share one border, with a divider
-  // between them, so they read as one button.
+  // rarer actions (Stop, the Run directory) and the state of the last run, so
+  // the top bar keeps a single control whatever happened. The two halves share
+  // one border, with a divider between them, so they read as one button.
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import Icon from "../Icon.svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
@@ -21,8 +21,7 @@
   const lastRunTime = $derived(lastRunAt ? new Intl.DateTimeFormat(locale(), { timeStyle: "short" }).format(new Date(lastRunAt)) : "");
 
   function choose(item) {
-    if (item.value === "run") onrun();
-    else if (item.value === "stop") onstop();
+    if (item.value === "stop") onstop();
     else if (item.value === "directory") ondirectory();
   }
 </script>
@@ -48,10 +47,6 @@
       <Icon name="chevron-down" size="0.875rem" />
     </Menu.Trigger>
     <ExplorerMenu>
-      <Menu.Item value="run" class="menuitem" disabled={running}>
-        <span class="menuitem-check" aria-hidden="true"></span>
-        <span class="menuitem-label">{m.runbutton_run_all()}</span>
-      </Menu.Item>
       {#if running}
         <Menu.Item value="stop" class="menuitem">
           <span class="menuitem-check" aria-hidden="true"></span>

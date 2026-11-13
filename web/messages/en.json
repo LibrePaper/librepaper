@@ -3010,7 +3010,6 @@
   "runbutton_run": "Run",
   "runbutton_stop": "Stop",
   "runbutton_run_hint": "Run this document's code on this computer",
-  "runbutton_run_all": "Run all cells",
   "runbutton_options": "Run options",
   "runbutton_directory": "Run directory and sharing…",
   "runbutton_last_run": "Last run {time}",

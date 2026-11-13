@@ -2995,7 +2995,6 @@
   "runbutton_run": "実行",
   "runbutton_stop": "停止",
   "runbutton_run_hint": "このドキュメントのコードをこのコンピューターで実行",
-  "runbutton_run_all": "すべてのセルを実行",
   "runbutton_options": "実行オプション",
   "runbutton_directory": "実行フォルダーと共有…",
   "runbutton_last_run": "前回の実行：{time}",
