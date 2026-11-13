@@ -245,6 +245,10 @@ const arrowKeymap = Prec.high(
 // it goes where it was sent.
 const KEY_WINDOW = 250;
 const STEP_KEYS: Record<string, boolean> = { ArrowDown: true, j: true, ArrowUp: false, k: false };
+// Vim keys that wait for one more key: a prefix (g, z, [, ]), a mark (' ` m), a
+// register (" @ q), a character to find or replace (f t F T r). The key after
+// one is its argument, never a step: 'j jumps to mark j.
+const PREFIX_KEYS = new Set(['g', 'z', '[', ']', "'", '`', 'm', '"', '@', 'q', 'f', 't', 'F', 'T', 'r']);
 
 // `enabled(state)` says whether the layer is on; `hidden(state, line, before)` says
 // whether a line drawn as text after the move was not seen before it: a collapsed
@@ -259,13 +263,16 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
       keyAt = 0;
       // The direction of the last key if it was a one-line step, else null.
       step: boolean | null = null;
-      // A Vim count being typed (digits; a lone 0 is a motion), and whether the last key was the g prefix.
+      // A Vim count being typed (digits; a lone 0 is a motion), and whether the last key waits for an argument.
       count = '';
       prefixed = false;
       // Capture phase: Vim handles its keys before CodeMirror's own handlers run.
       private onKey = (event: KeyboardEvent) => {
         this.keyAt = Date.now();
         const plain = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+        // Shift only makes a character; it is part of keys such as G, F and T.
+        const typed = !event.ctrlKey && !event.metaKey && !event.altKey;
+        if (event.key === 'Shift') return;
         if (plain && (/^[1-9]$/.test(event.key) || (event.key === '0' && this.count))) {
           this.count += event.key;
           this.step = null;
@@ -273,7 +280,7 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
         }
         const single = plain && !this.count && !this.prefixed && Object.hasOwn(STEP_KEYS, event.key);
         this.step = single ? STEP_KEYS[event.key] : null;
-        this.prefixed = plain && event.key === 'g' && !this.prefixed;
+        this.prefixed = typed && PREFIX_KEYS.has(event.key) && !this.prefixed;
         if (!this.prefixed) this.count = '';
       };
 
