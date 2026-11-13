@@ -1,8 +1,10 @@
 # Render transport: getting a project to its renderers
 
-Status: proposed 2026-11-11. This replaces the first draft (`e769c89ae`). Section 12 lists what changed and why.
+Status: proposed 2026-11-11, revised 2026-11-13. This replaces the first draft (`e769c89ae`). Section 12 lists what changed and why.
 
 A render reads a project: texts, figures, fonts, bibliographies, styles. Today every preview render collects the whole project, fetches every binary asset at once, and hands all of it to the renderer. On a large project that is slow, and the parallel fetches can exhaust the server's transfer permits, so the server answers 429 to page opens. This document specifies how assets are fetched and kept, how the work a render repeats is cut, and how a flow page fetches only the assets it shows.
+
+No client in this design caps how many requests it sends. The limit that 429s protect belongs to the server, and the client cannot see it. So the server stops relaying bytes it does not need to relay (section 6.2), and where it must relay them it makes a request wait for a permit instead of refusing it (section 6.3).
 
 PR 94 (`renderScope`, not merged) found the problem. On a project of 704 texts and 84 assets, a page open fetched all 84 assets and sometimes drew 429s, and a file switch was slow. The PR's fix hands the renderer an allow-list of files. It drops files that compilers do read (section 3.9). This spec keeps the PR's goal and reaches it without ever withholding a file on a guess.
 
@@ -21,8 +23,8 @@ Four rules follow from it:
 
 ### In scope
 
-- One client asset store: bounded concurrency, retries, and a persistent store that sign-out deletes (section 5).
-- Refusals that say how long to wait (section 6).
+- One client asset store: fetching through signed links, retries, and a persistent store that sign-out deletes (section 5).
+- Serving assets: signed links to object storage, a wait for a permit where the server relays bytes, and refusals that say how long to wait (section 6).
 - A profile of one render, and staging that sends a renderer only what changed (section 7).
 - Flow pages that fetch only the assets their output shows (section 8).
 
@@ -75,8 +77,11 @@ The first three rows produce **flow pages**: HTML painted in the documents frame
 
 `handle_asset_read` (`crates/librepaper-server/src/server/figures.rs:147-222`) checks read access. Readers below Editor also need `room.references_asset(sha)`. It then streams through `cost::blob_response` (`cost.rs:629`).
 
-- **Transfer permits:** `DEFAULT_ARTIFACT_TRANSFERS = 64` (`crates/librepaper-base/src/config/mod.rs:183`) is one semaphore for the whole deployment. It covers `/api/.../assets/`, and also `/published/` and `/assets/`, the web app's own bundles (`cost.rs:509-511`). A permit is held until the body finishes streaming.
-- **Work permits:** `work_concurrency` is 64 as well, taken for every request and held until the handler answers.
+- **The server relays every byte.** Asset bytes live in the blob store: an S3 bucket in production (`tools/deploy/production.toml`, `object_store = "s3"`, OVH in `bhs`), a directory in the self-hosting kit's default. `blob_response` reads the object in 1 MiB ranges and streams them out. No route hands the browser a link to the bucket.
+- **Uploads carry no type.** `ObjectBlobStore::put_new` ignores its `content_type` argument (`crates/librepaper-engine/src/storage/blob.rs:243`), and keys are digests with no extension.
+
+- **Transfer permits:** `DEFAULT_ARTIFACT_TRANSFERS = 64` (`crates/librepaper-base/src/config/mod.rs:183`) is one semaphore for the whole deployment. It covers `/api/.../assets/`, and also `/published/` and `/assets/`, the web app's own bundles (`cost.rs:509-511`). A permit is held until the body finishes streaming. The number dates from the initial commit, documented as "compiler/font/artifact transfers", from before engines and fonts moved to the mirror. Nothing records how it was chosen.
+- **Work permits:** `work_concurrency` is 64 as well, taken for every request and held until the handler answers. It is taken first (`cost.rs:425`), so a request that reaches the transfer check already holds one.
 - **Request budget:** `requests_per_principal_minute` is 6000, keyed by account, or by network for a request without one (`cost.rs:94-99`).
 - **Refusals:** a permit that is not free is refused at once, with no wait. Every refusal answers 429 with `retry-after: 60` and a `reason` of `transfer_concurrency`, `work_concurrency` or `request_budget` (`cost.rs:224-232`). For the two concurrency reasons 60 seconds is wrong: a permit frees in milliseconds.
 - **Why one client hits it:** over HTTP/2 a client that opens 84 fetches at once asks for more than the deployment's 64 transfer permits.
@@ -152,19 +157,26 @@ The upload is not a cost worth designing for. A job is capped at 64 MiB and 2000
 
 Phase 1. `web/src/lib/figures.js` becomes the asset store. Every caller that needs asset bytes goes through it: previews, candidate previews, exports, downloads, workspace previews and `figureUrlFor`.
 
-### 5.1 Bounded fetching
+### 5.1 Fetching
 
-- **At most 6 requests in flight per tab** (`ASSET_CONCURRENCY = 6`), in a first-in, first-out queue. Six matches a browser's HTTP/1.1 per-origin limit, so nothing is lost without HTTP/2, and it is well below the deployment's 64 permits.
-- **One queue for all callers**, so a preview and an export started together do not double the load.
+The store sends every request it needs at once. It does not cap requests in flight: the capacity that matters is the server's and the bucket's, the client cannot see either, and section 6 makes both answer a burst without refusing it. Requests for the same digest are still merged.
+
+For each asset not in memory or in the persistent store:
+
+1. **Ask for a link.** `GET /api/documents/{slug}/assets/{sha}/link` (6.2). The answer is `{"url": "<signed link>"}` or `{"url": null}`.
+2. **Fetch the link** with a plain `fetch(url)`: no credentials and no custom headers, so the browser sends a simple CORS request and no preflight.
+3. **Fall back to the byte route** when the answer is `null` (the store keeps files on disk), or when the fetch from the bucket fails as a network error (a bucket without the CORS rule of 6.2 fails this way). After either, the tab uses the byte route, today's `/api/documents/{slug}/assets/{sha}`, for the rest of its life, so a deployment without links costs one extra request per tab, not one per asset.
+4. **Verify** the body against its digest, wherever it came from.
 
 ### 5.2 Retries
 
 | Response | What the store does |
 |---|---|
-| 429 with `reason` `transfer_concurrency` or `work_concurrency` | Wait for `Retry-After` (1 second after section 6.2) plus jitter, then retry. At most 5 times |
+| 403 from the bucket | The link expired or was refused. Ask for a new link once, then fall back to the byte route |
+| 429 with `reason` `transfer_concurrency` or `work_concurrency` | Wait for `Retry-After` (1 second, section 6.4) plus jitter, then retry. At most 5 times. After 6.3 a transfer refusal means the wait timed out, so it is rare |
 | 429 with `reason` `request_budget` | No retry. The budget refills over a minute, and a render should not stall that long |
-| Network error or 5xx | Retry after 0.5, 1 and 2 seconds, with jitter |
-| 403, 404 or a digest mismatch | No retry |
+| Network error or 5xx from our server | Retry after 0.5, 1 and 2 seconds, with jitter |
+| 403 or 404 from our server, or a digest mismatch | No retry |
 
 When retries run out the asset is `missing`, and the render's existing behaviour applies (`preview-render.js:260-263`). A render that is superseded while it waits abandons its requests, as it abandons everything else.
 
@@ -176,7 +188,7 @@ When retries run out the asset is `missing`, and the render's existing behaviour
 - **Size:** at most 256 MiB, evicted least recently used. An entry's last use is written at most once per tab. An asset larger than the cap is not stored.
 - **When storage is unavailable:** in a private window, or when a write is refused, the store keeps today's in-memory map and nothing else. Nothing here throws.
 
-The key is the digest alone, so an asset that two documents share is fetched once. That leaks nothing. A page only asks for the digests in a tree it could read, and the server would serve those bytes to the same reader. The server's `references_asset` check for readers below Editor still runs on every fetch that reaches it.
+The key is the digest alone, so an asset that two documents share is fetched once. That leaks nothing. A page only asks for the digests in a tree it could read, and the server would serve those bytes to the same reader. The server's access check, and `references_asset` for readers below Editor, run on every link request and every byte-route fetch.
 
 The in-memory map stays as the first level, with its present key.
 
@@ -184,11 +196,52 @@ The in-memory map stays as the first level, with its present key.
 
 Phase 1.
 
-### 6.1 Headers
+The only part of an asset read that needs our server is the access check. Where the bytes sit in object storage, the server checks access and hands out a short-lived link, and the bucket serves the bytes. Where they sit on the server's disk, the server keeps relaying them, and a burst waits its turn instead of being refused.
 
-Unchanged: `private, no-store`, for the reasons in 3.5. The comment at `figures.rs:144` is corrected to say so and to say why.
+### 6.1 The byte route
 
-### 6.2 Refusals say how long to wait
+`GET` and `HEAD /api/documents/{slug}/assets/{sha}` stay as they are: same access check, same bytes, same headers (`private, no-store`, for the reasons in 3.5). The CLI's sync client reads and probes assets through it (`crates/librepaper-sync/src/client.rs:335-360`), tabs opened before the deploy use it, and deployments without object storage use nothing else. The comment at `figures.rs:144` is corrected to say the bytes are not cached, and why.
+
+It is not turned into a redirect. A link is signed for one method, so the sync client's `HEAD` would fail against a link signed for `GET`. A redirect would also carry the browser's custom headers to the bucket and force a CORS preflight there.
+
+### 6.2 Signed links
+
+`GET /api/documents/{slug}/assets/{sha}/link`:
+
+1. **The same checks as the byte route**: valid slug and digest, cross-site refusal, read access, `references_asset` for readers below Editor, the catalogue lookup scoped to the document. It shares that code with `handle_asset_read`, so the two cannot drift.
+2. **Asks the blob store for a link.** `BlobStore` gains `signed_get(key, ttl) -> BlobResult<Option<Url>>`, `None` by default. `ObjectBlobStore` answers with `object_store`'s `Signer::signed_url(GET, path, ttl)` (SigV4 query signing, `object_store` 0.14 `aws/mod.rs:143`). `FsStore` keeps the default.
+3. **Answers** `200 {"url": "...", "expires_in": 300}`, or `200 {"url": null}` when the store cannot sign. `cache-control: private, no-store`.
+
+Rules for the link:
+
+- **Lifetime: 300 seconds.** Long enough to cover a slow fetch started at once, short enough that a person whose access is removed loses the bytes within five minutes. A link already issued stays valid until it expires; that window is the one thing this design gives up against the byte route, which refuses a revoked reader at the next request. A transfer that started before expiry may finish after it.
+- **Expiry is enforced by the bucket.** `X-Amz-Expires` and `X-Amz-Date` are part of the signed string, so a link whose expiry is edited fails its signature. Rotating the access key kills every outstanding link at once.
+- **No transfer permit.** The link route does no byte work. The transfer check in `cost.rs:509-511` matches `/assets/` anywhere in an `/api/` path, so it must exclude paths that end in `/link`.
+- **The bytes stay untrusted.** The browser verifies every body against its digest (5.1), so the bucket cannot substitute bytes.
+- **Opening a link directly downloads it.** Objects are stored without a type (3.4), so the bucket answers generic binary, which browsers download rather than render. `content-security-policy: sandbox` cannot be set by a bucket, and is not needed for a download; and a link that did render would render on the bucket's origin, not the app's. `object_store` 0.14 cannot add `response-content-disposition` to a signed link (its query signer is crate-private). If an explicit download header is ever wanted, new uploads can carry one through `PutOptions` attributes.
+
+What a deployment needs:
+
+- **A CORS rule on the bucket** allowing `GET` from the app's origin. Without it the fetch in 5.1 fails as a network error and the store falls back to the byte route, so a self-hosted deployment on S3 keeps working without the rule, only slower. The production rule is set by `tools/deploy`; the self-hosting notes describe it.
+- **Nothing in the app's CSP.** `SHELL_POLICY` (`reply.rs:369`) does not restrict connections.
+- **A server clock in sync.** A signature dated outside the bucket's tolerance is refused.
+
+What it costs on OVH (price page, 2026-11-13): Object Storage Standard bills no outgoing traffic, internal or external, and no requests. Moving bytes from the VPS to the bucket changes no bill and takes the bytes off the VPS's link.
+
+What it changes for privacy: the bucket's operator sees the reader's address and the time of each fetch, which today it sees only as our server. `docs/privacy.md` is updated to say so.
+
+### 6.3 Relayed bytes wait for a permit
+
+Where the server relays bytes (the byte route, and `/published/` and `/assets/`), a request that finds no transfer permit free waits for one instead of being refused:
+
+- **Transfer before work.** The transfer permit is acquired before the work permit, so a waiting request holds nothing but its task. Today's order (`cost.rs:425` then `513`) would let waiting requests sit on work permits and starve unrelated routes.
+- **First come, first served.** `tokio::sync::Semaphore` hands permits out in order.
+- **A deadline, not a cap.** A request that has waited 10 seconds is refused with `transfer_concurrency`. The deadline is a policy about how long a page may wait for one file, not a guess at anybody's capacity.
+- **Bounded without another limit.** The deadline bounds how long each waiter lives, and the request budget (6000 a minute per principal) bounds how many arrive.
+
+One large project's burst now delays another reader's request by the time it takes to drain, instead of getting it refused. A fair share per principal would remove even that, and stays deferred (10.4).
+
+### 6.4 Refusals say how long to wait
 
 `refusal` (`cost.rs:224-232`) takes the wait as an argument:
 
@@ -199,7 +252,7 @@ Unchanged: `private, no-store`, for the reasons in 3.5. The comment at `figures.
 
 Nothing reads either value today: no client in `web/src` or `skills/` looks at `Retry-After`. The store in 5.2 is the first.
 
-### 6.3 No per-principal share
+### 6.5 No per-principal share
 
 The first draft put a share of 8 concurrent transfers per principal in front of the deployment's semaphore. It is not in this design (section 10.4).
 
@@ -272,7 +325,9 @@ That claim is tested, not assumed (section 9): for each renderer, the page built
 ## 9. Testing
 
 - **`figures.mjs` (unit):**
-  - at most 6 requests in flight;
+  - an asset is fetched through its link when the server gives one;
+  - a `null` link, or a link fetch that fails as a network error, falls back to the byte route, and the tab then skips the link request;
+  - a 403 from the bucket asks for one new link, then falls back;
   - a 429 for `transfer_concurrency` is retried after `Retry-After`, and five failures give `missing`;
   - a 429 for `request_budget` is not retried;
   - a digest mismatch is not retried;
@@ -282,9 +337,15 @@ That claim is tested, not assumed (section 9): for each renderer, the page built
   - with no IndexedDB, the store still fetches.
 - **`local-data` (unit):** `forgetLocalData` deletes `librepaper-assets-v1`.
 - **Server:**
+  - the link route refuses exactly what the byte route refuses: no access, a digest outside the current tree for a reader below Editor, another document's digest;
+  - on a file store it answers `{"url": null}`; on an object store, a link whose query carries `X-Amz-Expires=300` and a signature;
+  - it takes no transfer permit;
+  - with every transfer permit held, a byte-route request waits and succeeds when one frees, and is refused with `transfer_concurrency` after the deadline;
+  - a waiting request holds no work permit;
   - concurrency refusals carry `retry-after: 1`, in the header and the body;
   - budget refusals carry 60;
   - asset reads still carry `private, no-store`.
+- **Bucket (manual, once per provider):** a signed `GET` link works, an expired one and one with an edited expiry are refused, a `HEAD` on a `GET` link is refused, an object stored without a type comes back as generic binary, and the CORS rule admits the app's origin. See 13.6.
 - **Staging (unit):**
   - `snapshotDigest` gives the same digest with and without its memory, on the shared projection fixtures;
   - an incremental hand-over leaves the module holding the same files as a full one after an edit, an added file, a removed file and a rename;
@@ -299,7 +360,7 @@ That claim is tested, not assumed (section 9): for each renderer, the page built
   - Opening a note with no figure requests no asset.
   - Opening a note with two figures requests two.
   - A second open in a new tab requests none.
-  - Opening the paper requests each asset once, never more than 6 at a time, and none is refused.
+  - Opening the paper requests each asset once, and none is refused, on a server started with a file store and on one started with an S3 emulator.
   - After sign-out, the asset database is gone, and a second account that opens the same document fetches its assets from the server.
 - **Benchmark:** on the same fixture, record asset requests on open, time to first page, and time for a file switch, before phase 1 and after each phase. These are the numbers PR 94 reports.
 
@@ -328,9 +389,9 @@ It would stop an edit to an unrelated file from invalidating a finished page. It
 
 ### 10.4 A per-principal share of transfers
 
-A share of 8 would refuse the app's own bundles, which take the same permits and load some 75 at a time (3.4). Two tabs at 6 requests each would exceed it. And where permits are taken, a visitor without an account is known only by network (`cost.rs:94-99`), so a classroom behind one address would share 8.
+A share of 8 would refuse the app's own bundles, which take the same permits and load some 75 at a time (3.4). And where permits are taken, a visitor without an account is known only by network (`cost.rs:94-99`), so a classroom behind one address would share 8. After 6.2, asset bytes on object storage take no permit at all, and after 6.3 a burst on the rest waits rather than fails.
 
-**Reopen when** a single client is seen to hold the pool, and then with the bundles outside it and a principal that tells visitors apart.
+**Reopen when** waits on the transfer pool are seen to delay other readers noticeably, and then as a fair queue with the bundles outside it and a principal that tells visitors apart.
 
 ### 10.5 A digest plan for desktop uploads
 
@@ -338,7 +399,7 @@ Section 3.10. **Reopen if** `MAX_UPLOAD_BYTES` is raised well past 64 MiB. Then 
 
 ### 10.6 A batch endpoint
 
-HTTP/2 already multiplexes requests, and a bounded client with a store removes most of them. **Reopen if** a cold open of a figure-heavy compiled project is still slow after phase 1.
+HTTP/2 already multiplexes requests, and the store removes most of them. A link costs one small request before each cold fetch. **Reopen if** the profile shows link requests on a cold open of a figure-heavy project as a cost people feel; then one request signs links for many digests.
 
 ## 11. Phases
 
@@ -346,13 +407,23 @@ Each phase ships alone and is useful alone.
 
 | Phase | Content | Risk to correctness |
 |---|---|---|
-| 1 | Asset store (5), refusals that say how long to wait (6) | None. Same inputs, fetched better |
+| 1 | Asset store (5); signed links, waiting for permits and refusals that say how long to wait (6) | None. Same inputs, fetched better. Every body is verified against its digest |
 | 2 | Profile, then staging that sends only what changed (7) | None. The renderer's input is identical; the tests in 9 hold it to that |
 | 3 | Flow pages fetch what they show (8) | None by construction, and held to byte equality by the tests in 9 |
 
 Phase 1 alone removes the 429s a client causes itself and the refetch on every new tab. Phase 3 is what turns PR 94's 84 requests into none for a note without figures. Its author could be offered phase 3: their project is the benchmark.
 
-## 12. What changed from the first draft
+## 12. What changed
+
+### 12.1 From the second draft (2026-11-13)
+
+| Second draft | Now | Why |
+|---|---|---|
+| At most 6 asset requests in flight per tab | No client cap | Six was a guess at a server-side capacity the client cannot see, and it would differ by deployment |
+| The server relays every asset byte | A signed link to the bucket on object storage (6.2), the byte route kept for files on disk, the CLI and old tabs | The access check is the only part that needs our server. OVH bills no egress or requests, so the bucket's share costs nothing |
+| A busy transfer pool refuses at once, with `retry-after: 1` | A request waits up to 10 seconds for a permit, transfer before work (6.3) | A permit frees in milliseconds; refusing turned ordinary bursts into errors. This also covers the app's bundles and tabs opened before the deploy (13.1, 13.3) |
+
+### 12.2 From the first draft
 
 | First draft | Now | Why |
 |---|---|---|
@@ -371,8 +442,10 @@ Phase 1 alone removes the 429s a client causes itself and the refetch on every n
 
 ## 13. Open questions
 
-1. **Do the app's bundles cause refusals?** They share the transfer pool with document assets (3.4). Phase 1 should check, from the server's logs on the benchmark, which paths `transfer_concurrency` refuses before and after. If bundles are among them, taking them out of the pool is a separate, small change.
+1. **Do the app's bundles cause refusals?** They share the transfer pool with document assets (3.4). After 6.3 they wait instead. The benchmark should still record, from the server's metrics, how long requests wait for a transfer permit, by path.
 2. **Store cap:** is 256 MiB right? The stand-in pages have 96 MiB. A person with several figure-heavy projects may want more; a phone less.
-3. **Tabs opened before the deploy** keep the unbounded fetch until they reload, and they do not retry. This is accepted: the server would have to wait for a permit on their behalf, and that changes how every refusal works for a problem that ends at the next reload.
+3. **Tabs opened before the deploy** keep the unbounded fetch on the byte route until they reload. After 6.3 their burst waits for permits instead of drawing 429s, so they need no change.
 4. **The 50 ms line** in 7.1 is a proposal. The profile may show a better one.
 5. **Authored HTML in nested frames:** a nested frame's own images are not resolved today, because the frame is inlined before the rewrite runs. Section 8 keeps that behaviour. Fixing it is a separate question.
+6. **The production bucket's behaviour** (9, "Bucket"): PROBE_RESULTS_PENDING.
+7. **The 10-second wait** in 6.3 is a proposal. The benchmark's wait times may show a better one.
