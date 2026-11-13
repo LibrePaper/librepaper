@@ -9,11 +9,12 @@
 // page. Nothing here touches the DOM, and nothing is fetched or uploaded: the
 // Reader supplies the tree it already holds.
 //
-// An export follows the Run code switch, as the preview does: with it on in
-// the desktop app and the format set to this computer, a file the format has a
-// command for comes from that command, even where this browser has no renderer
-// for it, and otherwise it takes the browser route, which does not run code
-// cells.
+// A Quarto export runs on this computer whenever the desktop app has a Run
+// directory set, since an export is itself an explicit request. Other formats
+// follow the Run code switch, as the preview does: with it on in the desktop
+// app and the format set to this computer, a file the format has a command for
+// comes from that command, even where this browser has no renderer for it, and
+// otherwise it takes the browser route, which does not run code cells.
 
 import { pandocAvailable } from "../pandoc/client.js";
 import { dirOf, pandocPath, typstTree } from "../pandoc/typst.js";
@@ -39,8 +40,8 @@ export function unrunCells(format, tree) {
 }
 
 /// Whether the command on this computer makes `target` for `format`. `local`
-/// says the desktop app builds this document there, which is the Reader's
-/// answer to the Run code switch and the format's backend; `outputs` is the
+/// says the desktop app builds this document there. For other formats the Run
+/// code switch decides that; for Quarto, a Run directory does. `outputs` is the
 /// table of what each format has a command for. The menu and the export both
 /// ask this, so a file the menu offers is the file the export makes.
 export function madeLocally(format, target, local, outputs = LOCAL_OUTPUTS) {
@@ -132,7 +133,7 @@ export async function exportFile({ target, format, tree, title, slug, project = 
   const render = (source, name, options) => renderIn(source, name, options);
 
   // The desktop app builds the target itself, with no Pandoc step. The frame
-  // is not reused: its page may predate Run code and lack the cells' results.
+  // is not reused: its page may predate the last run and lack the cells' results.
   async function localBuild() {
     const result = await render(tree, title, {
       format: target,

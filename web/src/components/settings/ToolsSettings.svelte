@@ -7,7 +7,8 @@
   import { m } from "../../lib/paraglide/messages.js";
 
   // The page does not own the machine view; the dialog creates and starts it.
-  // The Run directory is the reader's; it is read while Run code is on.
+  // The Run directory is the reader's; it is read whenever a Quarto document is
+  // open in the desktop app with its format set to this computer.
   let { view, runDirectory = undefined, onchooserundirectory = undefined } = $props();
   const runStatus = $derived(runDirectory?.loaded ? runDirectory.status : null);
   const runUsable = $derived(Boolean(runDirectory?.usable));

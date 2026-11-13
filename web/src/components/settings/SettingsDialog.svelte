@@ -55,7 +55,8 @@
     account = {},
     remoteConnected = false,
     remoteNote = "",
-    // The Run directory of the open document, while Run code is on, and how
+    // The Run directory of the open document, read while a Quarto document is
+    // open in the desktop app with its format set to this computer, and how
     // to ask for another.
     runDirectory = undefined,
     onchooserundirectory = undefined,
