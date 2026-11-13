@@ -97,6 +97,7 @@
   import DesktopOnly from "./DesktopOnly.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
     import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
+  import { leaf, shareLineOf } from "../lib/reader/run-directory.js";
   import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
   import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { locale } from "../lib/locale.js";
@@ -2249,6 +2250,12 @@
   function openRunDirPage() {
     runDirPageOpen = true;
   }
+  // The Run menu's folder item: the dialog explains a missing or unset folder
+  // and offers the suggestion; otherwise go straight to the system picker.
+  function chooseRunDirectory() {
+    if (!runDir.usable) openRunDirPage();
+    else void runDir.choose();
+  }
   function closeRunDirPage() {
     runDirPageOpen = false;
   }
@@ -2469,6 +2476,7 @@
     shareStatus: sharedResults.state.status,
     pdfOutput: ["pdf", "docx"].includes(buildPreferences.output),
   });
+  const runShareLine = $derived(shareLineOf(shareProps));
   const stopLatex = () => buildSettings.stopLatex();
 
   const configureLatex = (format, owner = session) => buildSettings.configureLatex(format, owner, buildUserId);
@@ -4273,7 +4281,12 @@
 {/snippet}
 {#snippet localExecutionControl()}
   {#if runCodeOffered && sourceFormat === "quarto"}
-    <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun} ondirectory={openRunDirPage} />
+    <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun}
+      share={shareResults} onshare={setShareResults} shareLine={runShareLine}
+      directoryName={runDir.status?.path ? leaf(runDir.status.path) : ""}
+      directoryPath={runDir.status?.path ? runDir.shorten(runDir.status.path) : ""}
+      directoryMissing={Boolean(runDir.status?.path) && !runDir.usable}
+      ondirectory={chooseRunDirectory} />
   {:else if runCodeOffered}
     <label class="bar-toggle" data-tip={m.readerd_run_code_hint()}>
       <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label={m.readerd_run_code()} data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>

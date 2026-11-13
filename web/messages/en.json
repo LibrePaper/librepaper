@@ -2252,7 +2252,7 @@
   "quota_preferences_unit_tib": "TiB",
   "quotasettings_by_document": "Storage by document",
   "quotasettings_delete_results": "Delete shared results",
-  "quotasettings_delete_results_body": "Collaborators will see code without output until someone runs it again with Share results on. To stop sharing, turn off Share results under Run directory and sharing in the Run menu.",
+  "quotasettings_delete_results_body": "Collaborators will see code without output until someone runs it again with Share results on. To stop sharing, turn off Share results in the Run menu.",
   "quotasettings_delete_results_failed": "Shared results could not be deleted.",
   "quotasettings_delete_results_for": "Delete shared results for {name}",
   "quotasettings_delete_results_title": "Delete shared results?",
@@ -3011,7 +3011,8 @@
   "runbutton_stop": "Stop",
   "runbutton_run_hint": "Run this document's code on this computer",
   "runbutton_options": "Run options",
-  "runbutton_directory": "Run directory and sharing…",
+  "runbutton_directory_named": "Run directory: {name}",
+  "runbutton_choose_directory": "Choose a Run directory…",
   "runbutton_last_run": "Last run {time}",
   "runbutton_failed": "The last run failed",
   "runbutton_stale": [

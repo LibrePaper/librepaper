@@ -1,6 +1,7 @@
 // What the Run directory adds to a Quarto render on this computer: the notices
 // the desktop app sends back with a job, and the hint a missing data file gets.
 import { m } from "../paraglide/messages.js";
+import { storageBytes } from "../quota-preferences.js";
 
 // The wording R, Python, Julia and the shell use when a file is not where the
 // code looked for it.
@@ -101,4 +102,20 @@ export function belongsInRunDirectory(path) {
   const name = String(path || "");
   const dot = name.lastIndexOf(".");
   return dot > name.lastIndexOf("/") && LOCAL_ONLY.has(name.slice(dot).toLowerCase());
+}
+
+/** The line under Share results: what happened to the last shared run, or ""
+ * when there is nothing to say.
+ * @param {{ share?: boolean, pdfOutput?: boolean, shareStatus?: { kind?: string, bytes?: number, reason?: string } }} [input]
+ * @returns {string} */
+export function shareLineOf({ share = true, pdfOutput = false, shareStatus = { kind: "idle" } } = {}) {
+  if (!share) return "";
+  if (pdfOutput) return m.rundirectorycontrol_html_only();
+  if (shareStatus.kind === "shared") return m.rundirectorycontrol_shared({ size: storageBytes(shareStatus.bytes ?? 0) });
+  if (shareStatus.kind === "failed") {
+    if (shareStatus.reason === "storage") return m.rundirectorycontrol_not_shared_full();
+    if (shareStatus.reason === "unmatched") return m.rundirectorycontrol_not_shared_unmatched();
+    return m.rundirectorycontrol_not_shared_failed();
+  }
+  return "";
 }

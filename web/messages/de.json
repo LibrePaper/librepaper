@@ -2252,7 +2252,7 @@
   "quota_preferences_unit_tib": "TiB",
   "quotasettings_by_document": "Speicher nach Dokument",
   "quotasettings_delete_results": "Geteilte Ergebnisse löschen",
-  "quotasettings_delete_results_body": "Mitwirkende sehen den Code ohne Ausgabe, bis jemand ihn erneut ausführt, während „Ergebnisse teilen“ aktiviert ist. Um das Teilen zu beenden, deaktivieren Sie „Ergebnisse teilen“ unter „Ausführungsordner und Freigabe“ im Menü „Ausführen“.",
+  "quotasettings_delete_results_body": "Mitwirkende sehen den Code ohne Ausgabe, bis jemand ihn erneut ausführt, während „Ergebnisse teilen“ aktiviert ist. Um das Teilen zu beenden, deaktivieren Sie „Ergebnisse teilen“ im Menü „Ausführen“.",
   "quotasettings_delete_results_failed": "Die geteilten Ergebnisse konnten nicht gelöscht werden.",
   "quotasettings_delete_results_for": "Geteilte Ergebnisse von {name} löschen",
   "quotasettings_delete_results_title": "Geteilte Ergebnisse löschen?",
@@ -3011,7 +3011,8 @@
   "runbutton_stop": "Stoppen",
   "runbutton_run_hint": "Den Code dieses Dokuments auf diesem Computer ausführen",
   "runbutton_options": "Ausführungsoptionen",
-  "runbutton_directory": "Ausführungsordner und Freigabe…",
+  "runbutton_directory_named": "Ausführungsordner: {name}",
+  "runbutton_choose_directory": "Ausführungsordner wählen…",
   "runbutton_last_run": "Letzter Lauf: {time}",
   "runbutton_failed": "Der letzte Lauf ist fehlgeschlagen",
   "runbutton_stale": [

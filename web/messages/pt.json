@@ -2252,7 +2252,7 @@
   "quota_preferences_unit_tib": "TiB",
   "quotasettings_by_document": "Armazenamento por documento",
   "quotasettings_delete_results": "Excluir resultados compartilhados",
-  "quotasettings_delete_results_body": "Os colaboradores verão o código sem a saída até que alguém o execute novamente com «Compartilhar resultados» ativado. Para parar de compartilhar, desative «Compartilhar resultados» em «Pasta de execução e compartilhamento», no menu «Executar».",
+  "quotasettings_delete_results_body": "Os colaboradores verão o código sem a saída até que alguém o execute novamente com «Compartilhar resultados» ativado. Para parar de compartilhar, desative «Compartilhar resultados» no menu «Executar».",
   "quotasettings_delete_results_failed": "Não foi possível excluir os resultados compartilhados.",
   "quotasettings_delete_results_for": "Excluir os resultados compartilhados de {name}",
   "quotasettings_delete_results_title": "Excluir resultados compartilhados?",
@@ -3011,7 +3011,8 @@
   "runbutton_stop": "Parar",
   "runbutton_run_hint": "Executar o código deste documento neste computador",
   "runbutton_options": "Opções de execução",
-  "runbutton_directory": "Pasta de execução e compartilhamento…",
+  "runbutton_directory_named": "Pasta de execução: {name}",
+  "runbutton_choose_directory": "Escolher uma pasta de execução…",
   "runbutton_last_run": "Última execução: {time}",
   "runbutton_failed": "A última execução falhou",
   "runbutton_stale": [

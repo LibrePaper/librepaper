@@ -2252,7 +2252,7 @@
   "quota_preferences_unit_tib": "Tio",
   "quotasettings_by_document": "Stockage par document",
   "quotasettings_delete_results": "Supprimer les résultats partagés",
-  "quotasettings_delete_results_body": "Les collaborateurs verront le code sans sa sortie jusqu’à ce que quelqu’un l’exécute de nouveau avec « Partager les résultats » activé. Pour arrêter le partage, désactivez « Partager les résultats » dans « Dossier d’exécution et partage » du menu « Exécuter ».",
+  "quotasettings_delete_results_body": "Les collaborateurs verront le code sans sa sortie jusqu’à ce que quelqu’un l’exécute de nouveau avec « Partager les résultats » activé. Pour arrêter le partage, désactivez « Partager les résultats » dans le menu « Exécuter ».",
   "quotasettings_delete_results_failed": "Les résultats partagés n’ont pas pu être supprimés.",
   "quotasettings_delete_results_for": "Supprimer les résultats partagés de {name}",
   "quotasettings_delete_results_title": "Supprimer les résultats partagés?",
@@ -3011,7 +3011,8 @@
   "runbutton_stop": "Arrêter",
   "runbutton_run_hint": "Exécuter le code de ce document sur cet ordinateur",
   "runbutton_options": "Options d’exécution",
-  "runbutton_directory": "Dossier d’exécution et partage…",
+  "runbutton_directory_named": "Dossier d’exécution : {name}",
+  "runbutton_choose_directory": "Choisir un dossier d’exécution…",
   "runbutton_last_run": "Dernière exécution : {time}",
   "runbutton_failed": "La dernière exécution a échoué",
   "runbutton_stale": [
