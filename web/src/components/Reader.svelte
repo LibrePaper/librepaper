@@ -449,6 +449,10 @@
   // The log of the last completed Run. The next draft render replaces the
   // render status's log with its own, so Diagnostics reads this one instead.
   let runLog = $state("");
+  // What the last completed Run said about the document, such as a file its
+  // code reads from the Run directory that is missing. Kept here for the same
+  // reason as the log: the next draft render would otherwise erase it.
+  let runDiagnostics = $state.raw([]);
   const lastRunAt = $derived(ownResults?.updatedAt ?? "");
   // A Quarto document needs a folder to run its code in. Its code never runs
   // on this computer until Run is pressed and a folder is set.
@@ -2341,6 +2345,7 @@
       if (gone()) return;
       // The run's log is what Diagnostics shows, whether it worked or not.
       runLog = rendered?.log || "";
+      runDiagnostics = rendered?.diagnostics || [];
       if (rendered?.ok === false || typeof rendered?.html !== "string") {
         runPhase = "failed";
         return;
@@ -2377,8 +2382,13 @@
         framePreview?.publish({ kind: "html", html: rendered.html });
       }
       say(m.readerb_run_unmatched());
-    } catch {
-      if (!gone()) runPhase = "failed";
+    } catch (error) {
+      // A run that threw (the desktop app went away, say) leaves its reason
+      // where the failure message sends the reader, in place of an older log.
+      if (gone()) return;
+      runPhase = "failed";
+      runLog = error?.message || String(error);
+      runDiagnostics = [];
     }
   }
   function stopRun() {
@@ -2470,7 +2480,7 @@
     runPhase === "failed" ? { severity: "error", message: m.readerb_run_failed() } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
-  ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
+  ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })).concat(sourceFormat === "quarto" ? runDiagnostics : []));
   // Backups that are off say nothing. Only a failing backup is reported.
   const backupDiagnostics = $derived.by(() => {
     const data = backupStatus.active ? backupStatus.data : null;
