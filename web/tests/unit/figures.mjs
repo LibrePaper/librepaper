@@ -584,14 +584,14 @@ __resetAssetTestState();
 
 // release() clears the kept set: an entry kept before it can be evicted after.
 {
-  const make = (fill) => Uint8Array.of(...new Array(40).fill(fill));
+  const make = (fill) => Uint8Array.of(...new Array(60).fill(fill));
   const b = make(61);
   const c = make(62);
   const [shaB, shaC] = await Promise.all([b, c].map(digestOf));
   const fake = fakeIndexedDB();
   fake.databases.set(ASSET_DATABASE, new Map([
     ["bytes", new Map([[shaB, b]])],
-    ["meta", new Map([[shaB, { size: 40, used: 1 }]])],
+    ["meta", new Map([[shaB, { size: 60, used: 1 }]])],
   ]));
   await scenario((url) => {
     if (isLink(url)) return noLink();
