@@ -2,7 +2,7 @@
 
 Status: proposed 2026-11-11, revised 2026-11-13. This replaces the first draft (`e769c89ae`). Section 12 lists what changed and why.
 
-A render reads a project: texts, figures, fonts, bibliographies, styles. Today every preview render collects the whole project, fetches every binary asset at once, and hands all of it to the renderer. On a large project that is slow, and the parallel fetches can exhaust the server's transfer permits, so the server answers 429 to page opens. This document specifies how assets are fetched and kept, how the work a render repeats is cut, and how a flow page fetches only the assets it shows.
+A render reads a project: texts, figures, fonts, bibliographies, styles. Today every preview render collects the whole project, fetches every binary asset at once, and hands all of it to the renderer. On a large project that is slow, and the parallel fetches can exhaust the server's transfer permits, so the server answers 429 to page opens. This document specifies how assets are fetched and kept, how the work a render repeats is cut, and how a project's assets are loaded: whole, once, when it opens.
 
 No client in this design caps how many requests it sends. The limit that 429s protect belongs to the server, and the client cannot see it. So the server stops relaying bytes it does not need to relay (section 6.2), and where it must relay them it makes a request wait for a permit instead of refusing it (section 6.3).
 
@@ -10,11 +10,11 @@ PR 94 (`renderScope`, not merged) found the problem. On a project of 704 texts a
 
 ## 1. Product principle
 
-> A render reads the whole project. It pays only for what changed and for what the page shows.
+> A render reads the whole project. A project is loaded once, when it opens, the same way for every format. After that a render pays only for what changed.
 
 Four rules follow from it:
 
-1. **The renderer's input never shrinks on a guess.** No file is withheld because a heuristic judged it unrelated. Work is saved in two ways only: by not repeating it, and by exact knowledge of what the output uses.
+1. **The renderer's input never shrinks on a guess.** No file is withheld because a heuristic judged it unrelated. Work is saved one way only: by not repeating it.
 2. **Bytes travel once where the browser can keep them.** An asset is addressed by its SHA-256. A browser that has fetched and stored it does not fetch it again until the person signs out. Three ordinary conditions fetch again and are accepted: an entry the store evicted, a browser that refuses storage, and two tabs that open cold at the same moment.
 3. **Nothing private outlives sign-out.** Whatever this browser keeps of a project is deleted when the person signs out, the way projects and rendered pages already are (`web/src/lib/local-data.js`).
 4. **Measure, then change.** Every phase after the first starts from a profile and changes only the steps the profile shows to matter.
@@ -26,7 +26,7 @@ Four rules follow from it:
 - One client asset store: fetching through signed links, retries, and a persistent store that sign-out deletes (section 5).
 - Serving assets: signed links to object storage, a wait for a permit where the server relays bytes, and refusals that say how long to wait (section 6).
 - A profile of one render, and staging that sends a renderer only what changed (section 7).
-- Flow pages that fetch only the assets their output shows (section 8).
+- Loading a project whole when it opens, and keeping it loaded while it changes, the same way for every format (section 8).
 
 ### Out of scope
 
@@ -34,7 +34,7 @@ Four rules follow from it:
 - The asset mirror (`docs/dev/asset-mirrors.md`). It serves pinned engine modules, fonts and LaTeX release files, not project assets.
 - Server-side renders, such as MCP candidate renders (`crates/librepaper-server/src/server/mcp/render.rs`).
 - The desktop app's local renders. They keep the whole tree and today's upload (section 3.10).
-- Everything in section 10: a scope built from project structure, demand loading for compiled renders, a render identity over read files, a per-principal share of transfers, a digest plan for desktop uploads, and a batch endpoint. Each is deferred with the evidence that would reopen it.
+- Everything in section 10: a scope built from project structure, loading files as a render reads them, a render identity over read files, a per-principal share of transfers, a digest plan for desktop uploads, and a batch endpoint. Each is deferred with the evidence that would reopen it.
 
 ## 3. Current behavior and constraints
 
@@ -151,7 +151,6 @@ The upload is not a cost worth designing for. A job is capped at 64 MiB and 2000
 - **Flow page:** HTML output from the Markdown, Org, Quarto draft or authored HTML renderers, painted in the documents frame.
 - **Compiled render:** any other preview render: Typst, LaTeX, Markdown or Quarto to PDF, and every render on this computer.
 - **Staging:** copying the tree into a renderer: the message to the worker and the writes into the module or engine.
-- **Placeholder:** a stand-in URL for an asset whose bytes are not in memory yet (section 8.2).
 
 ## 5. The client asset store
 
@@ -293,36 +292,37 @@ LaTeX flushes and rewrites its file systems on every compile because `flushCache
 
 Unchanged. The identity is `snapshotDigest` of the whole tree. Candidate 1 makes it cheap. It does not make it narrower (section 10.3).
 
-## 8. Flow pages fetch what they show
+## 8. A project is the unit of loading
 
-Phase 3. A flow page's renderer never reads asset bytes. It writes URLs. So the page can be rendered first and its assets fetched afterwards, and only the ones it shows.
+Phase 3. One path for every format: when a project opens, the browser fetches all of its assets in the background, and keeps fetching whatever the project gains while it is open. A render, a file switch, a new tab or a reopened project then finds the bytes local, whatever the format.
 
-### 8.1 Which renders
+### 8.1 Why whole projects
 
-A preview render whose renderer is Markdown, Org, the Quarto draft or authored HTML, producing HTML in this browser. Every compiled render keeps today's order: gather everything, then render.
+The alternatives are per format, and no single one covers every renderer:
 
-Only `preview-render.js` changes. Candidate previews, label comparisons, exports and downloads gather every asset, as today.
+- **Render first, fetch what the output names** works for the four flow-page renderers, which write an asset's URL and never read its bytes. It cannot work for LaTeX or Typst, which read an image's bytes to lay out the page (`\includegraphics` needs its size), or answer `\IfFileExists` without failing.
+- **Fetch as the engine reads** works for every renderer in principle, but engine reads are synchronous, so it needs blocking network reads in workers, a synchronous local store, a host callback in three engines, and serial fetches on a cold open (10.2).
 
-### 8.2 The sequence
+Loading the project whole needs none of that, gives every renderer the complete tree with nothing withheld (rule 1), and costs, after phase 1, one fetch per asset per browser until sign-out.
 
-1. **Build the URL map without fetching.** The map has the same keys as today, one per path in `digests`. An asset already in memory gets its real URL. Any other gets a placeholder: `librepaper-pending-asset/<sha256>`.
-2. **Render.** The renderer receives no asset bytes.
-3. **Read the output.** Collect every placeholder in the HTML. Those digests are exactly the assets the page shows that are not in memory.
-4. **Fetch them** through the store.
-5. **Substitute.** Each placeholder is replaced by the asset's data: URL, with the `#librepaper-asset=<sha>` fragment the documents agent reads.
-6. **Publish once.** The frame is given the finished page, never one with holes. The render's guards against a newer ticket, a navigation and a source change are checked again after the fetch, like after every other await.
+### 8.2 Warm on open
 
-The stand-in page store and the `finished` map keep the page as published, with its data: URLs.
+- **When:** whenever the reader refreshes its file list, which it does once the project is restored and after every batch that changes the directory (`refreshFiles`, `Reader.svelte`). A change to an asset's bytes is a change to its digest, so a replaced, added or renamed figure arrives through the same call.
+- **What:** `figures.gather` over every digest in the current tree, in the background, through the phase 1 store (memory, the persistent store, a signed link, the byte route). Digests already held cost nothing. Requests for the same digest are merged with the render's own.
+- **Renders are unchanged.** A render still gathers its tree's assets before it compiles, as every render does today. On a cold open it waits for the same fetches the warm-up started; afterwards it finds everything in memory.
+- **Updates midway** need nothing more. An old version still downloading finishes under its old digest and is never used: the next render asks for the new digest. A deleted asset that was still downloading is either refused or stored and never used.
 
-### 8.3 An asset that cannot be fetched
+### 8.3 The store keeps the open project
 
-Its placeholder is replaced by an empty data: URL with the same fragment. The image is broken in the page, which is what a missing figure in a flow page looks like today, and the frame requests nothing from the server for it.
+The persistent store evicts least recently used entries to stay under its cap (5.3). A project's assets must not evict each other while it is open, or a file switch would fetch again:
 
-### 8.4 Why this is exact
+- The reader tells the store which digests the open project holds (`figures.keep`), every time it warms.
+- Eviction skips those digests. If the store cannot get under its cap without them, the entry just written is removed instead: a project bigger than the cap keeps what fits, and the rest comes from the network in the next cold tab. Within one tab, the in-memory map holds the whole project regardless.
+- Leaving the document (`release`) clears the kept set.
 
-Each of the four renderers resolves every asset reference through the URL map and reads no asset any other way (3.2). The map has the same keys as before, so the renderer makes the same decisions. A placeholder is a fixed prefix and 64 hexadecimal digits, which HTML and URL escaping leave alone. The page that results is the page a full gather would have produced.
+### 8.4 What it costs
 
-That claim is tested, not assumed (section 9): for each renderer, the page built through placeholders must equal, byte for byte, the page built with every asset gathered first.
+The first open of a project in a browser downloads every asset, including figures nobody looks at in that session. On a normal connection that is one parallel burst from the bucket; on a slow connection or a very figure-heavy project it is the time to first page that grows (13.8). Later opens, new tabs and file switches cost no network.
 
 ## 9. Testing
 
@@ -352,15 +352,14 @@ That claim is tested, not assumed (section 9): for each renderer, the page built
   - `snapshotDigest` gives the same digest with and without its memory, on the shared projection fixtures;
   - an incremental hand-over leaves the module holding the same files as a full one after an edit, an added file, a removed file and a rename;
   - a new worker receives everything.
-- **Flow pages (unit, one set per renderer):** the page built through placeholders equals the page built with every asset gathered, on documents with:
-  - a percent-encoded name (`my%20plot.png`);
-  - an image written as raw HTML inside Markdown;
-  - an image inside an included file;
-  - an asset the document never names, which must not be fetched;
-  - an asset that cannot be fetched, which becomes a broken image and not an error.
+- **Project loading (unit, `figures.mjs`):**
+  - eviction never removes a kept digest; another project's oldest entries go first;
+  - when kept digests alone exceed the cap, the entry just written is not left in the store;
+  - `release` clears the kept set.
 - **Browser:** a fixture project with 700 notes, 80 figures and one LaTeX paper that uses 10 of them.
-  - Opening a note with no figure requests no asset.
-  - Opening a note with two figures requests two.
+  - Opening the project requests each asset once, in the background, whichever file is open.
+  - Switching files afterwards requests no asset, in every format.
+  - Adding or replacing a figure requests that one asset.
   - A second open in a new tab requests none.
   - Opening the paper requests each asset once, and none is refused, on a server started with a file store and on one started with an S3 emulator.
   - After sign-out, the asset database is gone, and a second account that opens the same document fetches its assets from the server.
@@ -370,18 +369,22 @@ That claim is tested, not assumed (section 9): for each renderer, the page built
 
 ### 10.1 A scope built from project structure
 
-PR 94's allow-list, and the first draft's inverse of it with a fall-back to the whole tree. Not built, because of rule 1 and section 3.9: a structural scope withholds files on a guess, and the failures it causes are often silent. Phases 2 and 3 reach PR 94's results for the project it measured without it.
+PR 94's allow-list, and the first draft's inverse of it with a fall-back to the whole tree. Not built, because of rule 1 and section 3.9: a structural scope withholds files on a guess, and the failures it causes are often silent. Phases 1 and 3 remove the 429s and the repeated fetches PR 94 measured without it.
 
-Nothing reopens this in that form. A narrower input is acceptable only when it is exact, as in section 8 and 10.2.
+Nothing reopens this in that form. A narrower input is acceptable only when it is exact (10.2).
 
-### 10.2 Demand loading for compiled renders
+### 10.2 Loading files as a render reads them
 
-Compiled renders still gather every asset. After phase 1 that costs one fetch per asset per browser, until sign-out.
+The one other path that would treat every format alike: each engine reads project files through one interface, the file list comes complete from the tree, and bytes are fetched at the moment of the read. It is exact by construction and would not download figures nobody opens. It needs:
 
-- **Typst:** the module could report project files it did not find, beside the packages it already reports. The place is one line (`wasm-typst/src/typst.rs:321`), and `needs.js` already has the fetch-and-compile-again loop. But Typst stops at the first file it cannot read, so a cold render would take one round per figure.
-- **LaTeX:** the resolver evidence stream could name the project path a compile looked for and did not find. It would have to be shown first that every such miss reaches the stream, including `\IfFileExists` and `\includegraphics` without an extension.
+- a blocking read inside each renderer's worker (a synchronous `XMLHttpRequest` is allowed there, cross-origin with CORS);
+- a synchronous local store, since IndexedDB cannot be read synchronously (the origin private file system's synchronous handles lock a file to one worker, and their shared read mode is not available in every browser);
+- a host callback for a missed file in each of our three engines, and three engine releases;
+- and it fetches a cold compile's figures one after another.
 
-**Reopen when** a measured cold open of a compiled document is slow because it fetches assets the page does not use, on a project where that is most of them.
+Not built, because loading the project whole (8) gets every format the same result after the first open, with none of this.
+
+**Reopen when** projects are seen that are too large to load whole: a first open measured as slow because of figures the session never uses, or projects that routinely exceed the store's cap.
 
 ### 10.3 A render identity over the files a render read
 
@@ -411,9 +414,9 @@ Each phase ships alone and is useful alone.
 |---|---|---|
 | 1 | Asset store (5); signed links, waiting for permits and refusals that say how long to wait (6) | None. Same inputs, fetched better. Every body is verified against its digest |
 | 2 | Profile, then staging that sends only what changed (7) | None. The renderer's input is identical; the tests in 9 hold it to that |
-| 3 | Flow pages fetch what they show (8) | None by construction, and held to byte equality by the tests in 9 |
+| 3 | A project is the unit of loading: warm on open, keep the open project in the store (8) | None. Renders get the same tree; only when the bytes arrive changes |
 
-Phase 1 alone removes the 429s a client causes itself and the refetch on every new tab. Phase 3 is what turns PR 94's 84 requests into none for a note without figures. Its author could be offered phase 3: their project is the benchmark.
+Phase 1 alone removes the 429s a client causes itself and the refetch on every new tab. Phase 3 makes every file switch and every later open free of network, in every format; the first open of a project pays for all of its assets once.
 
 ## 12. What changed
 
@@ -421,6 +424,8 @@ Phase 1 alone removes the 429s a client causes itself and the refetch on every n
 
 | Second draft | Now | Why |
 |---|---|---|
+| Phase 3: flow pages render with placeholders, then fetch the assets the page names | The project is the unit of loading: every asset fetched in the background when it opens, the open project kept in the store (8) | Render-then-check worked for four renderers and not for LaTeX or Typst. One path for every format was wanted; whole projects are that path, and phase 1 had already built most of it |
+| Demand loading for compiled renders, deferred | Loading files as a render reads them, deferred for every format (10.2) | Considered as the uniform alternative; it needs blocking reads, a synchronous store and three engine changes |
 | At most 6 asset requests in flight per tab | No client cap | Six was a guess at a server-side capacity the client cannot see, and it would differ by deployment |
 | The server relays every asset byte | A signed link to the bucket on object storage (6.2), the byte route kept for files on disk, the CLI and old tabs | The access check is the only part that needs our server. OVH bills no egress or requests, so the bucket's share costs nothing |
 | A busy transfer pool refuses at once, with `retry-after: 1` | A request waits up to 10 seconds for a permit, transfer before work (6.3) | A permit frees in milliseconds; refusing turned ordinary bursts into errors. This also covers the app's bundles and tabs opened before the deploy (13.1, 13.3) |
@@ -438,7 +443,7 @@ Phase 1 alone removes the 429s a client causes itself and the refetch on every n
 | Render identity over the scope | Whole tree, hashed cheaply | 10.3 |
 | Observed read sets | Deferred | 10.2 and 10.3. `inputFiles` is untested here and incomplete for identity |
 | Content store and `jobs/plan` for the desktop app, wire 3.3.0 | Dropped | 3.10. No wire change is needed |
-| Lazy URLs for Markdown, Quarto and Org | Render first, fetch what the output names, substitute (8) | A blob: URL or the asset route cannot load in the documents frame (`figures.js:9-17`) |
+| Lazy URLs for Markdown, Quarto and Org | Render first, fetch what the output names, substitute; itself replaced by whole-project loading (12.1) | A blob: URL or the asset route cannot load in the documents frame (`figures.js:9-17`) |
 | Lazy bytes for Typst through `set_asset_url` | Deferred (10.2) | Typst reads bytes from the file map; a URL does nothing for it |
 | No measurement step | Phase 2 starts with a profile | Rule 4. Section 3.8 lists six per-render costs and nobody knows their sizes |
 
@@ -448,10 +453,11 @@ Phase 1 alone removes the 429s a client causes itself and the refetch on every n
 2. **Store cap:** is 256 MiB right? The stand-in pages have 96 MiB. A person with several figure-heavy projects may want more; a phone less.
 3. **Tabs opened before the deploy** keep the unbounded fetch on the byte route until they reload. After 6.3 their burst waits for permits instead of drawing 429s, so they need no change.
 4. **The 50 ms line** in 7.1 is a proposal. The profile may show a better one.
-5. **Authored HTML in nested frames:** a nested frame's own images are not resolved today, because the frame is inlined before the rewrite runs. Section 8 keeps that behaviour. Fixing it is a separate question.
+5. **Authored HTML in nested frames:** a nested frame's own images are not resolved today, because the frame is inlined before the rewrite runs. Fixing it is a separate question.
 6. **The production bucket's behaviour** (9, "Bucket"), probed 2026-11-13 against OVH `bhs` with links signed by a stand-alone SigV4 signer:
    - a signed `GET` link works; one used after expiry, one with an edited expiry, and a `HEAD` on a `GET` link are refused with 403;
    - the response overrides are honoured: `Content-Type: application/octet-stream`, `Content-Disposition: attachment`;
    - the bucket has no CORS configuration today, and answers a request with an `Origin` header without `Access-Control-Allow-Origin`. The rule in 6.2 has to be set before the store can use links; until then it falls back to the byte route;
    - what the bucket answers for an object stored with no type at all is not known: the probe's upload carried a type its HTTP library added. The signed overrides make it irrelevant.
 7. **The 10-second wait** in 6.3 is a proposal. The benchmark's wait times may show a better one.
+8. **The first open of a large project** downloads every asset. Measure time to first page on the fixture over a throttled connection, and on a phone, before deciding whether 10.2 is ever needed.
