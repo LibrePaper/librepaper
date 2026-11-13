@@ -196,14 +196,19 @@ export async function splitResults(html, qmdSource, { path = "main.qmd" } = {}) 
 
 /// How many of the document's executed cells have no saved output with the
 /// same fingerprint: the cells whose code changed since the last run, or that
-/// were never run. The Run button shows this count so a reader knows how much
+/// were never run. Saved fingerprints are counted, so a cell that was copied
+/// after the run is stale: each saved output covers only one cell. The Run button shows this count so a reader knows how much
 /// of the draft is out of date.
 export async function staleCells(cells, qmdSource, { path = "main.qmd" } = {}) {
-  const saved = new Set((Array.isArray(cells) ? cells : []).map((cell) => cell?.fingerprint));
+  const saved = new Map();
+  for (const cell of Array.isArray(cells) ? cells : []) saved.set(cell?.fingerprint, (saved.get(cell?.fingerprint) ?? 0) + 1);
   const expected = executedCells(parseQuarto(String(qmdSource ?? ""), { path }));
   let stale = 0;
   for (const cell of expected) {
-    if (!saved.has(await cellFingerprint(cell))) stale += 1;
+    const fingerprint = await cellFingerprint(cell);
+    const left = saved.get(fingerprint) ?? 0;
+    if (left > 0) saved.set(fingerprint, left - 1);
+    else stale += 1;
   }
   return stale;
 }

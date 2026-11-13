@@ -443,7 +443,12 @@
   let runPhase = $state("idle");
   let ownResults = $state.raw(null);
   let staleCount = $state(0);
-  let stopRequested = false;
+  // Each Run takes a number; Stop moves the counter on, so a call that was
+  // stopped can tell, after any await, that it no longer owns the state.
+  let runGeneration = 0;
+  // The log of the last completed Run. The next draft render replaces the
+  // render status's log with its own, so Diagnostics reads this one instead.
+  let runLog = $state("");
   const lastRunAt = $derived(ownResults?.updatedAt ?? "");
   // A Quarto document needs a folder to run its code in. Its code never runs
   // on this computer until Run is pressed and a folder is set.
@@ -2198,7 +2203,7 @@
           },
         };
       }),
-      provide("buildLog", () => renderStatus.state.lastLog || renderStatus.state.lastLatexResult?.log || ""),
+      provide("buildLog", () => (sourceFormat === "quarto" && runLog ? runLog : renderStatus.state.lastLog) || renderStatus.state.lastLatexResult?.log || ""),
     ];
     return () => undo.forEach((unregister) => unregister());
   });
@@ -2313,31 +2318,35 @@
       return;
     }
     runPhase = "running";
-    stopRequested = false;
+    const mine = ++runGeneration;
+    // What the run was started against: the unmatched fallback page is only
+    // shown if the reader is still looking at the same document.
+    const navigation = target.navigation;
+    const source = schedule.generation;
+    const tree = capturePreviewTree(treeNow());
+    const gone = () => mine !== runGeneration || readerDisposed;
     try {
-      const tree = capturePreviewTree(treeNow());
       if (Object.keys(tree.digests || {}).length) {
         const { held } = await gatherFigures(tree.digests);
+        if (gone()) return;
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
       }
-      const rendered = await renderers.render(tree, await headingOf(tree), {
+      const heading = await headingOf(tree);
+      if (gone()) return;
+      const rendered = await renderers.render(tree, heading, {
         buildPreferences: { ...buildPreferences, backend: "local", output: "html" },
         project: SLUG,
       });
-      if (readerDisposed) return;
-      if (stopRequested) {
-        runPhase = "idle";
-        return;
-      }
-      // The run's log is what Diagnostics shows when it fails.
-      renderStatus.recordLog(rendered?.log || "");
+      if (gone()) return;
+      // The run's log is what Diagnostics shows, whether it worked or not.
+      runLog = rendered?.log || "";
       if (rendered?.ok === false || typeof rendered?.html !== "string") {
         runPhase = "failed";
         return;
       }
       const split = await splitResults(rendered.html, tree.texts[tree.main] ?? "", { path: tree.main });
-      if (readerDisposed) return;
+      if (gone()) return;
       if (split.ok) {
         ownResults = { cells: split.record.cells, path: tree.main, updatedAt: new Date().toISOString() };
         runPhase = "idle";
@@ -2359,16 +2368,21 @@
         return;
       }
       // The output could not be matched to the cells, so it cannot be spliced
-      // into the draft: show the run's own page instead.
+      // into the draft: show the run's own page instead, unless the reader
+      // moved to another file or edited since. Bumping the target keeps a
+      // draft that is still in flight from painting over it.
       sharedResults.skip("unmatched");
-      framePreview?.publish({ kind: "html", html: rendered.html });
+      if (navigation === target.navigation && source === schedule.generation && tree.main === previewPath) {
+        target.bump();
+        framePreview?.publish({ kind: "html", html: rendered.html });
+      }
       say(m.readerb_run_unmatched());
     } catch {
-      if (!readerDisposed) runPhase = stopRequested ? "idle" : "failed";
+      if (!gone()) runPhase = "failed";
     }
   }
   function stopRun() {
-    stopRequested = true;
+    runGeneration++;
     renderers.cancelPreview({ keepWarm: true });
     runPhase = "idle";
   }
@@ -4420,7 +4434,7 @@
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
       onagent={agentOffered ? askDiagnostic : undefined}
-      log={renderState.lastLatexResult?.log || renderState.lastLog || ""}
+      log={sourceFormat === "quarto" && runLog ? runLog : renderState.lastLatexResult?.log || renderState.lastLog || ""}
       logOpen={renderState.lastLatexResult ? undefined : false} />
   {/snippet}
 

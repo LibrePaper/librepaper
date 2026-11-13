@@ -20,3 +20,9 @@ assert.equal(await staleCells([], qmd, { path: "a.qmd" }), 2);
 assert.equal(await staleCells(cells, "# Only prose\n", { path: "a.qmd" }), 0);
 // A cell switched off with include: false is not executed, so is never counted.
 assert.equal(await staleCells([], "```{r}\n#| include: false\n1\n```\n", { path: "a.qmd" }), 0);
+// A cell duplicated after the run: one saved output covers only one of the two.
+const once = "```{r}\n1 + 1\n```\n";
+const [onlyCell] = await Promise.all(executedCells(parseQuarto(once, { path: "a.qmd" })).map(async (cell) => ({
+  fingerprint: await cellFingerprint(cell), label: null, html: "<div class=\"cell\"></div>",
+})));
+assert.equal(await staleCells([onlyCell], `${once}\n${once}`, { path: "a.qmd" }), 1);
