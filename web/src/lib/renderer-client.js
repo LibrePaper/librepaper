@@ -2,6 +2,8 @@
 // module so warming a large Typst module cannot delay a Markdown preview.
 const workers = new Map();
 let sequence = 0;
+// Operations whose `tree` is the render tree, kept in the worker between calls.
+const STAGED = new Set(["render", "draft"]);
 
 /// What the page sends a worker instead of a whole tree: the entries that
 /// differ from `sent`, the tree that worker already holds (null for a worker
@@ -74,7 +76,10 @@ export function rendererRequest(url, operation, args) {
   }
   const id = ++sequence;
   let payload = args;
-  if (args?.tree) {
+  // Only render trees travel as deltas. Completion sends a tree of its own
+  // (texts and a file list, no figures): as a delta it would empty the
+  // worker's copy of the figures and make the next render resend them all.
+  if (args?.tree && STAGED.has(operation)) {
     const { delta, sent } = treeDelta(client.sent, args.tree);
     client.sent = sent;
     payload = { ...args, tree: delta };

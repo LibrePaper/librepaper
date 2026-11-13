@@ -65,7 +65,7 @@ rendererScope.onmessage = ({ data: { id, url, operation, args: incoming } }) => 
   queue = queue.then(async () => {
     try {
       let args = incoming;
-      if (incoming?.tree) {
+      if (incoming?.tree && (operation === "render" || operation === "draft")) {
         const applied = applyTree(mirror, incoming.tree);
         mirror = applied.mirror;
         args = { ...incoming, tree: applied.tree };
