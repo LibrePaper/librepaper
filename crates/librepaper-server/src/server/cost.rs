@@ -254,8 +254,9 @@ fn transfer_path(path: &str) -> bool {
 
 /// How long a page may wait for one relayed file before it is refused. A
 /// policy about how long a page may wait, not a guess at anybody's capacity.
-/// The wait happens before the work permit is taken, so a waiting request
-/// holds nothing but its own task.
+/// The wait happens after the request budget has admitted the request, with
+/// the work permit given back for its duration, so a waiting request holds
+/// no work slot and nothing but its own task.
 const TRANSFER_WAIT: Duration = Duration::from_secs(10);
 
 /// Waits up to `wait` for a transfer permit, first come first served. `None`
@@ -460,33 +461,25 @@ async fn middleware_inner(
     } else {
         None
     };
-    // The transfer permit comes before the work permit: a request waiting for
-    // a relayed file holds no work slot, so a burst of files cannot starve
-    // unrelated routes. It is held until the response body has streamed.
-    let permit = if transfer_path(&path) {
-        match acquire_transfer(server.cost.transfers.clone(), TRANSFER_WAIT).await {
-            Some(permit) => Some(permit),
-            None => {
-                server.metrics.record_refusal("transfer_concurrency");
-                return refusal("transfer_concurrency", "deployment");
-            }
-        }
-    } else {
-        None
-    };
+    // The work permit is taken first and held until the handler answers. A
+    // relayed file that has to wait for a transfer permit gives it back for
+    // the wait (see below), so the wait never holds a work slot.
     let is_control = control(&path, &method);
-    let _work = match server.cost.work.clone().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => match is_control
-            .then(|| server.cost.control_work.clone().try_acquire_owned())
-            .transpose()
-        {
-            Ok(Some(permit)) => permit,
-            _ => {
-                server.metrics.record_refusal("work_concurrency");
-                return refusal("work_concurrency", "deployment");
+    let take_work = || {
+        server.cost.work.clone().try_acquire_owned().ok().or_else(|| {
+            if is_control {
+                server.cost.control_work.clone().try_acquire_owned().ok()
+            } else {
+                None
             }
-        },
+        })
+    };
+    let mut _work = match take_work() {
+        Some(permit) => Some(permit),
+        None => {
+            server.metrics.record_refusal("work_concurrency");
+            return refusal("work_concurrency", "deployment");
+        }
     };
     let network = client_network(&client_address(
         peer,
@@ -559,6 +552,30 @@ async fn middleware_inner(
         };
         return refusal("request_budget", scope);
     }
+    // A relayed file waits for a transfer permit only now, after the request
+    // budget has counted it, so the budget bounds how many requests can wait.
+    // The wait holds no work permit: the one taken above goes back for its
+    // duration and is taken again afterwards. A waiting request holds nothing
+    // but its own task. The transfer permit is held until the response body
+    // has streamed.
+    let permit = if transfer_path(&path) {
+        _work = None;
+        let Some(transfer) = acquire_transfer(server.cost.transfers.clone(), TRANSFER_WAIT).await
+        else {
+            server.metrics.record_refusal("transfer_concurrency");
+            return refusal("transfer_concurrency", "deployment");
+        };
+        _work = match take_work() {
+            Some(permit) => Some(permit),
+            None => {
+                server.metrics.record_refusal("work_concurrency");
+                return refusal("work_concurrency", "deployment");
+            }
+        };
+        Some(transfer)
+    } else {
+        None
+    };
     request.extensions_mut().insert(RequestContext {
         arrival,
         peer,
