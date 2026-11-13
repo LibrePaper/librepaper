@@ -129,7 +129,19 @@ function build(state, path, imageUrl, adapter, project) {
       ),
     );
   }
-  return { decorations: Decoration.set(marks), rendered };
+  // Blank source lines between two drawn blocks would add a full line to the preview's spacing, so they are collapsed.
+  const drawn = new Set(rendered);
+  for (let i = 0; i + 1 < blocks.length; i++) {
+    if (!drawn.has(blocks[i]) || !drawn.has(blocks[i + 1])) continue;
+    const last = state.doc.lineAt(blocks[i + 1].from).number;
+    for (let number = state.doc.lineAt(blocks[i].to).number + 1; number < last; number++) {
+      const line = state.doc.line(number);
+      if (/^\s*$/.test(line.text) && !touches(ranges, line)) {
+        marks.push(Decoration.line({ class: "cm-lp-paper-gap" }).range(line.from));
+      }
+    }
+  }
+  return { decorations: Decoration.set(marks, true), rendered };
 }
 
 function paperField(path, imageUrl, adapter, project) {
