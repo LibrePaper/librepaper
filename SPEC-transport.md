@@ -209,7 +209,9 @@ It is not turned into a redirect. A link is signed for one method, so the sync c
 `GET /api/documents/{slug}/assets/{sha}/link`:
 
 1. **The same checks as the byte route**: valid slug and digest, cross-site refusal, read access, `references_asset` for readers below Editor, the catalogue lookup scoped to the document. It shares that code with `handle_asset_read`, so the two cannot drift.
-2. **Asks the blob store for a link.** `BlobStore` gains `signed_get(key, ttl) -> BlobResult<Option<Url>>`, `None` by default. `ObjectBlobStore` answers with `object_store`'s `Signer::signed_url(GET, path, ttl)` (SigV4 query signing, `object_store` 0.14 `aws/mod.rs:143`). `FsStore` keeps the default.
+2. **Asks the blob store for a link.** `BlobStore` gains `signed_get(key, ttl) -> BlobResult<Option<Url>>`, `None` by default. `ObjectBlobStore` signs the link itself, with SigV4 query signing over the bucket's endpoint, region and keys, and two response overrides in the signed query: `response-content-type=application/octet-stream` and `response-content-disposition=attachment`. `FsStore` keeps the default.
+
+   It does not use `object_store`'s `Signer::signed_url` (0.14, `aws/mod.rs:143`): that takes only a method, a path and a lifetime, and the signer that could sign extra query parameters (`AwsAuthorizer::sign`) is crate-private. SigV4 query signing is some 60 lines over `hmac` and `sha2`, both already dependencies, and is tested against AWS's published signing examples. The probe of 2026-11-13 (13.6) signed links this way against the production bucket.
 3. **Answers** `200 {"url": "...", "expires_in": 300}`, or `200 {"url": null}` when the store cannot sign. `cache-control: private, no-store`.
 
 Rules for the link:
@@ -218,7 +220,7 @@ Rules for the link:
 - **Expiry is enforced by the bucket.** `X-Amz-Expires` and `X-Amz-Date` are part of the signed string, so a link whose expiry is edited fails its signature. Rotating the access key kills every outstanding link at once.
 - **No transfer permit.** The link route does no byte work. The transfer check in `cost.rs:509-511` matches `/assets/` anywhere in an `/api/` path, so it must exclude paths that end in `/link`.
 - **The bytes stay untrusted.** The browser verifies every body against its digest (5.1), so the bucket cannot substitute bytes.
-- **Opening a link directly downloads it.** Objects are stored without a type (3.4), so the bucket answers generic binary, which browsers download rather than render. `content-security-policy: sandbox` cannot be set by a bucket, and is not needed for a download; and a link that did render would render on the bucket's origin, not the app's. `object_store` 0.14 cannot add `response-content-disposition` to a signed link (its query signer is crate-private). If an explicit download header is ever wanted, new uploads can carry one through `PutOptions` attributes.
+- **Opening a link directly downloads it.** The signed overrides make the bucket answer `application/octet-stream` and `attachment` whatever type the object was stored with, which covers every object already stored without one (3.4). `content-security-policy: sandbox` cannot be set by a bucket, and is not needed for a download; and a link that did render would render on the bucket's origin, not the app's. The overrides are inside the signature, so a reader cannot strip them.
 
 What a deployment needs:
 
@@ -345,7 +347,7 @@ That claim is tested, not assumed (section 9): for each renderer, the page built
   - concurrency refusals carry `retry-after: 1`, in the header and the body;
   - budget refusals carry 60;
   - asset reads still carry `private, no-store`.
-- **Bucket (manual, once per provider):** a signed `GET` link works, an expired one and one with an edited expiry are refused, a `HEAD` on a `GET` link is refused, an object stored without a type comes back as generic binary, and the CORS rule admits the app's origin. See 13.6.
+- **Bucket (manual, once per provider):** a signed `GET` link works, an expired one and one with an edited expiry are refused, a `HEAD` on a `GET` link is refused, the response overrides are honoured, and the CORS rule admits the app's origin. See 13.6.
 - **Staging (unit):**
   - `snapshotDigest` gives the same digest with and without its memory, on the shared projection fixtures;
   - an incremental hand-over leaves the module holding the same files as a full one after an edit, an added file, a removed file and a rename;
@@ -447,5 +449,9 @@ Phase 1 alone removes the 429s a client causes itself and the refetch on every n
 3. **Tabs opened before the deploy** keep the unbounded fetch on the byte route until they reload. After 6.3 their burst waits for permits instead of drawing 429s, so they need no change.
 4. **The 50 ms line** in 7.1 is a proposal. The profile may show a better one.
 5. **Authored HTML in nested frames:** a nested frame's own images are not resolved today, because the frame is inlined before the rewrite runs. Section 8 keeps that behaviour. Fixing it is a separate question.
-6. **The production bucket's behaviour** (9, "Bucket"): PROBE_RESULTS_PENDING.
+6. **The production bucket's behaviour** (9, "Bucket"), probed 2026-11-13 against OVH `bhs` with links signed by a stand-alone SigV4 signer:
+   - a signed `GET` link works; one used after expiry, one with an edited expiry, and a `HEAD` on a `GET` link are refused with 403;
+   - the response overrides are honoured: `Content-Type: application/octet-stream`, `Content-Disposition: attachment`;
+   - the bucket has no CORS configuration today, and answers a request with an `Origin` header without `Access-Control-Allow-Origin`. The rule in 6.2 has to be set before the store can use links; until then it falls back to the byte route;
+   - what the bucket answers for an object stored with no type at all is not known: the probe's upload carried a type its HTTP library added. The signed overrides make it irrelevant.
 7. **The 10-second wait** in 6.3 is a proposal. The benchmark's wait times may show a better one.
