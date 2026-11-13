@@ -236,6 +236,8 @@ function numbered(spans, links = [], taken = {}) {
   assert.match(commented.tex, /\\tag\{3\}/);
   const percent = rewriteDisplay("\\begin{equation}\n50\\% \\label{eq:p}\n\\end{equation}", () => 1);
   assert.ok(percent.tex.includes("50\\%"));
+  const verbatim = rewriteDisplay("\\begin{equation}\n\\verb|50%| \\label{eq:v}\n\\end{equation}", () => 2);
+  assert.ok(verbatim.tex.includes("\\verb|50%|"));
 }
 
 console.log("math: spans, KaTeX options, one lazy load, retry after failure passed");

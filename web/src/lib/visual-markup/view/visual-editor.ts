@@ -273,14 +273,21 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
         // Shift only makes a character; it is part of keys such as G, F and T.
         const typed = !event.ctrlKey && !event.metaKey && !event.altKey;
         if (event.key === 'Shift') return;
+        // The key after one that waits for an argument is that argument (f5, 'j, gg), and ends the command.
+        if (this.prefixed) {
+          this.prefixed = false;
+          this.count = '';
+          this.step = null;
+          return;
+        }
         if (plain && (/^[1-9]$/.test(event.key) || (event.key === '0' && this.count))) {
           this.count += event.key;
           this.step = null;
           return;
         }
-        const single = plain && !this.count && !this.prefixed && Object.hasOwn(STEP_KEYS, event.key);
+        const single = plain && !this.count && Object.hasOwn(STEP_KEYS, event.key);
         this.step = single ? STEP_KEYS[event.key] : null;
-        this.prefixed = typed && PREFIX_KEYS.has(event.key) && !this.prefixed;
+        this.prefixed = typed && PREFIX_KEYS.has(event.key);
         if (!this.prefixed) this.count = '';
       };
 
