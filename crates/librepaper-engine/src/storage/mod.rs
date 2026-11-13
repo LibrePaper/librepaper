@@ -11,6 +11,7 @@ pub mod schedule;
 #[cfg(test)]
 mod schedule_tests;
 pub mod seed;
+pub mod sigv4;
 pub mod source;
 pub mod source_archive;
 pub mod store;
