@@ -20,6 +20,7 @@
 import { createHash } from "node:crypto";
 import { snapshotDigest } from "../../src/lib/renderers.js";
 import { canonicalBytes } from "../../src/lib/projection.js";
+import { __resetTextDigests } from "../../src/lib/projection-digest.js";
 
 function sha(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -92,5 +93,46 @@ check(
 // snapshot with the tree it changed nothing else about (renderers.js).
 const withSettings = await snapshotDigest({ ...tree, settings: { engine: "pdflatex" } });
 check("compile settings do not participate in the digest", withSettings === actual);
+
+// The per-path memo of text digests must never change an answer. Each fixture
+// gives the same digest with a cold memo and a warm one.
+const fixtures = { tree, numeric };
+for (const [name, fixture] of Object.entries(fixtures)) {
+  __resetTextDigests();
+  const cold = await snapshotDigest(fixture);
+  const warm = await snapshotDigest(fixture);
+  check(`${name}: cold and warm memo give the same digest`, cold === warm, cold);
+  check(`${name}: warm memo matches the canonical digest`, warm === sha(canonicalBytes({
+    main: fixture.main,
+    files: Object.keys({ ...fixture.texts, ...fixture.digests }).sort((a, b) =>
+      Buffer.compare(Buffer.from(a), Buffer.from(b)),
+    ).map((path) =>
+      Object.hasOwn(fixture.texts, path)
+        ? [path, { kind: "text", digest: sha(Buffer.from(fixture.texts[path])) }]
+        : [path, { kind: "asset", digest: String(fixture.digests[path]) }],
+    ),
+  })), warm);
+}
+
+// Changing one text changes the digest, and changing it back restores the
+// original exactly: a memo that returned a stale hash would fail here.
+__resetTextDigests();
+const original = await snapshotDigest(tree);
+const edited = await snapshotDigest({ ...tree, texts: { "é.tex": `${text}?` } });
+const restored = await snapshotDigest({ ...tree, texts: { "é.tex": text } });
+check("editing one text changes the digest under a warm memo", edited !== original, edited);
+check("restoring the text restores the original digest exactly", restored === original, restored);
+
+// Two trees sharing a path but holding different texts, called alternately,
+// must each keep their own correct digest.
+__resetTextDigests();
+const treeA = { main: "main.tex", texts: { "a.tex": "alpha" }, digests: {} };
+const treeB = { main: "main.tex", texts: { "a.tex": "beta" }, digests: {} };
+const expectedA = sha(canonicalBytes({ main: "main.tex", files: [["a.tex", { kind: "text", digest: sha(Buffer.from("alpha")) }]] }));
+const expectedB = sha(canonicalBytes({ main: "main.tex", files: [["a.tex", { kind: "text", digest: sha(Buffer.from("beta")) }]] }));
+for (let round = 0; round < 3; round += 1) {
+  check("alternating trees: first tree keeps its own digest", (await snapshotDigest(treeA)) === expectedA, `round ${round}`);
+  check("alternating trees: second tree keeps its own digest", (await snapshotDigest(treeB)) === expectedB, `round ${round}`);
+}
 
 if (!process.exitCode) console.log("projection-digest: all checks passed");

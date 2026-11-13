@@ -60,6 +60,14 @@ export function canonicalBytes(projection) {
   return encoder.encode(out);
 }
 
+// A render hashes the same unchanged texts up to three times, and a keystroke
+// changes one text. Remembering the last text and digest per path makes every
+// call cost one hash per changed text. Strings are compared by value: equal
+// strings compare cheaply in practice, and a wrong reuse is impossible because
+// the text itself is the key's check.
+const textDigests = new Map(); // path -> { text, digest }
+const TEXT_DIGESTS_LIMIT = 20000; // projects are far smaller; this only stops unbounded growth across many projects in one tab
+
 /// The name of a renderer tree: `{main, texts, digests}` as the render path
 /// carries it, hashed through the one canonical form above.
 ///
@@ -79,10 +87,22 @@ export async function snapshotDigest(tree) {
   const files = [];
   for (const path of paths) {
     if (Object.prototype.hasOwnProperty.call(texts, path)) {
-      files.push([path, { kind: "text", digest: await sha256HexOfText(String(texts[path])) }]);
+      const text = String(texts[path]);
+      let digest = textDigests.get(path)?.text === text ? textDigests.get(path).digest : undefined;
+      if (digest === undefined) {
+        digest = await sha256HexOfText(text);
+        if (textDigests.size >= TEXT_DIGESTS_LIMIT) textDigests.clear();
+        textDigests.set(path, { text, digest });
+      }
+      files.push([path, { kind: "text", digest }]);
     } else {
       files.push([path, { kind: "asset", digest: String(digests[path]) }]);
     }
   }
   return sha256Hex(canonicalBytes({ main: String(tree?.main || ""), files }));
+}
+
+/// Test-only: forget every remembered text digest.
+export function __resetTextDigests() {
+  textDigests.clear();
 }
