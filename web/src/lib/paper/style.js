@@ -6,8 +6,8 @@
 // The values of the `margin` shorthand in the first rule whose selector list
 // satisfies `matches`, or null. Only plain lengths are taken.
 function pageMargin(pageCss, matches) {
-  const length = /^-?[\d.]+(?:px|r?em)$/;
-  for (const rule of pageCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+  const length = /^(?:0|-?[\d.]+(?:px|r?em))$/;
+  for (const rule of pageCss.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selectors = rule[1].split(",").map((selector) => selector.trim());
     if (!matches(selectors)) continue;
     const declaration = /(?<![\w-])margin:\s*([^;}]+)/.exec(rule[2]);
@@ -42,16 +42,24 @@ export function paperStylesheet(pageCss) {
     const defined = new RegExp(`${name}\\s*:\\s*([^;}]+)`).exec(pageCss);
     return defined ? defined[1].trim() : whole;
   });
-  // The page's margins, read from its shorthand declarations. A shorthand's
-  // first value is the top and its third (or the only) value the bottom.
-  const headingTop = pageMargin(pageCss, (selectors) => selectors[0] === "h1" && selectors[1] === "h2");
-  const paragraphBottom = pageMargin(pageCss, (selectors) => selectors.includes("p"));
-  // A heading that opens a block sits after the previous block's paragraph
-  // margin; the extra top margin is the page's gap less that paragraph margin.
-  const headingGap =
-    headingTop && paragraphBottom
-      ? `:scope > :is(h2, h3, h4, h5, h6):first-child { margin-top: calc(${headingTop[0]} - ${paragraphBottom[2] ?? paragraphBottom[0]}); }`
-      : "";
+  // In the preview a heading's top margin collapses with the paragraph margin
+  // above it. Here each block keeps its margins inside, so a heading that opens
+  // a block takes only the part of its margin the paragraph above does not give.
+  // The paragraph margin is in the body's em, which is not the heading's em.
+  const paragraph = pageMargin(pageCss, (selectors) => selectors.includes("p"));
+  let paragraphBottom = paragraph && (paragraph[2] ?? paragraph[0]);
+  const em = paragraphBottom && /^([\d.]+)em$/.exec(paragraphBottom);
+  if (em) paragraphBottom = font ? `${em[1]} * ${font[1]}` : null;
+  const headingGap = paragraphBottom
+    ? [1, 2, 3, 4, 5, 6]
+        .map((level) => {
+          const heading = pageMargin(pageCss, (selectors) => selectors.includes(`h${level}`));
+          return heading
+            ? `:scope > h${level}:first-child { margin-top: max(0px, calc(${heading[0]} - ${paragraphBottom})); }`
+            : "";
+        })
+        .join("\n")
+    : "";
   const sourceType = [
     font
       ? `.cm-editor.cm-lp-visual.cm-lp-paper-editor {
