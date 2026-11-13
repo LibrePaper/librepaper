@@ -1,7 +1,7 @@
 <script>
   // The Run control for a Quarto document: one split button. The main half
   // runs the document, or stops a run that is going. The chevron opens the
-  // rarer actions (Stop, the Run directory) and the state of the last run, so
+  // rarer actions (Stop, Share results, the Run directory) and the state of the last run, so
   // the top bar keeps a single control whatever happened. The two halves share
   // one border, with a divider between them, so they read as one button.
   import { Menu } from "@skeletonlabs/skeleton-svelte";
@@ -10,7 +10,10 @@
   import { m } from "../../lib/paraglide/messages.js";
   import { locale } from "../../lib/locale.js";
 
-  let { phase = "idle", stale = 0, lastRunAt = "", onrun = () => {}, onstop = () => {}, ondirectory = () => {} } = $props();
+  let {
+    phase = "idle", stale = 0, lastRunAt = "", onrun = () => {}, onstop = () => {}, ondirectory = () => {},
+    share = true, onshare = () => {}, shareLine = "", directoryName = "", directoryPath = "", directoryMissing = false,
+  } = $props();
 
   const running = $derived(phase === "running");
   const failed = $derived(phase === "failed");
@@ -53,10 +56,19 @@
           <span class="menuitem-label">{m.runbutton_stop()}</span>
         </Menu.Item>
       {/if}
-      <Menu.Item value="directory" class="menuitem">
-        <span class="menuitem-check" aria-hidden="true"></span>
-        <span class="menuitem-label">{m.runbutton_directory()}</span>
+      {#if running}<Menu.Separator class="hr my-1" />{/if}
+      <Menu.OptionItem type="checkbox" value="share" checked={share} onCheckedChange={(on) => onshare(on)} class="menuitem">
+        <span class="menuitem-check" aria-hidden="true">{share ? "✓" : ""}</span>
+        <span class="menuitem-label">{m.rundirectorycontrol_share_results()}</span>
+      </Menu.OptionItem>
+      {#if shareLine}
+        <div class="run-note" role="status">{shareLine}</div>
+      {/if}
+      <Menu.Item value="directory" class="menuitem" data-tip={directoryPath || undefined} data-tip-place="left">
+        <span class="menuitem-check" aria-hidden="true"><Icon name={directoryMissing ? "triangle-alert" : "folder"} size="0.875rem" /></span>
+        <span class="menuitem-label">{directoryName ? m.runbutton_directory_named({ name: directoryName }) : m.runbutton_choose_directory()}</span>
       </Menu.Item>
+      {#if lastRunAt || stale > 0 || failed}<Menu.Separator class="hr my-1" />{/if}
       {#if lastRunAt}
         <div class="run-note">{m.runbutton_last_run({ time: lastRunTime })}</div>
       {/if}

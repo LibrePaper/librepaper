@@ -1,7 +1,6 @@
 <script>
-  import { leaf, pageVariant } from "../../lib/reader/run-directory.js";
+  import { leaf, pageVariant, shareLineOf } from "../../lib/reader/run-directory.js";
   import { m } from "../../lib/paraglide/messages.js";
-  import { storageBytes } from "../../lib/quota-preferences.js";
   import Icon from "../Icon.svelte";
 
   // The body of the Run directory dialog: opened when the button beside Run
@@ -22,17 +21,7 @@
   const caption = $derived(variant === "current" ? m.rundirectorycontrol_current_caption() : m.rundirectorycontrol_suggested_caption());
 
   // Shared results: the line under the checkbox, if there is anything to say.
-  const shareLine = $derived.by(() => {
-    if (!share) return "";
-    if (pdfOutput) return m.rundirectorycontrol_html_only();
-    if (shareStatus.kind === "shared") return m.rundirectorycontrol_shared({ size: storageBytes(shareStatus.bytes ?? 0) });
-    if (shareStatus.kind === "failed") {
-      if (shareStatus.reason === "storage") return m.rundirectorycontrol_not_shared_full();
-      if (shareStatus.reason === "unmatched") return m.rundirectorycontrol_not_shared_unmatched();
-      return m.rundirectorycontrol_not_shared_failed();
-    }
-    return "";
-  });
+  const shareLine = $derived(shareLineOf({ share, pdfOutput, shareStatus }));
 
   async function use() {
     if (variant === "current") return onclose();

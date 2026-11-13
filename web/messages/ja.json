@@ -2237,7 +2237,7 @@
   "quota_preferences_unit_tib": "TiB",
   "quotasettings_by_document": "ドキュメント別のストレージ",
   "quotasettings_delete_results": "共有された結果を削除",
-  "quotasettings_delete_results_body": "共同編集者は、誰かが「結果を共有」をオンにしてコードを再実行するまで、出力のないコードを見ることになります。共有を止めるには、実行メニューの「実行フォルダーと共有」で「結果を共有」をオフにしてください。",
+  "quotasettings_delete_results_body": "共同編集者は、誰かが「結果を共有」をオンにしてコードを再実行するまで、出力のないコードを見ることになります。共有を止めるには、実行メニューで「結果を共有」をオフにしてください。",
   "quotasettings_delete_results_failed": "共有された結果を削除できませんでした。",
   "quotasettings_delete_results_for": "{name}の共有された結果を削除",
   "quotasettings_delete_results_title": "共有された結果を削除しますか？",
@@ -2996,7 +2996,8 @@
   "runbutton_stop": "停止",
   "runbutton_run_hint": "このドキュメントのコードをこのコンピューターで実行",
   "runbutton_options": "実行オプション",
-  "runbutton_directory": "実行フォルダーと共有…",
+  "runbutton_directory_named": "実行フォルダー: {name}",
+  "runbutton_choose_directory": "実行フォルダーを選択…",
   "runbutton_last_run": "前回の実行：{time}",
   "runbutton_failed": "前回の実行は失敗しました",
   "runbutton_stale": [

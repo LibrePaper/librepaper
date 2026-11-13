@@ -2237,7 +2237,7 @@
   "quota_preferences_unit_tib": "TiB",
   "quotasettings_by_document": "按文档统计存储空间",
   "quotasettings_delete_results": "删除共享结果",
-  "quotasettings_delete_results_body": "在有人重新运行并开启“共享结果”之前，协作者看到的代码将没有输出。要停止共享，请在“运行”菜单的“运行文件夹和共享”中关闭“共享结果”。",
+  "quotasettings_delete_results_body": "在有人重新运行并开启“共享结果”之前，协作者看到的代码将没有输出。要停止共享，请在“运行”菜单中关闭“共享结果”。",
   "quotasettings_delete_results_failed": "无法删除共享结果。",
   "quotasettings_delete_results_for": "删除 {name} 的共享结果",
   "quotasettings_delete_results_title": "删除共享结果？",
@@ -2996,7 +2996,8 @@
   "runbutton_stop": "停止",
   "runbutton_run_hint": "在这台电脑上运行此文档的代码",
   "runbutton_options": "运行选项",
-  "runbutton_directory": "运行文件夹和共享…",
+  "runbutton_directory_named": "运行文件夹：{name}",
+  "runbutton_choose_directory": "选择运行文件夹…",
   "runbutton_last_run": "上次运行：{time}",
   "runbutton_failed": "上次运行失败",
   "runbutton_stale": [

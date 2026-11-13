@@ -2252,7 +2252,7 @@
   "quota_preferences_unit_tib": "TiB",
   "quotasettings_by_document": "Almacenamiento por documento",
   "quotasettings_delete_results": "Eliminar resultados compartidos",
-  "quotasettings_delete_results_body": "Los colaboradores verán el código sin su salida hasta que alguien lo ejecute de nuevo con «Compartir resultados» activado. Para dejar de compartir, desactive «Compartir resultados» en «Carpeta de ejecución y uso compartido», en el menú «Ejecutar».",
+  "quotasettings_delete_results_body": "Los colaboradores verán el código sin su salida hasta que alguien lo ejecute de nuevo con «Compartir resultados» activado. Para dejar de compartir, desactive «Compartir resultados» en el menú «Ejecutar».",
   "quotasettings_delete_results_failed": "No se pudieron eliminar los resultados compartidos.",
   "quotasettings_delete_results_for": "Eliminar los resultados compartidos de {name}",
   "quotasettings_delete_results_title": "¿Eliminar resultados compartidos?",
@@ -3011,7 +3011,8 @@
   "runbutton_stop": "Detener",
   "runbutton_run_hint": "Ejecutar el código de este documento en este equipo",
   "runbutton_options": "Opciones de ejecución",
-  "runbutton_directory": "Carpeta de ejecución y uso compartido…",
+  "runbutton_directory_named": "Carpeta de ejecución: {name}",
+  "runbutton_choose_directory": "Elegir una carpeta de ejecución…",
   "runbutton_last_run": "Última ejecución : {time}",
   "runbutton_failed": "La última ejecución falló",
   "runbutton_stale": [
