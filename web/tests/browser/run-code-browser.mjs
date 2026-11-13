@@ -1,6 +1,6 @@
-// The Run code switch: off whenever a document opens, not offered in a plain
-// browser, on in the desktop app, and never remembered across a reload or a
-// stored build preference.
+// The Run button of a Quarto document: not offered in a plain browser,
+// offered in the desktop app, and nothing runs until it is pressed. Pressing
+// it without a Run directory asks for one instead of running.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -43,7 +43,7 @@ globalThis.WebSocket = class {
 };
 globalThis.fetch = async (url) => {
   const path = String(url);
-  if (path.includes('/__lp/')) return Response.json({});
+  if (path.includes('/__lp/')) { (window.lpCalls ||= []).push(path); return Response.json({}); }
   if (path.endsWith('/me')) return Response.json({name:'Tester',providers:[]});
   if (path.endsWith('/config')) return Response.json({ extensions: ['.qmd', '.md'], text_extensions: ['.qmd', '.md'], asset_extensions: ['.png'], derived_extensions: [] });
   if (path === '/api/documents/paper') return Response.json({title:'Run code',created_at:'test',role:'owner',source_format:'quarto',docs_origin:location.origin});
@@ -83,41 +83,31 @@ try {
   const desktopUrl = `${origin}/docs/paper?desktop=1`;
   await b.resize(1280,900);
 
-  const runCodeState = () => b.evaluate(`document.querySelector('button[role=switch][aria-label="Run code"]')?.getAttribute("aria-checked") ?? null`);
-  const runCodeSwitchExists = () => b.evaluate(`Boolean(document.querySelector('button[role=switch][aria-label="Run code"]'))`);
-  const clickRunCode = () => b.evaluate("document.querySelector('button[role=switch][aria-label=\"Run code\"]').click()");
+  const runButton = `[role=group][aria-label="Run"] button[data-tip]`;
+  const runButtonExists = () => b.evaluate(`Boolean(document.querySelector('${runButton}'))`);
+  const switchExists = () => b.evaluate(`Boolean(document.querySelector('button[role=switch][aria-label="Run code"]'))`);
+  const renderCalls = () => b.evaluate(`(window.lpCalls || []).filter((path) => path.includes("/jobs")).length`);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
 
-  // Case 1: a plain browser has no computer to run code on, so it is not offered.
+  // Case 1: a plain browser has no computer to run code on, so Run is not offered.
   await b.navigate(plainUrl);
   await until('the page joined its room',()=>b.evaluate('typeof window.roomConnected === "function"'),10000);
   await settle();
-  assert.equal(await runCodeSwitchExists(),false,'Run code is not offered in a browser');
+  assert.equal(await runButtonExists(),false,'Run is not offered in a browser');
 
-  // Case 2: the desktop app. The switch turns on, and a reload turns it off again.
+  // Case 2: the desktop app offers Run in place of the switch, and opening the
+  // document runs nothing.
   await b.navigate(desktopUrl);
-  await until('Run code switch in the desktop app',runCodeSwitchExists,10000);
-  assert.equal(await runCodeState(),"false",'Run code starts off in the desktop app');
-  await clickRunCode();
-  await until('Run code on in the desktop app',()=>b.evaluate('document.querySelector(\'button[role=switch][aria-label="Run code"]\')?.getAttribute("aria-checked") === "true"'),5000);
-  await b.navigate(desktopUrl);
-  await until('Run code switch after reload',runCodeSwitchExists,10000);
-  assert.equal(await runCodeState(),"false",'Run code is never remembered across a reload');
+  await until('Run button in the desktop app',runButtonExists,10000);
+  assert.equal(await switchExists(),false,'a Quarto document has no Run code switch');
+  await settle();
+  assert.equal(await renderCalls(),0,'opening a Quarto document runs nothing on this computer');
 
-  // Case 3: a stored build preference that sends Quarto to this computer
-  // cannot turn Run code on. The page is still on this origin, so its storage
-  // is ours.
-  await b.evaluate(`(() => {
-    const anonymous = localStorage.getItem("librepaper-build-v3:anonymous-id");
-    if (!anonymous) throw new Error("no anonymous build identity was stored");
-    const scope = JSON.stringify([location.origin, anonymous, "quarto"]);
-    localStorage.setItem("librepaper-build-v3:" + scope, JSON.stringify({ selection: "automatic", backend: "local", format: "quarto" }));
-    return true;
-  })()`);
-  await b.navigate(desktopUrl);
-  await until('Run code switch with a stored local preference',runCodeSwitchExists,10000);
-  assert.equal(await runCodeState(),"false",'a stored preference cannot turn Run code on');
+  // Case 3: Run without a Run directory asks for one and runs nothing.
+  await b.evaluate(`document.querySelector('${runButton}').click()`);
+  await until('Run directory dialog',()=>b.evaluate(`[...document.querySelectorAll('[role=dialog]')].some((d) => d.textContent.includes("Choose a Run directory"))`),5000);
+  assert.equal(await renderCalls(),0,'Run without a folder runs nothing');
 
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log("run-code-browser: off on open, not offered in a browser, desktop turns on, never remembered");
+  console.log("run-code-browser: not offered in a browser, offered in the desktop app, nothing runs until Run, Run asks for a folder");
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

@@ -2278,8 +2278,9 @@
     // even when its output is identical to the last one this tab sent.
     if (!next) sharedResults.reset();
     // A run on this computer draws its own output, so it never re-runs
-    // because its own upload came back.
-    if (readerDisposed || ownResults || (next?.updatedAt ?? "") === (before ?? "")) return;
+    // because its own upload came back. A run in progress is never cut short
+    // by a collaborator's results arriving.
+    if (readerDisposed || ownResults || runPhase === "running" || (next?.updatedAt ?? "") === (before ?? "")) return;
     stopRendering();
     void paintPreview();
   }

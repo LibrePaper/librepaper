@@ -117,7 +117,7 @@ assert.match(previewSource, /const build = format !== "quarto" && current\.local
 // shares results any more: that happens from the Run action.
 assert.doesNotMatch(previewSource, /shareRun|runDirectoryReady/);
 // A Quarto document with code says what produces the real output.
-assert.match(readerSource, /readerb_run_quarto_hint/);
+assert.match(readerSource, /Press Run to run it on this computer/);
 // The paged controls are the preview header's, and the frame is what says
 // what they should read: a zoom the frame could not honour -- a pane too
 // narrow for 150% -- must not leave the header claiming it did.
@@ -150,7 +150,7 @@ assert.match(readerSource, /cover=\{painted\.state\.empty \? emptyCover : waitin
 assert.doesNotMatch(readerSource, /runDirectoryCover/);
 assert.match(readerSource, /\{:else if shown\.document && failedBeforeRender\}/);
 assert.match(readerSource, /\{:else if shown\.document && noCompiler\}/);
-assert.match(readerSource, /<Modal open=\{runDirectoryPage\}[^>]*>\s*<RunDirectoryPrompt [^>]*\{\.\.\.shareProps\}/);
+assert.match(readerSource, /<Modal open=\{runDirPageOpen\}[^>]*>\s*<RunDirectoryPrompt [^>]*\{\.\.\.shareProps\}/);
 assert.match(readerSource, /onEmpty: \(\) => \{\s*painted\.reset\(\{ empty: true \}\);\s*renderStatus\.resetFailure\(\);\s*\}/);
 assert.doesNotMatch(previewSource, /This document is empty/);
 assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);

@@ -73,6 +73,7 @@ export function viewCommands(c) {
     { id: "format-pdf", label: "PDF", checked: c.selectedFormat === "pdf", disabled: !c.selectableFormat },
   ];
 
+  /** @type {{ id: string, label: string, checked?: boolean }[]} */
   const markup = [
     { id: "linked", label: labelOf("linked"), checked: c.linked },
     { id: "visual-markup", label: labelOf("visual-markup"), checked: c.visual },
