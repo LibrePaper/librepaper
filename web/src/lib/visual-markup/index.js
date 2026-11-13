@@ -1,9 +1,10 @@
-import { Facet, StateEffect, StateField } from "@codemirror/state";
+import { StateEffect, StateField } from "@codemirror/state";
 import { EditorView, WidgetType } from "@codemirror/view";
 import { typst2tex } from "tex2typst";
 import "./markup.css";
 import "./visual-markup.css";
-import { preambleFold } from "./preamble.js";
+import { foldLayer } from "../visual/folds.js";
+import { latexFolds } from "../visual/fold-finders.js";
 import { cleanTitle, longToday, titleParts } from "./metadata.js";
 import {
   createImageResolver,
@@ -72,9 +73,6 @@ export function factsUpdate(facts) {
   return [setFacts.of(facts), refreshVisual.of(null)];
 }
 
-// The callback that opens an included file, given its raw name. The first one wins.
-export const includeOpener = Facet.define({ combine: (values) => values[0] ?? null });
-
 /// The visual layer for one LaTeX file, or nothing for any other format: Markdown, Quarto, Org and Typst are drawn by the paper view (lib/paper).
 /// `path` returns the open file's project path (no leading slash), for resolving relative image paths.
 /// `imageUrl(path)` resolves a project path (no leading slash) to a URL an <img> can load, or null.
@@ -110,9 +108,8 @@ export function visualMarkup(format, { path = () => "", imageUrl = null, dark = 
     );
   }
 
-  extensions.push(preambleFold());
+  extensions.push(...foldLayer(latexFolds, { openInclude }));
   extensions.push(factsField);
-  if (openInclude) extensions.push(includeOpener.of(openInclude));
 
   return extensions;
 }
@@ -351,51 +348,6 @@ registerWidget("captionnum", ({ token, state }) => {
   const number = factsOf(state).captionNumbers?.get(token.from);
   return number ? new CaptionNumWidget(m.widgets_figure_number({ number })) : null;
 });
-
-// An \input, \include or \subfile, shown as a chip with the file's name.
-class IncludeWidget extends WidgetType {
-  constructor(context) {
-    super();
-    const { token, source, state } = context;
-    this.name = token.args?.[0] ? source.slice(token.args[0].from, token.args[0].to).trim() : "";
-    this.opener = state.facet(includeOpener);
-  }
-
-  eq(other) {
-    return other instanceof IncludeWidget && other.name === this.name && other.opener === this.opener;
-  }
-
-  toDOM(view) {
-    const element = document.createElement("span");
-    element.className = "cm-lp-include";
-    element.append(this.name);
-
-    if (this.opener) {
-      const opener = this.opener;
-      const name = this.name;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "cm-lp-include-open";
-      button.textContent = m.common_open();
-      // The button stops its own mousedown, so the reveal below does not see it.
-      button.addEventListener("mousedown", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        opener(name);
-      });
-      element.appendChild(button);
-    }
-
-    revealOnMousedown(view, element);
-    return element;
-  }
-
-  ignoreEvent() {
-    return true;
-  }
-}
-
-registerWidget("include", (context) => new IncludeWidget(context));
 
 // Makes one part of the title block open its command in the source. The listener
 // sits on the part, a child of the block, so it runs before the block's own reveal,
