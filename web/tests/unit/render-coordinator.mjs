@@ -85,8 +85,9 @@ assert.equal(coordinator.superseded({
     ticket: 1, capturedNavigation: 1, capturedSource: 1,
     strictSource: false, capturedMain: "main.md",
   }), true, "a ticket issued before claim() is superseded");
+  // Two requests and claim() used tickets 1 to 3; the next request gets 4.
   assert.equal(claimed.superseded({
-    ticket: 3, capturedNavigation: 1, capturedSource: 1,
+    ticket: 4, capturedNavigation: 1, capturedSource: 1,
     strictSource: false, capturedMain: "main.md",
   }), false, "a ticket issued after claim() is not");
 }
