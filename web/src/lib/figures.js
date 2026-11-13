@@ -265,21 +265,20 @@ async function askServer(url, init) {
 }
 
 /// The signed link for a digest: `{ url }`, where url is null when the server
-/// offers none, or `{ failed: true }` when the link route did not answer. A
-/// failed link sends this asset to the byte route; a 404 or 405 means a server
-/// without the route at all, so this tab uses the byte route from now on.
+/// offers none, or `{ failed: true }` when the server has no link route (404 or
+/// 405, an older or stand-in server). Then this asset, and the rest of the
+/// tab, use the byte route. Any other refusal throws, after askServer's
+/// retries: the byte route would meet the same refusal from the same server,
+/// and trying it too would only add load to a server that is already busy.
 async function requestLink(slug, sha, headers) {
-  try {
-    const response = await askServer(`/api/documents/${slug}/assets/${sha}/link`, { credentials: "same-origin", headers, cache: "no-store" });
-    if (!response.ok) {
-      if (response.status === 404 || response.status === 405) useByteRoute = true;
-      return { failed: true };
-    }
-    const { url } = await response.json();
-    return { url: url ?? null };
-  } catch {
+  const response = await askServer(`/api/documents/${slug}/assets/${sha}/link`, { credentials: "same-origin", headers, cache: "no-store" });
+  if (response.status === 404 || response.status === 405) {
+    useByteRoute = true;
     return { failed: true };
   }
+  if (!response.ok) throw new Error(`could not fetch a figure link (${response.status})`);
+  const { url } = await response.json();
+  return { url: url ?? null };
 }
 
 /// The bytes from the bucket, or null when the byte route should be used.
@@ -304,7 +303,12 @@ async function fetchFromBucket(slug, sha, headers) {
     }
     if (response.status !== 403 || reissued) return null;
     reissued = true;
-    const again = await requestLink(slug, sha, headers);
+    let again;
+    try {
+      again = await requestLink(slug, sha, headers);
+    } catch {
+      return null;
+    }
     if (again.failed) return null;
     if (again.url === null) {
       useByteRoute = true;
