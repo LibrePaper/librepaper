@@ -24,7 +24,7 @@ import { m } from "../paraglide/messages.js";
 // arguments now, and the guards are gone with them.
 
 /** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, quartoResults?: { cells: unknown[], note?: string } | null }} PreviewTree */
-/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectoryReady?: boolean, runDirectory?: string, shareResults?: boolean, quartoResults?: { cells: unknown[], note?: string, path?: string, updatedAt?: string } | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectory?: string, quartoResults?: { cells: unknown[], note?: string, path?: string, updatedAt?: string } | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
 /** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
@@ -45,7 +45,6 @@ import { m } from "../paraglide/messages.js";
  * gather: (digests: Record<string, string>) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string> }, missing: string[] }>,
  * heading: (tree: PreviewTree) => Promise<string>, takeManual?: () => boolean, manualPending?: () => boolean,
  * onsynctex?: (map: unknown | null) => void, send?: (message: { type: string, html?: string }) => void,
- * shareRun?: (run: { html: string, source: PreviewTree }) => Promise<void>,
  * clearDebounce?: () => void, refreshFrame?: () => void, debug?: (message: string, ...details: unknown[]) => void,
  * }} options
  */
@@ -96,7 +95,6 @@ export function createPreviewRenderer({
   refreshFrame = () => {},
   /// A finished render on this computer whose HTML can be shared as results.
   /// It is fire-and-forget: the render does not wait for it.
-  shareRun = async (_run) => {},
   debug = () => {},
 }) {
   /// The renders that finished during this visit, by entry path, newest last.
@@ -166,13 +164,6 @@ export function createPreviewRenderer({
     // Rendering that placeholder used to call the renderer registry with an
     // empty format and permanently consume the initial paint.
     if (!source.main || !format) return;
-    // A Quarto document that runs its code on this computer needs a Run
-    // directory first. Until one is chosen the control beside Run code asks
-    // for it and nothing is rendered; choosing one paints again.
-    if (format === "quarto" && start.localExecution && start.buildPreferences?.backend === "local" && start.runDirectoryReady === false) {
-      coordinator.commit(ticket);
-      return;
-    }
     // A known main path distinguishes an intentionally empty document from
     // the pre-hydration placeholder above. Never leave the previous document
     // or its downloadable artifact on screen after select-all/delete.
@@ -196,8 +187,10 @@ export function createPreviewRenderer({
     const slow = format === "latex";
     // A render on this computer runs the document's code, which can take a
     // minute, and gives no sign of its own: it says it is running whatever
-    // the output, the way a paged compile does.
-    const announced = paged || htmlPreview || (start.localExecution && start.buildPreferences?.backend === "local");
+    // the output, the way a paged compile does. Quarto never renders there
+    // from here: its code runs only on an explicit Run.
+    const announced = paged || htmlPreview
+      || (format !== "quarto" && start.localExecution && start.buildPreferences?.backend === "local");
     // Compiling while typing: a result for older text is still worth showing.
     const continuousHtml = htmlPreview && format === "latex" && Boolean(start.latexContinuous);
     // Shared by both guard points so asset fetching and compilation reject
@@ -295,8 +288,9 @@ export function createPreviewRenderer({
       // Run code is a switch that is off whenever a document opens and is
       // never stored. While it is off, a format set to this computer is
       // drawn by this browser's own renderer, and a document never runs on
-      // this computer without consent.
-      const build = current.localExecution ? current.buildPreferences : { ...current.buildPreferences, backend: "browser" };
+      // this computer without consent. Quarto has no switch: it is always
+      // drawn here as a draft, and its code runs only when Run is pressed.
+      const build = format !== "quarto" && current.localExecution ? current.buildPreferences : { ...current.buildPreferences, backend: "browser" };
       rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug });
       debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
       if (facts().disposed) return;
@@ -352,12 +346,6 @@ export function createPreviewRenderer({
         };
         show(done, { identity, capturedProjectDigest, capturedSource });
         if (rendered.ok !== false) keep(source.main, done, identity);
-        // The output of a run on this computer goes up as shared results:
-        // HTML only, and only when this person has not opted out.
-        if (rendered.ok !== false && format === "quarto" && !markdownPdf && !pdf && typeof html === "string"
-            && rendered.provenance?.backend === "local" && current.localExecution && current.shareResults) {
-          void Promise.resolve().then(() => shareRun({ html, source })).catch(() => {});
-        }
         // SyncTeX is navigation metadata, not part of the rendered page.
         // Large maps can take long enough to decompress and index that
         // awaiting them here left a finished PDF behind the placeholder.

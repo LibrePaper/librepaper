@@ -101,7 +101,8 @@
   import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { locale } from "../lib/locale.js";
   import { createSharedResults } from "../lib/reader/shared-results.svelte.js";
-  import { splitResults } from "../lib/quarto-results.js";
+  import { splitResults, staleCells } from "../lib/quarto-results.js";
+  import RunButton from "./reader/RunButton.svelte";
   import Avatar from "./Avatar.svelte";
   import { presenceJumpTarget } from "../lib/presence-jump.js";
   import { extractOutline } from "../lib/outline.js";
@@ -437,20 +438,29 @@
   // code runs is not a preference and is never stored: it is off each time a
   // document opens.
   let localExecution = $state(false);
-  // A Quarto document needs a folder to run its code in. Nothing renders on
-  // this computer until the control beside Run code says one is set.
+  // A Quarto document's code runs only when Run is pressed. Between runs the
+  // preview is the browser's draft with the last run's output under each cell.
+  let runPhase = $state("idle");
+  let ownResults = $state.raw(null);
+  let staleCount = $state(0);
+  let stopRequested = false;
+  const lastRunAt = $derived(ownResults?.updatedAt ?? "");
+  // A Quarto document needs a folder to run its code in. Its code never runs
+  // on this computer until Run is pressed and a folder is set.
   let runDirectory = $state("");
   const runDirectoryReady = $derived(runDirectory !== "");
+  // Run was pressed before a folder was set: choosing one carries on with it.
+  let pendingRun = false;
   function setRunDirectory(path) {
     const next = path || "";
     if (next === runDirectory) return;
     runDirectory = next;
-    if (next && localExecution && !readerDisposed) {
-      stopRendering();
-      void paintPreview();
+    if (next && pendingRun && !readerDisposed) {
+      pendingRun = false;
+      void runCode();
     }
   }
-  // The chip beside Run code and the Run directory dialog share this state.
+  // The Run button's menu and the Run directory dialog share this state.
   const runDir = createRunDirectory(SLUG, setRunDirectory);
 
   async function setLatexOutput(format) {
@@ -472,12 +482,10 @@
   // Run code is the consent to run a document's code on this computer. It is
   // off whenever a document opens and is never remembered. While it is on, a
   // format set to this computer renders there; the pane is drawn again
-  // because the renderer that draws it changes hands.
+  // because the renderer that draws it changes hands. Quarto has no switch:
+  // its code runs once, on an explicit Run.
   function toggleLocalExecution() {
     localExecution = !localExecution;
-    if (localExecution) runDirectory = "";
-    // Turning Run code on is the moment to pick, or confirm, the folder.
-    if (localExecution && sourceFormat === "quarto") runDirPageOpen = true;
     stopRendering();
     void paintPreview();
   }
@@ -2210,35 +2218,28 @@
   // Where the toggle is offered: in the desktop app, for every editable
   // document whose format is set to this computer.
   const runCodeOffered = $derived(mayEdit && !suggestOnly && hasDesktop && buildPreferences.backend === "local");
-  // The Run directory is read while a Quarto document's code may run here.
+  // The Run directory is read whenever a Quarto document's code may be run
+  // here; reading it only asks the desktop app for the setting.
   $effect(() => {
-    if (localExecution && sourceFormat === "quarto" && runCodeOffered) untrack(() => runDir.load());
+    if (sourceFormat === "quarto" && runCodeOffered) untrack(() => runDir.load());
     else untrack(() => runDir.reset());
   });
-  // A render is waiting for a Run directory: none is set, or the one that was
-  // set no longer exists.
-  const runDirectoryBlocked = $derived(
-    sourceFormat === "quarto" && localExecution && runCodeOffered && runDir.loaded && !runDir.usable,
-  );
-  // The Run directory page, opened from the button beside Run code. It also
-  // shows by itself while a render is blocked.
+  // The Run directory page, opened from the Run button's menu, and by Run
+  // itself when no folder is set.
   let runDirPageOpen = $state(false);
   $effect(() => {
-    if (!(sourceFormat === "quarto" && localExecution && runCodeOffered)) runDirPageOpen = false;
+    if (!(sourceFormat === "quarto" && runCodeOffered)) runDirPageOpen = false;
   });
-  const runDirectoryPage = $derived(runDirectoryBlocked || runDirPageOpen);
   function openRunDirPage() {
     runDirPageOpen = true;
   }
   function closeRunDirPage() {
     runDirPageOpen = false;
   }
-  // Dismissing the dialog while it blocks a render turns Run code off, since
-  // nothing can run without a folder.
+  // Dismissing the dialog gives up a Run that was waiting for a folder.
   function dismissRunDir() {
-    const blocked = runDirectoryBlocked;
+    pendingRun = false;
     runDirPageOpen = false;
-    if (blocked && localExecution) toggleLocalExecution();
   }
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
@@ -2278,7 +2279,7 @@
     if (!next) sharedResults.reset();
     // A run on this computer draws its own output, so it never re-runs
     // because its own upload came back.
-    if (readerDisposed || localExecution || (next?.updatedAt ?? "") === (before ?? "")) return;
+    if (readerDisposed || ownResults || (next?.updatedAt ?? "") === (before ?? "")) return;
     stopRendering();
     void paintPreview();
   }
@@ -2286,37 +2287,111 @@
     if (sourceFormat === "quarto") untrack(() => { void refreshResults(); });
   });
   // The saved output as the draft shows it, with the line that says whose
-  // run it is and when. Null while this computer draws the real output.
+  // run it is and when: this person's last run here, else a collaborator's.
   const quartoResults = $derived.by(() => {
-    const record = sharedResults.state.record;
-    if (!record || sourceFormat !== "quarto" || localExecution) return null;
+    if (sourceFormat !== "quarto") return null;
+    const record = ownResults ?? sharedResults.state.record;
+    if (!record) return null;
     const when = new Date(record.updatedAt);
     const date = Number.isNaN(when.getTime()) ? "" : new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" }).format(when);
     return {
       cells: record.cells,
       path: String(record.path || ""),
       updatedAt: String(record.updatedAt || ""),
-      note: m.readerd_results_note({ name: record.uploaderName || "", date }),
+      note: ownResults ? m.readerd_results_note_own({ date }) : m.readerd_results_note({ name: record.uploaderName || "", date }),
     };
   });
-  // Called with the HTML of a finished run on this computer. Nothing here may
-  // throw into the preview.
-  async function shareRun({ html, source }) {
+  // Run the document's code once on this computer. The page it makes is not
+  // the preview: its cell outputs are split out and spliced under the draft's
+  // cells, so the preview stays the browser draft between runs.
+  async function runCode() {
+    if (runPhase === "running" || readerDisposed) return;
+    if (!runDir.usable) {
+      pendingRun = true;
+      runDirPageOpen = true;
+      return;
+    }
+    runPhase = "running";
+    stopRequested = false;
     try {
-      const split = await splitResults(html, source.texts?.[source.main] ?? "", { path: source.main });
-      // Sharing may have been turned off, or edit access lost, while the run
-      // was being split: the choice at upload time is the one that counts.
-      if (readerDisposed || !shareResults || !mayEdit || !localExecution) return;
-      if (!split.ok) {
-        // A document without code cells has nothing to share and nothing to complain about.
-        sharedResults.skip(split.reason === "no-cells" ? "none" : "unmatched");
+      const tree = capturePreviewTree(treeNow());
+      if (Object.keys(tree.digests || {}).length) {
+        const { held } = await gatherFigures(tree.digests);
+        tree.assets = held.assets;
+        tree.urls = { ...(tree.urls || {}), ...held.urls };
+      }
+      const rendered = await renderers.render(tree, await headingOf(tree), {
+        buildPreferences: { ...buildPreferences, backend: "local", output: "html" },
+        project: SLUG,
+      });
+      if (readerDisposed) return;
+      if (stopRequested) {
+        runPhase = "idle";
         return;
       }
-      await sharedResults.upload(split.record, () => !readerDisposed && shareResults && mayEdit && localExecution);
-    } catch {
+      // The run's log is what Diagnostics shows when it fails.
+      renderStatus.recordLog(rendered?.log || "");
+      if (rendered?.ok === false || typeof rendered?.html !== "string") {
+        runPhase = "failed";
+        return;
+      }
+      const split = await splitResults(rendered.html, tree.texts[tree.main] ?? "", { path: tree.main });
+      if (readerDisposed) return;
+      if (split.ok) {
+        ownResults = { cells: split.record.cells, path: tree.main, updatedAt: new Date().toISOString() };
+        runPhase = "idle";
+        stopRendering();
+        void paintPreview();
+        // Sharing may have been turned off, or edit access lost, while the
+        // run was being split: the choice at upload time is the one that counts.
+        if (shareResults && mayEdit) {
+          void sharedResults.upload(split.record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+        }
+        return;
+      }
+      runPhase = "idle";
+      if (split.reason === "no-cells") {
+        // A document without code cells has nothing to share and nothing to complain about.
+        sharedResults.skip("none");
+        stopRendering();
+        void paintPreview();
+        return;
+      }
+      // The output could not be matched to the cells, so it cannot be spliced
+      // into the draft: show the run's own page instead.
       sharedResults.skip("unmatched");
+      framePreview?.publish({ kind: "html", html: rendered.html });
+      say(m.readerb_run_unmatched());
+    } catch {
+      if (!readerDisposed) runPhase = stopRequested ? "idle" : "failed";
     }
   }
+  function stopRun() {
+    stopRequested = true;
+    renderers.cancelPreview({ keepWarm: true });
+    runPhase = "idle";
+  }
+  // How many cells have changed since the last run, counted a moment after
+  // typing stops so that the parse does not follow every keystroke.
+  $effect(() => {
+    void outlineRevision;
+    const results = quartoResults;
+    const main = previewPath;
+    if (sourceFormat !== "quarto" || !results || !main || results.path !== main) {
+      staleCount = 0;
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const text = String(untrack(() => treeNow()).texts?.[main] ?? "");
+      const count = await staleCells(results.cells, text, { path: main }).catch(() => 0);
+      if (!cancelled && !readerDisposed) staleCount = count;
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  });
   const shareProps = $derived({
     share: shareResults,
     onshare: setShareResults,
@@ -2366,12 +2441,18 @@
       : renderState.failure ? renderState.failureReason || m.readerb_build_failed() : "",
   );
 
-  // A Quarto document is drawn as the Markdown it is until Run code is on,
-  // so the desktop app says what turns the real render on.
-  const quartoNeedsRunCode = $derived(sourceFormat === "quarto" && hasDesktop && mayEdit && !suggestOnly && !localExecution);
+  // A Quarto document with code is drawn as a draft until it has been run,
+  // so the desktop app says what produces the real output.
+  const quartoNeedsRun = $derived.by(() => {
+    if (sourceFormat !== "quarto" || !runCodeOffered || quartoResults || !previewPath) return false;
+    void outlineRevision;
+    const text = String(treeNow().texts?.[previewPath] ?? "");
+    return quarto.executedCells(quarto.parseQuarto(text, { path: previewPath })).length > 0;
+  });
 
   const localAppDiagnostics = $derived([
-    quartoNeedsRunCode ? { severity: "warning", message: m.readerb_run_code_for_render() } : null,
+    quartoNeedsRun ? { severity: "info", message: m.readerb_run_quarto_hint() } : null,
+    runPhase === "failed" ? { severity: "error", message: m.readerb_run_failed() } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
   ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
@@ -2551,9 +2632,7 @@
       typstOutput,
       buildPreferences,
       localExecution,
-      runDirectoryReady: sourceFormat === "quarto" ? runDirectoryReady : true,
       runDirectory,
-      shareResults: shareResults && mayEdit,
       quartoResults,
       latexContinuous: latexContinuous(),
       projectDigest: mayEdit ? "" : projection.state.project?.project_digest || "",
@@ -2569,7 +2648,6 @@
     manualPending: () => manualCompile,
     onsynctex: (parsed) => { painted.synctex = parsed; },
     send: (message) => tell(message),
-    shareRun: (run) => shareRun(run),
     clearDebounce: () => {
       schedule.cancel();
     },
@@ -2982,13 +3060,15 @@
     can: () => can,
     editGroups: () => editGroups,
     outputs: () => ({ displayedFormat, latexOutput, typstOutput, markdownOutput }),
-    view: () => ({ linked, visual, runCodeOffered, localExecution }),
+    view: () => ({ linked, visual, runCodeOffered, localExecution, quarto: sourceFormat === "quarto", running: runPhase === "running" }),
     insertMenu: () => insertMenu,
     refreshEditAvailability: () => refreshEditAvailability(),
     chooseFileCommand: (id) => chooseFileCommand(id),
     chooseEditCommand: (id) => chooseEditCommand(id),
     chooseViewCommand: (id) => chooseViewCommand(id),
     toggleLocalExecution: () => toggleLocalExecution(),
+    runQuarto: () => void runCode(),
+    stopRun: () => stopRun(),
     openSettings: () => openSettings(),
     runCommand: (id) => runCommand(id),
     signOut: () => signOut(),
@@ -3183,7 +3263,12 @@
   // Whether the desktop app builds exports with the command for this format:
   // the same facts the preview routes a job by, so the menu offers what the
   // export makes. The browser route is taken for any file it has no command for.
-  const exportsLocally = $derived(localExecution && hasDesktop && mayEdit && !suggestOnly && buildPreferences.backend === "local");
+  // A Quarto export is itself an explicit request to run the code, so it needs
+  // no switch, only a folder to run in.
+  const exportsLocally = $derived(
+    hasDesktop && mayEdit && !suggestOnly && buildPreferences.backend === "local"
+      && (sourceFormat === "quarto" ? runDirectoryReady : localExecution),
+  );
 
   // Which exports the File menu can honour, for the file being previewed.
   const exportable = $derived({
@@ -4116,7 +4201,9 @@
   {/if}
 {/snippet}
 {#snippet localExecutionControl()}
-  {#if runCodeOffered}
+  {#if runCodeOffered && sourceFormat === "quarto"}
+    <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun} ondirectory={openRunDirPage} />
+  {:else if runCodeOffered}
     <label class="bar-toggle" data-tip={m.readerd_run_code_hint()}>
       <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label={m.readerd_run_code()} data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>
         <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
@@ -4743,9 +4830,9 @@
   {/if}
 </Modal>
 
-<!-- The Run directory: opened from the chip beside Run code, and on its own
-     while a render waits for a folder. -->
-<Modal open={runDirectoryPage} title={m.rundirectorycontrol_prompt_title()} onclose={dismissRunDir} sheet>
+<!-- The Run directory: opened from the Run button's menu, and by Run itself
+     while it waits for a folder. -->
+<Modal open={runDirPageOpen} title={m.rundirectorycontrol_prompt_title()} onclose={dismissRunDir} sheet>
   <RunDirectoryPrompt directory={runDir} title={doc.title} onclose={closeRunDirPage} {...shareProps} />
 </Modal>
 
