@@ -83,17 +83,24 @@ function displaySpans(root) {
   );
 }
 
-/// Numbers the document's display formulas, gives each labelled one an id
-/// to link to (unless something else has it) and points `<a href="key">`
-/// links, as Org emits for [[key]], at them. Returns what `typeset` needs.
-export function numberDocument(root, document) {
-  const spans = displaySpans(root);
-  const sources = spans.map(
+/// The TeX of every display formula under `root`, in order: what numbering
+/// is computed from.
+export function displaySources(root) {
+  return displaySpans(root).map(
     (span) => (span.firstElementChild && span.getAttribute?.("data-equation-source")) || span.textContent,
   );
-  const { tex, keys, labels } = numberDisplays(sources);
+}
+
+/// Gives the display formulas under `root` their numbers. `tex[i]` and `keys[i]`
+/// belong to the i-th display span, as `numberDisplays(displaySources(root))`
+/// gives them; `labels` is the document-wide map from key to number. Each
+/// labelled formula gets an id to link to (unless something else has it), and
+/// `<a href="key">` links, as Org emits for [[key]], point at them. Returns
+/// what `typeset` takes.
+export function applyNumbering(root, document, { tex, keys, labels }) {
+  const spans = displaySpans(root);
   spans.forEach((span, i) => {
-    const key = keys[i][0];
+    const key = keys[i]?.[0];
     if (!key || !span.setAttribute) return;
     const holder = document.getElementById?.(key);
     if (!holder) span.setAttribute("id", key);
@@ -105,6 +112,11 @@ export function numberDocument(root, document) {
     if (link.textContent === href) link.textContent = String(labels.get(href));
   }
   return { tex: new Map(spans.map((span, i) => [span, tex[i]])), labels, document };
+}
+
+/// Numbers the document's display formulas and applies the numbers to `root`.
+export function numberDocument(root, document) {
+  return applyNumbering(root, document, numberDisplays(displaySources(root)));
 }
 
 /**

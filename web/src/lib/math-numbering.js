@@ -46,7 +46,9 @@ export function splitRows(body) {
 /**
  * Rewrites one display formula for KaTeX. `claim(keys)` is called once per
  * numbered equation or row, with the labels found in it, and returns its
- * number. Returns the TeX to render and every label key found.
+ * number, or null when no number is known: that equation or row then gets no
+ * \tag, though its labels are still removed. Returns the TeX to render and
+ * every label key found.
  */
 export function rewriteDisplay(source, claim) {
   const keys = [];
@@ -56,8 +58,10 @@ export function rewriteDisplay(source, claim) {
   };
   const tagged = (text, from) => {
     if (TAG.test(text)) return text;
+    const number = claim(keys.slice(from));
+    if (number == null) return text;
     const tail = /\s*$/.exec(text)[0];
-    return `${text.slice(0, text.length - tail.length)}\\tag{${claim(keys.slice(from))}}${tail}`;
+    return `${text.slice(0, text.length - tail.length)}\\tag{${number}}${tail}`;
   };
 
   const match = ENV.exec(source);

@@ -1,7 +1,16 @@
 // The typesetter, driven with a stand-in document: which spans it takes,
 // what it asks KaTeX for, and how it fetches KaTeX once and only when needed.
 import assert from "node:assert/strict";
-import { createMathTypesetter, numberDocument, prepareQuartoMath, typeset, untypeset } from "../../src/lib/math.js";
+import {
+  applyNumbering,
+  createMathTypesetter,
+  displaySources,
+  numberDocument,
+  prepareQuartoMath,
+  typeset,
+  untypeset,
+} from "../../src/lib/math.js";
+import { numberDisplays, rewriteDisplay } from "../../src/lib/math-numbering.js";
 
 function span(style, tex, rendered = false) {
   const attributes = {};
@@ -168,6 +177,50 @@ function numbered(spans, links = [], taken = {}) {
   const eq = span("display", "\\begin{equation}a\\label{k}\\end{equation}");
   numbered([eq], [], { k: {} }).run();
   assert.equal(eq.attributes.id, undefined);
+}
+
+// A claim with no number leaves the formula untagged, and its labels still go.
+{
+  const equation = rewriteDisplay("\\begin{equation}\ny \\label{eq:none}\n\\end{equation}", () => null);
+  assert.ok(!equation.tex.includes("\\tag"), "no \\tag without a number");
+  assert.ok(!equation.tex.includes("\\label"));
+  assert.deepEqual(equation.keys, ["eq:none"]);
+
+  const aligned = rewriteDisplay("\\begin{align}\na &= 1 \\label{r1}\\\\\nb &= 2\n\\end{align}", () => null);
+  assert.ok(aligned.tex.startsWith("\\begin{align*}"));
+  assert.ok(!aligned.tex.includes("\\tag") && !aligned.tex.includes("\\label"));
+
+  const withNumber = rewriteDisplay("\\begin{equation}\ny \\label{eq:some}\n\\end{equation}", () => 4);
+  assert.ok(withNumber.tex.includes("\\tag{4}"));
+}
+
+// applyNumbering takes numbers computed for a root's own spans and applies them.
+{
+  const source = "\\begin{equation}\ny \\label{eq:y}\n\\end{equation}";
+  const eq = span("display", source);
+  const link = { attributes: { href: "eq:y" }, textContent: "eq:y", getAttribute(n) { return this.attributes[n]; }, setAttribute(n, v) { this.attributes[n] = v; } };
+  const body = {
+    querySelectorAll: (selector) =>
+      selector === "span[data-math-style]" ? [eq] : selector === "a[href]" ? [link] : [],
+  };
+  const document = { body, getElementById: () => null };
+  assert.deepEqual(displaySources(body), [source]);
+
+  const numbering = numberDisplays(displaySources(body));
+  const applied = applyNumbering(body, document, numbering);
+  assert.equal(applied.tex.get(eq), numbering.tex[0]);
+  assert.ok(applied.tex.get(eq).includes("\\tag{1}"));
+  assert.equal(applied.labels.get("eq:y"), 1);
+  assert.equal(applied.document, document);
+  assert.equal(eq.attributes.id, "eq:y");
+  assert.equal(link.attributes.href, "#eq:y");
+  assert.equal(link.textContent, "1");
+
+  // The numbers given are the ones used, whatever this root alone would count to.
+  const given = new Map([["eq:y", 7]]);
+  const fixed = applyNumbering(body, document, { tex: ["T"], keys: [["eq:y"]], labels: given });
+  assert.equal(fixed.tex.get(eq), "T");
+  assert.equal(fixed.labels, given);
 }
 
 console.log("math: spans, KaTeX options, one lazy load, retry after failure passed");

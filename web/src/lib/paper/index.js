@@ -12,7 +12,8 @@ import { Decoration, EditorView, keymap, ViewPlugin, WidgetType } from "@codemir
 import { caretParked, isExternal, resolveImagePath, revealingSelection } from "../visual-markup/markup.ts";
 import "../visual-markup/visual-markup.css";
 import { loadKatex } from "../katex.js";
-import { typeset, untypeset } from "../math.js";
+import { applyNumbering, displaySources, typeset, untypeset } from "../math.js";
+import { numberDisplays } from "../math-numbering.js";
 import { foldLayer, foldsOf } from "../visual/folds.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
 import { paperFormat } from "./formats.js";
@@ -33,27 +34,61 @@ async function resolveImage(imageUrl, file) {
   return null;
 }
 
+// The TeX of a block's display formulas, by the HTML the block was drawn as, so a selection change does not parse every block again.
+const sourcesByHtml = new Map();
+
+function displaySourcesOf(html) {
+  let sources = sourcesByHtml.get(html);
+  if (!sources) {
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    sources = displaySources(template.content);
+    if (sourcesByHtml.size >= 1000) sourcesByHtml.clear();
+    sourcesByHtml.set(html, sources);
+  }
+  return sources;
+}
+
+// Numbers the display formulas of every drawn block together, so a counter runs down the document, and returns each block's share.
+function numberBlocks(htmls) {
+  const entries = [...htmls].map(([block, html]) => ({ block, sources: displaySourcesOf(html) }));
+  const { tex, keys, labels } = numberDisplays(entries.flatMap((entry) => entry.sources));
+  const shares = new Map();
+  let offset = 0;
+  for (const { block, sources } of entries) {
+    const end = offset + sources.length;
+    shares.set(block, { tex: tex.slice(offset, end), keys: keys.slice(offset, end), labels });
+    offset = end;
+  }
+  return shares;
+}
+
 class PaperWidget extends WidgetType {
-  constructor(html, from, path, imageUrl) {
+  constructor(html, from, path, imageUrl, math = null) {
     super();
     this.html = html;
     this.from = from;
     this.path = path;
     this.imageUrl = imageUrl;
+    this.math = math;
+    // Compared as text, so that a renumbering redraws the block.
+    this.mathKey = math ? JSON.stringify([math.tex, math.keys, [...math.labels]]) : "";
   }
 
   eq(other) {
-    return other.html === this.html;
+    return other.html === this.html && other.mathKey === this.mathKey;
   }
 
   toDOM() {
     const div = document.createElement("div");
     div.className = "cm-lp-paper";
     div.innerHTML = this.html;
+    // The numbers go in before KaTeX is here, so a link to an equation reads its number at once.
+    const numbering = this.math ? applyNumbering(div, document, this.math) : null;
 
     if (untypeset(div).length) {
       loadKatex()
-        .then((katex) => typeset(katex, untypeset(div), null))
+        .then((katex) => typeset(katex, untypeset(div), numbering))
         .catch(() => {});
     }
 
@@ -106,15 +141,10 @@ function build(state, path, imageUrl, adapter, project) {
   }
   const blocks = whole ?? adapter.splitBlocks(text);
   if (!blocks) return { decorations: Decoration.none, rendered: [] };
-  // A parked caret (the layer just turned on) reveals nothing, as in the LaTeX layer.
-  const ranges = revealingSelection(state);
-  // A block that overlaps a fold stays source: the fold layer draws that line, or shows the source when revealed.
-  const folds = foldsOf(state);
-  const marks = [];
-  const rendered = [];
+  // Every block the renderer draws, the selected ones too, so that numbers do not move when the caret enters an equation.
+  const htmls = new Map();
   for (const block of blocks) {
-    if (!block.render || touches(ranges, block)) continue;
-    if (folds.some((fold) => block.from <= fold.to && block.to >= fold.from)) continue;
+    if (!block.render) continue;
     let html = "";
     if (whole) {
       html = block.html ?? "";
@@ -125,13 +155,27 @@ function build(state, path, imageUrl, adapter, project) {
         continue;
       }
     }
+    htmls.set(block, html);
+  }
+  // Display math is numbered across the document as the preview numbers it. Typst's math is not KaTeX's, so it is left alone.
+  const numbering = adapter.module !== "typst" ? numberBlocks(htmls) : null;
+  // A parked caret (the layer just turned on) reveals nothing, as in the LaTeX layer.
+  const ranges = revealingSelection(state);
+  // A block that overlaps a fold stays source: the fold layer draws that line, or shows the source when revealed.
+  const folds = foldsOf(state);
+  const marks = [];
+  const rendered = [];
+  for (const block of blocks) {
+    if (!htmls.has(block) || touches(ranges, block)) continue;
+    if (folds.some((fold) => block.from <= fold.to && block.to >= fold.from)) continue;
+    const html = htmls.get(block);
     if (!html.trim()) continue;
     rendered.push(block);
     marks.push(
-      Decoration.replace({ widget: new PaperWidget(html, block.from, path, imageUrl), block: true }).range(
-        block.from,
-        block.to,
-      ),
+      Decoration.replace({
+        widget: new PaperWidget(html, block.from, path, imageUrl, numbering?.get(block) ?? null),
+        block: true,
+      }).range(block.from, block.to),
     );
   }
   // Blank source lines between two drawn blocks would add a full line to the preview's spacing, so they are collapsed.
