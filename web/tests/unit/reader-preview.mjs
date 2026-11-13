@@ -87,7 +87,7 @@ assert.doesNotMatch(readerSource, /granted\(|local-execution\.js|localExecutionC
 // Turning the switch changes who renders, so what was in flight stops and the
 // pane is drawn again. Quarto has no switch: it runs on an explicit Run.
 assert.match(readerSource, /function toggleLocalExecution\(\) \{\s*localExecution = !localExecution;\s*stopRendering\(\);\s*void paintPreview\(\);/);
-assert.match(readerSource, /async function runCode\(\) \{[\s\S]*?if \(!runDir\.usable\) \{\s*pendingRun = true;\s*runDirPageOpen = true;[\s\S]*?backend: "local", output: "html"/);
+assert.match(readerSource, /async function runCode\(\) \{[\s\S]*?if \(!runDir\.usable\) \{\s*pendingRun = true;\s*runDirPageOpen = true;[\s\S]*?backend: "local", output: toPdf \? "pdf" : "html"/);
 // Switching Run code on opens the Run directory dialog. The navbar and the
 // phone strip no longer show the folder; Settings > Tools does.
 assert.doesNotMatch(readerSource, /RunDirectoryControl|run-directory-strip|runStrip/);

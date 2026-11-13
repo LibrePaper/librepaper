@@ -1,9 +1,10 @@
 <script>
   // The Run control for a Quarto document: one split button. The main half
   // runs the document, or stops a run that is going. The chevron opens the
-  // rarer actions (Stop, Share results, the Run directory) and the state of the last run, so
-  // the top bar keeps a single control whatever happened. The two halves share
-  // one border, with a divider between them, so they read as one button.
+  // rarer actions (Stop, Share results, the Run directory) and the state of
+  // the last run, so the top bar keeps a single control whatever happened. The
+  // two halves share one border, with a divider between them, so they read as
+  // one button.
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import Icon from "../Icon.svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
