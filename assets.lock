@@ -13,7 +13,7 @@
 # with an explicit repository and tag, then review the lockfile diff.
 #
 # module             repository          tag       sha256
-markdown.wasm        wasm-markdown       v0.3.2    2e253f398149bb9302637b4c656ee6a5fa630ecf376c19ba035bd5df6913941d
+markdown.wasm        wasm-markdown       v0.3.3    97a8ead2b4caf79fd8a4cead4f49dc08b79b333577bda6e677b0ac2b7a59019e
 org.wasm             wasm-orgmode        v0.2.1    d1891bfcab353e764db4a10f12c72d0aecdbf5dada307f90aa28a326014490ca
 bibliography.wasm    wasm-bibliography   v0.1.2    429a884eb6c59ec2ac7534e33662722d3d7eef0db39d4651dada113be7ae6c8e
 citations.wasm       wasm-bibliography   v0.1.2    87a4d8eb88027eec485a7794f80d0a040e05f7ea4b6e4afa21b4d6ba73e8bc0d
