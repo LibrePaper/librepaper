@@ -3,7 +3,7 @@ import { homeOf, shorten } from "./run-directory.js";
 
 /**
  * The folder a Quarto document's code runs in on this computer, shared by the
- * button beside Run code and the page in the preview. `onchange(path)` gets the
+ * Run button's menu and the Run directory dialog. `onchange(path)` gets the
  * folder once one that exists is set, or "" when none is.
  * @param {string} project
  * @param {(path: string) => void} [onchange]
@@ -57,7 +57,7 @@ export function createRunDirectory(project, onchange = () => {}) {
         (cause) => { if (mine === generation) { loaded = true; error = cause?.message || ""; } },
       );
     },
-    /** Forget everything, as when Run code goes off. */
+    /** Forget everything, as when the document stops being a Quarto document run here. */
     reset() {
       generation++;
       status = null;

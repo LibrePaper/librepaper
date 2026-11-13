@@ -2366,7 +2366,7 @@
   "readerb_run_unmatched": "The run's output could not be matched to the code cells. It is shown as rendered until the next edit.",
   "readerb_version_download_failed": "That version could not be downloaded.",
   "readerb_version_history": "Version history",
-  "readerc_cells_not_run": "Code cells were not run. Export from the LibrePaper desktop app with a Run directory set to include their results.",
+  "readerc_cells_not_run": "Code cells were not run. To include their results, export from the LibrePaper desktop app with a Run directory set.",
   "readerc_comments_export_failed": "The comments could not be exported.",
   "readerc_comments_preparing": "Preparing the comments.",
   "readerc_demo_no_uploads": "Images and other uploads are not available in the demo.",

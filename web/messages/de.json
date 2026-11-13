@@ -2366,7 +2366,7 @@
   "readerb_run_unmatched": "Die Ausgabe des Laufs ließ sich keinen Codezellen zuordnen. Bis zur nächsten Änderung wird sie so angezeigt, wie sie gerendert wurde.",
   "readerb_version_download_failed": "Diese Version konnte nicht heruntergeladen werden.",
   "readerb_version_history": "Versionsverlauf",
-  "readerc_cells_not_run": "Codezellen wurden nicht ausgeführt. Exportieren Sie aus der LibrePaper-Desktop-App mit einem gesetzten Ausführungsordner, der ihre Ergebnisse einbezieht.",
+  "readerc_cells_not_run": "Codezellen wurden nicht ausgeführt. Um ihre Ergebnisse einzubeziehen, exportieren Sie aus der LibrePaper-Desktop-App mit einem festgelegten Ausführungsordner.",
   "readerc_comments_export_failed": "Die Kommentare konnten nicht exportiert werden.",
   "readerc_comments_preparing": "Kommentare werden vorbereitet.",
   "readerc_demo_no_uploads": "Bilder und andere Uploads sind in der Demo nicht verfügbar.",

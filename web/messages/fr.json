@@ -2366,7 +2366,7 @@
   "readerb_run_unmatched": "La sortie de l’exécution n’a pas pu être associée aux cellules de code. Elle reste affichée telle qu’elle a été rendue jusqu’à la prochaine modification.",
   "readerb_version_download_failed": "Cette version n’a pas pu être téléchargée.",
   "readerb_version_history": "Historique des versions",
-  "readerc_cells_not_run": "Les cellules de code n’ont pas été exécutées. Exportez depuis l’application de bureau LibrePaper avec un dossier d’exécution défini qui inclut leurs résultats.",
+  "readerc_cells_not_run": "Les cellules de code n’ont pas été exécutées. Pour inclure leurs résultats, exportez depuis l’application de bureau LibrePaper avec un dossier d’exécution défini.",
   "readerc_comments_export_failed": "Les commentaires n’ont pas pu être exportés.",
   "readerc_comments_preparing": "Préparation des commentaires.",
   "readerc_demo_no_uploads": "Les images et autres téléversements ne sont pas disponibles dans la démo.",
