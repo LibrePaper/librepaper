@@ -2794,6 +2794,7 @@ dependencies = [
  "futures-util",
  "governor",
  "hex",
+ "hmac",
  "librepaper-base",
  "librepaper-document",
  "log",
