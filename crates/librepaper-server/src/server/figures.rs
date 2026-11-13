@@ -163,8 +163,7 @@ impl Server {
             Ok(key) => key,
             Err(reply) => return reply,
         };
-        crate::server::cost::blob_response(self.store.blobs.clone(), key, sha, headers, false)
-            .await
+        crate::server::cost::blob_response(self.store.blobs.clone(), key, sha, headers, false).await
     }
 
     /// A signed link to a figure's bytes on the blob store, for whoever may
@@ -191,10 +190,8 @@ impl Server {
             .await
         {
             Ok(Some(url)) => {
-                let mut response = write_json(
-                    200,
-                    &json!({"url": url, "expires_in": ASSET_LINK_SECONDS}),
-                );
+                let mut response =
+                    write_json(200, &json!({"url": url, "expires_in": ASSET_LINK_SECONDS}));
                 set(&mut response, "cache-control", "private, no-store");
                 response
             }

@@ -1,8 +1,8 @@
 //! Immutable deployment bytes backed by `object_store`.
 
+use super::sigv4;
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt};
-use super::sigv4;
 use object_store::{
     aws::AmazonS3Builder, local::LocalFileSystem, path::Path as ObjectPath, ObjectStore,
     ObjectStoreExt, PutMode, PutOptions,

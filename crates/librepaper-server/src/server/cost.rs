@@ -1163,7 +1163,9 @@ mod transfer_admission_tests {
         assert!(transfer_path("/assets/app.js"));
         assert!(transfer_path("/published/x"));
         let digest = "a".repeat(64);
-        assert!(transfer_path(&format!("/api/documents/abc/assets/{digest}")));
+        assert!(transfer_path(&format!(
+            "/api/documents/abc/assets/{digest}"
+        )));
         assert!(!transfer_path(&format!(
             "/api/documents/abc/assets/{digest}/link"
         )));

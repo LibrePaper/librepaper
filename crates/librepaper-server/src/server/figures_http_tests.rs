@@ -467,7 +467,10 @@ async fn the_link_route_refuses_what_the_byte_route_refuses() {
         let bytes = fetch(&served.base, &path, &headers).await;
         let link = fetch(&served.base, &format!("{path}/link"), &headers).await;
         assert_ne!(bytes, 200, "{name}: the byte route must refuse");
-        assert_eq!(link, bytes, "{name}: the link route answers the byte route's status");
+        assert_eq!(
+            link, bytes,
+            "{name}: the link route answers the byte route's status"
+        );
     }
 }
 

@@ -68,9 +68,8 @@ pub fn presign(
 
     let authority = base.split_once("://").map_or(base, |(_, rest)| rest);
     let host = authority.split('/').next().unwrap_or(authority);
-    let canonical_request = format!(
-        "{method}\n{path}\n{canonical_query}\nhost:{host}\n\nhost\nUNSIGNED-PAYLOAD"
-    );
+    let canonical_request =
+        format!("{method}\n{path}\n{canonical_query}\nhost:{host}\n\nhost\nUNSIGNED-PAYLOAD");
     let string_to_sign = format!(
         "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
         hex::encode(Sha256::digest(canonical_request.as_bytes()))
