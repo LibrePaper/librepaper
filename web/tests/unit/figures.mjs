@@ -28,6 +28,24 @@ function reply(status, { bytes, json, headers = {} } = {}) {
 
 const noLink = () => reply(200, { json: { url: null } });
 
+// A reply whose body read fails the first time, as a dropped connection does.
+function flakyReply(status, options) {
+  const good = reply(status, options);
+  let failed = false;
+  const flaky = (read) => async () => {
+    if (!failed) {
+      failed = true;
+      throw new TypeError("network error");
+    }
+    return read();
+  };
+  return {
+    ...good,
+    arrayBuffer: flaky(good.arrayBuffer),
+    json: flaky(good.json),
+  };
+}
+
 // An in-memory IndexedDB: enough of the API for the store, with requests
 // answered on the next turn. Stores are plain Maps keyed by digest.
 function fakeIndexedDB() {
@@ -431,6 +449,74 @@ __resetAssetTestState();
     assert.deepEqual([...result.assets["fig.png"]], [...body]);
     assert.deepEqual(result.missing, []);
   }, { indexedDB: null });
+}
+
+// A byte-route body that fails to read once is asked for again after one
+// backoff, and the figure arrives.
+{
+  const body = Uint8Array.of(31, 32);
+  const sha = await digestOf(body);
+  let byteFetches = 0;
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    byteFetches++;
+    return byteFetches === 1 ? flakyReply(200, { bytes: body }) : reply(200, { bytes: body });
+  }, async (calls) => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual([...result.assets["fig.png"]], [...body]);
+    assert.deepEqual(result.missing, []);
+    assert.deepEqual(sleeps, [500]);
+    assert.equal(calls.filter((call) => !isLink(call.url)).length, 2);
+  });
+}
+
+// A link body that fails to read once is asked for again, and the figure still
+// arrives by the byte route.
+{
+  const body = Uint8Array.of(33);
+  const sha = await digestOf(body);
+  let links = 0;
+  await scenario((url) => {
+    if (isLink(url)) {
+      links++;
+      return links === 1 ? flakyReply(200, { json: { url: null } }) : noLink();
+    }
+    return reply(200, { bytes: body });
+  }, async () => {
+    const result = await gather("doc", { "fig.png": sha });
+    assert.deepEqual([...result.assets["fig.png"]], [...body]);
+    assert.deepEqual(result.missing, []);
+    assert.deepEqual(sleeps, [500]);
+    assert.equal(links, 2);
+  });
+}
+
+// A denied IndexedDB (the global getter throws) means memory only: the figure
+// is still fetched from the network.
+{
+  const body = Uint8Array.of(34);
+  const sha = await digestOf(body);
+  const realDescriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB");
+  Object.defineProperty(globalThis, "indexedDB", {
+    get() {
+      throw new Error("denied");
+    },
+    configurable: true,
+  });
+  try {
+    await scenario((url) => {
+      if (isLink(url)) return noLink();
+      return reply(200, { bytes: body });
+    }, async (calls) => {
+      const result = await gather("doc", { "fig.png": sha });
+      assert.deepEqual([...result.assets["fig.png"]], [...body]);
+      assert.deepEqual(result.missing, []);
+      assert.equal(calls.filter((call) => !isLink(call.url)).length, 1);
+    });
+  } finally {
+    if (realDescriptor) Object.defineProperty(globalThis, "indexedDB", realDescriptor);
+    else delete globalThis.indexedDB;
+  }
 }
 
 // After a sign-out nothing is written, and the store is not even opened. This

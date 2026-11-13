@@ -71,7 +71,15 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const sleep = (ms) => (hooks.sleep ?? defaultSleep)(ms);
 const jitter = () => (hooks.random ?? Math.random)() * 250;
 const storeCap = () => hooks.capBytes ?? ASSET_STORE_BYTES;
-const idbFactory = () => (hooks.indexedDB === undefined ? globalThis.indexedDB : hooks.indexedDB);
+// Reading the global can throw where storage is denied; that is no store.
+function idbFactory() {
+  if (hooks.indexedDB !== undefined) return hooks.indexedDB;
+  try {
+    return globalThis.indexedDB ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function scopedKey(slug, sha, headers) {
   const entries = headers instanceof Headers ? [...headers.entries()] : Object.entries(headers || {});
@@ -232,16 +240,21 @@ async function reasonOf(response) {
   }
 }
 
-/// A request to our server, with the retry table of spec 5.2. Returns the
-/// response, which the caller checks; a network error that runs out of retries
-/// throws.
-async function askServer(url, init) {
-  let failures = 0; // network errors and 5xx, shared
+/// A request to our server, with the retry table of spec 5.2. `read`, when
+/// given, reads the body of an OK response, and is part of the retried request:
+/// a body that fails to read (a connection dropped mid-download) is retried
+/// exactly like a network error. Returns `{ response, body }`, where body is
+/// `read`'s result for an OK response and undefined otherwise; the caller checks
+/// the response. A network error that runs out of retries throws.
+async function askServer(url, init, read) {
+  let failures = 0; // network errors, failed body reads and 5xx, shared
   let throttled = 0;
   for (;;) {
     let response;
+    let body;
     try {
       response = await fetch(url, init);
+      if (response.ok && read) body = await read(response);
     } catch (error) {
       if (failures >= BACKOFF.length) throw error;
       await sleep(BACKOFF[failures++] + jitter());
@@ -254,13 +267,13 @@ async function askServer(url, init) {
         await sleep(retryAfterMs(response) + jitter());
         continue;
       }
-      return response;
+      return { response, body };
     }
     if (response.status >= 500 && failures < BACKOFF.length) {
       await sleep(BACKOFF[failures++] + jitter());
       continue;
     }
-    return response;
+    return { response, body };
   }
 }
 
@@ -271,13 +284,17 @@ async function askServer(url, init) {
 /// retries: the byte route would meet the same refusal from the same server,
 /// and trying it too would only add load to a server that is already busy.
 async function requestLink(slug, sha, headers) {
-  const response = await askServer(`/api/documents/${slug}/assets/${sha}/link`, { credentials: "same-origin", headers, cache: "no-store" });
+  const { response, body } = await askServer(
+    `/api/documents/${slug}/assets/${sha}/link`,
+    { credentials: "same-origin", headers, cache: "no-store" },
+    (r) => r.json(),
+  );
   if (response.status === 404 || response.status === 405) {
     useByteRoute = true;
     return { failed: true };
   }
   if (!response.ok) throw new Error(`could not fetch a figure link (${response.status})`);
-  const { url } = await response.json();
+  const { url } = body;
   return { url: url ?? null };
 }
 
@@ -325,9 +342,13 @@ async function fetchFromServer(slug, sha, headers) {
     const fromBucket = await fetchFromBucket(slug, sha, headers);
     if (fromBucket) return fromBucket;
   }
-  const response = await askServer(`/api/documents/${slug}/assets/${sha}`, { credentials: "same-origin", headers, cache: "no-store" });
+  const { response, body } = await askServer(
+    `/api/documents/${slug}/assets/${sha}`,
+    { credentials: "same-origin", headers, cache: "no-store" },
+    (r) => r.arrayBuffer(),
+  );
   if (!response.ok) throw new Error(`could not fetch a figure (${response.status})`);
-  return new Uint8Array(await response.arrayBuffer());
+  return new Uint8Array(body);
 }
 
 /// The bytes of a figure, fetched once per browser and kept.
