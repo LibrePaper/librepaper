@@ -7,6 +7,7 @@
   import { locale } from "../../lib/locale.js";
   import { elapsedSeconds, runStatusVisible } from "../../lib/reader/run-status.js";
 
+  /** @type {{ since: number, onstop?: () => void }} */
   let { since, onstop = () => {} } = $props();
   let now = $state(Date.now());
   onMount(() => {
