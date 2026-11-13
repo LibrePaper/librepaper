@@ -221,6 +221,21 @@ function numbered(spans, links = [], taken = {}) {
   const fixed = applyNumbering(body, document, { tex: ["T"], keys: [["eq:y"]], labels: given });
   assert.equal(fixed.tex.get(eq), "T");
   assert.equal(fixed.labels, given);
+
+  // Without ids, as the paper blocks ask, no span takes the key as its id.
+  const bare = span("display", source);
+  const root = { querySelectorAll: (selector) => (selector === "span[data-math-style]" ? [bare] : []) };
+  applyNumbering(root, document, numbering, { ids: false });
+  assert.equal(bare.attributes.id, undefined);
+}
+
+// A comment after a label does not swallow the \tag; an escaped \% stays.
+{
+  const commented = rewriteDisplay("\\begin{equation}\nx = 1 \\label{eq:x} % why\n\\end{equation}", () => 3);
+  assert.ok(!commented.tex.includes("%"));
+  assert.match(commented.tex, /\\tag\{3\}/);
+  const percent = rewriteDisplay("\\begin{equation}\n50\\% \\label{eq:p}\n\\end{equation}", () => 1);
+  assert.ok(percent.tex.includes("50\\%"));
 }
 
 console.log("math: spans, KaTeX options, one lazy load, retry after failure passed");

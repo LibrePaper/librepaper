@@ -95,11 +95,13 @@ export function displaySources(root) {
 /// belong to the i-th display span, as `numberDisplays(displaySources(root))`
 /// gives them; `labels` is the document-wide map from key to number. Each
 /// labelled formula gets an id to link to (unless something else has it), and
-/// `<a href="key">` links, as Org emits for [[key]], point at them. Returns
+/// `<a href="key">` links, as Org emits for [[key]], point at them. With
+/// `ids: false` no id is set: the editor's paper blocks follow no links, and a
+/// block drawn again would find its own outgoing copy holding the id. Returns
 /// what `typeset` takes.
-export function applyNumbering(root, document, { tex, keys, labels }) {
+export function applyNumbering(root, document, { tex, keys, labels }, { ids = true } = {}) {
   const spans = displaySpans(root);
-  spans.forEach((span, i) => {
+  if (ids) spans.forEach((span, i) => {
     const key = keys[i]?.[0];
     if (!key || !span.setAttribute) return;
     const holder = document.getElementById?.(key);

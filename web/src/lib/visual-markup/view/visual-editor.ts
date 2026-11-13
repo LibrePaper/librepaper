@@ -259,14 +259,22 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
       keyAt = 0;
       // The direction of the last key if it was a one-line step, else null.
       step: boolean | null = null;
-      previousKey = '';
+      // A Vim count being typed (digits; a lone 0 is a motion), and whether the last key was the g prefix.
+      count = '';
+      prefixed = false;
       // Capture phase: Vim handles its keys before CodeMirror's own handlers run.
       private onKey = (event: KeyboardEvent) => {
         this.keyAt = Date.now();
         const plain = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
-        const counted = /^[0-9]$/.test(this.previousKey);
-        this.step = plain && !counted && event.key in STEP_KEYS ? STEP_KEYS[event.key] : null;
-        this.previousKey = event.key;
+        if (plain && (/^[1-9]$/.test(event.key) || (event.key === '0' && this.count))) {
+          this.count += event.key;
+          this.step = null;
+          return;
+        }
+        const single = plain && !this.count && !this.prefixed && Object.hasOwn(STEP_KEYS, event.key);
+        this.step = single ? STEP_KEYS[event.key] : null;
+        this.prefixed = plain && event.key === 'g' && !this.prefixed;
+        if (!this.prefixed) this.count = '';
       };
 
       constructor(private view: EditorView) {
@@ -278,6 +286,8 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
       }
 
       update(update: ViewUpdate): void {
+        // Typed text is not a count: a digit typed in the text leaves no count behind.
+        if (update.docChanged) this.count = '';
         if (!update.selectionSet || update.docChanged) return;
         if (!enabled(update.state)) return;
         if (Date.now() - this.keyAt > KEY_WINDOW) return;
