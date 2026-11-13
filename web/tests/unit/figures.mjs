@@ -3,6 +3,7 @@ import {
   __resetAssetTestState,
   __setAssetTestHooks,
   gather,
+  keep,
   release,
 } from "../../src/lib/figures.js";
 import { ASSET_DATABASE } from "../../src/lib/local-data.js";
@@ -517,6 +518,93 @@ __resetAssetTestState();
     if (realDescriptor) Object.defineProperty(globalThis, "indexedDB", realDescriptor);
     else delete globalThis.indexedDB;
   }
+}
+
+// The open project's figures are never evicted to make room: with a cap of 100,
+// the write of C evicts A (not kept) and leaves B (kept) in place.
+{
+  const make = (fill) => Uint8Array.of(...new Array(40).fill(fill));
+  const a = make(41);
+  const b = make(42);
+  const c = make(43);
+  const [shaA, shaB, shaC] = await Promise.all([a, b, c].map(digestOf));
+  const fake = fakeIndexedDB();
+  fake.databases.set(ASSET_DATABASE, new Map([
+    ["bytes", new Map([[shaA, a], [shaB, b]])],
+    ["meta", new Map([[shaA, { size: 40, used: 1 }], [shaB, { size: 40, used: 2 }]])],
+  ]));
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    return reply(200, { bytes: c });
+  }, async () => {
+    keep([shaB, shaC]);
+    await gather("doc", { "c.png": shaC });
+    await tick();
+    const bytesStore = fake.databases.get(ASSET_DATABASE).get("bytes");
+    const metaStore = fake.databases.get(ASSET_DATABASE).get("meta");
+    assert.equal(bytesStore.has(shaA), false, "the old entry that is not kept is evicted");
+    assert.equal(metaStore.has(shaA), false);
+    assert.equal(bytesStore.has(shaB), true, "a kept entry is not evicted");
+    assert.equal(metaStore.has(shaB), true);
+    assert.equal(bytesStore.has(shaC), true, "the new kept entry stays while the store is within its cap");
+  }, { indexedDB: fake, capBytes: 100 });
+}
+
+// When the kept entries alone exceed the cap, nothing kept is evicted, and the
+// entry just written is not left in the store.
+{
+  const make = (fill) => Uint8Array.of(...new Array(40).fill(fill));
+  const a = new Uint8Array(10).fill(51);
+  const b = make(52);
+  const c = make(53);
+  const d = make(54);
+  const [shaA, shaB, shaC, shaD] = await Promise.all([a, b, c, d].map(digestOf));
+  const fake = fakeIndexedDB();
+  fake.databases.set(ASSET_DATABASE, new Map([
+    ["bytes", new Map([[shaA, a], [shaB, b], [shaD, d]])],
+    ["meta", new Map([[shaA, { size: 10, used: 0 }], [shaB, { size: 40, used: 1 }], [shaD, { size: 40, used: 2 }]])],
+  ]));
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    return reply(200, { bytes: c });
+  }, async () => {
+    keep([shaB, shaC, shaD]);
+    await gather("doc", { "c.png": shaC });
+    await tick();
+    const bytesStore = fake.databases.get(ASSET_DATABASE).get("bytes");
+    const metaStore = fake.databases.get(ASSET_DATABASE).get("meta");
+    assert.equal(bytesStore.has(shaA), false, "the evictable entry goes first");
+    assert.equal(bytesStore.has(shaB), true, "kept entries are not evicted");
+    assert.equal(bytesStore.has(shaD), true, "kept entries are not evicted");
+    assert.equal(bytesStore.has(shaC), false, "the entry just written is dropped when still over the cap");
+    assert.equal(metaStore.has(shaC), false, "and its meta is dropped too");
+    assert.deepEqual([...metaStore.keys()].sort(), [shaB, shaD].sort());
+  }, { indexedDB: fake, capBytes: 100 });
+}
+
+// release() clears the kept set: an entry kept before it can be evicted after.
+{
+  const make = (fill) => Uint8Array.of(...new Array(40).fill(fill));
+  const b = make(61);
+  const c = make(62);
+  const [shaB, shaC] = await Promise.all([b, c].map(digestOf));
+  const fake = fakeIndexedDB();
+  fake.databases.set(ASSET_DATABASE, new Map([
+    ["bytes", new Map([[shaB, b]])],
+    ["meta", new Map([[shaB, { size: 40, used: 1 }]])],
+  ]));
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    return reply(200, { bytes: c });
+  }, async () => {
+    keep([shaB]);
+    release();
+    await gather("doc", { "c.png": shaC });
+    await tick();
+    const bytesStore = fake.databases.get(ASSET_DATABASE).get("bytes");
+    assert.equal(bytesStore.has(shaB), false, "after release the entry is no longer kept, so it is evicted");
+    assert.equal(bytesStore.has(shaC), true);
+  }, { indexedDB: fake, capBytes: 100 });
 }
 
 // After a sign-out nothing is written, and the store is not even opened. This

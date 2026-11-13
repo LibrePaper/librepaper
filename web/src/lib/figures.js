@@ -36,6 +36,7 @@ const THROTTLE_RETRIES = 5;
 
 const bytes = new Map(); // digest -> Uint8Array
 const urls = new Map(); // digest -> data: URL or blob: URL (PDFs only)
+const kept = new Set(); // digests of the open project, never evicted to make room
 const inFlight = new Map(); // digest -> Promise
 const scopes = new Map();
 let generation = 0;
@@ -62,6 +63,7 @@ export function __setAssetTestHooks(overrides = {}) {
  * persistent store itself is not deleted. */
 export function __resetAssetTestState() {
   release();
+  kept.clear();
   useByteRoute = false;
   database = null;
   touched.clear();
@@ -202,7 +204,8 @@ async function touch(sha) {
 }
 
 /// Stores verified bytes, then evicts least recently used entries until the
-/// store is within its cap. An asset larger than the cap is not stored.
+/// store is within its cap. Entries of the open project (`kept`) are never
+/// evicted. An asset larger than the cap is not stored.
 async function writeStored(sha, body) {
   if (body.byteLength > storeCap()) return;
   const db = await openStore();
@@ -217,9 +220,18 @@ async function writeStored(sha, body) {
     let total = rows.reduce((sum, row) => sum + row.size, 0);
     for (const row of rows) {
       if (total <= storeCap()) break;
+      if (kept.has(row.key) || row.key === sha) continue;
       tx.objectStore(BYTES).delete(row.key);
       meta.delete(row.key);
       total -= row.size;
+    }
+    // Every evictable entry is gone and the store is still over its cap: the
+    // project is bigger than the cap. The entry just written is dropped too,
+    // so the rest of the project comes from the network on the next cold tab
+    // rather than the store holding a part of it past its cap.
+    if (total > storeCap()) {
+      tx.objectStore(BYTES).delete(sha);
+      meta.delete(sha);
     }
   } catch {
     /* a quota refusal, or a database deleted under this tab: memory only */
@@ -464,11 +476,21 @@ export function ready(digests, slug = "", headers = {}) {
   return Object.values(digests || {}).every((sha) => bytes.has(scopedKey(slug, sha, headers)));
 }
 
+/// The open project's figures. The persistent store never evicts these to
+/// make room: a project is loaded whole, and switching files inside it must
+/// not fetch again. Called with every digest of the current tree.
+export function keep(digests) {
+  kept.clear();
+  for (const sha of digests) kept.add(sha);
+}
+
 /// Forgets everything, for a page leaving a document. The blob URLs are
 /// revoked: each one holds its bytes alive in the browser until it is.
-/// Data URLs do not need to be revoked. The persistent store is kept.
+/// Data URLs do not need to be revoked. The persistent store is kept, and so
+/// is no longer protected: the kept set is cleared.
 export function release() {
   generation++;
+  kept.clear();
   for (const url of urls.values()) {
     const base = url.split("#", 1)[0];
     if (base.startsWith("blob:")) URL.revokeObjectURL(base);

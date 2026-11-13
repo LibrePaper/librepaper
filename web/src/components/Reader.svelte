@@ -3632,7 +3632,16 @@
   // Reading the directory into the list is the workspace's; what is left
   // here is the preview target, which is a rendering question rather than a
   // directory one.
-  const refreshFiles = () => workspace.refresh();
+  // A project is the unit of loading: opening it fetches every figure in the
+  // background, and every change to the directory fetches what it added, so a
+  // file switch or a new figure never waits on the network
+  // (SPEC-transport section 8). The store keeps the open project's figures.
+  function warmFigures() {
+    const digests = liveTreeNow().digests || {};
+    figures.keep(Object.values(digests));
+    if (Object.keys(digests).length) void figures.gather(SLUG, digests, authHeaders(KEY)).catch(() => {});
+  }
+  const refreshFiles = () => { workspace.refresh(); warmFigures(); };
 
   // A project with no file at all, as opposed to one whose directory has not
   // arrived yet. The directory is read from the session itself so that a
