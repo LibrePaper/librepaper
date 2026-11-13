@@ -1111,7 +1111,7 @@
       }
     }
   ],
-  "folds_comment": "批注",
+  "folds_comment": "注释",
   "folds_definitions": "定义",
   "folds_include": "引入",
   "folds_preamble": "导言区",

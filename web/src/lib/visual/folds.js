@@ -1,6 +1,7 @@
 import { Facet, StateField } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 import { m } from "../paraglide/messages.js";
+import { revealingSelection } from "../visual-markup/markup.ts";
 import { mergeFolds } from "./merge-folds.js";
 
 /** @typedef {import("./merge-folds.js").Fold} Fold */
@@ -42,10 +43,11 @@ function findIn(state) {
 }
 
 // A fold is drawn unless the selection touches it; a touched fold shows its
-// source as ordinary lines, the whole fold at once.
+// source as ordinary lines, the whole fold at once. A parked caret (the layer
+// just turned on) reveals nothing, so a file opens with its preamble folded.
 function foldState(state, folds) {
   const { openInclude } = state.facet(finderFacet);
-  const ranges = state.selection.ranges;
+  const ranges = revealingSelection(state);
   const drawn = folds.filter((fold) => !ranges.some((range) => range.from <= fold.to && range.to >= fold.from));
   const decorations = Decoration.set(
     drawn.map((fold) =>

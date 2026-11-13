@@ -129,36 +129,6 @@
   white-space: nowrap;
 }
 
-/* An \input, \include or \subfile: a chip with the file's name and an Open button. */
-.cm-lp-include {
-  display: inline-flex;
-  align-items: center;
-  gap: calc(var(--spacing) * 2);
-  padding: 0 calc(var(--spacing) * 2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-base);
-  background: var(--color-subtle);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.cm-lp-include-open {
-  padding: 0 calc(var(--spacing) * 2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-base);
-  background: var(--color-raised);
-  color: var(--color-link);
-  font-size: var(--text-xs);
-  line-height: 1.5;
-  cursor: pointer;
-}
-
-.cm-lp-include-open:hover {
-  background: var(--color-row-hover);
-}
-
 /* The title block drawn for \maketitle. Line breaks in the title and author
    come from the source, so they are kept. */
 .cm-lp-title {
@@ -453,55 +423,6 @@
   letter-spacing: 0.02em;
 }
 
-/* The preamble, folded: a compact disclosure as wide as its content, left
-   aligned with the text. A chevron, the label, then muted metadata. The vertical
-   gap is the padding of the shared .cm-lp-pill-gap wrapper. */
-.cm-editor.cm-lp-visual .cm-lp-disclosure {
-  display: inline-flex;
-  align-items: center;
-  gap: calc(var(--spacing) * 1.5);
-  max-width: 100%;
-  padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2.5) calc(var(--spacing) * 1) calc(var(--spacing) * 1.5);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-base);
-  background: var(--color-subtle);
-  color: var(--color-text-secondary);
-  font-family: var(--typo-base--font-family);
-  font-size: var(--text-sm);
-  font-style: normal;
-  line-height: 1.4;
-  text-align: left;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.cm-editor.cm-lp-visual .cm-lp-disclosure:hover {
-  border-color: var(--color-text-secondary);
-  background: var(--color-border);
-}
-
-.cm-editor.cm-lp-visual .cm-lp-disclosure:focus-visible {
-  outline: 2px solid var(--color-focus);
-  outline-offset: 1px;
-}
-
-.cm-editor.cm-lp-visual .cm-lp-disclosure svg {
-  flex: none;
-  width: 1em;
-  height: 1em;
-}
-
-.cm-editor.cm-lp-visual .cm-lp-disclosure-label {
-  color: var(--color-text);
-  font-weight: 500;
-}
-
-.cm-editor.cm-lp-visual .cm-lp-disclosure-meta {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: var(--text-xs);
-}
-
 /* A figure: image and caption centred in the text column, with no panel around
    a loaded image. The hover outline takes no room. Spacing is padding, because
    CodeMirror does not measure margins. */
@@ -627,7 +548,7 @@
   white-space: nowrap;
 }
 
-/* The look of .cm-lp-include-open, so an include's Open button is unchanged. */
+/* An include's Open button. */
 .cm-lp-fold-open {
   padding: 0 calc(var(--spacing) * 2);
   border: 1px solid var(--color-border);

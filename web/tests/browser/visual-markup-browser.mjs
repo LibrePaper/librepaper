@@ -992,29 +992,20 @@ try {
   console.log(`visual-markup-browser: refs.tex draws its title, include, references ${JSON.stringify(result.refs.refTexts)} and equation number`);
 
   // Check 6c2: the parts of the title block open their source lines in refs.tex.
-  // The expected preamble summary is computed from the sample's own preamble.
-  const refsPreamble = refsSample.slice(0, refsSample.indexOf("\\begin{document}"));
-  const refsClass = refsPreamble.match(/\\documentclass(?:\[[^\]]*\])?\{([^}]*)\}/)[1];
-  const refsPackages = [...refsPreamble.matchAll(/\\usepackage(?:\[[^\]]*\])?\{([^}]*)\}/g)]
-    .reduce((count, match) => count + match[1].split(",").length, 0);
-  // The disclosure leaves the count out when the preamble loads no package.
-  const refsSummary = refsPackages === 0 ? `Preamble${refsClass}` : `Preamble${refsClass} · ${refsPackages} ${refsPackages === 1 ? "package" : "packages"}`;
   const tb = result.titleBlock;
   assert.equal(tb.titleClick.head, refsSample.indexOf("\\title{") + 7, "a click on the title did not put the caret at the start of the \\title argument");
   assert.ok(tb.titleClick.text.includes("\\title{A Study}"), "a click on the title did not show \\title{A Study}");
-  for (const source of ["\\documentclass", "\\author", "\\maketitle"]) {
-    assert.equal(tb.titleClick.text.includes(source), false, `${source} is still visible after a click on the title`);
+  // A caret in the preamble reveals all of it, as in every format.
+  for (const source of ["\\documentclass", "\\author"]) {
+    assert.ok(tb.titleClick.text.includes(source), `${source} is not visible after a click on the title`);
   }
-  // The preamble splits around the title's line: the first piece reads its summary, the second is a fold of its own.
-  // Whitespace is left out of the comparison, since the pill's label and detail are separate elements.
-  assert.equal(tb.titleClick.chips.length, 2, `the preamble folds after a click on the title were ${JSON.stringify(tb.titleClick.chips)}`);
-  assert.equal(tb.titleClick.chips[0].replace(/\s+/g, ""), refsSummary.replace(/\s+/g, ""), `the first preamble fold after a click on the title was ${JSON.stringify(tb.titleClick.chips[0])}`);
+  assert.equal(tb.titleClick.text.includes("\\maketitle"), false, "\\maketitle is visible after a click on the title");
+  assert.deepEqual(tb.titleClick.chips, [], `the preamble stayed folded after a click on the title: ${JSON.stringify(tb.titleClick.chips)}`);
   assert.equal(tb.titleClick.main, "A Study", "the title block changed after a click on the title");
   assert.equal(tb.liveTitle, "A Study II", "an edit to the title did not draw in the title block within 300 ms");
   assert.equal(tb.restored, true, "the title edit was not taken out of refs.tex");
   assert.equal(tb.authorClick.head, refsSample.indexOf("Bob"), "a click on the second author did not put the caret at Bob");
   assert.ok(tb.authorClick.text.includes("\\author{Ada \\and Bob}"), "a click on the second author did not show \\author{Ada \\and Bob}");
-  assert.equal(tb.authorClick.text.includes("\\title{"), false, "\\title{ is still visible after a click on the author");
   assert.equal(tb.dateClick.head, refsSample.indexOf("\\date{") + 6, "a click on the date did not put the caret at the start of the \\date argument");
   assert.deepEqual(tb.preambleAt5.chips, [], "the preamble fold stayed with the caret at offset 5");
   assert.ok(tb.preambleAt5.text.includes("\\date{2020}"), "\\date{2020} was not visible with the caret in the preamble");
@@ -1026,7 +1017,7 @@ try {
   assert.ok(tb.sample.affils.some((text) => text.includes("Uni A")), `the \\affil was not drawn in .cm-lp-title-affil; got ${JSON.stringify(tb.sample.affils)}`);
   assert.equal(tb.sample.click.head, titleSample.indexOf("\\title{New}") + 7, "a click on the body title did not put the caret at the start of its argument");
   assert.equal(tb.sample.click.preambles, 1, "the preamble did not stay folded after a click on the body title");
-  console.log(`visual-markup-browser: the title block's parts open their source lines, the preamble splits around them, and the title draws its edits (${tb.titleClick.chips.join(" | ")})`);
+  console.log(`visual-markup-browser: the title block's parts open their source lines, the preamble shows whole, and the title draws its edits`);
 
   // Check 6d: a figure folds into an image with the caret outside it, shows its
   // source with the caret inside it, and shows its source after a click on the image.

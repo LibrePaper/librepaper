@@ -9,7 +9,7 @@
 // rendered DOM.
 import { Prec, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, ViewPlugin, WidgetType } from "@codemirror/view";
-import { isExternal, resolveImagePath } from "../visual-markup/markup.ts";
+import { caretParked, isExternal, resolveImagePath, revealingSelection } from "../visual-markup/markup.ts";
 import "../visual-markup/visual-markup.css";
 import { loadKatex } from "../katex.js";
 import { typeset, untypeset } from "../math.js";
@@ -106,7 +106,8 @@ function build(state, path, imageUrl, adapter, project) {
   }
   const blocks = whole ?? adapter.splitBlocks(text);
   if (!blocks) return { decorations: Decoration.none, rendered: [] };
-  const ranges = state.selection.ranges;
+  // A parked caret (the layer just turned on) reveals nothing, as in the LaTeX layer.
+  const ranges = revealingSelection(state);
   // A block that overlaps a fold stays source: the fold layer draws that line, or shows the source when revealed.
   const folds = foldsOf(state);
   const marks = [];
@@ -256,6 +257,7 @@ export function paperVisual({ format = "markdown", path = () => "", imageUrl = n
   if (!adapter) return [];
   const field = paperField(path, imageUrl, adapter, project);
   return [
+    caretParked,
     ...foldLayer(adapter.folds, { openInclude }),
     field,
     loaderFor(adapter, project),

@@ -300,7 +300,10 @@ function orgFoldsOf(text) {
         }
       }
       if (index < leading) {
-        folds.push({ from: block.from, to: block.to, kind: "preamble", detail: documentTitle });
+        // The header is one fold: it grows over the keywords and comments of the leading run.
+        const previous = folds.at(-1);
+        if (previous?.kind === "preamble") previous.to = block.to;
+        else folds.push({ from: block.from, to: block.to, kind: "preamble", detail: documentTitle });
       } else {
         folds.push({ from: block.from, to: block.to, kind: "definitions", detail: cut(`#+${key.toUpperCase()}`) });
       }
@@ -313,6 +316,12 @@ function orgFoldsOf(text) {
       const label = /^\s*\[fn:([^\]]+)\]/.exec(firstLine)?.[1];
       folds.push({ from: block.from, to: block.to, kind: "definitions", detail: cut(label ? `[fn:${label}]` : kind) });
     } else if (kind === "Comment" || kind === "CommentBlock") {
+      // A comment between header keywords belongs to the header.
+      const previous = folds.at(-1);
+      if (index < leading && previous?.kind === "preamble" && blocks.slice(index + 1, leading).some((next) => next.kind === "Keyword")) {
+        previous.to = block.to;
+        return;
+      }
       const detail = firstContent(source, (line) => line.trim().replace(/^#\+(begin|end)_comment\b/i, "").replace(/^#\s?/, ""));
       folds.push({ from: block.from, to: block.to, kind: "comment", detail: cut(detail) });
     }

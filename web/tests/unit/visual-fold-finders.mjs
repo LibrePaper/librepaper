@@ -130,9 +130,19 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
     { kind: "definitions", text: ":PROPERTIES:", detail: "PROPERTIES" },
     { kind: "definitions", text: "#+NAME: table-one", detail: "#+NAME" },
     { kind: "comment", text: "# a comment", detail: "a comment" },
-    { kind: "comment", text: "#+begin_comment", detail: "second" },
     { kind: "definitions", text: "[fn:1] Note.", detail: "[fn:1]" },
   ]);
+}
+
+// An Org header of several keywords, with a comment among them, is one fold.
+{
+  const text = ["#+TITLE: Notes", "# draft", "#+AUTHOR: A", "#+OPTIONS: toc:nil", "", "Body text.", ""].join("\n");
+  const folds = orgFolds(text);
+  assertWellFormed(folds, text);
+  assert.equal(folds.length, 1);
+  assert.equal(folds[0].kind, "preamble");
+  assert.equal(folds[0].detail, "Notes");
+  assert.equal(text.slice(folds[0].from, folds[0].to), "#+TITLE: Notes\n# draft\n#+AUTHOR: A\n#+OPTIONS: toc:nil");
 }
 
 // ---- Typst ----------------------------------------------------------------
