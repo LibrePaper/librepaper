@@ -5,6 +5,7 @@ import { ConfigService, DEFAULT_CONFIG, EditorConfig } from '../core/config';
 import { getLanguage } from '../core/language';
 import { Token } from '../core/tokens';
 import { onOrgSyntax, onTypstSyntax } from '../../source-trees.js';
+import { refreshFolds } from '../../visual/folds.js';
 import { buildDecorations, caretParked, revealRanges } from './decorations';
 import { createTheme } from './theme';
 import './widgets';
@@ -312,7 +313,7 @@ const syntaxArrival = ViewPlugin.fromClass(
       if (language !== 'typst' && language !== 'org') return;
       this.stop = (language === 'typst' ? onTypstSyntax : onOrgSyntax)(() => {
         this.stop = null;
-        view.dispatch({ effects: refreshVisual.of(null) });
+        view.dispatch({ effects: [refreshVisual.of(null), refreshFolds.of(null)] });
       });
     }
 

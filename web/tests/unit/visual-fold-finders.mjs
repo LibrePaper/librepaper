@@ -95,8 +95,20 @@ function assertWellFormed(folds, text) {
 
 // ---- Org ------------------------------------------------------------------
 
+// Before the syntax module loads, the finder has nothing to say. That is not
+// cached: once the module is loaded, the same text gets its folds.
+const lateHeader = "#+TITLE: Late\n#+AUTHOR: A\n\nBody.\n";
+assert.deepEqual(orgFolds(lateHeader), []);
+
 // The syntax module must be loaded before the tree can be read.
 await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)));
+
+{
+  const folds = orgFolds(lateHeader);
+  assert.equal(folds.length, 1);
+  assert.equal(folds[0].kind, "preamble");
+  assert.equal(folds[0].detail, "Late");
+}
 
 {
   const text = [
@@ -151,7 +163,6 @@ const typstWasm = new URL("../../wasm/typst-syntax.wasm", import.meta.url);
 if (!existsSync(typstWasm)) {
   console.log("typst-syntax.wasm is missing; skipping the Typst fold tests");
 } else {
-  await loadTypstSyntax(new Uint8Array(readFileSync(typstWasm)));
   const text = [
     '#import "@preview/note:1.0.0": note',
     "#set text(size: 11pt)",
@@ -167,6 +178,9 @@ if (!existsSync(typstWasm)) {
     "// trailing comment",
     "",
   ].join("\n");
+  // Before the module loads the finder returns nothing, and that is not cached.
+  assert.deepEqual(typstFolds(text), []);
+  await loadTypstSyntax(new Uint8Array(readFileSync(typstWasm)));
   const folds = typstFolds(text);
   assertWellFormed(folds, text);
   const named = plain(folds, text);

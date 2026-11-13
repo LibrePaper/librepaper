@@ -14,7 +14,7 @@ import "../visual-markup/visual-markup.css";
 import { loadKatex } from "../katex.js";
 import { applyNumbering, displaySources, typeset, untypeset } from "../math.js";
 import { numberDisplays } from "../math-numbering.js";
-import { foldLayer, foldsOf } from "../visual/folds.js";
+import { foldLayer, foldsOf, refreshFolds } from "../visual/folds.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
 import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
@@ -256,7 +256,7 @@ function loaderFor(adapter, project) {
           document.head.appendChild(style);
         }
         prepare();
-        view.dispatch({ effects: refreshPaper.of(null) });
+        view.dispatch({ effects: [refreshPaper.of(null), refreshFolds.of(null)] });
       })
       .catch(() => {});
     return plugin;
