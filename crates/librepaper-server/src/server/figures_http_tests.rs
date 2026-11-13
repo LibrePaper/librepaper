@@ -174,6 +174,33 @@ async fn fetch(base: &str, path: &str, headers: &[(&str, &str)]) -> u16 {
     request.send().await.unwrap().status().as_u16()
 }
 
+/// The status, `cache-control` and body of one request, for the link route's
+/// JSON answer.
+async fn fetch_full(
+    base: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> (u16, Option<String>, String) {
+    let mut request = reqwest::Client::new()
+        .get(format!("{base}{path}"))
+        .header("host", "paper.example");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.send().await.unwrap();
+    let status = response.status().as_u16();
+    let cache_control = response
+        .headers()
+        .get("cache-control")
+        .map(|value| value.to_str().unwrap().to_owned());
+    let body = response.text().await.unwrap();
+    (status, cache_control, body)
+}
+
+fn link_path(slug: &str, sha: &str) -> String {
+    format!("/api/documents/{slug}/assets/{sha}/link")
+}
+
 /// A running server for a deployment. The writer lease and the object store
 /// live here, so they outlive the requests.
 struct Served {
@@ -393,4 +420,76 @@ async fn nobody_reads_another_documents_figure() {
         status, 404,
         "a figure of another document is not reachable under this slug"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_link_route_refuses_what_the_byte_route_refuses() {
+    let Some(deployment) = deployment("figures-link-refusals").await else {
+        return;
+    };
+    let slug = deployment.slug.clone();
+    let removed = Digest::of(&figure(1)).to_hex();
+    let other = "figures-link-other";
+    let other_figure = Digest::of(&figure(2)).to_hex();
+    put_directory(&deployment, &slug, vec![("figure-b.png".into(), figure(2))]).await;
+    put_directory(&deployment, other, vec![("figure-b.png".into(), figure(2))]).await;
+    let document = document_id(&deployment, &slug).await;
+    let reader = reader_bearer(&deployment, document).await;
+    let served = serve(deployment).await;
+
+    // Each case: the request's path, and the headers it carries. The byte
+    // route and the link route must answer the same status for every one.
+    let cases: Vec<(&str, String, Vec<(&str, &str)>)> = vec![
+        (
+            "anonymous reader of a private document",
+            asset_path(&slug, &removed),
+            vec![],
+        ),
+        (
+            "reader asking for a digest not in the current tree",
+            asset_path(&slug, &removed),
+            reader_headers(&reader),
+        ),
+        (
+            "reader asking for another document's digest",
+            asset_path(&slug, &other_figure),
+            reader_headers(&reader),
+        ),
+        (
+            "a malformed digest",
+            asset_path(&slug, "not-a-digest"),
+            reader_headers(&reader),
+        ),
+    ];
+    for (name, path, headers) in cases {
+        let bytes = fetch(&served.base, &path, &headers).await;
+        let link = fetch(&served.base, &format!("{path}/link"), &headers).await;
+        assert_ne!(bytes, 200, "{name}: the byte route must refuse");
+        assert_eq!(link, bytes, "{name}: the link route answers the byte route's status");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_authorized_reader_gets_a_null_link_from_a_store_that_cannot_sign() {
+    let Some(deployment) = deployment("figures-link-null").await else {
+        return;
+    };
+    let slug = deployment.slug.clone();
+    let sha = Digest::of(&figure(1)).to_hex();
+    let document = document_id(&deployment, &slug).await;
+    let authorization = reader_bearer(&deployment, document).await;
+    let served = serve(deployment).await;
+
+    let (status, cache_control, body) = fetch_full(
+        &served.base,
+        &link_path(&slug, &sha),
+        &reader_headers(&authorization),
+    )
+    .await;
+    assert_eq!(status, 200, "an authorized reader gets the link answer");
+    assert_eq!(cache_control.as_deref(), Some("private, no-store"));
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body, serde_json::json!({"url": null}));
 }

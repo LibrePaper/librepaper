@@ -65,6 +65,10 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         )
         .route("/api/documents/{slug}/assets", any(document_assets))
         .route("/api/documents/{slug}/assets/{sha}", get(document_asset))
+        .route(
+            "/api/documents/{slug}/assets/{sha}/link",
+            get(document_asset_link),
+        )
         .route("/api/documents/{slug}/source-change", post(source_change))
         .route("/api/documents/{slug}/share", any(share))
         .route("/api/documents/{slug}/source", get(source))
@@ -547,6 +551,17 @@ async fn document_asset(
 ) -> Reply {
     server
         .handle_asset_read(request.headers(), &ctx, &slug, &sha)
+        .await
+}
+
+async fn document_asset_link(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, sha)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_asset_link(request.headers(), &ctx, &slug, &sha)
         .await
 }
 
