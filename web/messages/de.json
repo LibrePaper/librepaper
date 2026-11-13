@@ -3020,6 +3020,9 @@
   "runbutton_choose_directory": "Ausführungsordner wählen…",
   "runbutton_last_run": "Letzter Lauf: {time}",
   "runbutton_failed": "Der letzte Lauf ist fehlgeschlagen",
+  "runbutton_running_in": "Code wird in {name} ausgeführt…",
+  "runbutton_running": "Code wird ausgeführt…",
+  "runstatus_running": "Quarto läuft · {seconds} s",
   "runbutton_stale": [
     {
       "declarations": [

@@ -3020,6 +3020,9 @@
   "runbutton_choose_directory": "Choose a Run directory…",
   "runbutton_last_run": "Last run {time}",
   "runbutton_failed": "The last run failed",
+  "runbutton_running_in": "Running code in {name}…",
+  "runbutton_running": "Running code…",
+  "runstatus_running": "Running Quarto · {seconds} s",
   "runbutton_stale": [
     {
       "declarations": [

@@ -104,6 +104,7 @@
   import { createSharedResults } from "../lib/reader/shared-results.svelte.js";
   import { splitResults, staleCells } from "../lib/quarto-results.js";
   import RunButton from "./reader/RunButton.svelte";
+  import RunStatus from "./reader/RunStatus.svelte";
   import Avatar from "./Avatar.svelte";
   import { presenceJumpTarget } from "../lib/presence-jump.js";
   import { extractOutline } from "../lib/outline.js";
@@ -444,6 +445,8 @@
   // A Quarto document's code runs only when Run is pressed. Between runs the
   // preview is the browser's draft with the last run's output under each cell.
   let runPhase = $state("idle");
+  // When the running Run began, for the preview corner's elapsed time.
+  let runStartedAt = $state(0);
   let ownResults = $state.raw(null);
   let staleCount = $state(0);
   // Each Run takes a number; Stop moves the counter on, so a call that was
@@ -2338,6 +2341,7 @@
       return;
     }
     runPhase = "running";
+    runStartedAt = Date.now();
     const mine = ++runGeneration;
     // What the run was started against: the unmatched fallback page is only
     // shown if the reader is still looking at the same document.
@@ -4292,6 +4296,9 @@
     </label>
   {/if}
 {/snippet}
+{#snippet runStatus()}
+  {#if runPhase === "running"}<RunStatus since={runStartedAt} onstop={stopRun} />{/if}
+{/snippet}
 {#snippet localExecutionControl()}
   {#if runCodeOffered && sourceFormat === "quarto"}
     <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun}
@@ -4811,6 +4818,8 @@
            controls={previewControls}
            notice={previewChip ? previewNotice : undefined}
            cover={painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}
+           status={runStatus}
+           dimmed={sourceFormat === "quarto" && (runPhase === "running" || runPhase === "failed")}
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
            away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || (noCompiler || failedBeforeRender) || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
