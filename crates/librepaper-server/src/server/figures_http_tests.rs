@@ -431,9 +431,9 @@ async fn the_link_route_refuses_what_the_byte_route_refuses() {
     let slug = deployment.slug.clone();
     let removed = Digest::of(&figure(1)).to_hex();
     let other = "figures-link-other";
-    let other_figure = Digest::of(&figure(2)).to_hex();
+    let other_figure = Digest::of(&figure(3)).to_hex();
     put_directory(&deployment, &slug, vec![("figure-b.png".into(), figure(2))]).await;
-    put_directory(&deployment, other, vec![("figure-b.png".into(), figure(2))]).await;
+    put_directory(&deployment, other, vec![("figure-c.png".into(), figure(3))]).await;
     let document = document_id(&deployment, &slug).await;
     let reader = reader_bearer(&deployment, document).await;
     let served = serve(deployment).await;
