@@ -191,6 +191,8 @@
     hidden: () => hidden,
     onProject: (next) => {
       workspace.fromProject(next);
+      // Readers load the project whole too, on every projection that lands.
+      warmFigures();
       changeRows = readerChangeRows(next.changes);
       if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
       // A reader opens on the file the project opens on, whichever that is
