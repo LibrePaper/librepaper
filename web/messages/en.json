@@ -1111,6 +1111,10 @@
       }
     }
   ],
+  "folds_comment": "Comment",
+  "folds_definitions": "Definitions",
+  "folds_include": "Include",
+  "folds_preamble": "Preamble",
   "formatting_heading_1": "Heading 1",
   "formatting_heading_2": "Heading 2",
   "formatting_heading_3": "Heading 3",
@@ -2176,9 +2180,6 @@
       }
     }
   ],
-  "preamble_more": "More preamble",
-  "preamble_show": "Show the preamble",
-  "preamble_summary_label": "Preamble",
   "preview_notes_shown_inside": "{name} is shown inside {path}.",
   "preview_render_could_not_render": "could not render",
   "preview_render_missing_figures": [

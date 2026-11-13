@@ -1111,6 +1111,10 @@
       }
     }
   ],
+  "folds_comment": "注释",
+  "folds_definitions": "定义",
+  "folds_include": "引入",
+  "folds_preamble": "导言区",
   "formatting_heading_1": "标题 1",
   "formatting_heading_2": "标题 2",
   "formatting_heading_3": "标题 3",
@@ -2161,9 +2165,6 @@
       }
     }
   ],
-  "preamble_more": "更多导言区",
-  "preamble_show": "显示导言区",
-  "preamble_summary_label": "导言区",
   "preview_notes_shown_inside": "{name} 显示在 {path} 中。",
   "preview_render_could_not_render": "无法渲染",
   "preview_render_missing_figures": [

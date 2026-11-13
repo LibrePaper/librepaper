@@ -1111,6 +1111,10 @@
       }
     }
   ],
+  "folds_comment": "Comentario",
+  "folds_definitions": "Definiciones",
+  "folds_include": "Inclusión",
+  "folds_preamble": "Preámbulo",
   "formatting_heading_1": "Encabezado 1",
   "formatting_heading_2": "Encabezado 2",
   "formatting_heading_3": "Encabezado 3",
@@ -2176,9 +2180,6 @@
       }
     }
   ],
-  "preamble_more": "Más preámbulo",
-  "preamble_show": "Mostrar el preámbulo",
-  "preamble_summary_label": "Preámbulo",
   "preview_notes_shown_inside": "{name} se muestra dentro de {path}.",
   "preview_render_could_not_render": "no se pudo compilar",
   "preview_render_missing_figures": [

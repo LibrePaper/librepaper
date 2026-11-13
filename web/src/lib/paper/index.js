@@ -9,10 +9,11 @@
 // rendered DOM.
 import { Prec, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, ViewPlugin, WidgetType } from "@codemirror/view";
-import { isExternal, resolveImagePath } from "../visual-markup/markup.ts";
+import { caretParked, isExternal, resolveImagePath, revealingSelection } from "../visual-markup/markup.ts";
 import "../visual-markup/visual-markup.css";
 import { loadKatex } from "../katex.js";
 import { typeset, untypeset } from "../math.js";
+import { foldLayer, foldsOf } from "../visual/folds.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
 import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
@@ -105,11 +106,15 @@ function build(state, path, imageUrl, adapter, project) {
   }
   const blocks = whole ?? adapter.splitBlocks(text);
   if (!blocks) return { decorations: Decoration.none, rendered: [] };
-  const ranges = state.selection.ranges;
+  // A parked caret (the layer just turned on) reveals nothing, as in the LaTeX layer.
+  const ranges = revealingSelection(state);
+  // A block that overlaps a fold stays source: the fold layer draws that line, or shows the source when revealed.
+  const folds = foldsOf(state);
   const marks = [];
   const rendered = [];
   for (const block of blocks) {
     if (!block.render || touches(ranges, block)) continue;
+    if (folds.some((fold) => block.from <= fold.to && block.to >= fold.from)) continue;
     let html = "";
     if (whole) {
       html = block.html ?? "";
@@ -245,11 +250,15 @@ function stepInto(field, direction) {
 /// `main` the open file's path, `texts` every project text by path, `assets` each asset path to a version,
 /// `assetUrl(path)` a fetchable URL for an asset or null.
 /// `dark` puts `lp-dark` on the editor, which the house stylesheet answers.
-export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false, project = null } = {}) {
+/// `openInclude(name)` opens the file a fold's include names; without it the include fold has no button.
+/// The fold layer comes before the paper field, so the field sees the folds in force when it builds.
+export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false, project = null, openInclude = null } = {}) {
   const adapter = paperFormat(format);
   if (!adapter) return [];
   const field = paperField(path, imageUrl, adapter, project);
   return [
+    caretParked,
+    ...foldLayer(adapter.folds, { openInclude }),
     field,
     loaderFor(adapter, project),
     paperOverlays(field),

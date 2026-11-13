@@ -4,7 +4,7 @@
 
 import { blankedComments, latexCommands, readArguments } from "../latex-language/args.js";
 
-/// The commands that set the title block, or that the preamble fold reveals as a line.
+/// The commands that set the title block.
 export const METADATA_COMMANDS = [
   "title",
   "author",

@@ -1111,6 +1111,10 @@
       }
     }
   ],
+  "folds_comment": "Commentaire",
+  "folds_definitions": "Définitions",
+  "folds_include": "Inclusion",
+  "folds_preamble": "Préambule",
   "formatting_heading_1": "Titre 1",
   "formatting_heading_2": "Titre 2",
   "formatting_heading_3": "Titre 3",
@@ -2176,9 +2180,6 @@
       }
     }
   ],
-  "preamble_more": "Suite du préambule",
-  "preamble_show": "Afficher le préambule",
-  "preamble_summary_label": "Préambule",
   "preview_notes_shown_inside": "{name} est affiché dans {path}.",
   "preview_render_could_not_render": "impossible de produire le rendu",
   "preview_render_missing_figures": [

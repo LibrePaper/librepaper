@@ -1111,6 +1111,10 @@
       }
     }
   ],
+  "folds_comment": "コメント",
+  "folds_definitions": "定義",
+  "folds_include": "インクルード",
+  "folds_preamble": "プリアンブル",
   "formatting_heading_1": "見出し1",
   "formatting_heading_2": "見出し2",
   "formatting_heading_3": "見出し3",
@@ -2161,9 +2165,6 @@
       }
     }
   ],
-  "preamble_more": "プリアンブルをさらに表示",
-  "preamble_show": "プリアンブルを表示",
-  "preamble_summary_label": "プリアンブル",
   "preview_notes_shown_inside": "{name}は{path}の中に表示されます。",
   "preview_render_could_not_render": "レンダリングできませんでした",
   "preview_render_missing_figures": [

@@ -428,60 +428,6 @@ export class PillWidget extends WidgetType {
   }
 }
 
-// A compact inline disclosure standing in for folded source, such as the
-// preamble: a chevron, a label and muted metadata, as wide as its content. A
-// click or Enter/Space moves the caret into the folded range, which shows the
-// source as ordinary text and removes the widget, so it is always collapsed.
-export class DisclosureWidget extends WidgetType {
-  constructor(
-    readonly label: string,
-    readonly meta: string,
-    readonly title: string,
-    private kind = ''
-  ) {
-    super();
-  }
-
-  eq(other: WidgetType): boolean {
-    return other instanceof DisclosureWidget && other.label === this.label && other.meta === this.meta && other.title === this.title && other.kind === this.kind;
-  }
-
-  toDOM(view: EditorView): HTMLElement {
-    const gap = document.createElement('div');
-    gap.className = 'cm-lp-pill-gap';
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = this.kind ? `cm-lp-disclosure ${this.kind}` : 'cm-lp-disclosure';
-    button.setAttribute('data-tip', this.title);
-    button.setAttribute('aria-label', this.title);
-    button.setAttribute('aria-expanded', 'false');
-    button.append(iconElement('chevron-right'));
-    const label = document.createElement('span');
-    label.className = 'cm-lp-disclosure-label';
-    label.textContent = this.label;
-    button.append(label);
-    if (this.meta) {
-      const meta = document.createElement('span');
-      meta.className = 'cm-lp-disclosure-meta';
-      meta.textContent = this.meta;
-      button.append(meta);
-    }
-    gap.append(button);
-    revealOnMousedown(view, gap);
-    // A keyboard activation fires click with no pointer (detail 0).
-    button.addEventListener('click', event => {
-      if (event.detail !== 0) return;
-      view.dispatch({ selection: { anchor: view.posAtDOM(gap) } });
-      view.focus();
-    });
-    return gap;
-  }
-
-  ignoreEvent(): boolean {
-    return true;
-  }
-}
-
 // A table is drawn as a pill: the caption when there is one, never the cells.
 // A caret in the table or a click on the pill shows the source.
 function tableBox(caption: string): PillWidget {
