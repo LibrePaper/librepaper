@@ -97,6 +97,7 @@
   import DesktopOnly from "./DesktopOnly.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
     import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
+  import { leaf } from "../lib/reader/run-directory.js";
   import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
   import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { locale } from "../lib/locale.js";
@@ -443,8 +444,24 @@
   let runPhase = $state("idle");
   let ownResults = $state.raw(null);
   let staleCount = $state(0);
-  let stopRequested = false;
-  const lastRunAt = $derived(ownResults?.updatedAt ?? "");
+  // Each Run takes a number; Stop moves the counter on, so a call that was
+  // stopped can tell, after any await, that it no longer owns the state.
+  let runGeneration = 0;
+  // The log of the last completed Run. The next draft render replaces the
+  // render status's log with its own, so Diagnostics reads this one instead.
+  let runLog = $state("");
+  // What the last completed Run said about the document, such as a file its
+  // code reads from the Run directory that is missing. Kept here for the same
+  // reason as the log: the next draft render would otherwise erase it.
+  let runDiagnostics = $state.raw([]);
+  // A Run to PDF keeps no per-cell results, so its time is kept on its own.
+  let lastPdfRunAt = $state("");
+  const lastRunAt = $derived(
+    (ownResults?.updatedAt ?? "") > lastPdfRunAt ? ownResults?.updatedAt ?? "" : lastPdfRunAt,
+  );
+  // The running Run's controller, so Stop can end the job before it starts as
+  // well as while it runs. Not reactive: nothing renders from it.
+  let runAbort = null;
   // A Quarto document needs a folder to run its code in. Its code never runs
   // on this computer until Run is pressed and a folder is set.
   let runDirectory = $state("");
@@ -2198,7 +2215,7 @@
           },
         };
       }),
-      provide("buildLog", () => renderStatus.state.lastLog || renderStatus.state.lastLatexResult?.log || ""),
+      provide("buildLog", () => (sourceFormat === "quarto" && runLog ? runLog : renderStatus.state.lastLog) || renderStatus.state.lastLatexResult?.log || ""),
     ];
     return () => undo.forEach((unregister) => unregister());
   });
@@ -2232,6 +2249,12 @@
   });
   function openRunDirPage() {
     runDirPageOpen = true;
+  }
+  // The Run menu's folder item: the dialog explains a missing or unset folder
+  // and offers the suggestion; otherwise go straight to the system picker.
+  function chooseRunDirectory() {
+    if (!runDir.usable) openRunDirPage();
+    else void runDir.choose();
   }
   function closeRunDirPage() {
     runDirPageOpen = false;
@@ -2313,36 +2336,81 @@
       return;
     }
     runPhase = "running";
-    stopRequested = false;
+    const mine = ++runGeneration;
+    // What the run was started against: the unmatched fallback page is only
+    // shown if the reader is still looking at the same document.
+    const navigation = target.navigation;
+    const source = schedule.generation;
+    const gone = () => mine !== runGeneration || readerDisposed;
+    const controller = new AbortController();
+    runAbort = controller;
+    // The run's own page replaces the draft, unless the reader moved to
+    // another file or edited since. Bumping the target keeps a draft that is
+    // still in flight from painting over it.
+    const showRunPage = (tree, page) => {
+      if (navigation === target.navigation && source === schedule.generation && tree.main === previewPath) {
+        // The frame now shows something newer than any draft that is
+        // scheduled, running or queued, so they must not paint over it.
+        schedule.cancel();
+        renderCoordinator.claim();
+        target.bump();
+        framePreview?.publish(page);
+      }
+    };
     try {
       const tree = capturePreviewTree(treeNow());
       if (Object.keys(tree.digests || {}).length) {
         const { held } = await gatherFigures(tree.digests);
+        if (gone()) return;
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
       }
-      const rendered = await renderers.render(tree, await headingOf(tree), {
-        buildPreferences: { ...buildPreferences, backend: "local", output: "html" },
+      const heading = await headingOf(tree);
+      if (gone()) return;
+      const toPdf = buildPreferences.output === "pdf";
+      const rendered = await renderers.render(tree, heading, {
+        buildPreferences: { ...buildPreferences, backend: "local", output: toPdf ? "pdf" : "html" },
         project: SLUG,
+        signal: controller.signal,
       });
-      if (readerDisposed) return;
-      if (stopRequested) {
+      if (gone()) return;
+      // The run's log is what Diagnostics shows, whether it worked or not.
+      runLog = rendered?.log || rendered?.failure?.message || "";
+      runDiagnostics = rendered?.diagnostics || [];
+      if (toPdf) {
+        if (rendered?.ok === false || !rendered?.pdf) {
+          runPhase = "failed";
+          return;
+        }
+        // The PDF is the run's page as it came, with the code's output in it;
+        // there is nothing to split. The next edit repaints the browser PDF
+        // draft as usual, which is intended: the draft cannot show outputs.
+        const digest = await renderers.snapshotDigest(tree);
+        if (gone()) return;
         runPhase = "idle";
+        lastPdfRunAt = new Date().toISOString();
+        showRunPage(tree, { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() });
         return;
       }
-      // The run's log is what Diagnostics shows when it fails.
-      renderStatus.recordLog(rendered?.log || "");
       if (rendered?.ok === false || typeof rendered?.html !== "string") {
         runPhase = "failed";
         return;
       }
+      // Inline expressions have no cell to be spliced under, so a document
+      // with any shows the run's own page until the next edit.
+      const hasInline = quarto.parseQuarto(tree.texts[tree.main] ?? "", { path: tree.main }).inlineRecords.length > 0;
       const split = await splitResults(rendered.html, tree.texts[tree.main] ?? "", { path: tree.main });
-      if (readerDisposed) return;
+      if (gone()) return;
       if (split.ok) {
         ownResults = { cells: split.record.cells, path: tree.main, updatedAt: new Date().toISOString() };
         runPhase = "idle";
-        stopRendering();
-        void paintPreview();
+        // The next edit's draft carries the outputs either way (ownResults);
+        // a repaint now would replace the page that shows the inline results.
+        if (hasInline) showRunPage(tree, { kind: "html", html: rendered.html });
+        else {
+          stopRendering();
+          void paintPreview();
+        }
         // Sharing may have been turned off, or edit access lost, while the
         // run was being split: the choice at upload time is the one that counts.
         if (shareResults && mayEdit) {
@@ -2352,23 +2420,35 @@
       }
       runPhase = "idle";
       if (split.reason === "no-cells") {
-        // A document without code cells has nothing to share and nothing to complain about.
+        // Nothing to share. The cells may live in included files, whose
+        // outputs cannot be paired with the main file, so the run's own page
+        // is kept until the next edit rather than thrown away; a document
+        // with no code at all loses nothing by showing it.
         sharedResults.skip("none");
-        stopRendering();
-        void paintPreview();
+        showRunPage(tree, { kind: "html", html: rendered.html });
         return;
       }
       // The output could not be matched to the cells, so it cannot be spliced
       // into the draft: show the run's own page instead.
       sharedResults.skip("unmatched");
-      framePreview?.publish({ kind: "html", html: rendered.html });
+      showRunPage(tree, { kind: "html", html: rendered.html });
       say(m.readerb_run_unmatched());
-    } catch {
-      if (!readerDisposed) runPhase = stopRequested ? "idle" : "failed";
+    } catch (error) {
+      // A run that threw (the desktop app went away, say) leaves its reason
+      // where the failure message sends the reader, in place of an older log.
+      if (gone()) return;
+      runPhase = "failed";
+      runLog = error?.message || String(error);
+      runDiagnostics = [];
+    } finally {
+      if (runAbort === controller) runAbort = null;
     }
   }
   function stopRun() {
-    stopRequested = true;
+    runGeneration++;
+    // The signal also stops a run that has not started its job yet, which
+    // cancelPreview alone cannot reach.
+    runAbort?.abort();
     renderers.cancelPreview({ keepWarm: true });
     runPhase = "idle";
   }
@@ -2456,7 +2536,7 @@
     runPhase === "failed" ? { severity: "error", message: m.readerb_run_failed() } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
-  ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
+  ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })).concat(sourceFormat === "quarto" ? runDiagnostics : []));
   // Backups that are off say nothing. Only a failing backup is reported.
   const backupDiagnostics = $derived.by(() => {
     const data = backupStatus.active ? backupStatus.data : null;
@@ -4203,7 +4283,12 @@
 {/snippet}
 {#snippet localExecutionControl()}
   {#if runCodeOffered && sourceFormat === "quarto"}
-    <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun} ondirectory={openRunDirPage} />
+    <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun}
+      share={shareResults} onshare={setShareResults}
+      directoryName={runDir.status?.path ? leaf(runDir.status.path) : ""}
+      directoryPath={runDir.status?.path ? runDir.shorten(runDir.status.path) : ""}
+      directoryMissing={Boolean(runDir.status?.path) && !runDir.usable}
+      ondirectory={chooseRunDirectory} />
   {:else if runCodeOffered}
     <label class="bar-toggle" data-tip={m.readerd_run_code_hint()}>
       <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label={m.readerd_run_code()} data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>
@@ -4420,7 +4505,7 @@
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
       onagent={agentOffered ? askDiagnostic : undefined}
-      log={renderState.lastLatexResult?.log || renderState.lastLog || ""}
+      log={sourceFormat === "quarto" && runLog ? runLog : renderState.lastLatexResult?.log || renderState.lastLog || ""}
       logOpen={renderState.lastLatexResult ? undefined : false} />
   {/snippet}
 

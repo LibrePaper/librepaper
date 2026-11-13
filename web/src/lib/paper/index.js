@@ -84,7 +84,7 @@ class PaperWidget extends WidgetType {
     div.className = "cm-lp-paper";
     div.innerHTML = this.html;
     // The numbers go in before KaTeX is here, so a link to an equation reads its number at once.
-    const numbering = this.math ? applyNumbering(div, document, this.math) : null;
+    const numbering = this.math ? applyNumbering(div, document, this.math, { ids: false }) : null;
 
     if (untypeset(div).length) {
       loadKatex()

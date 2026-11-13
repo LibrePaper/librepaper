@@ -8,6 +8,8 @@
 // formula (or row) that already has a \tag keeps it and is not counted.
 
 const ENV = /^\s*\\begin\{([A-Za-z]+\*?)\}([\s\S]*)\\end\{\1\}\s*$/;
+// A % comment to the end of the line, unless the % is escaped (\%); an escaped backslash before it (\\%) does not escape it.
+const COMMENT = /((?:^|[^\\])(?:\\\\)*)%.*$/;
 const LABEL = /\\label\s*\{([^{}]*)\}/g;
 const TAG = /\\tag\*?\s*\{/;
 const NOTAG = /\\(?:nonumber|notag)(?![A-Za-z])/;
@@ -51,6 +53,12 @@ export function splitRows(body) {
  * every label key found.
  */
 export function rewriteDisplay(source, claim) {
+  // A comment would swallow a \tag put at the end of its line; KaTeX needs none of them.
+  // A line with \verb keeps its text, since a % there is verbatim.
+  source = source
+    .split("\n")
+    .map((line) => (line.includes("\\verb") ? line : line.replace(COMMENT, "$1")))
+    .join("\n");
   const keys = [];
   const take = (text) => {
     for (const found of text.matchAll(LABEL)) keys.push(found[1].trim());

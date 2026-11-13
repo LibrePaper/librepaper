@@ -239,7 +239,16 @@ const arrowKeymap = Prec.high(
 // crosses drawn lines (a page down, 5j, a search) and a pointer click are left
 // alone, and so is a move made in code: Vim labels its moves no differently
 // from a program's, so the sign of a keyboard move is a key pressed just before it.
+// Only a one-line step is answered: a plain ArrowUp, ArrowDown, k or j, with no
+// count typed before it, moving the way its key points. A jump (G, Ctrl-End, 5j,
+// a search) may cross only rendered lines when the whole page is rendered, and
+// it goes where it was sent.
 const KEY_WINDOW = 250;
+const STEP_KEYS: Record<string, boolean> = { ArrowDown: true, j: true, ArrowUp: false, k: false };
+// Vim keys that wait for one more key: a prefix (g, z, [, ]), a mark (' ` m), a
+// register (" @ q), a character to find or replace (f t F T r). The key after
+// one is its argument, never a step: 'j jumps to mark j.
+const PREFIX_KEYS = new Set(['g', 'z', '[', ']', "'", '`', 'm', '"', '@', 'q', 'f', 't', 'F', 'T', 'r']);
 
 // `enabled(state)` says whether the layer is on; `hidden(state, line, before)` says
 // whether a line drawn as text after the move was not seen before it: a collapsed
@@ -252,9 +261,34 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
   return ViewPlugin.fromClass(
     class {
       keyAt = 0;
+      // The direction of the last key if it was a one-line step, else null.
+      step: boolean | null = null;
+      // A Vim count being typed (digits; a lone 0 is a motion), and whether the last key waits for an argument.
+      count = '';
+      prefixed = false;
       // Capture phase: Vim handles its keys before CodeMirror's own handlers run.
-      private onKey = () => {
+      private onKey = (event: KeyboardEvent) => {
         this.keyAt = Date.now();
+        const plain = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+        // Shift only makes a character; it is part of keys such as G, F and T.
+        const typed = !event.ctrlKey && !event.metaKey && !event.altKey;
+        if (event.key === 'Shift') return;
+        // The key after one that waits for an argument is that argument (f5, 'j, gg), and ends the command.
+        if (this.prefixed) {
+          this.prefixed = false;
+          this.count = '';
+          this.step = null;
+          return;
+        }
+        if (plain && (/^[1-9]$/.test(event.key) || (event.key === '0' && this.count))) {
+          this.count += event.key;
+          this.step = null;
+          return;
+        }
+        const single = plain && !this.count && Object.hasOwn(STEP_KEYS, event.key);
+        this.step = single ? STEP_KEYS[event.key] : null;
+        this.prefixed = typed && PREFIX_KEYS.has(event.key);
+        if (!this.prefixed) this.count = '';
       };
 
       constructor(private view: EditorView) {
@@ -266,6 +300,8 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
       }
 
       update(update: ViewUpdate): void {
+        // Typed text is not a count: a digit typed in the text leaves no count behind.
+        if (update.docChanged) this.count = '';
         if (!update.selectionSet || update.docChanged) return;
         if (!enabled(update.state)) return;
         if (Date.now() - this.keyAt > KEY_WINDOW) return;
@@ -280,6 +316,7 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
         const to = doc.lineAt(after.main.head).number;
         if (Math.abs(to - from) < 2) return;
         const forward = to > from;
+        if (this.step !== forward) return;
         for (let n = forward ? from + 1 : from - 1; n !== to; n += forward ? 1 : -1) {
           const line = doc.line(n);
           if (hidden(update.state, line, update.startState)) continue;

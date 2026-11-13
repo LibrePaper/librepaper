@@ -15,7 +15,9 @@ fi
 
 dir="$(git rev-parse --path-format=absolute --git-common-dir)/librepaper-demo"
 
-if ! git worktree list --porcelain | grep -qx "worktree $dir"; then
+# grep reads the whole listing: with -q it stops at the first match, git gets
+# SIGPIPE, and pipefail turns a found worktree into a missing one.
+if ! git worktree list --porcelain | grep -x "worktree $dir" >/dev/null; then
   git worktree prune >&2
   git worktree add --quiet --detach "$dir" "$REF" >&2
 else

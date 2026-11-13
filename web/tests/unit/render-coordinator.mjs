@@ -59,4 +59,37 @@ assert.equal(coordinator.superseded({
   strictSource: false, capturedMain: "main.md",
 }), true);
 
+// claim(): a page shown by other means supersedes running and queued renders.
+{
+  const ran = [];
+  const gates = [];
+  const claimed = createRenderCoordinator({
+    navigation: () => 1,
+    source: () => 1,
+    main: () => "main.md",
+    render: async (ticket) => {
+      ran.push(ticket);
+      await new Promise((resolve) => gates.push(resolve));
+    },
+  });
+  const a = claimed.request();
+  const b = claimed.request();
+  assert.equal(claimed.queued, true);
+  claimed.claim();
+  assert.equal(claimed.queued, false, "claim() drops the queued request");
+  gates.shift()();
+  await Promise.all([a, b]);
+  await new Promise(setImmediate);
+  assert.deepEqual(ran, [1], "a queued request is not executed after claim()");
+  assert.equal(claimed.superseded({
+    ticket: 1, capturedNavigation: 1, capturedSource: 1,
+    strictSource: false, capturedMain: "main.md",
+  }), true, "a ticket issued before claim() is superseded");
+  // Two requests and claim() used tickets 1 to 3; the next request gets 4.
+  assert.equal(claimed.superseded({
+    ticket: 4, capturedNavigation: 1, capturedSource: 1,
+    strictSource: false, capturedMain: "main.md",
+  }), false, "a ticket issued after claim() is not");
+}
+
 console.log("render coordinator tests passed");

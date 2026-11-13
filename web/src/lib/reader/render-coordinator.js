@@ -33,6 +33,13 @@ export function createRenderCoordinator({ navigation, source, main, render }) {
   return {
     request,
     invalidate() { issued += 1; },
+    // The frame now shows something newer than any render that is running or
+    // queued, so they are all superseded.
+    claim() {
+      queued = false;
+      issued += 1;
+      committed = issued;
+    },
     superseded({ ticket, capturedNavigation, capturedSource, strictSource, capturedMain }) {
       return ticket <= committed ||
         capturedNavigation !== navigation() ||

@@ -195,113 +195,111 @@
   },
   {
     "body": {
-      "from": 1393,
-      "to": 1517
+      "from": 1321,
+      "to": 1445
     },
     "from": 1314,
     "kind": "container",
     "meta": {
-      "caption": "A small summary computed by Quarto.",
       "cell": "true",
-      "label": "tbl-summary",
       "lang": "r"
     },
     "name": "codeblock",
-    "to": 1521
+    "to": 1449
   },
   {
-    "from": 1521,
+    "from": 1449,
     "kind": "text",
-    "to": 1523
+    "to": 1451
   },
   {
     "body": {
-      "from": 1526,
-      "to": 1542
+      "from": 1454,
+      "to": 1470
     },
     "children": [
       {
-        "from": 1526,
+        "from": 1454,
         "kind": "text",
-        "to": 1542
+        "to": 1470
       }
     ],
-    "from": 1523,
+    "from": 1451,
     "kind": "heading",
     "level": 2,
-    "to": 1542
+    "to": 1470
   },
   {
-    "from": 1542,
+    "from": 1470,
     "kind": "text",
-    "to": 1728
+    "to": 1656
   },
   {
     "body": {
-      "from": 1729,
-      "to": 1735
+      "from": 1657,
+      "to": 1663
     },
-    "from": 1728,
+    "from": 1656,
     "kind": "command",
     "name": "code",
-    "to": 1736
+    "to": 1664
   },
   {
-    "from": 1736,
+    "from": 1664,
     "kind": "text",
-    "to": 1777
+    "to": 1705
   },
   {
     "body": {
-      "from": 1780,
-      "to": 1806
+      "from": 1708,
+      "to": 1734
     },
     "children": [
       {
-        "from": 1780,
+        "from": 1708,
         "kind": "text",
-        "to": 1806
+        "to": 1734
       }
     ],
-    "from": 1777,
+    "from": 1705,
     "kind": "heading",
     "level": 2,
-    "to": 1806
+    "to": 1734
   },
   {
-    "from": 1806,
+    "from": 1734,
     "kind": "text",
-    "to": 2123
+    "to": 2051
   },
   {
     "body": {
-      "from": 2126,
-      "to": 2136
+      "from": 2054,
+      "to": 2064
     },
     "children": [
       {
-        "from": 2126,
+        "from": 2054,
         "kind": "text",
-        "to": 2136
+        "to": 2064
       }
     ],
-    "from": 2123,
+    "from": 2051,
     "kind": "heading",
     "level": 2,
-    "to": 2136
+    "to": 2064
   },
   {
-    "from": 2136,
+    "from": 2064,
     "kind": "text",
-    "to": 2138
+    "to": 2066
   },
   {
     "body": {
-      "from": 2150,
-      "to": 2150
+      "from": 2078,
+      "to": 2078
     },
     "children": [],
-    "from": 2138,
+    "from": 2066,
     "kind": "container",
     "meta": {
       "attrs": "#refs",
@@ -309,11 +307,11 @@
       "id": "refs"
     },
     "name": "div",
-    "to": 2153
+    "to": 2081
   },
   {
-    "from": 2153,
+    "from": 2081,
     "kind": "text",
-    "to": 2154
+    "to": 2082
   }
 ]

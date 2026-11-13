@@ -103,6 +103,22 @@ function setup(fetch, { inDesktop = true } = {}) {
   }
 }
 
+// Stop before submission posts no job.
+{
+  let posts = 0;
+  setup(async (url, init = {}) => {
+    if (init.method === "POST") posts += 1;
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    local.runRender({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, format: "quarto", output: "html" }, { signal: controller.signal }),
+    (error) => error.name === "Canceled",
+  );
+  assert.equal(posts, 0, "a stopped run posts no job");
+}
+
 // A 403 from a management route says it is not available for this site.
 {
   setup(async () => response({ error: "forbidden" }, 403));

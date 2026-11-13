@@ -455,6 +455,8 @@ async function pollJob(id, signal) {
 }
 
 async function submitAndAwait(form, signal) {
+  // A Stop that landed while the form was being made must not start a job.
+  if (signal?.aborted) throw named("Canceled", "Canceled");
   const submitted = await send("POST", "jobs", { formBody: form }).then((r) => r.json());
   let status;
   try {
@@ -515,6 +517,8 @@ export const rendererKey = (format, output) => `${format}.${output}`;
 export async function runRender({ job = {}, tree, format, output, entrypoint = "" }, { signal, onProgress } = {}) {
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
+  // Stop pressed while the files were hashed: nothing has been sent yet.
+  if (signal?.aborted) throw named("Canceled", "Canceled");
   const request = {
     protocol: 3,
     project: current.project,

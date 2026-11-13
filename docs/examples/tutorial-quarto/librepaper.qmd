@@ -32,8 +32,6 @@ A formula is a rule a machine can be made to follow, the point Ada Lovelace made
 The icon in @fig-librepaper is a relative project asset. Change the values in the cell below, render locally, and make a label for the new result.
 
 ```{r}
-#| label: tbl-summary
-#| tbl-cap: "A small summary computed by Quarto."
 values <- c(2, 4, 6, 8)
 data.frame(statistic = c("Mean", "Sample size"),
            value = c(mean(values), length(values)))
