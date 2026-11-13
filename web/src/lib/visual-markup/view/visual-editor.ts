@@ -239,7 +239,12 @@ const arrowKeymap = Prec.high(
 // crosses drawn lines (a page down, 5j, a search) and a pointer click are left
 // alone, and so is a move made in code: Vim labels its moves no differently
 // from a program's, so the sign of a keyboard move is a key pressed just before it.
+// Only a one-line step is answered: a plain ArrowUp, ArrowDown, k or j, with no
+// count typed before it, moving the way its key points. A jump (G, Ctrl-End, 5j,
+// a search) may cross only rendered lines when the whole page is rendered, and
+// it goes where it was sent.
 const KEY_WINDOW = 250;
+const STEP_KEYS: Record<string, boolean> = { ArrowDown: true, j: true, ArrowUp: false, k: false };
 
 // `enabled(state)` says whether the layer is on; `hidden(state, line, before)` says
 // whether a line drawn as text after the move was not seen before it: a collapsed
@@ -252,9 +257,16 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
   return ViewPlugin.fromClass(
     class {
       keyAt = 0;
+      // The direction of the last key if it was a one-line step, else null.
+      step: boolean | null = null;
+      previousKey = '';
       // Capture phase: Vim handles its keys before CodeMirror's own handlers run.
-      private onKey = () => {
+      private onKey = (event: KeyboardEvent) => {
         this.keyAt = Date.now();
+        const plain = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+        const counted = /^[0-9]$/.test(this.previousKey);
+        this.step = plain && !counted && event.key in STEP_KEYS ? STEP_KEYS[event.key] : null;
+        this.previousKey = event.key;
       };
 
       constructor(private view: EditorView) {
@@ -280,6 +292,7 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
         const to = doc.lineAt(after.main.head).number;
         if (Math.abs(to - from) < 2) return;
         const forward = to > from;
+        if (this.step !== forward) return;
         for (let n = forward ? from + 1 : from - 1; n !== to; n += forward ? 1 : -1) {
           const line = doc.line(n);
           if (hidden(update.state, line, update.startState)) continue;
