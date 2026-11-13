@@ -466,13 +466,19 @@ async fn middleware_inner(
     // the wait (see below), so the wait never holds a work slot.
     let is_control = control(&path, &method);
     let take_work = || {
-        server.cost.work.clone().try_acquire_owned().ok().or_else(|| {
-            if is_control {
-                server.cost.control_work.clone().try_acquire_owned().ok()
-            } else {
-                None
-            }
-        })
+        server
+            .cost
+            .work
+            .clone()
+            .try_acquire_owned()
+            .ok()
+            .or_else(|| {
+                if is_control {
+                    server.cost.control_work.clone().try_acquire_owned().ok()
+                } else {
+                    None
+                }
+            })
     };
     let mut _work = match take_work() {
         Some(permit) => Some(permit),
