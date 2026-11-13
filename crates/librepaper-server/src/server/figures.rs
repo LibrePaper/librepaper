@@ -212,6 +212,7 @@ impl Server {
     /// may read the document, a reader's digest is in the current tree, and
     /// the digest belongs to this document. On success, the storage key of
     /// the figure. On refusal, the reply to send.
+    #[allow(clippy::result_large_err)] // The error is a ready-to-return response.
     async fn authorized_asset_key(
         &self,
         headers: &HeaderMap,

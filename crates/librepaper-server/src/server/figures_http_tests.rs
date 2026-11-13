@@ -440,7 +440,8 @@ async fn the_link_route_refuses_what_the_byte_route_refuses() {
 
     // Each case: the request's path, and the headers it carries. The byte
     // route and the link route must answer the same status for every one.
-    let cases: Vec<(&str, String, Vec<(&str, &str)>)> = vec![
+    type Case<'a> = (&'a str, String, Vec<(&'a str, &'a str)>);
+    let cases: Vec<Case> = vec![
         (
             "anonymous reader of a private document",
             asset_path(&slug, &removed),
