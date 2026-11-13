@@ -2401,7 +2401,7 @@
       // Inline expressions have no cell to be spliced under, so a document
       // with any shows the run's own page until the next edit.
       const hasInline = quarto.parseQuarto(tree.texts[tree.main] ?? "", { path: tree.main }).inlineRecords.length > 0;
-      const split = await splitResults(rendered.html, tree.texts[tree.main] ?? "", { path: tree.main });
+      const split = await splitResults(rendered.html, tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts });
       if (gone()) return;
       if (split.ok) {
         ownResults = { cells: split.record.cells, path: tree.main, updatedAt: new Date().toISOString() };
@@ -2466,8 +2466,9 @@
     }
     let cancelled = false;
     const timer = setTimeout(async () => {
-      const text = String(untrack(() => treeNow()).texts?.[main] ?? "");
-      const count = await staleCells(results.cells, text, { path: main }).catch(() => 0);
+      const texts = untrack(() => treeNow()).texts ?? {};
+      const text = String(texts[main] ?? "");
+      const count = await staleCells(results.cells, text, { path: main, files: texts }).catch(() => 0);
       if (!cancelled && !readerDisposed) staleCount = count;
     }, 400);
     return () => {

@@ -368,7 +368,7 @@ function quartoNeedsBibliography(source) {
 // document with a bibliography still goes through citations.wasm, which does
 // not know Quarto, so that one is given the module's draft as plain Markdown.
 async function renderQuarto(tree, title, moduleUrls, settings, source) {
-  const sidecar = await quarto.quartoSidecar(source, { path: tree.main, results: tree.quartoResults ?? null });
+  const sidecar = await quarto.quartoSidecar(source, { path: tree.main, results: tree.quartoResults ?? null, files: tree.texts });
   const withSidecar = { ...tree, texts: { ...tree.texts, [quarto.QUARTO_SIDECAR]: JSON.stringify(sidecar) } };
   if (quartoNeedsBibliography(source)) {
     const drafted = await quartoDraft(withSidecar, 0, moduleUrls, settings);

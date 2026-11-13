@@ -299,7 +299,76 @@ export function executedCells(parsed) {
   return parsed.cells.filter((cell) => ({ ...defaults, ...cell.options }).include !== false);
 }
 
-// Pair saved outputs with the cells of the main file. A result whose
+const MAX_INCLUDE_DEPTH = 8;
+
+// A project path resolved like the renderer's `shortcodes::resolve`: relative
+// to the including file's directory, `.` and `..` folded, never absolute and
+// never above the project root. Null when the name is not allowed.
+function resolveInclude(name, from, lookup) {
+  const requested = String(name).replace(/\\/g, "/");
+  if (!requested || requested.startsWith("/") || /^[A-Za-z]:/.test(requested) || requested.split("/").some((part) => !part)) return null;
+  const parts = from.split("/");
+  parts.pop();
+  const normalized = [];
+  let above = false;
+  for (const part of [...parts, ...requested.split("/")]) {
+    if (part === ".") continue;
+    if (part === "..") { if (!normalized.length) { above = true; break; } normalized.pop(); } else normalized.push(part);
+  }
+  if (!above) {
+    const joined = normalized.join("/");
+    const text = lookup(joined);
+    if (typeof text === "string") return { path: joined, text };
+  }
+  const text = lookup(requested);
+  return typeof text === "string" ? { path: requested, text } : null;
+}
+
+// The executed cells of the whole document in document order: the main file's
+// and those of its block-level `{{< include >}}` files, expanded like the
+// renderer does. `files` is a function, a Map or an object from project path
+// to text. Each cell carries `file` (its normalized path) and `main`.
+export function expandedCells(source, { path = "main.qmd", files = null } = {}) {
+  const lookup = typeof files === "function" ? files
+    : files instanceof Map ? (name) => files.get(name)
+    : files && typeof files === "object" ? (name) => (Object.hasOwn(files, name) ? files[name] : undefined)
+    : () => undefined;
+  const mainParsed = parseQuarto(source, { path });
+  const meta = mainParsed.metadata?.execute;
+  const defaults = meta && typeof meta === "object" ? meta : {};
+  const out = [];
+  const walk = (text, file, chain, isMain) => {
+    text = String(text ?? "");
+    const parsed = isMain ? mainParsed : parseQuarto(text, { path: file });
+    const lines = text.split("\n");
+    const front = parsed.frontMatter.end ? text.slice(0, parsed.frontMatter.end).split("\n").length - 1 : 0;
+    const cellAt = new Map(parsed.cells.map((cell) => [cell.startLine, cell]));
+    let fence = null;
+    for (let i = front; i < lines.length; i += 1) {
+      const line = lines[i].replace(/\r$/, "");
+      if (fence) {
+        if (new RegExp(`^ {0,3}${fence.char}{${fence.length},}\\s*$`).test(line)) fence = null;
+        continue;
+      }
+      const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      if (open) {
+        const cell = cellAt.get(i);
+        if (cell && ({ ...defaults, ...cell.options }).include !== false) out.push({ ...cell, file, main: isMain });
+        fence = { char: open[1][0], length: open[1].length };
+        continue;
+      }
+      const include = /^\s*\{\{<\s*include\s+([^\s>]+)\s*>\}\}\s*$/.exec(line);
+      if (!include) continue;
+      const found = resolveInclude(include[1], file, lookup);
+      if (!found || chain.length >= MAX_INCLUDE_DEPTH || chain.includes(found.path)) continue;
+      walk(found.text, found.path, [...chain, found.path], false);
+    }
+  };
+  walk(source, path, [], true);
+  return out;
+}
+
+// Pair saved outputs with the cells of the document. A result whose
 // fingerprint equals the cell's is fresh; others fall back to the same label,
 // then to the same position when the cell counts agree, and are stale.
 export function matchResults(results, cells) {
@@ -337,17 +406,19 @@ export function matchResults(results, cells) {
 /// stays here, in the browser; the module only places what it is given.
 export const QUARTO_SIDECAR = ".librepaper/quarto.json";
 
-/** @param {string} source @param {{path?: string, results?: any, strings?: Record<string, string>}} [options] */
-export async function quartoSidecar(source, { path = "main.qmd", results = null, strings } = {}) {
-  const parsed = parseQuarto(source, { path });
-  const hashes = await Promise.all(parsed.cells.map((cell) => cellFingerprint(cell)));
-  parsed.cells.forEach((cell, index) => { cell.source_sha256 = hashes[index]; });
-  const matched = matchResults(results, executedCells(parsed));
-  const outputs = [];
+/** @param {string} source @param {{path?: string, results?: any, strings?: Record<string, string>, files?: any}} [options] */
+export async function quartoSidecar(source, { path = "main.qmd", results = null, strings, files = null } = {}) {
+  const cells = expandedCells(source, { path, files });
+  const hashes = await Promise.all(cells.map((cell) => cellFingerprint(cell)));
+  cells.forEach((cell, index) => { cell.source_sha256 = hashes[index]; });
+  const matched = matchResults(results, cells);
+  const ordered = [];
   for (const [cell, output] of matched) {
-    outputs.push({ line: cell.startLine + 1, html: String(output.html ?? "").replace(/\r?\n/g, " "), stale: output.stale });
+    const entry = { line: cell.startLine + 1, html: String(output.html ?? "").replace(/\r?\n/g, " "), stale: output.stale };
+    if (!cell.main) entry.path = cell.file;
+    ordered.push({ entry, order: cells.indexOf(cell) });
   }
-  outputs.sort((a, b) => a.line - b.line);
+  const outputs = ordered.sort((a, b) => a.order - b.order).map((item) => item.entry);
   return {
     outputs,
     note: typeof results?.note === "string" ? results.note.trim() : "",

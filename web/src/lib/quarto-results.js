@@ -10,7 +10,7 @@
 // instead of using DOMParser. Quarto's HTML is well formed apart from void
 // elements, and its data: URIs contain no angle brackets.
 
-import { cellFingerprint, executedCells, parseQuarto } from "./engines/quarto.js";
+import { cellFingerprint, expandedCells } from "./engines/quarto.js";
 
 const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
 
@@ -172,7 +172,7 @@ function cellHtml(tokens) {
   return out.join("");
 }
 
-export async function splitResults(html, qmdSource, { path = "main.qmd" } = {}) {
+export async function splitResults(html, qmdSource, { path = "main.qmd", files = null } = {}) {
   let htmlCells;
   try {
     htmlCells = findCells(contentTokens(tokenize(String(html ?? "")))).map(cellHtml);
@@ -180,7 +180,7 @@ export async function splitResults(html, qmdSource, { path = "main.qmd" } = {}) 
     if (error instanceof ParseError) return { ok: false, reason: "parse" };
     throw error;
   }
-  const expected = executedCells(parseQuarto(qmdSource, { path }));
+  const expected = expandedCells(qmdSource, { path, files });
   if (!htmlCells.length || !expected.length) return { ok: false, reason: "no-cells" };
   if (htmlCells.length !== expected.length) return { ok: false, reason: "count-mismatch" };
   const cells = [];
@@ -189,6 +189,7 @@ export async function splitResults(html, qmdSource, { path = "main.qmd" } = {}) 
       fingerprint: await cellFingerprint(expected[i]),
       label: expected[i].label || null,
       html: htmlCells[i],
+      ...(expected[i].main ? {} : { path: expected[i].file }),
     });
   }
   return { ok: true, record: { version: 1, path, cells } };
@@ -199,10 +200,10 @@ export async function splitResults(html, qmdSource, { path = "main.qmd" } = {}) 
 /// were never run. Saved fingerprints are counted, so a cell copied after the
 /// run is stale: each saved output covers only one cell. The Run button shows
 /// this count so a reader knows how much of the draft is out of date.
-export async function staleCells(cells, qmdSource, { path = "main.qmd" } = {}) {
+export async function staleCells(cells, qmdSource, { path = "main.qmd", files = null } = {}) {
   const saved = new Map();
   for (const cell of Array.isArray(cells) ? cells : []) saved.set(cell?.fingerprint, (saved.get(cell?.fingerprint) ?? 0) + 1);
-  const expected = executedCells(parseQuarto(String(qmdSource ?? ""), { path }));
+  const expected = expandedCells(String(qmdSource ?? ""), { path, files });
   let stale = 0;
   for (const cell of expected) {
     const fingerprint = await cellFingerprint(cell);
