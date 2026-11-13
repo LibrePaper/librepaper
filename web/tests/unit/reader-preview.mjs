@@ -84,9 +84,10 @@ assert.match(previewSource, /const failed = hasError[\s\S]*?severity: "error"[\s
 // stored. The switch is the consent, and it is given again each time.
 assert.match(readerSource, /let localExecution = \$state\(false\)/);
 assert.doesNotMatch(readerSource, /granted\(|local-execution\.js|localExecutionConsent/);
-// Turning the switch changes who renders, so a chosen Run directory is
-// forgotten, what was in flight stops and the pane is drawn again.
-assert.match(readerSource, /function toggleLocalExecution\(\) \{\s*localExecution = !localExecution;\s*if \(localExecution\) runDirectory = "";\s*(?:\/\/[^\n]*\n\s*)*if \(localExecution && sourceFormat === "quarto"\) runDirPageOpen = true;\s*stopRendering\(\);\s*void paintPreview\(\);/);
+// Turning the switch changes who renders, so what was in flight stops and the
+// pane is drawn again. Quarto has no switch: it runs on an explicit Run.
+assert.match(readerSource, /function toggleLocalExecution\(\) \{\s*localExecution = !localExecution;\s*stopRendering\(\);\s*void paintPreview\(\);/);
+assert.match(readerSource, /async function runCode\(\) \{[\s\S]*?if \(!runDir\.usable\) \{\s*pendingRun = true;\s*runDirPageOpen = true;[\s\S]*?backend: "local", output: "html"/);
 // Switching Run code on opens the Run directory dialog. The navbar and the
 // phone strip no longer show the folder; Settings > Tools does.
 assert.doesNotMatch(readerSource, /RunDirectoryControl|run-directory-strip|runStrip/);
@@ -97,7 +98,7 @@ assert.doesNotMatch(readerSource, /setQuartoPreviewMode|setTypstPreviewMode|star
 assert.doesNotMatch(readerSource, /livePreviewOwnsPane|liveServing|liveTargets|liveShown|calepin/i);
 assert.doesNotMatch(previewSource, /livePreviewOwnsPane|calepin/i);
 // The switch sits in the top bar and the View menu, and it is the consent.
-assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?\{#if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
+assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?<RunButton phase=\{runPhase\}[\s\S]*?onrun=\{runCode\}[\s\S]*?\{:else if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
 // The switch is offered in the desktop app, for every document this person may
 // edit outright (not only suggest) whose format is set to this computer.
 assert.match(readerSource, /const runCodeOffered = \$derived\(mayEdit && !suggestOnly && hasDesktop && buildPreferences\.backend === "local"\)/);
@@ -111,9 +112,12 @@ assert.doesNotMatch(readerSource, /pdfNeedsLocalTool|pdfNeedsLocalExecution|PDF 
 // `typeof` guard, because the only way to test it was to slice it out of the
 // component into a context that had never declared the name; it is an argument
 // now.
-assert.match(previewSource, /const build = current\.localExecution \? current\.buildPreferences : \{ \.\.\.current\.buildPreferences, backend: "browser" \};/);
-// Quarto with Run code off says what turns the real render on.
-assert.match(readerSource, /Turn on Run code to render on this computer\./);
+assert.match(previewSource, /const build = format !== "quarto" && current\.localExecution \? current\.buildPreferences : \{ \.\.\.current\.buildPreferences, backend: "browser" \};/);
+// Quarto never renders on this computer from the preview, and nothing there
+// shares results any more: that happens from the Run action.
+assert.doesNotMatch(previewSource, /shareRun|runDirectoryReady/);
+// A Quarto document with code says what produces the real output.
+assert.match(readerSource, /readerb_run_quarto_hint/);
 // The paged controls are the preview header's, and the frame is what says
 // what they should read: a zoom the frame could not honour -- a pane too
 // narrow for 150% -- must not leave the header claiming it did.

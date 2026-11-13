@@ -77,7 +77,9 @@ export function viewCommands(c) {
     { id: "linked", label: labelOf("linked"), checked: c.linked },
     { id: "visual-markup", label: labelOf("visual-markup"), checked: c.visual },
   ];
-  if (c.runCodeOffered) markup.push({ id: "run-code", label: m.readerd_run_code(), checked: c.localExecution });
+  // Quarto runs its code on an explicit action rather than a switch.
+  if (c.runCodeOffered && c.quarto) markup.push({ id: "run-quarto", label: c.running ? m.runbutton_stop() : m.runbutton_run() });
+  else if (c.runCodeOffered) markup.push({ id: "run-code", label: m.readerd_run_code(), checked: c.localExecution });
 
   const size = [
     { id: "text-bigger", label: labelOf("text-bigger") },

@@ -755,11 +755,12 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(harness.published[0].kind, "html");
   assert.equal(harness.published[0].html, "<p>draft</p>");
 
-  // With Run code on, the stored choice of this computer is what renders.
+  // Quarto is drawn by this browser even with Run code on and a format set to
+  // this computer: its code runs only on an explicit Run.
   harness.facts.buildPreferences = { selection: "automatic", backend: "local", output: "html" };
   harness.facts.localExecution = true;
   await harness.paint();
-  assert.equal(builds.at(-1).backend, "local");
+  assert.equal(builds.at(-1).backend, "browser");
 
   // And a reader who has not approved execution gets the Markdown it is,
   // rather than code this browser was never given permission to run.
