@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// How long a signed figure link lives: long enough for a slow fetch started
+/// at once, short enough that a reader whose access is removed loses the bytes
+/// within five minutes.
+const ASSET_LINK_SECONDS: u64 = 300;
+
 impl Server {
     /// Stores a figure and answers with its digest and size. The bytes are the
     /// server's to keep; the name is the client's to give, which it does by
@@ -141,9 +146,12 @@ impl Server {
 
     /// A figure's bytes, for whoever may read the document.
     ///
-    /// Content-addressed and immutable, so it is cached for a year: the digest
-    /// is in the URL, and bytes that changed would be at another one. A
-    /// private document's figures are refused exactly as its text is.
+    /// Content-addressed, so the digest in the URL names one set of bytes, but
+    /// the answer is `private, no-store`: a browser's HTTP cache outlives
+    /// sign-out and cannot be cleared reliably, and a cached answer would skip
+    /// this access check. The client keeps its own store, which sign-out
+    /// deletes (SPEC-transport 3.5). A private document's figures are refused
+    /// exactly as its text is.
     pub(super) async fn handle_asset_read(
         &self,
         headers: &HeaderMap,
@@ -151,24 +159,84 @@ impl Server {
         slug: &str,
         sha: &str,
     ) -> Reply {
+        let key = match self.authorized_asset_key(headers, context, slug, sha).await {
+            Ok(key) => key,
+            Err(reply) => return reply,
+        };
+        crate::server::cost::blob_response(self.store.blobs.clone(), key, sha, headers, false)
+            .await
+    }
+
+    /// A signed link to a figure's bytes on the blob store, for whoever may
+    /// read the document (SPEC-transport 6.2).
+    ///
+    /// The access checks are the byte route's, in the same helper, so the two
+    /// cannot drift. A store that cannot sign answers `{"url": null}` and the
+    /// client falls back to the byte route.
+    pub(super) async fn handle_asset_link(
+        &self,
+        headers: &HeaderMap,
+        context: &RequestContext,
+        slug: &str,
+        sha: &str,
+    ) -> Reply {
+        let key = match self.authorized_asset_key(headers, context, slug, sha).await {
+            Ok(key) => key,
+            Err(reply) => return reply,
+        };
+        match self
+            .store
+            .blobs
+            .signed_get(&key, std::time::Duration::from_secs(ASSET_LINK_SECONDS))
+            .await
+        {
+            Ok(Some(url)) => {
+                let mut response = write_json(
+                    200,
+                    &json!({"url": url, "expires_in": ASSET_LINK_SECONDS}),
+                );
+                set(&mut response, "cache-control", "private, no-store");
+                response
+            }
+            Ok(None) => {
+                let mut response = write_json(200, &json!({"url": null}));
+                set(&mut response, "cache-control", "private, no-store");
+                response
+            }
+            Err(_) => plain(503, "storage temporarily unavailable"),
+        }
+    }
+
+    /// Every check a figure read makes before the bytes are named: the slug
+    /// and digest are well formed, the request is not cross-site, the viewer
+    /// may read the document, a reader's digest is in the current tree, and
+    /// the digest belongs to this document. On success, the storage key of
+    /// the figure. On refusal, the reply to send.
+    async fn authorized_asset_key(
+        &self,
+        headers: &HeaderMap,
+        context: &RequestContext,
+        slug: &str,
+        sha: &str,
+    ) -> Result<String, Reply> {
         let arrival = &context.arrival;
         if !self.valid_slug(slug) {
-            return plain(400, "bad slug");
+            return Err(plain(400, "bad slug"));
         }
         // A digest and nothing else: this becomes a storage key, and a key is
         // never built from something a caller can shape.
         if !is_sha(sha) {
-            return plain(404, "not found");
+            return Err(plain(404, "not found"));
         }
         if cross_site_refused(headers, arrival) {
-            return write_json(403, &cross_site_refusal());
+            return Err(write_json(403, &cross_site_refusal()));
         }
         let (entry, who) = match self
             .authorize::<access::rung::Read>(context, headers, slug, None)
             .await
         {
             Ok(auth) => (auth.entry, auth.viewer),
-            Err(refusal) => return access::deny(&refusal),
+            Err(refusal) => return Err(access::deny(&refusal)),
         };
         // Assets retained for history are not part of the reader contract, so
         // a reader needs the digest to be in the current tree. An editor
@@ -186,38 +254,31 @@ impl Server {
         if !who.at_least(Role::Editor) {
             let room = match self.rooms.get(slug).await {
                 Ok(room) => room,
-                Err(_) => return plain(503, "room state temporarily unavailable"),
+                Err(_) => return Err(plain(503, "room state temporarily unavailable")),
             };
             match room.references_asset(sha).await {
                 Ok(true) => {}
-                Ok(false) => return plain(404, "not found"),
+                Ok(false) => return Err(plain(404, "not found")),
                 Err(error) => {
                     let error = librepaper_room::room::WriteError::from(error);
-                    return refusal::http(&Refusal::from(&error));
+                    return Err(refusal::http(&Refusal::from(&error)));
                 }
             }
         }
         let catalog = self.store.catalog.clone();
         let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {
-            return plain(404, "not found");
+            return Err(plain(404, "not found"));
         };
         let assets = match catalog
             .assets_by_digests(document_id, &[sha.to_owned()])
             .await
         {
             Ok(assets) => assets,
-            Err(_) => return plain(503, "catalogue temporarily unavailable"),
+            Err(_) => return Err(plain(503, "catalogue temporarily unavailable")),
         };
         let Some(asset) = assets.first() else {
-            return plain(404, "not found");
+            return Err(plain(404, "not found"));
         };
-        crate::server::cost::blob_response(
-            self.store.blobs.clone(),
-            asset.storage_key.clone(),
-            sha,
-            headers,
-            false,
-        )
-        .await
+        Ok(asset.storage_key.clone())
     }
 }
