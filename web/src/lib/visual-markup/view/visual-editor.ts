@@ -268,7 +268,8 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
         if (!update.selectionSet || update.docChanged) return;
         if (!enabled(update.state)) return;
         if (Date.now() - this.keyAt > KEY_WINDOW) return;
-        if (update.transactions.some(tr => tr.isUserEvent('select.pointer'))) return;
+        // A pointer click is the person's own choice, and a step of this plugin is its answer to a move already made.
+        if (update.transactions.some(tr => tr.isUserEvent('select.pointer') || tr.isUserEvent('select.step'))) return;
         const before = update.startState.selection;
         const after = update.state.selection;
         if (after.ranges.length !== 1 || !after.main.empty || before.ranges.length !== 1) return;
@@ -290,7 +291,7 @@ export function stepIntoBlocksPlugin({ enabled = () => true, hidden = () => fals
         // Dispatching inside an update is not allowed; the step follows at once.
         queueMicrotask(() => {
           if (this.view.state.selection.main.head !== after.main.head) return;
-          this.view.dispatch({ selection: { anchor }, scrollIntoView: true, userEvent: 'select' });
+          this.view.dispatch({ selection: { anchor }, scrollIntoView: true, userEvent: 'select.step' });
         });
       }
     }
