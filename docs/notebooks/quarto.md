@@ -30,7 +30,7 @@ Someone who only writes or comments needs none of this.
 
 Between runs, the preview is the browser's draft, and no code runs. After a run to HTML, the last output sits under each code cell in the draft. It is faded when that cell's code has changed, and the **Run code** button shows how many cells have changed. Before the first run, a document with code is drawn without results.
 
-Inline values, such as `` `r mean(x)` ``, show the run's own page until your next edit. A run to PDF shows that PDF until your next edit, and the draft then has no outputs until you run again.
+A document with inline values, such as `` `r mean(x)` ``, shows the run's own page until your next edit. A run to PDF shows that PDF until your next edit, and the draft then has no outputs until you run again.
 
 ## Dropbox tutorial
 
@@ -96,7 +96,7 @@ Published results count against the document owner's storage. Delete them in **S
 
 **A file is not found.** Paths must be relative to the Run directory. Hidden files, `_quarto.yml` and folders Quarto makes (`*_files`, `*_cache`, `_freeze`) are not visible to Quarto from there.
 
-**The `.qmd` is in a subfolder.** Paths in code still start at the top of the Run directory.
+**The `.qmd` is in a subfolder.** Paths in code still start at the top of the Run directory. Markdown paths are relative to the `.qmd`, as usual.
 
 **Including a file your code writes.** Quarto reads `{{< include >}}` before code runs, so it works from the next run only.
 
@@ -106,7 +106,7 @@ Published results count against the document owner's storage. Delete them in **S
 harvest_root <- Sys.getenv("HARVEST_ROOT", "data/harvest_abstracts")
 ```
 
-**Scripts and uploaded folders.** Scripts (`.R`, `.py`, `.jl`) cannot be uploaded. They stay in your Run directory. Uploading a folder or zip keeps `.qmd`, `.md`, `.bib`, `.csl`, `.yml`, `.css`, images and `.lua` filters, and leaves out rendered output, `_freeze`, `_site`, `_book`, `*_files`, `*_cache`, `renv` and `venv` folders, data files such as `.csv`, and scripts. To share one data file anyway, list it in `.librepaper-share.json` at the top of the project:
+**Scripts and uploaded folders.** Scripts (`.R`, `.py`, `.jl`) cannot be uploaded. They stay in your Run directory. Scripts uploaded before this rule are hidden, but **File → Download** still includes them. Uploading a folder or zip keeps `.qmd`, `.md`, `.bib`, `.csl`, `.yml`, `.css`, images and `.lua` filters, and leaves out rendered output, `_freeze`, `_site`, `_book`, `*_files`, `*_cache`, `renv` and `venv` folders, data files such as `.csv`, and scripts. To share one data file anyway, list it in `.librepaper-share.json` at the top of the project:
 
 ```json
 {"include": ["data/public.csv"]}
