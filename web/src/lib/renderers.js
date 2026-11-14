@@ -25,6 +25,7 @@ import { parse as parseTypstLog } from "./typst-log.js";
 import * as latex from "./latex.js";
 import * as latexHtml from "./latex/html.js";
 import * as quarto from "./engines/quarto.js";
+import * as calepin from "./calepin-results.js";
 import * as localBridge from "./desktop/client.js";
 import { logMissesAFile, runDirectoryDiagnostics } from "./reader/run-directory.js";
 import { snapshotDigest } from "./projection-digest.js";
@@ -164,10 +165,11 @@ export function diff(oldText, newText, format = "markdown") {
 export { formatOf, previewFormatOf } from "./formats.js";
 
 // The output a local render of this document produces, or "" when the format
-// has no command for what is asked: the commands for LaTeX and Typst make a
-// PDF only, so an HTML preview of either stays in the browser.
+// has no command for what is asked: the command for LaTeX makes a PDF only,
+// and the one for Typst makes a PDF or an HTML page.
 function localOutput(format, buildPreferences, requestedFormat) {
-  if (format === "latex" || format === "typst") return requestedFormat === "html" ? "" : "pdf";
+  if (format === "latex") return requestedFormat === "html" ? "" : "pdf";
+  if (format === "typst") return requestedFormat === "html" ? "html" : "pdf";
   if (format !== "markdown" && format !== "quarto") return "";
   const chosen = buildPreferences?.output;
   return chosen === "pdf" || chosen === "docx" ? chosen : "html";
@@ -243,6 +245,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
       exportHtml: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null,
       pdf: output === "pdf" ? result.artifact : null,
       synctex: result.synctex,
+      results: result.results ?? null,
       diagnostics: [
         ...localDiagnostics(format, result, tree),
         ...runDirectoryDiagnostics({ format, ok: result.ok, log: result.log, notices: result.notices }, runDirectoryPath, [...Object.keys(tree.texts || {}), ...Object.keys(tree.assets || {})]),
@@ -328,7 +331,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
     const typstSource = await typstTree(pandocInput, { from: "markdown" });
     return renderTypst(typstSource, title, "pdf", capturedModules, capturedSettings);
   }
-  if (format === "typst") return renderTypst(tree, title, requestedFormat, capturedModules, capturedSettings);
+  if (format === "typst") return renderTypstDraft(tree, title, requestedFormat, capturedModules, capturedSettings);
   // The Org renderer does not follow #+INCLUDE, so the included text goes in first.
   if (format === "org") await orgTreeReady(tree.texts?.[tree.main] ?? "");
   if (format === "quarto") {
@@ -448,6 +451,28 @@ async function renderTypst(tree, title, requestedFormat, moduleUrls, settings) {
     pdf: pdf == null ? null : pdf instanceof Uint8Array ? pdf : new Uint8Array(pdf),
     diagnostics: result?.diagnostics || [],
   };
+}
+
+// A Calepin notebook imports its runtime and its stored results from
+// /.calepin/. The browser never runs code: it compiles with the files of
+// the last run when it has them, and otherwise with the bundled runtime
+// switched off, which draws the code without its output.
+async function renderTypstDraft(tree, title, requestedFormat, moduleUrls, settings) {
+  const saved = tree.calepinResults?.files ?? null;
+  if (!saved && !calepin.usesCalepin(tree.texts)) return renderTypst(tree, title, requestedFormat, moduleUrls, settings);
+  if (!saved) return renderTypst(calepin.overlay(tree, await calepin.runtimeFiles(), { disabled: true }), title, requestedFormat, moduleUrls, settings);
+  const drawn = await renderTypst(calepin.overlay(tree, saved), title, requestedFormat, moduleUrls, settings);
+  if (!missesChunk(drawn)) return drawn;
+  // A chunk added since the run has no stored result, and Calepin's
+  // runtime stops there. The draft is drawn without outputs instead.
+  const plain = await renderTypst(calepin.overlay(tree, saved, { disabled: true }), title, requestedFormat, moduleUrls, settings);
+  return { ...plain, diagnostics: [...(plain.diagnostics || []), { severity: "info", message: m.renderers_calepin_outputs_hidden(), file: tree.main, line: 0, column: 0, end_line: 0, end_column: 0 }] };
+}
+
+// True when Calepin's runtime stopped at a chunk with no stored result.
+function missesChunk(result) {
+  if (result?.pdf || result?.html) return false;
+  return (result?.diagnostics || []).some((diagnostic) => calepin.MISSING_LABEL.test(String(diagnostic?.message ?? "")));
 }
 
 /// The page to show where a flow document would be when compilation fails.

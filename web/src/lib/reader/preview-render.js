@@ -23,8 +23,8 @@ import { m } from "../paraglide/messages.js";
 // context that declared some of those names and not others. They are
 // arguments now, and the guards are gone with them.
 
-/** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, quartoResults?: { cells: unknown[], note?: string } | null }} PreviewTree */
-/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectory?: string, quartoResults?: { cells: unknown[], note?: string, path?: string, updatedAt?: string } | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
+/** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, quartoResults?: { cells: unknown[], note?: string } | null, calepinResults?: { files: any[] } | null }} PreviewTree */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectory?: string, runResults?: { path?: string, updatedAt?: string, note?: string, cells?: unknown[], files?: any[] } | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
 /** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
@@ -154,11 +154,12 @@ export function createPreviewRenderer({
     let identity = "";
     const format = renderers.previewFormatOf(source.main);
     // The saved output of a collaborator's run, for the draft to show under
-    // its code cells. Set on every render so a stale one never lingers.
-    // Only the file the results were made from gets them.
-    source.quartoResults = format === "quarto" && start.quartoResults && start.quartoResults.path === source.main
-      ? { cells: start.quartoResults.cells, note: start.quartoResults.note }
-      : null;
+    // its code cells. A Typst draft gets the files Calepin stored. Set on
+    // every render so a stale one never lingers. Only the file the results
+    // were made from gets them.
+    const saved = start.runResults && start.runResults.path === source.main ? start.runResults : null;
+    source.quartoResults = format === "quarto" && saved?.cells ? { cells: saved.cells, note: saved.note } : null;
+    source.calepinResults = format === "typst" && saved?.files ? { files: saved.files } : null;
     debug("preview: tree", source.main, format, Object.keys(source.texts || {}).length);
     // The collaboration session exists before its first document state arrives.
     // Rendering that placeholder used to call the renderer registry with an
@@ -187,10 +188,11 @@ export function createPreviewRenderer({
     const slow = format === "latex";
     // A render on this computer runs the document's code, which can take a
     // minute, and gives no sign of its own: it says it is running whatever
-    // the output, the way a paged compile does. Quarto never renders there
-    // from here: its code runs only on an explicit Run.
+    // the output, the way a paged compile does. Quarto and Typst never render
+    // there from here: their code runs only on an explicit Run.
+    const explicitRun = format === "quarto" || format === "typst";
     const announced = paged || htmlPreview
-      || (format !== "quarto" && start.localExecution && start.buildPreferences?.backend === "local");
+      || (!explicitRun && start.localExecution && start.buildPreferences?.backend === "local");
     // Compiling while typing: a result for older text is still worth showing.
     const continuousHtml = htmlPreview && format === "latex" && Boolean(start.latexContinuous);
     // Shared by both guard points so asset fetching and compilation reject
@@ -208,7 +210,7 @@ export function createPreviewRenderer({
       // the shortcut below. It is only looked at here; the compile takes it.
       const manualWaiting = manualPending();
       /** @param {string} id */
-      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution, start.runDirectory ?? "", start.quartoResults?.updatedAt ?? ""]);
+      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution, start.runDirectory ?? "", start.runResults?.updatedAt ?? ""]);
       const held = finished.get(source.main);
       if (held && !manualWaiting) {
         // The identity depends on the texts, their digests and the main path,
@@ -293,9 +295,10 @@ export function createPreviewRenderer({
       // Run code is a switch that is off whenever a document opens and is
       // never stored. While it is off, a format set to this computer is
       // drawn by this browser's own renderer, and a document never runs on
-      // this computer without consent. Quarto has no switch: it is always
-      // drawn here as a draft, and its code runs only when Run is pressed.
-      const build = format !== "quarto" && current.localExecution ? current.buildPreferences : { ...current.buildPreferences, backend: "browser" };
+      // this computer without consent. Quarto and Typst have no switch: they
+      // are always drawn here as a draft, and their code runs only when Run
+      // is pressed.
+      const build = !explicitRun && current.localExecution ? current.buildPreferences : { ...current.buildPreferences, backend: "browser" };
       rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug });
       debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
       if (facts().disposed) return;

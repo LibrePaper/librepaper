@@ -1,9 +1,10 @@
 import { authHeaders } from "../api.js";
 import { sha256 } from "../results-hash.js";
 
-// The shared results of a Quarto document: one record the owner's storage
+// The shared results of a run document: one record the owner's storage
 // holds, uploaded after a local run and fetched by everyone who opens the
-// document. Nothing here throws into the preview path.
+// document. A Quarto record holds per-cell HTML, and a Typst record holds the
+// files Calepin stored. Nothing here throws into the preview path.
 
 const endpoint = (slug) => `/api/documents/${encodeURIComponent(slug)}/results`;
 
@@ -20,7 +21,7 @@ export async function fetchResults(slug, headers = authHeaders("")) {
     if (response.status === 404) return null;
     if (!response.ok) return undefined;
     const body = await response.json();
-    return body && Array.isArray(body.cells) ? body : null;
+    return body && (Array.isArray(body.cells) || Array.isArray(body.files)) ? body : null;
   } catch { return undefined; }
 }
 
@@ -42,7 +43,8 @@ export async function putResults(slug, record, headers = authHeaders("", "applic
 }
 
 /**
- * The state of one open document's shared results: the record everyone sees,
+ * The state of one open document's shared results (Quarto cells or Typst
+ * files, see the top of this module): the record everyone sees,
  * the hash of the last record this tab uploaded, and how that upload went.
  * @param {string} slug
  * @param {() => Record<string, string>} headers The request headers, read per call.
