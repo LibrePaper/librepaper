@@ -18,10 +18,11 @@ const ACTIVE = ".calepin/active.typ";
 const IMPORT = /#import\s+"\/?\.calepin\//;
 const DEFAULT_LANGS = ["python", "r", "mermaid", "dot", "tikz", "d2"];
 
-// The `.calepin/<stem>/...` folder of a document is named after the path
-// without its last extension, so `chapters/intro.typ` uses `chapters/intro`.
+// The `.calepin/<stem>/...` folder sits beside the document and is named after
+// the file name alone, without its last extension. So `chapters/intro.typ`
+// uses `intro`, and two notebooks in different folders can share a stem.
 function stemOf(path) {
-  return String(path ?? "").replace(/\.[^./]*$/, "");
+  return String(path ?? "").split("/").pop().replace(/\.[^.]*$/, "");
 }
 
 function entriesOf(files) {

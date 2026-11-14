@@ -25,7 +25,7 @@ Code runs only when you press **Run code**. Each press runs the whole document o
 
 A plain Typst document with no code runs the same way. Calepin compiles it.
 
-The entry file should be at the top of the project. Calepin keeps its `.calepin` folder beside the file it compiles.
+Keep the notebook at the top of the project when you can. A notebook in a subfolder still runs and previews, but its code runs in that subfolder, so files from your Run directory are one level up (`../data/survey.csv`), and Calepin reads paths that start with `/` from the notebook's folder.
 
 ## Run directory
 
@@ -49,7 +49,7 @@ If you add a chunk after a run, it has no stored output. The draft is drawn with
 
 **Publish results** is a tick box in the **Run code** button's menu. It is on by default, and each person sets it for each project.
 
-While it is on, each run sends the stored results to the server. Collaborators see them in their own browser draft, including people without the desktop app or your data. Each run replaces the published results. Unlike Quarto, this works for PDF and HTML output alike, and inline values are included.
+While it is on, each run sends the stored results to the server. Collaborators see them in their own browser draft, including people without the desktop app or your data. Diagnostics says whose run the results are from. Each run replaces the published results. Unlike Quarto, this works for PDF and HTML output alike, and inline values are included.
 
 Published results count against the storage of the document's owner. To delete them, go to **Settings → Storage**. To stop, untick **Publish results**. Results are uploaded only while it is on.
 

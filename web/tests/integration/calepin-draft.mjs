@@ -82,4 +82,14 @@ assert.equal(record.engine, "calepin", "the record should name the calepin engin
 assert.equal(record.path, "paper.typ", "the record should keep the document path");
 assert.equal(record.files.length, stored.length, "the record should keep every stored file");
 
-console.log("calepin-draft: stored results, stale counting, disabled and never-run notebooks and the wire record passed");
+// 9. A notebook in a subfolder is drawn from the same stored files.
+const nested = "chapters/paper.typ";
+const nestedOverlay = overlay({ main: nested, texts: { [nested]: source }, assets: {} }, stored);
+handOver(wasm, { main: nested, texts: nestedOverlay.texts, assets: nestedOverlay.assets });
+const nestedDrawn = call(wasm, "compile", source, "paper");
+assert.equal(nestedDrawn.ok, true, `a notebook in a subfolder does not compile: ${JSON.stringify(nestedDrawn.diagnostics)}`);
+assert.equal(staleChunks(stored, source, { path: nested }), 0, "a notebook in a subfolder should find its stored results");
+
+console.log(
+  "calepin-draft: stored results, stale counting, disabled and never-run notebooks, the wire record and a notebook in a subfolder passed",
+);

@@ -2588,6 +2588,9 @@
 
   const localAppDiagnostics = $derived([
     needsRun ? { severity: "info", message: m.readerb_run_quarto_hint() } : null,
+    // A Typst draft has no place for the line that says whose run its
+    // results are, so a collaborator's results are named here.
+    sourceFormat === "typst" && runResults?.files && !ownResults ? { severity: "info", message: runResults.note } : null,
     runPhase === "failed" ? { severity: "error", message: m.readerb_run_failed() } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
