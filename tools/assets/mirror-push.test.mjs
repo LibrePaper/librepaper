@@ -190,6 +190,18 @@ test("dry run stages the pinned mirrors, hashes both mirrors and skips SOPS, eve
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("MIRRORS_NO_LATEX leaves the LaTeX mirror out, and it need not exist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "push-mirrors-no-latex-"));
+  const paths = await makeMirrors(root);
+  try {
+    const output = execFileSync(process.execPath, ['tools/assets/mirror.mjs', 'publish'], { encoding: "utf8", env: { ...process.env,
+      MIRRORS_DRY_RUN: "1", MIRRORS_NO_LATEX: "1", ASSETS_DIR: paths.assets, ASSETS_LOCK: paths.lock, MIRROR: join(root, "no-such-mirror") } });
+    assert.match(output, /Validated wasm: 8 files/);
+    assert.match(output, /Validated fonts: 14 files/);
+    assert.doesNotMatch(output, /latex/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("SOPS failure diagnostics are suppressed", async () => {
   const root = await mkdtemp(join(tmpdir(), "push-mirrors-sops-error-"));
   const bin = join(root, "bin");

@@ -97,7 +97,7 @@ function assertWellFormed(folds, text) {
 
 // Before the syntax module loads, the finder has nothing to say. That is not
 // cached: once the module is loaded, the same text gets its folds.
-const lateHeader = "#+TITLE: Late\n#+AUTHOR: A\n\nBody.\n";
+const lateHeader = "#+OPTIONS: toc:nil\n#+STARTUP: overview\n\nBody.\n";
 assert.deepEqual(orgFolds(lateHeader), []);
 
 // The syntax module must be loaded before the tree can be read.
@@ -107,7 +107,7 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
   const folds = orgFolds(lateHeader);
   assert.equal(folds.length, 1);
   assert.equal(folds[0].kind, "preamble");
-  assert.equal(folds[0].detail, "Late");
+  assert.ok(!folds[0].detail);
 }
 
 {
@@ -135,8 +135,8 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
   const folds = orgFolds(text);
   assertWellFormed(folds, text);
   const named = plain(folds, text);
+  // The first keyword is the title block, which the paper layer draws, so it has no fold.
   assert.deepEqual(named, [
-    { kind: "preamble", text: "#+TITLE: My Doc", detail: "My Doc" },
     { kind: "include", text: '#+INCLUDE: "chapters/intro.org::*Start"', detail: "chapters/intro.org", target: "chapters/intro.org" },
     { kind: "preamble", text: "#+AUTHOR: A", detail: "My Doc" },
     { kind: "definitions", text: ":PROPERTIES:", detail: "PROPERTIES" },
@@ -146,15 +146,23 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
   ]);
 }
 
-// An Org header of several keywords, with a comment among them, is one fold.
+// A header with title keywords is drawn as the title block, so it has no fold.
 {
   const text = ["#+TITLE: Notes", "# draft", "#+AUTHOR: A", "#+OPTIONS: toc:nil", "", "Body text.", ""].join("\n");
+  assert.deepEqual(orgFolds(text), []);
+}
+
+// An Org header of several keywords, with a comment among them, and no title keywords is one fold.
+{
+  const text = ["#+OPTIONS: toc:nil", "# draft", "#+STARTUP: overview", "#+LATEX_HEADER: \\usepackage{x}", "", "Body text.", ""].join("\n");
   const folds = orgFolds(text);
   assertWellFormed(folds, text);
   assert.equal(folds.length, 1);
   assert.equal(folds[0].kind, "preamble");
-  assert.equal(folds[0].detail, "Notes");
-  assert.equal(text.slice(folds[0].from, folds[0].to), "#+TITLE: Notes\n# draft\n#+AUTHOR: A\n#+OPTIONS: toc:nil");
+  assert.equal(
+    text.slice(folds[0].from, folds[0].to),
+    ["#+OPTIONS: toc:nil", "# draft", "#+STARTUP: overview", "#+LATEX_HEADER: \\usepackage{x}"].join("\n"),
+  );
 }
 
 // ---- Typst ----------------------------------------------------------------

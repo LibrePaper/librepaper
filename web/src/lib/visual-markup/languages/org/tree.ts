@@ -575,7 +575,7 @@ export function tokenizeOrg(source: string): Token[] {
 
   // ---- Lists -------------------------------------------------------------
 
-  const TASKS: Record<string, string> = { ' ': 'todo', x: 'done', X: 'done', '-': 'doing' };
+  const TASKS: Record<string, string> = { ' ': 'todo', x: 'done', X: 'done', '-': 'doing', '/': 'doing' };
 
   // The bullet, with the checkbox that may follow it.
   function itemToken(node: SyntaxNode): Token | null {
