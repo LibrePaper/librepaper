@@ -9,6 +9,7 @@ import {
   docxFile,
   entryDownload,
   inlineBlobUrls,
+  inlineFigureReferences,
   projectFiles,
 } from "../../src/lib/reader/downloads.js";
 
@@ -168,6 +169,23 @@ await assert.rejects(
   assert.deepEqual(fetched, ["blob:https://x/one", "blob:https://x/gone"], "each object URL is fetched once, without its fragment");
   assert.equal(inlined, '<img src="data:image/png;base64,AQID"><img src="data:image/png;base64,AQID"><img src="blob:https://x/gone">');
   assert.equal(await inlineBlobUrls("<p>no figures</p>", fetcher), "<p>no figures</p>");
+}
+
+// The live preview's page names a figure by reference. A download replaces
+// each reference with the data URL its tree holds for that path, and leaves a
+// reference alone when the tree has no data URL for it.
+{
+  const tree = {
+    digests: { "fig.png": "aa", "orphan.png": "bb" },
+    urls: { "fig.png": "data:image/png;base64,AQID#librepaper-asset=aa" },
+  };
+  const page = '<img src="about:blank#librepaper-asset=aa"><img src="about:blank#librepaper-asset=bb"><img src="about:blank#librepaper-asset=cc">';
+  assert.equal(
+    inlineFigureReferences(page, tree),
+    '<img src="data:image/png;base64,AQID#librepaper-asset=aa"><img src="about:blank#librepaper-asset=bb"><img src="about:blank#librepaper-asset=cc">',
+    "a referenced figure is inlined; an unknown or unresolved one is left as it was",
+  );
+  assert.equal(inlineFigureReferences("<p>no figures</p>", tree), "<p>no figures</p>");
 }
 
 console.log("downloads: file exports follow transient output handed to the frame");
