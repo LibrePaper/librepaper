@@ -3005,6 +3005,9 @@
   "runbutton_choose_directory": "选择运行文件夹…",
   "runbutton_last_run": "上次运行：{time}",
   "runbutton_failed": "上次运行失败",
+  "runbutton_running_in": "正在 {name} 中运行代码…",
+  "runbutton_running": "正在运行代码…",
+  "runstatus_running": "正在运行 Quarto · {seconds} 秒",
   "runbutton_stale": [
     {
       "declarations": [

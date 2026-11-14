@@ -3020,6 +3020,9 @@
   "runbutton_choose_directory": "Choisir un dossier d’exécution…",
   "runbutton_last_run": "Dernière exécution : {time}",
   "runbutton_failed": "La dernière exécution a échoué",
+  "runbutton_running_in": "Exécution du code dans {name}…",
+  "runbutton_running": "Exécution du code…",
+  "runstatus_running": "Exécution de Quarto · {seconds} s",
   "runbutton_stale": [
     {
       "declarations": [

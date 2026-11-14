@@ -20,7 +20,7 @@
   const failed = $derived(phase === "failed");
   // A failed run says so in the hover text, which is where someone looks
   // before pressing Run again.
-  const primaryTip = $derived(running ? undefined : failed ? m.runbutton_failed() : m.runbutton_run_hint());
+  const primaryTip = $derived(running ? (directoryName ? m.runbutton_running_in({ name: directoryName }) : m.runbutton_running()) : failed ? m.runbutton_failed() : m.runbutton_run_hint());
   const staleLabel = $derived(m.runbutton_stale({ count: stale }));
   const lastRunTime = $derived(lastRunAt ? new Intl.DateTimeFormat(locale(), { timeStyle: "short" }).format(new Date(lastRunAt)) : "");
 
@@ -33,7 +33,7 @@
 <div class="run-button" role="group" aria-label={m.runbutton_run()}>
   <button type="button" class="run-main" data-tip={primaryTip} onclick={() => (running ? onstop() : onrun())}>
     {#if running}
-      <span class="spinner" aria-hidden="true"></span>
+      <span class="run-spin"><Icon name="loader-circle" size="0.875rem" /></span>
       <span class="run-label">{m.runbutton_stop()}</span>
     {:else}
       <Icon name="play" size="0.875rem" />
@@ -124,6 +124,17 @@
   :global(.run-chevron:focus-visible) {
     outline: 2px solid var(--color-focus);
     outline-offset: -2px;
+  }
+  /* The icon turns while code runs; with reduced motion it stays still. */
+  .run-spin {
+    display: inline-flex;
+    animation: run-spin 900ms linear infinite;
+  }
+  @keyframes run-spin {
+    to { transform: rotate(360deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .run-spin { animation: none; }
   }
   .run-stale {
     display: inline-flex;
