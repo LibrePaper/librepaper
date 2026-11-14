@@ -878,14 +878,26 @@ impl Agent {
     }
 }
 
-fn tool_call_activity(title: Option<&str>) -> Update {
-    Update::Activity(
-        if title.is_some_and(|title| title.starts_with("document_")) {
-            "Using document tools"
-        } else {
-            "Working on your document"
-        },
-    )
+/// The activity line for a tool call. It is only a label, so the title and
+/// the raw input are good enough evidence here, unlike for permissions.
+/// Agents name a document tool in different places: Codex titles the call
+/// `document_read`, Pi `mcp__librepaper__document_read`, and opencode runs
+/// its own `execute` tool on code that calls `tools.librepaper.document_read`.
+fn tool_call_activity(title: Option<&str>, raw_input: Option<&serde_json::Value>) -> Update {
+    let titled = title.is_some_and(|title| {
+        title.starts_with("document_") || title.starts_with("mcp__librepaper__document_")
+    });
+    let coded = || {
+        raw_input
+            .and_then(|input| input.get("code"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|code| code.contains("tools.librepaper.document_"))
+    };
+    Update::Activity(if titled || coded() {
+        "Using document tools"
+    } else {
+        "Working on your document"
+    })
 }
 
 fn translate_update(update: SessionUpdate) -> Update {
@@ -895,8 +907,12 @@ fn translate_update(update: SessionUpdate) -> Update {
             _ => Update::Ignored,
         },
         SessionUpdate::AgentThoughtChunk(_) => Update::Activity("Thinking"),
-        SessionUpdate::ToolCall(call) => tool_call_activity(Some(call.title.as_str())),
-        SessionUpdate::ToolCallUpdate(call) => tool_call_activity(call.fields.title.as_deref()),
+        SessionUpdate::ToolCall(call) => {
+            tool_call_activity(Some(call.title.as_str()), call.raw_input.as_ref())
+        }
+        SessionUpdate::ToolCallUpdate(call) => {
+            tool_call_activity(call.fields.title.as_deref(), call.fields.raw_input.as_ref())
+        }
         SessionUpdate::Plan(_) => Update::Activity("Planning the change"),
         SessionUpdate::AvailableCommandsUpdate(update) => Update::Commands(
             update
@@ -912,6 +928,27 @@ fn translate_update(update: SessionUpdate) -> Update {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_document_tool_call_is_labelled_whichever_agent_makes_it() {
+        let label = |title, input: Option<serde_json::Value>| match tool_call_activity(
+            Some(title),
+            input.as_ref(),
+        ) {
+            Update::Activity(label) => label,
+            _ => unreachable!(),
+        };
+        assert_eq!(label("document_read", None), "Using document tools");
+        assert_eq!(
+            label("mcp__librepaper__document_comment", None),
+            "Using document tools"
+        );
+        let code = serde_json::json!({"code": "return await tools.librepaper.document_read();"});
+        assert_eq!(label("execute", Some(code)), "Using document tools");
+        let other = serde_json::json!({"code": "return 1 + 1;"});
+        assert_eq!(label("execute", Some(other)), "Working on your document");
+        assert_eq!(label("bash", None), "Working on your document");
+    }
 
     #[test]
     fn pi_acp_is_recognised_wherever_it_sits_in_the_command() {
