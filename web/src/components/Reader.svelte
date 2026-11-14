@@ -1944,8 +1944,8 @@
   /// Fetches the figures a tree's digests point to and reports which of the
   /// requested digests the server did not have, so a caller can decide
   /// whether a hole in the result is tolerable or should fail the whole call.
-  async function gatherFigures(digests) {
-    const held = await figures.gather(SLUG, digests, authHeaders(KEY));
+  async function gatherFigures(digests, { urls = true } = {}) {
+    const held = await figures.gather(SLUG, digests, authHeaders(KEY), { urls });
     const missing = Object.keys(digests).filter(
       (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
     );
@@ -2726,7 +2726,7 @@
       projectDigest: mayEdit ? "" : projection.state.project?.project_digest || "",
     }),
     tree: () => treeNow(),
-    gather: (digests) => gatherFigures(digests),
+    gather: (digests, options) => gatherFigures(digests, options),
     heading: (tree) => headingOf(tree),
     takeManual: () => {
       const manual = manualCompile;
@@ -3646,7 +3646,7 @@
   function warmFigures() {
     const digests = liveTreeNow().digests || {};
     figures.keep(Object.values(digests));
-    if (Object.keys(digests).length) void figures.gather(SLUG, digests, authHeaders(KEY)).catch(() => {});
+    if (Object.keys(digests).length) void figures.gather(SLUG, digests, authHeaders(KEY), { urls: false }).catch(() => {});
   }
   const refreshFiles = () => { workspace.refresh(); warmFigures(); };
 

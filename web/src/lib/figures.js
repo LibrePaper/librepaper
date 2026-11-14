@@ -418,8 +418,8 @@ export function typeOf(path) {
 /// A figure that cannot be fetched is left out rather than failing the render:
 /// the rest of the document is still worth showing, and the image is broken in
 /// the page, which is what a missing figure looks like everywhere else.
-/** @param {string} slug @param {Record<string, string>} digests @param {HeadersInit} [headers] @param {{strict?: boolean}} [options] @returns {Promise<{assets: Record<string, Uint8Array>, urls: Record<string, string>, missing: string[]}>} */
-export async function gather(slug, digests, headers = {}, { strict = false } = {}) {
+/** @param {string} slug @param {Record<string, string>} digests @param {HeadersInit} [headers] @param {{strict?: boolean, urls?: boolean}} [options] @returns {Promise<{assets: Record<string, Uint8Array>, urls: Record<string, string>, missing: string[]}>} */
+export async function gather(slug, digests, headers = {}, { strict = false, urls: wantUrls = true } = {}) {
   const wanted = Object.entries(digests || {});
   const got = await Promise.all(
     wanted.map(async ([path, sha]) => {
@@ -428,6 +428,7 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
         const captured = generation;
         const body = await fetchOne(slug, sha, headers);
         if (generation !== captured) throw new Error("Asset authorization changed");
+        if (!wantUrls) return [path, body, null];
         if (!urls.has(key)) {
           const type = typeOf(path);
           let url;
@@ -457,7 +458,7 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
     if (!one) continue;
     const [path, body, url] = one;
     assets[path] = body;
-    where[path] = url;
+    if (url) where[path] = url;
   }
   for (const [path] of wanted) {
     if (!Object.prototype.hasOwnProperty.call(assets, path)) missing.push(path);
