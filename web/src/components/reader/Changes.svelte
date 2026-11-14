@@ -438,7 +438,7 @@
   .row-action.reject { color: var(--color-error-text); }
   :is(.scope-trigger, .text-action, .bar-action, .row-action, .row-more):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
   /* Touch needs room for a thumb; a mouse does not. */
-  @media (pointer: coarse) { .scope-trigger, .text-action, .bar-action, .row-action { min-height: 2.25rem; } .row-action { width: 2.25rem; } .row-meta { min-height: 2.25rem; line-height: 2.25rem; } }
+  @media (pointer: coarse) { .scope-trigger, .text-action, .bar-action, .row-action { min-height: 2.25rem; } .row-action { width: 2.25rem; } }
   .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
   .panel-status { margin: 0; padding: .5rem 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
   /* The queue is the pane's scroller. It bleeds to the panel's edges so the
@@ -464,6 +464,8 @@
   /* The meta line is one line as tall as the answers beside it, so they never
      reach down over the diff, and its right end is kept clear of them. */
   .row-meta { display: block; min-width: 0; min-height: 1.75rem; line-height: 1.75rem; padding-right: 4rem; overflow: hidden; color: var(--panel-muted); font-size: var(--panel-meta-size); text-overflow: ellipsis; white-space: nowrap; }
+  /* Touch answers are bigger, so the line grows to match and keeps room for both. */
+  @media (pointer: coarse) { .row-meta { min-height: 2.25rem; line-height: 2.25rem; padding-right: 5.25rem; } }
   .row-run::before, .row-location + .row-author::before { content: "\00b7"; margin-inline: .3rem; }
   /* The diff quotes the source, so it wears the source's monospace at the
      panel's own size rather than a hand-set one. */
