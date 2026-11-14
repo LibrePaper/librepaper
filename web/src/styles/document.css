@@ -224,6 +224,12 @@ table.table-striped tbody tr:nth-child(odd){background:color-mix(in srgb,var(--l
 table.table-bordered :is(th,td){border:1px solid var(--lp-rule)}table.table-bordered :is(th,td):first-child{padding-left:.75rem}table.table-bordered :is(th,td):last-child{padding-right:.75rem}
 table.table-borderless{border-top:0;border-bottom:0}table.table-borderless :is(th,td),table.table-borderless thead th,table.table-borderless tbody tr+tr>:is(td,th){border:0}
 table:is(.table-sm,.small){font-size:.8rem}table.table-sm :is(th,td){padding:.25rem .5rem}table.table-sm :is(th,td):first-child{padding-left:0}table.table-sm :is(th,td):last-child{padding-right:0}table.table-sm.table-bordered :is(th,td):first-child{padding-left:.5rem}table.table-sm.table-bordered :is(th,td):last-child{padding-right:.5rem}
+/* adapter: tinytable (a table that brings its own stylesheet, and an inline width and margins that would make it a full-width block; a real Quarto page runs its script and draws its own rules, a saved output does not and takes the house rules) */
+table.tinytable{display:table;width:auto;margin-left:0!important;margin-right:auto!important;--tt-line-color:var(--lp-ink)}
+table.tinytable :is(th,td):first-child{padding-left:0}table.tinytable :is(th,td):last-child{padding-right:0}
+table.tinytable thead th{border-bottom:1px solid color-mix(in srgb,var(--lp-ink) 60%,var(--lp-paper))}
+div.container:has(>table.tinytable){overflow-x:auto}
+.lp-quarto table.tinytable{border:0}.lp-quarto table.tinytable :is(thead th,tbody tr+tr>:is(td,th)){border-top:0;border-bottom:0}
 /* title block extras */
 .title-block.plain,#title-block-header.plain{border:0;padding-bottom:0}
 .title-block .doi{font:.85rem var(--lp-sans);color:var(--lp-muted);margin:.2rem 0}

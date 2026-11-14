@@ -71,6 +71,7 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 - Figure grids and subfigures: unchanged, captions as above.
 - Tables: font-size .9rem, lining tabular nums, border-collapse, sans font (the table body is sans in v3; headers too). Booktabs with 1px rules: top rule 1px ink 85%, header bottom 1px ink 60%, bottom rule 1px ink 85%. Body rows are separated by a 1px `--lp-rule` line between rows (not zebra). `th` sans weight 600 ink, vertical-align bottom; header cells are sans .82rem muted so the header reads as labels, not data. `td,th` padding .5rem .75rem; first/last column padding-left/right 0 so the rules align with the text; no zebra; right-aligned cells nowrap. Wide tables keep their scroll (`display:block; width:max-content; overflow-x:auto`) on screen; print restores a normal table.
 - Equations (`.equation`): margin 1.4rem 0; `.equation-number` muted tabular lining.
+- tinytable tables (`table.tinytable`) come with their own stylesheet and an inline width and auto margins; the adapter makes them a left-aligned table of natural width whose first and last cells are flush with the caption, draws their lines in the ink colour so they show in dark mode, and leaves the rules to tinytable on a real Quarto page (`.lp-quarto`), while a saved output (no script) takes the house rules.
 
 ## Theorems and proofs
 - Margin 1.4rem 0. `.theorem-label`: serif 650 ink; `.theorem-name`: regular ink; body italic for thm/lem/cor/prp/cnj (convention), upright for def/exm/exr/sol/rem.
