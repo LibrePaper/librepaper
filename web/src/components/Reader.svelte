@@ -1949,6 +1949,7 @@
   /// Fetches the figures a tree's digests point to and reports which of the
   /// requested digests the server did not have, so a caller can decide
   /// whether a hole in the result is tolerable or should fail the whole call.
+  /** @param {Record<string, string>} digests @param {{ urls?: boolean | "reference" }} [options] */
   async function gatherFigures(digests, { urls = true } = {}) {
     const held = await figures.gather(SLUG, digests, authHeaders(KEY), { urls });
     const missing = Object.keys(digests).filter(
