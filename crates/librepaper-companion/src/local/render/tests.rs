@@ -61,6 +61,14 @@ fn script(key: &str, body: &str, result: &str) {
     .unwrap();
 }
 
+/// A Run directory for a Typst job, which needs one as Quarto does. The
+/// returned guard keeps the folder alive for the test.
+fn typst_run_dir() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = std::fs::canonicalize(dir.path()).unwrap();
+    (dir, path)
+}
+
 async fn run_fixture(fixture: &Fixture, cancelled: bool) -> JobOutcome {
     let cancel = Shutdown::new();
     if cancelled {
@@ -156,7 +164,8 @@ async fn exit_zero_with_no_result_file_fails_and_names_the_expected_path() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let fixture = fixture("typst", "pdf", "docs/paper.typ");
     script("typst.pdf", "true", "{stem}.pdf");
-    let outcome = run_fixture(&fixture, false).await;
+    let (_run_dir, run_path) = typst_run_dir();
+    let outcome = run_fixture_in(&fixture, Some(run_path)).await;
     assert_eq!(outcome.status.status, JobState::Failed);
     let error = outcome.status.error.unwrap();
     assert!(error.contains("docs/paper.pdf"), "{error}");
@@ -173,7 +182,8 @@ async fn a_failing_run_still_returns_the_result_it_wrote() {
         "cat paper.typ > paper.pdf; echo 'error: broken' >&2; exit 1",
         "{stem}.pdf",
     );
-    let outcome = run_fixture(&fixture, false).await;
+    let (_run_dir, run_path) = typst_run_dir();
+    let outcome = run_fixture_in(&fixture, Some(run_path)).await;
     assert_eq!(outcome.status.status, JobState::Failed);
     assert_eq!(outcome.status.exit, 1);
     assert!(outcome.status.log_tail.contains("error: broken"));
@@ -242,7 +252,8 @@ async fn a_failing_run_does_not_return_a_result_an_earlier_run_left() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let fixture = fixture("typst", "pdf", "paper.typ");
     script("typst.pdf", "cat paper.typ > paper.pdf", "{stem}.pdf");
-    let first = run_fixture(&fixture, false).await;
+    let (_run_dir, run_path) = typst_run_dir();
+    let first = run_fixture_in(&fixture, Some(run_path.clone())).await;
     assert_eq!(
         first.status.status,
         JobState::Done,
@@ -256,7 +267,7 @@ async fn a_failing_run_does_not_return_a_result_an_earlier_run_left() {
         "echo 'error: broken' >&2; exit 1",
         "{stem}.pdf",
     );
-    let outcome = run_fixture(&fixture, false).await;
+    let outcome = run_fixture_in(&fixture, Some(run_path)).await;
     assert_eq!(outcome.status.status, JobState::Failed);
     assert_eq!(outcome.status.exit, 1);
     assert!(!outcome.files.contains_key("artifact"));
@@ -273,7 +284,8 @@ async fn a_failing_command_reports_its_status_and_its_log() {
         "echo 'error: broken' >&2; exit 3",
         "{stem}.pdf",
     );
-    let outcome = run_fixture(&fixture, false).await;
+    let (_run_dir, run_path) = typst_run_dir();
+    let outcome = run_fixture_in(&fixture, Some(run_path)).await;
     assert_eq!(outcome.status.status, JobState::Failed);
     assert_eq!(outcome.status.exit, 3);
     assert!(outcome.status.log_tail.contains("error: broken"));
@@ -314,7 +326,19 @@ async fn a_canceled_job_ends_canceled() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let fixture = fixture("typst", "pdf", "paper.typ");
     script("typst.pdf", "sleep 30", "{stem}.pdf");
-    let outcome = run_fixture(&fixture, true).await;
+    let (_run_dir, run_path) = typst_run_dir();
+    let cancel = Shutdown::new();
+    cancel.cancel();
+    let (progress, _updates) = mpsc::unbounded_channel();
+    let outcome = run_with(
+        fixture.request.clone(),
+        fixture.staged.path().to_path_buf(),
+        &fixture.bindings,
+        cancel,
+        progress,
+        Some(run_path),
+    )
+    .await;
     assert_eq!(outcome.status.status, JobState::Canceled);
 }
 
@@ -360,7 +384,7 @@ async fn quarto_without_a_run_directory_is_refused_before_anything_runs() {
     assert_eq!(outcome.status.status, JobState::Failed);
     assert_eq!(
         outcome.status.error.as_deref(),
-        Some("Choose a Run directory before running Quarto code.")
+        Some("Choose a Run directory before running code.")
     );
     let root = fixture
         .bindings
@@ -369,6 +393,90 @@ async fn quarto_without_a_run_directory_is_refused_before_anything_runs() {
         .root;
     assert!(!root.join("ran").exists());
     assert!(!root.join("paper.qmd").exists());
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_typst_run_without_a_run_directory_is_refused_before_anything_runs() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let fixture = fixture("typst", "pdf", "paper.typ");
+    script(
+        "typst.pdf",
+        "touch ran; echo '%PDF' > paper.pdf",
+        "{stem}.pdf",
+    );
+    let outcome = run_fixture_in(&fixture, None).await;
+    assert_eq!(outcome.status.status, JobState::Failed);
+    assert_eq!(
+        outcome.status.error.as_deref(),
+        Some("Choose a Run directory before running code.")
+    );
+    let root = fixture
+        .bindings
+        .get_scoped("hosted", ORIGIN, "paper")
+        .unwrap()
+        .root;
+    assert!(!root.join("ran").exists());
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_typst_run_returns_the_calepin_results_beside_the_entry_file() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let fixture = fixture("typst", "pdf", "paper.typ");
+    script(
+        "typst.pdf",
+        "cat paper.typ > paper.pdf; mkdir -p .calepin/paper; echo chunks > .calepin/paper/results.json; echo '<svg/>' > .calepin/paper/figure.svg",
+        "{stem}.pdf",
+    );
+    let (_run_dir, run_path) = typst_run_dir();
+    let outcome = run_fixture_in(&fixture, Some(run_path)).await;
+    assert_eq!(
+        outcome.status.status,
+        JobState::Done,
+        "{:?}",
+        outcome.status.error
+    );
+    let results: serde_json::Value =
+        serde_json::from_slice(&outcome.files["results"]).expect("results is JSON");
+    assert_eq!(results["version"], 1);
+    let files = results["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    for file in files {
+        assert!(file["path"].as_str().unwrap().starts_with(".calepin/"));
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_typst_run_gets_no_execute_dir_flag() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let fixture = fixture("typst", "pdf", "paper.typ");
+    // The script prints its own arguments, so an appended flag would show up.
+    records::set(
+        Key::parse("typst.pdf").unwrap(),
+        Record {
+            command: vec![
+                "sh".into(),
+                "-c".into(),
+                "echo \"$0 $@\" > paper.pdf".into(),
+                "calepin".into(),
+                "{input}".into(),
+            ],
+            result: "{stem}.pdf".into(),
+        },
+    )
+    .unwrap();
+    let (_run_dir, run_path) = typst_run_dir();
+    let outcome = run_fixture_in(&fixture, Some(run_path)).await;
+    assert_eq!(
+        outcome.status.status,
+        JobState::Done,
+        "{:?}",
+        outcome.status.error
+    );
+    assert_eq!(outcome.files["artifact"], b"calepin paper.typ\n".to_vec());
+    assert!(!outcome.files.contains_key("results"));
 }
 
 #[tokio::test]
@@ -553,7 +661,7 @@ async fn real_quarto_runs_code_in_the_run_directory() {
 }
 
 #[tokio::test]
-#[ignore = "requires installed Typst"]
+#[ignore = "requires installed Calepin and Typst"]
 #[allow(clippy::await_holding_lock)]
 async fn real_typst_renders_a_pdf_with_its_default_command() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -566,6 +674,17 @@ async fn real_typst_renders_a_pdf_with_its_default_command() {
         outcome.status.log_tail
     );
     assert!(outcome.files["artifact"].starts_with(b"%PDF-"));
+    // Calepin's stored results come back beside the PDF, named from the
+    // entry file's own folder.
+    let results: serde_json::Value = serde_json::from_slice(&outcome.files["results"]).unwrap();
+    let paths: Vec<&str> = results["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.contains(&".calepin/calepin.typ"), "{paths:?}");
+    assert!(paths.contains(&".calepin/paper/results.json"), "{paths:?}");
 }
 
 #[tokio::test]

@@ -2352,7 +2352,7 @@
   "readerb_preparing_export": "{format}を準備中です。",
   "readerb_quit_failed": "デスクトップアプリを終了できませんでした。",
   "readerb_run_failed": "実行に失敗しました。診断のログを確認してください。",
-  "readerb_run_quarto_hint": "このドキュメントのコードはまだ実行されていません。「実行」を押すと、このコンピューターで実行されます。",
+  "readerb_run_quarto_hint": "このドキュメントのコードはまだ実行されていません。「コードを実行」を押すと、このコンピューターで実行されます。",
   "readerb_run_unmatched": "実行結果をコードセルに対応付けられませんでした。次の編集まで、レンダリングされたとおりに表示されます。",
   "readerb_version_download_failed": "そのバージョンをダウンロードできませんでした。",
   "readerb_version_history": "バージョン履歴",
@@ -2566,6 +2566,7 @@
   "rename_invalid_chars": "この形式ではその名前は使えません",
   "rename_label": "{name} の名前を変更",
   "renderers_local_failed": "このコンピューターで{format}をレンダリングできませんでした。",
+  "renderers_calepin_outputs_hidden": "コードチャンクに最後の実行による出力がないため、出力は非表示になっています。「コードを実行」を押すと再表示されます。",
   "renderers_quarto_failed": "Quarto のプレビューを表示できませんでした。",
   "renderersettings_aria": "{name}のレンダリング先",
   "renderersettings_description": "{name}ドキュメントは、このブラウザーで、または「コードを実行」がオンの間はこのコンピューターでレンダリングされます。",
@@ -2575,7 +2576,7 @@
   "room_submission_failed_status": "コメントを送信できませんでした（{status}）",
   "settingsdialog_categories_label": "設定のカテゴリー",
   "settingsdialog_nothing_matches": "一致する項目がありません。",
-  "settingsdialog_quarto_note": "Quartoドキュメントは、ブラウザーで下書きをレンダリングします。「実行」を押すと、このコンピューターでコードを実行します。",
+  "settingsdialog_quarto_note": "Quartoドキュメントは、ブラウザーで下書きをレンダリングします。「コードを実行」を押すと、このコンピューターでコードを実行します。",
   "settingsdialog_search": "検索",
   "settingsdialog_version": "バージョン{version} · このコンピューター",
   "share_copy_manual_label": "手動でコピーするテキスト",
@@ -2997,7 +2998,6 @@
   "rundirectorycontrol_not_shared_unmatched": "結果は公開されていません: 出力をコードセルに対応付けられませんでした。",
   "rundirectorycontrol_not_shared_failed": "結果は公開されていません: アップロードに失敗しました。",
   "rundirectorycontrol_html_only": "結果は HTML 出力からのみ公開されます。",
-  "runbutton_run": "実行",
   "runbutton_stop": "停止",
   "runbutton_run_hint": "このドキュメントのコードをこのコンピューターで実行",
   "runbutton_options": "実行オプション",
@@ -3008,6 +3008,7 @@
   "runbutton_running_in": "{name} でコードを実行中…",
   "runbutton_running": "コードを実行中…",
   "runstatus_running": "Quarto を実行中 · {seconds} 秒",
+  "runstatus_running_calepin": "Calepin を実行中 · {seconds} 秒",
   "runbutton_stale": [
     {
       "declarations": [

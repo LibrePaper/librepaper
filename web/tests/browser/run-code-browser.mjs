@@ -41,17 +41,23 @@ globalThis.WebSocket = class {
   }
   close() { this.onclose?.(); }
 };
+const account = {name:'Tester',providers:[]};
+const params = new URLSearchParams(location.search);
+const format = params.get('format') === 'typst' ? 'typst' : 'quarto';
 globalThis.fetch = async (url) => {
   const path = String(url);
   if (path.includes('/__lp/')) { (window.lpCalls ||= []).push(path); return Response.json({}); }
-  if (path.endsWith('/me')) return Response.json({name:'Tester',providers:[]});
-  if (path.endsWith('/config')) return Response.json({ extensions: ['.qmd', '.md'], text_extensions: ['.qmd', '.md'], asset_extensions: ['.png'], derived_extensions: [] });
-  if (path === '/api/documents/paper') return Response.json({title:'Run code',created_at:'test',role:'owner',source_format:'quarto',docs_origin:location.origin});
+  if (path.endsWith('/me')) return Response.json(account);
+  if (path.endsWith('/config')) return Response.json({ extensions: ['.qmd', '.md', '.typ'], text_extensions: ['.qmd', '.md', '.typ'], asset_extensions: ['.png'], derived_extensions: [] });
+  if (path === '/api/documents/paper') return Response.json({title:'Run code',created_at:'test',role:'owner',source_format:format,docs_origin:location.origin});
   if (path.endsWith('/frame')) return Response.json({token:'frame-token',until:9999999999});
   if (path.endsWith('/chat')) return Response.json({id:'chat',token:'private'});
   if (path.includes('/comments')) return {ok:true,json:async()=>({comments:[]})};
   return {ok:false,json:async()=>({})};
 };
+const { update, buildPreferenceUser } = await import(${JSON.stringify(join(root,"web/src/lib/build-preferences.js"))});
+// This person's stored Typst preference: this computer renders Typst (Run code is offered).
+if (params.get('local') === '1') update({origin: location.origin, user: buildPreferenceUser(account)}, 'typst', {backend:'local'});
 const { default: Reader } = await import(${JSON.stringify(join(root,"web/src/components/Reader.svelte"))});
 const { mount } = await import(${JSON.stringify(join(root,"web/node_modules/svelte/src/index-client.js"))});
 mount(Reader, {target:document.body});
@@ -83,7 +89,7 @@ try {
   const desktopUrl = `${origin}/docs/paper?desktop=1`;
   await b.resize(1280,900);
 
-  const runButton = `[role=group][aria-label="Run"] button[data-tip]`;
+  const runButton = `[role=group][aria-label="Run code"] button[data-tip]`;
   const runButtonExists = () => b.evaluate(`Boolean(document.querySelector('${runButton}'))`);
   const switchExists = () => b.evaluate(`Boolean(document.querySelector('button[role=switch][aria-label="Run code"]'))`);
   const renderCalls = () => b.evaluate(`(window.lpCalls || []).filter((path) => path.includes("/jobs")).length`);
@@ -108,6 +114,30 @@ try {
   await until('Run directory dialog',()=>b.evaluate(`[...document.querySelectorAll('[role=dialog]')].some((d) => d.textContent.includes("Choose a Run directory"))`),5000);
   assert.equal(await renderCalls(),0,'Run without a folder runs nothing');
 
+  // Case 4: a Typst document left to the browser is not offered Run, so the
+  // desktop app shows neither the Run button nor the switch, and nothing runs.
+  // This runs before case 5 because the stored preference persists in this
+  // browser profile.
+  await b.navigate(`${origin}/docs/paper?desktop=1&format=typst`);
+  await until('the Typst page joined its room',()=>b.evaluate('typeof window.roomConnected === "function"'),10000);
+  await settle();
+  assert.equal(await runButtonExists(),false,'a Typst document rendered in the browser is not offered Run');
+  assert.equal(await switchExists(),false,'a Typst document rendered in the browser has no Run code switch');
+  assert.equal(await renderCalls(),0,'opening a Typst document rendered in the browser runs nothing');
+
+  // Case 5: this computer renders Typst (stored preference backend "local"),
+  // so the Run button replaces the switch, and opening the document runs nothing.
+  await b.navigate(`${origin}/docs/paper?desktop=1&format=typst&local=1`);
+  await until('Run button for a Typst document on this computer',runButtonExists,10000);
+  assert.equal(await switchExists(),false,'a Typst document has no Run code switch');
+  await settle();
+  assert.equal(await renderCalls(),0,'opening a Typst document runs nothing on this computer');
+
+  // Case 6: Run without a Run directory asks for one and runs nothing, as for Quarto.
+  await b.evaluate(`document.querySelector('${runButton}').click()`);
+  await until('Run directory dialog for Typst',()=>b.evaluate(`[...document.querySelectorAll('[role=dialog]')].some((d) => d.textContent.includes("Choose a Run directory"))`),5000);
+  assert.equal(await renderCalls(),0,'Run on a Typst document without a folder runs nothing');
+
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log("run-code-browser: not offered in a browser, offered in the desktop app, nothing runs until Run, Run asks for a folder");
+  console.log("run-code-browser: not offered in a browser, offered in the desktop app, nothing runs until Run, Run asks for a folder; Typst is offered Run only when this computer renders it");
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

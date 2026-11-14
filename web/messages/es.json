@@ -2367,7 +2367,7 @@
   "readerb_preparing_export": "Preparando el {format}.",
   "readerb_quit_failed": "La aplicación de escritorio no pudo cerrarse.",
   "readerb_run_failed": "La ejecución falló. Consulte el registro en Diagnósticos.",
-  "readerb_run_quarto_hint": "El código de este documento no se ha ejecutado. Pulse Ejecutar para ejecutarlo en este equipo.",
+  "readerb_run_quarto_hint": "El código de este documento no se ha ejecutado. Pulse Ejecutar código para ejecutarlo en este equipo.",
   "readerb_run_unmatched": "La salida de la ejecución no se pudo asociar a las celdas de código. Se muestra como se renderizó hasta la próxima edición.",
   "readerb_version_download_failed": "No se pudo descargar esa versión.",
   "readerb_version_history": "Historial de versiones",
@@ -2581,6 +2581,7 @@
   "rename_invalid_chars": "Este formato no admite ese nombre",
   "rename_label": "Renombrar {name} a",
   "renderers_local_failed": "Error al compilar {format} en este equipo.",
+  "renderers_calepin_outputs_hidden": "Un fragmento de código no tiene resultado de la última ejecución, así que los resultados están ocultos. Pulse Ejecutar código para mostrarlos de nuevo.",
   "renderers_quarto_failed": "No se pudo mostrar la vista previa de Quarto.",
   "renderersettings_aria": "{name} se compila en",
   "renderersettings_description": "Los documentos de {name} se compilan en este navegador, o en este equipo mientras «Ejecutar código» esté activado.",
@@ -2590,7 +2591,7 @@
   "room_submission_failed_status": "error al enviar el comentario ({status})",
   "settingsdialog_categories_label": "Categorías de configuración",
   "settingsdialog_nothing_matches": "No hay coincidencias.",
-  "settingsdialog_quarto_note": "En el navegador, los documentos de Quarto se compilan como borrador. Pulse «Ejecutar» para ejecutar su código en este equipo.",
+  "settingsdialog_quarto_note": "En el navegador, los documentos de Quarto se compilan como borrador. Pulse «Ejecutar código» para ejecutar su código en este equipo.",
   "settingsdialog_search": "Buscar",
   "settingsdialog_version": "Versión {version} · Este equipo",
   "share_copy_manual_label": "Texto para copiar manualmente",
@@ -3012,7 +3013,6 @@
   "rundirectorycontrol_not_shared_unmatched": "Resultados no publicados: no se pudo asociar la salida con las celdas de código.",
   "rundirectorycontrol_not_shared_failed": "Resultados no publicados: falló la subida.",
   "rundirectorycontrol_html_only": "Los resultados se publican solo desde la salida HTML.",
-  "runbutton_run": "Ejecutar",
   "runbutton_stop": "Detener",
   "runbutton_run_hint": "Ejecutar el código de este documento en este equipo",
   "runbutton_options": "Opciones de ejecución",
@@ -3023,6 +3023,7 @@
   "runbutton_running_in": "Ejecutando el código en {name}…",
   "runbutton_running": "Ejecutando el código…",
   "runstatus_running": "Ejecutando Quarto · {seconds} s",
+  "runstatus_running_calepin": "Ejecutando Calepin · {seconds} s",
   "runbutton_stale": [
     {
       "declarations": [

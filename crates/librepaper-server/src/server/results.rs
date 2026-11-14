@@ -1,8 +1,12 @@
-//! Shared Quarto results: `/api/documents/{slug}/results`.
+//! Shared results: `/api/documents/{slug}/results`.
 //!
 //! One record per project, uploaded by an editor after a local render and
-//! shown by every collaborator's draft. It is not a project file: it is never
-//! listed, synced or versioned. Its bytes count toward the owner's storage.
+//! shown by every collaborator's draft. A Quarto record carries per-cell HTML;
+//! a Calepin record carries the files of its `.calepin/` folder. It is not a
+//! project file: it is never listed, synced or versioned. Its bytes count
+//! toward the owner's storage.
+
+use std::collections::HashSet;
 
 use serde::Serialize;
 
@@ -10,6 +14,7 @@ use super::*;
 
 const MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CELLS: usize = 2000;
+const MAX_FILES: usize = 2000;
 const MAX_PATH_BYTES: usize = 1024;
 const MAX_LABEL_BYTES: usize = 256;
 const QUOTA_MESSAGE: &str = "Shared results would exceed your storage quota.";
@@ -19,7 +24,12 @@ const QUOTA_MESSAGE: &str = "Shared results would exceed your storage quota.";
 struct ResultsRecord {
     version: u32,
     path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine: Option<String>,
+    #[serde(default)]
     cells: Vec<ResultsCell>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    files: Vec<ResultsFile>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -30,6 +40,16 @@ struct ResultsCell {
     html: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ResultsFile {
+    path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base64: Option<String>,
+}
+
 /// Checks the limits serde cannot express. The message is the 400 body.
 fn validate(record: &ResultsRecord) -> Result<(), &'static str> {
     if record.version != 1 {
@@ -38,10 +58,28 @@ fn validate(record: &ResultsRecord) -> Result<(), &'static str> {
     if record.path.is_empty() || record.path.len() > MAX_PATH_BYTES {
         return Err("results path must be 1 to 1024 bytes");
     }
-    if record.cells.len() > MAX_CELLS {
+    match record.engine.as_deref() {
+        None => {
+            if !record.files.is_empty() {
+                return Err("a Quarto results record holds no files");
+            }
+            validate_cells(&record.cells)
+        }
+        Some("calepin") => {
+            if !record.cells.is_empty() {
+                return Err("a Calepin results record holds no cells");
+            }
+            validate_files(&record.files)
+        }
+        Some(_) => Err("unsupported results engine"),
+    }
+}
+
+fn validate_cells(cells: &[ResultsCell]) -> Result<(), &'static str> {
+    if cells.len() > MAX_CELLS {
         return Err("too many result cells");
     }
-    for cell in &record.cells {
+    for cell in cells {
         let hex = cell.fingerprint.len() == 64
             && cell
                 .fingerprint
@@ -56,6 +94,31 @@ fn validate(record: &ResultsRecord) -> Result<(), &'static str> {
             .is_some_and(|l| l.len() > MAX_LABEL_BYTES)
         {
             return Err("a cell label is too long");
+        }
+    }
+    Ok(())
+}
+
+fn validate_files(files: &[ResultsFile]) -> Result<(), &'static str> {
+    if files.is_empty() {
+        return Err("a Calepin results record needs its files");
+    }
+    if files.len() > MAX_FILES {
+        return Err("too many result files");
+    }
+    let mut seen = HashSet::new();
+    for file in files {
+        if file.path.len() > MAX_PATH_BYTES
+            || !file.path.starts_with(".calepin/")
+            || !librepaper_base::paths::RelPath::is_local(&file.path)
+        {
+            return Err("a result file path must be a safe path under .calepin/");
+        }
+        if file.text.is_some() == file.base64.is_some() {
+            return Err("a result file holds either text or base64");
+        }
+        if !seen.insert(file.path.as_str()) {
+            return Err("a result file path is repeated");
         }
     }
     Ok(())

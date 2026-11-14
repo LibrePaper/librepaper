@@ -37,8 +37,10 @@ const PALETTE = /^src\/styles\/palettes\/[a-z]+\.css$/;
 // The document stylesheet is the house style documents are shown in, not the
 // application's: it travels with each page into the documents frame, and its
 // class names are the renderers' vocabulary (wasm-helpers docs/classes.md).
+// Calepin's bundled runtime is Typst code a notebook is compiled with, so its
+// colours are the document's, drawn in the preview.
 const DOCUMENT_CSS = "src/styles/document.css";
-const OUTSIDE = [/^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/, /^src\/lib\/text-page\.js$/, /^src\/styles\/document\.css$/];
+const OUTSIDE = [/^src\/lib\/calepin-runtime\.js$/, /^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/, /^src\/lib\/text-page\.js$/, /^src\/styles\/document\.css$/];
 
 function files(dir) {
   return readdirSync(dir).flatMap((name) => {

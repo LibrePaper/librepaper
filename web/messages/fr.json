@@ -2367,7 +2367,7 @@
   "readerb_preparing_export": "Préparation du {format}.",
   "readerb_quit_failed": "L’application de bureau n’a pas pu se fermer.",
   "readerb_run_failed": "L’exécution a échoué. Consultez le journal dans Diagnostics.",
-  "readerb_run_quarto_hint": "Le code de ce document n’a pas encore été exécuté. Cliquez sur « Exécuter » pour l’exécuter sur cet ordinateur.",
+  "readerb_run_quarto_hint": "Le code de ce document n’a pas encore été exécuté. Cliquez sur « Exécuter le code » pour l’exécuter sur cet ordinateur.",
   "readerb_run_unmatched": "La sortie de l’exécution n’a pas pu être associée aux cellules de code. Elle reste affichée telle qu’elle a été rendue jusqu’à la prochaine modification.",
   "readerb_version_download_failed": "Cette version n’a pas pu être téléchargée.",
   "readerb_version_history": "Historique des versions",
@@ -2581,6 +2581,7 @@
   "rename_invalid_chars": "Ce format n’accepte pas ce nom",
   "rename_label": "Renommer {name} en",
   "renderers_local_failed": "Le rendu en {format} sur cet ordinateur a échoué.",
+  "renderers_calepin_outputs_hidden": "Un bloc de code n’a pas de résultat de la dernière exécution, les résultats sont donc masqués. Appuyez sur Exécuter le code pour les afficher à nouveau.",
   "renderers_quarto_failed": "L’aperçu Quarto n’a pas pu être affiché.",
   "renderersettings_aria": "Rendu de {name} dans",
   "renderersettings_description": "Les documents {name} sont produits dans ce navigateur, ou sur cet ordinateur lorsque « Exécuter le code » est activé.",
@@ -2590,7 +2591,7 @@
   "room_submission_failed_status": "L’envoi du commentaire a échoué ({status})",
   "settingsdialog_categories_label": "Catégories des paramètres",
   "settingsdialog_nothing_matches": "Aucun résultat.",
-  "settingsdialog_quarto_note": "Dans le navigateur, les documents Quarto produisent un brouillon. Appuyez sur « Exécuter » pour exécuter leur code sur cet ordinateur.",
+  "settingsdialog_quarto_note": "Dans le navigateur, les documents Quarto produisent un brouillon. Appuyez sur « Exécuter le code » pour exécuter leur code sur cet ordinateur.",
   "settingsdialog_search": "Rechercher",
   "settingsdialog_version": "Version {version} · Cet ordinateur",
   "share_copy_manual_label": "Texte à copier manuellement",
@@ -3012,7 +3013,6 @@
   "rundirectorycontrol_not_shared_unmatched": "Résultats non publiés : la sortie n’a pas pu être associée aux cellules de code.",
   "rundirectorycontrol_not_shared_failed": "Résultats non publiés : le téléversement a échoué.",
   "rundirectorycontrol_html_only": "Les résultats sont publiés à partir de la sortie HTML seulement.",
-  "runbutton_run": "Exécuter",
   "runbutton_stop": "Arrêter",
   "runbutton_run_hint": "Exécuter le code de ce document sur cet ordinateur",
   "runbutton_options": "Options d’exécution",
@@ -3023,6 +3023,7 @@
   "runbutton_running_in": "Exécution du code dans {name}…",
   "runbutton_running": "Exécution du code…",
   "runstatus_running": "Exécution de Quarto · {seconds} s",
+  "runstatus_running_calepin": "Exécution de Calepin · {seconds} s",
   "runbutton_stale": [
     {
       "declarations": [

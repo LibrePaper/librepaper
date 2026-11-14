@@ -48,14 +48,14 @@ const PANEL_ICONS = { files: "folder", outline: "list-tree", history: "history",
  *   can?: () => any,
  *   editGroups?: () => any,
  *   outputs?: () => { displayedFormat: string, latexOutput: string, typstOutput: string, markdownOutput: string },
- *   view?: () => { linked: boolean, visual: boolean, runCodeOffered: boolean, localExecution: boolean, quarto?: boolean, running?: boolean },
+ *   view?: () => { linked: boolean, visual: boolean, runCodeOffered: boolean, localExecution: boolean, explicitRun?: boolean, running?: boolean },
  *   insertMenu?: () => any,
  *   refreshEditAvailability?: () => void,
  *   chooseFileCommand?: (id: string) => unknown,
  *   chooseEditCommand?: (id: string) => unknown,
  *   chooseViewCommand?: (id: string) => unknown,
  *   toggleLocalExecution?: () => void,
- *   runQuarto?: () => void,
+ *   runNow?: () => void,
  *   stopRun?: () => void,
  *   openSettings?: () => unknown,
  *   runCommand?: (id: string) => unknown,
@@ -102,7 +102,7 @@ export function createPhone({
   // The format on screen and what each format builds to.
   outputs = () => ({ displayedFormat: "", latexOutput: "", typstOutput: "", markdownOutput: "" }),
   // The View list's toggles.
-  view = () => ({ linked: false, visual: false, runCodeOffered: false, localExecution: false, quarto: false, running: false }),
+  view = () => ({ linked: false, visual: false, runCodeOffered: false, localExecution: false, explicitRun: false, running: false }),
   // The Insert menu's component instance.
   insertMenu = () => null,
   // The actions the lists and rows route to.
@@ -111,7 +111,7 @@ export function createPhone({
   chooseEditCommand = (_id) => {},
   chooseViewCommand = (_id) => {},
   toggleLocalExecution = () => {},
-  runQuarto = () => {},
+  runNow = () => {},
   stopRun = () => {},
   openSettings = () => {},
   runCommand = (_id) => {},
@@ -212,7 +212,7 @@ export function createPhone({
     : arrangement.state.mobileCommand === "view" ? viewCommands({
       can: can(), selectedFormat: outputFormat, selectableFormat: outputSelectable, linked: view().linked, visual: view().visual,
       runCodeOffered: view().runCodeOffered, localExecution: view().localExecution,
-      quarto: view().quarto, running: view().running,
+      explicitRun: view().explicitRun, running: view().running,
     })
     : arrangement.state.mobileCommand === "insert" ? insertGroups
     : []
@@ -230,7 +230,7 @@ export function createPhone({
     }
     if (kind === "view") {
       if (id === "run-code") toggleLocalExecution();
-      else if (id === "run-quarto") (view().running ? stopRun : runQuarto)();
+      else if (id === "run-now") (view().running ? stopRun : runNow)();
       else chooseViewCommand(id);
       if (STAYS_OPEN.includes(id)) arrangement.state.mobileCommand = "view";
     }

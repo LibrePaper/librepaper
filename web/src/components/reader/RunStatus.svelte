@@ -7,8 +7,8 @@
   import { locale } from "../../lib/locale.js";
   import { elapsedSeconds, runStatusVisible } from "../../lib/reader/run-status.js";
 
-  /** @type {{ since: number, onstop?: () => void }} */
-  let { since, onstop = () => {} } = $props();
+  /** @type {{ since: number, onstop?: () => void, tool?: "quarto" | "calepin" }} */
+  let { since, onstop = () => {}, tool = "quarto" } = $props();
   let now = $state(Date.now());
   onMount(() => {
     const timer = setInterval(() => { now = Date.now(); }, 500);
@@ -20,7 +20,7 @@
 
 {#if runStatusVisible(elapsed)}
   <div class="run-status" role="status">
-    <span>{m.runstatus_running({ seconds })}</span>
+    <span>{tool === "calepin" ? m.runstatus_running_calepin({ seconds }) : m.runstatus_running({ seconds })}</span>
     <button type="button" class="run-status-stop" onclick={onstop}>{m.runbutton_stop()}</button>
   </div>
 {/if}

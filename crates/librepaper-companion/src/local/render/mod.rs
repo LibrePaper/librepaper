@@ -8,7 +8,8 @@
 //! 1. Write the job's files into the persistent workspace (`workspace`).
 //! 2. Run the expanded command there through the confined runner, which owns
 //!    cancellation, the deadline and the captured log.
-//! 3. Read the result file, and for a PDF the SyncTeX file beside it.
+//! 3. Read the result file, for a PDF the SyncTeX file beside it, and for
+//!    Typst the Calepin results in `.calepin/` beside the entry file.
 //!
 //! Exit status 0 with no result file is a failure that names the path the
 //! command was expected to write. After exit status 0 the result counts
@@ -33,6 +34,7 @@ use crate::local::protocol::{
     Tool, MAX_RESULT_BYTES,
 };
 
+mod calepin;
 pub mod discovery;
 pub mod records;
 pub mod tool;
@@ -170,13 +172,12 @@ async fn run_with(
             )
         }
     };
-    let quarto = key.format == Format::Quarto;
+    // Quarto and Typst (through Calepin) run code from the document, so both
+    // need the Run directory and its links.
+    let runs_code = matches!(key.format, Format::Quarto | Format::Typst);
     let run_dir = run_dir_override.or_else(|| binding.run_dir.clone());
-    if quarto && run_dir.is_none() {
-        return failed(
-            &request,
-            "Choose a Run directory before running Quarto code.",
-        );
+    if runs_code && run_dir.is_none() {
+        return failed(&request, "Choose a Run directory before running code.");
     }
     // Links from an earlier render go first, so no project file is written
     // under one.
@@ -188,7 +189,7 @@ async fn run_with(
         return failed(&request, &error);
     }
     let mut notices = Vec::new();
-    if let (true, Some(run_dir)) = (quarto, run_dir.as_ref()) {
+    if let (true, Some(run_dir)) = (runs_code, run_dir.as_ref()) {
         let manifest_paths = request.manifest.iter().map(|e| e.path.clone()).collect();
         match workspace::link_run_directory(
             &root,
@@ -200,10 +201,14 @@ async fn run_with(
             Ok(found) => notices = found,
             Err(error) => return failed(&request, &error),
         }
-        expanded.command.push("--execute-dir".into());
-        expanded
-            .command
-            .push(run_dir.to_string_lossy().into_owned());
+        // Calepin has no such option: its chunks run in the document's folder
+        // inside the workspace, where the links above are.
+        if key.format == Format::Quarto {
+            expanded.command.push("--execute-dir".into());
+            expanded
+                .command
+                .push(run_dir.to_string_lossy().into_owned());
+        }
     }
     // The check that the entry file exists comes after the uploads are in place.
     if let Err(error) = BindingStore::require_entrypoint_file(&root, &request.entrypoint) {
@@ -270,6 +275,13 @@ async fn run_with(
                     None,
                     bytes,
                 );
+                // The stored results let the browser draw Calepin's chunks
+                // with its own Typst compiler. Only a successful run sends them.
+                if key.format == Format::Typst {
+                    if let Some(bytes) = calepin::results(&root, &request.entrypoint) {
+                        files.insert("results".into(), bytes);
+                    }
+                }
                 status.status = JobState::Done;
             }
             Ok(Some(_)) => {

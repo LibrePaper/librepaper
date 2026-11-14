@@ -95,8 +95,8 @@ assert.match(readerSource, /<SettingsDialog [^>]*runDirectory=\{runDir\} onchoos
 // Nothing resets a stored choice of this computer when a document opens, and
 // there is no live preview left to start or stop.
 assert.doesNotMatch(readerSource, /setQuartoPreviewMode|setTypstPreviewMode|startLocalExecution|stopLocalExecution|createLocalPreview/);
-assert.doesNotMatch(readerSource, /livePreviewOwnsPane|liveServing|liveTargets|liveShown|calepin/i);
-assert.doesNotMatch(previewSource, /livePreviewOwnsPane|calepin/i);
+assert.doesNotMatch(readerSource, /livePreviewOwnsPane|liveServing|liveTargets|liveShown/i);
+assert.doesNotMatch(previewSource, /livePreviewOwnsPane/i);
 // The switch sits in the top bar and the View menu, and it is the consent.
 assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?<RunButton phase=\{runPhase\}[\s\S]*?onrun=\{runCode\}[\s\S]*?\{:else if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
 // The switch is offered in the desktop app, for every document this person may
@@ -112,12 +112,12 @@ assert.doesNotMatch(readerSource, /pdfNeedsLocalTool|pdfNeedsLocalExecution|PDF 
 // `typeof` guard, because the only way to test it was to slice it out of the
 // component into a context that had never declared the name; it is an argument
 // now.
-assert.match(previewSource, /const build = format !== "quarto" && current\.localExecution \? current\.buildPreferences : \{ \.\.\.current\.buildPreferences, backend: "browser" \};/);
+assert.match(previewSource, /const explicitRun = format === "quarto" \|\| format === "typst";[\s\S]*?const build = !explicitRun && current\.localExecution \? current\.buildPreferences : \{ \.\.\.current\.buildPreferences, backend: "browser" \};/);
 // Quarto never renders on this computer from the preview, and nothing there
 // shares results any more: that happens from the Run action.
 assert.doesNotMatch(previewSource, /shareRun|runDirectoryReady/);
 // A Quarto document with code says what produces the real output.
-assert.match(readerSource, /Press Run to run it on this computer/);
+assert.match(readerSource, /Press Run code to run it on this computer/);
 // The paged controls are the preview header's, and the frame is what says
 // what they should read: a zoom the frame could not honour -- a pane too
 // narrow for 150% -- must not leave the header claiming it did.
