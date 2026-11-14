@@ -1,9 +1,9 @@
 <!-- The design notes for web/src/styles/document.css, the house stylesheet every LibrePaper HTML document is shown in. Moved from LibrePaper/wasm-helpers (docs/style.md) when the stylesheet moved into the app (kata 6y41). The class vocabulary the renderers emit stays in wasm-helpers: docs/classes.md. -->
 
-# House style v2 — modern serif, intentional choices for every element
+# House style v3 — sans headings over a serif body
 
-Direction: a contemporary academic web document. Serif for reading, a quiet
-system sans for interface-like labels, lining numerals, neutral surfaces, no
+Direction: a contemporary academic web document. Serif for reading, the system sans for headings, the title block and
+interface-like labels, lining numerals, neutral surfaces, no
 small caps, no ornament. It should feel like a well-made journal article on
 the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 
@@ -11,26 +11,27 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 - `--lp-serif`: "Charter", "Bitstream Charter", "Source Serif 4", "Source Serif Pro", "Sitka Text", "Noto Serif", Cambria, Georgia, serif  (drop "Iowan Old Style": old-style face)
 - `--lp-sans` (new): system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif
 - `--lp-mono`: keep.
-- Colours: keep the neutral paper/ink and derived shades (rq34). Accent: keep #1f5fa8 light / #8ab4f0 dark. Add `--lp-mark` modern highlight: light `color-mix(in srgb, #ffd84d 45%, transparent)`, dark `color-mix(in srgb, #ffd84d 25%, transparent)`.
+- `--lp-math` (new): "STIX Two Math", "Cambria Math", "Latin Modern Math", "New Computer Modern Math", math. Set on `math` in the Typst adapter.
+- Colours: keep the neutral paper/ink and derived shades (rq34), muted text at 68% ink (was 62%). Accent: keep #1f5fa8 light / #8ab4f0 dark. Add `--lp-mark` modern highlight: light `color-mix(in srgb, #ffd84d 45%, transparent)`, dark `color-mix(in srgb, #ffd84d 25%, transparent)`.
 - Numerals: body `font-variant-numeric: lining-nums proportional-nums`; tables, equation numbers, section numbers, TOC numbers, footnote numbers: `lining-nums tabular-nums`. No oldstyle-nums anywhere.
 - No `font-variant: small-caps` / `font-variant-caps` anywhere except `.smallcaps`. No `text-transform: uppercase` labels.
 
 ## Page
-- body: serif 1.0625rem / 1.65, ink on paper, max-width 68ch, margin auto, padding 3rem 1.25rem 5rem (phone: 1.5rem 1rem 3rem). `text-wrap: pretty`, `hanging-punctuation: first`, `-webkit-font-smoothing: antialiased`.
+- body: serif 1.125rem / 1.6, ink on paper, max-width 44rem, margin auto, padding 3rem 1.25rem 5rem (phone: 1.5rem 1rem 3rem). `text-wrap: pretty`, `hanging-punctuation: first`, `-webkit-font-smoothing: antialiased`.
 - Paragraph spacing 1em; no indents.
 - Selection colour: accent at 20%.
 
 ## Headings
-- Serif, weight 650, `letter-spacing: -0.012em`, `text-wrap: balance`, line-height 1.2, ink colour. No rules/borders under any heading.
-- Sizes (body headings; the document title is separate): h1 1.75rem (margin 2.6rem 0 .8rem), h2 1.35rem (2.2rem 0 .6rem), h3 1.125rem (1.8rem 0 .5rem), h4 1rem (1.5rem 0 .4rem), h5/h6 1rem regular italic.
-- Section number (`.section-number[data-number]::before`): same font and size, weight 400, colour muted, tabular lining, margin-right .5em.
+- Sans (`--lp-sans`), weight 650, `letter-spacing: -0.017em`, `text-wrap: balance`, line-height 1.2, ink colour. No rules/borders under any heading.
+- Sizes (body headings; the document title is separate): h1 1.9rem (margin 2.8rem 0 .8rem), h2 1.5rem (2.75rem 0 .7rem), h3 1.2rem (2rem 0 .5rem), h4 1.05rem (1.5rem 0 .4rem), h5/h6 1rem regular italic serif.
+- Section number (`.section-number[data-number]::before`): same font and size, weight 600, colour muted, tabular lining, margin-right .5em.
 - Anchors (`a.anchor`): hidden.
 
 ## Title block (`header.title-block`)
 - Left-aligned (not centred), no rules inside; a single hairline (`--lp-rule`) below the whole block, padding-bottom 1.5rem, margin-bottom 2rem.
-- `.title`: serif 650, `font-size: clamp(1.8rem, 1.2rem + 2.4vw, 2.5rem)`, line-height 1.12, letter-spacing -0.02em, margin 0 0 .4rem.
-- `.subtitle`: serif regular (not italic), 1.2rem, muted, margin 0 0 1rem.
-- `.author`: serif 1rem ink; `.affiliation-ref` sup in sans .7em muted.
+- `.title`: sans 700, `font-size: clamp(1.8rem, 1.2rem + 2.4vw, 2.5rem)`, line-height 1.08, letter-spacing -0.028em, margin 0 0 .4rem.
+- `.subtitle`: sans regular (not italic), 1.15rem, muted, margin 0 0 1rem.
+- `.author`: sans 500 1rem ink; `.affiliation-ref` sup in sans .7em muted.
 - `.affiliations`, `.date`: sans .85rem muted, margin .2rem 0.
 - `.abstract`: margin 1.25rem 0 0; `.abstract-title`: sans .8rem weight 600 ink, letter-spacing .01em, margin 0 0 .3rem (sentence case "Abstract"); abstract text serif 1rem, ink.
 - `.keywords`: sans .85rem muted; `.keywords-label` weight 600 ink.
@@ -93,6 +94,7 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 ## Adapters
 - LaTeXML and Typst adapters: map onto the same choices (title left-aligned, sans labels, no small caps, captions sans).
 - Quarto page adapter (`.lp-quarto`): same — `.callout-title-container` sans 600 sentence case, `#title-block-header` left-aligned, `#TOC` like nav.toc, `figcaption.quarto-float-caption` sans muted.
+- LaTeXML and Quarto title and section headings follow the same sans scale as Headings, with the title block sans 700; paragraph and theorem labels stay serif.
 
 ## Print
 - Light palette (as now); body 11pt / 1.45; links ink without underline; no page-breaks inside figures/tables/callouts/theorems.
