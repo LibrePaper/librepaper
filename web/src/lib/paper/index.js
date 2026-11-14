@@ -172,22 +172,37 @@ function build(state, path, imageUrl, adapter, project) {
     } else {
       try {
         html = renderer.render(adapter.blockSource(text, block, blocks, files, openPath));
+        // A template frames every block it is replayed in front of; the frame is drawn once, as the header.
+        const prefix = adapter.framePrefix ? adapter.framePrefix(text, block, blocks, files, openPath) : null;
+        if (prefix !== null && renderer.unframe) html = renderer.unframe(html, prefix);
       } catch {
         continue;
       }
     }
     htmls.set(block, html);
   }
+  // The folds are found from the text here, not read from the fold layer, because the fold layer reads this layer's taken ranges.
+  const folds = mergeFolds(text, adapter.folds(text));
+  // A format whose header is not a block of its own (Typst: what the template writes before the body) offers it here.
+  let header = null;
+  if (adapter.header) {
+    try {
+      header = adapter.header(text, blocks, folds, renderer, files, openPath);
+    } catch {
+      header = null;
+    }
+  }
+  if (header) htmls.set(header, header.html);
+  // The blocks to lay out: the header stands in for the blocks under it.
+  const layout = header ? [header, ...blocks.filter((block) => block.to < header.from || block.from > header.to)] : blocks;
   // Display math is numbered across the document as the preview numbers it. Typst's math is not KaTeX's, so it is left alone.
   const numbering = adapter.module !== "typst" ? numberBlocks(htmls) : null;
   // A parked caret (the layer just turned on) reveals nothing, as in the LaTeX layer.
   const ranges = revealingSelection(state);
-  // The folds are found from the text here, not read from the fold layer, because the fold layer reads this layer's taken ranges.
-  const folds = mergeFolds(text, adapter.folds(text));
   const taken = [];
   const marks = [];
   const rendered = [];
-  for (const block of blocks) {
+  for (const block of layout) {
     if (!htmls.has(block) || touches(ranges, block)) continue;
     const html = htmls.get(block);
     if (!html.trim()) continue;
@@ -219,10 +234,10 @@ function build(state, path, imageUrl, adapter, project) {
   // The collapsed lines are kept too: a keyboard move passes over them as if they were not there.
   const drawn = new Set(rendered);
   const gaps = new Set();
-  for (let i = 0; i + 1 < blocks.length; i++) {
-    if (!drawn.has(blocks[i]) || !drawn.has(blocks[i + 1])) continue;
-    const last = state.doc.lineAt(blocks[i + 1].from).number;
-    for (let number = state.doc.lineAt(blocks[i].to).number + 1; number < last; number++) {
+  for (let i = 0; i + 1 < layout.length; i++) {
+    if (!drawn.has(layout[i]) || !drawn.has(layout[i + 1])) continue;
+    const last = state.doc.lineAt(layout[i + 1].from).number;
+    for (let number = state.doc.lineAt(layout[i].to).number + 1; number < last; number++) {
       const line = state.doc.line(number);
       if (/^\s*$/.test(line.text) && !touches(ranges, line)) {
         marks.push(Decoration.line({ class: "cm-lp-paper-gap" }).range(line.from));
