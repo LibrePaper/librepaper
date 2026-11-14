@@ -2,7 +2,13 @@ import { LoroDoc, VersionVector } from "loro-crdt";
 import { projectIdentityKey } from "./project-identity.js";
 import { openOfflineDatabase, requestResult, STATES, transactionDone, UPDATES } from "./offline-projects.js";
 
-const COMPACT_AFTER_UPDATES = 64;
+// Every stored delta row is one Loro import when the project reopens offline,
+// and compaction re-exports the whole history on the main thread. Typing can
+// write up to three commits per keystroke with tiny deltas, so the row count
+// is the bound that fires first; 256 keeps a reopen to at most 256 small
+// imports after the snapshot and compacts about every 85 to 256 keystrokes.
+// Large deltas are capped by bytes instead.
+const COMPACT_AFTER_UPDATES = 256;
 const COMPACT_AFTER_BYTES = 4 * 1024 * 1024;
 
 export function durableProjectPersistence(identity, indexedDB_ = globalThis.indexedDB, legacyIdentity = null) {
