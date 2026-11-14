@@ -199,6 +199,12 @@ import { morphChildren } from "./morph.js";
     html.librepaper-dark mark[data-librepaper][data-librepaper-selected] {
       outline-color: #56b4e9;
     }
+    /* A figure whose bytes have not reached this frame yet, as on a page kept
+       from an earlier visit: its space is held without a broken-image icon
+       until the render that brings the bytes replaces the page. */
+    img[src^="about:blank#librepaper-asset="] {
+      visibility: hidden;
+    }
   `;
   document.head.appendChild(markStyle);
 
