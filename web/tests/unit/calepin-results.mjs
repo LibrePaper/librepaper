@@ -155,6 +155,24 @@ test("chunksOf ends the scan at an unclosed fence", () => {
   assert.deepEqual(chunksOf(source, ["python"]), [{ lang: "python", source: "print(1)" }]);
 });
 
+test("chunksOf drops leading option lines and keeps a later #| line", () => {
+  const source = "```python\n#| echo: false\n#| label: fig-x\nprint(\"second\")\n#| kept: yes\n```";
+  assert.deepEqual(chunksOf(source, ["python"]), [{ lang: "python", source: 'print("second")\n#| kept: yes' }]);
+});
+
+test("staleChunks ignores option lines, and an option-only edit", () => {
+  const files = [
+    {
+      path: RESULTS,
+      text: JSON.stringify({ chunks: { "chunk-2": { source: 'print("second")\n' } } }),
+    },
+  ];
+  const withOptions = "```python\n#| echo: false\n#| label: fig-x\nprint(\"second\")\n```";
+  assert.equal(staleChunks(files, withOptions, { path: "paper.typ" }), 0);
+  const editedOption = "```python\n#| echo: true\n#| label: fig-x\nprint(\"second\")\n```";
+  assert.equal(staleChunks(files, editedOption, { path: "paper.typ" }), 0);
+});
+
 test("rawLangs reads the raw-langs list from runtime-config.typ", () => {
   const files = [
     {

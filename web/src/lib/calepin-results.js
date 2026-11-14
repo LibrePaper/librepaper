@@ -168,7 +168,12 @@ export function chunksOf(source, langs) {
       // compares equal to the same code at the top level.
       const indents = body.filter((line) => line.trim() !== "").map((line) => /^[ \t]*/.exec(line)[0].length);
       const indent = indents.length ? Math.min(...indents) : 0;
-      blocks.push({ lang, source: body.map((line) => line.slice(indent)).join("\n") });
+      const code = body.map((line) => line.slice(indent));
+      // The `#|` option lines at the top of a chunk are not stored with its
+      // code, so they are dropped here; a later `#|` line is real code and stays.
+      let first = 0;
+      while (first < code.length && code[first].trim().startsWith("#|")) first += 1;
+      blocks.push({ lang, source: code.slice(first).join("\n") });
     }
     i = close + 1;
   }
