@@ -20,6 +20,7 @@ pub mod lifecycle;
 pub mod native;
 pub mod paths;
 pub mod protocol;
+pub(crate) mod remote_grants;
 pub mod render;
 pub mod service;
 pub mod store;
