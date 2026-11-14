@@ -230,7 +230,8 @@ pub struct JobStatus {
     pub generation: u64,
     #[serde(default)]
     pub log_tail: String,
-    /// `artifact`, `synctex` when found, and `log`.
+    /// `artifact`, `synctex` when found, `results` for a Typst run through
+    /// Calepin, and `log`.
     #[serde(default)]
     pub outputs: BTreeMap<String, OutputEntry>,
     #[serde(default)]
@@ -256,7 +257,7 @@ pub struct Notice {
 #[derive(Clone, Debug, Default)]
 pub struct JobOutcome {
     pub status: JobStatus,
-    /// `artifact`, `synctex`, `log` as raw bytes.
+    /// `artifact`, `synctex`, `results`, `log` as raw bytes.
     pub files: BTreeMap<String, Vec<u8>>,
 }
 
