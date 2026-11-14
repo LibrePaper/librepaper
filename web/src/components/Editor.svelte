@@ -527,6 +527,10 @@
           // cursor is made at an intermediate offset.
           let state = snapshot;
           const touched = new Set();
+          // The edits of the one transaction that changed the document, which
+          // is all a written state is derived for; with more it is resolved.
+          let batchEdits = null;
+          let batches = 0;
           const now = Date.now();
           // An untracked edit that touches no span and no gap only moves what
           // lies after it, so the resolved state is shifted instead of planned,
@@ -554,6 +558,8 @@
               transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
                 edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
               });
+              batches += 1;
+              batchEdits = edits;
               /** @type {any} */
               const plan = planEdits(transaction.startState.doc.toString(), state, edits, me, {
                 run: null,
@@ -576,7 +582,7 @@
               // What was written is what the next read would resolve to, so it
               // is handed to the cache instead of being read back. A plan the
               // records do not obviously match is resolved, as before.
-              const adopted = writtenState(doc, planned, written, snapshot);
+              const adopted = writtenState(doc, planned, written, snapshot, batches === 1 ? batchEdits : null);
               if (adopted) adoptResolved(doc, fileId, adopted);
               // The anchors plugin runs behind this one and needs the ids that
               // the deletions of this update were stored under. Gaps resolve in
