@@ -66,7 +66,7 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 
 ## Figures and tables
 - `figure` margin 2.25rem 0; images centred, max-width 100%, height auto, radius 6px, with a 1px `--lp-rule` outline drawn inside the image (outline-offset -1px) so light images keep an edge on white paper.
-- Image-only figures (`figure` holding an `img`, directly or inside a link or paragraph) shrink to the image, with a min-width of 26rem, centred; the caption is contained to that width (`contain: inline-size`), so it wraps under the image instead of widening the figure. Tables, margin notes, subfigures, grids, layout rows and column-classed figures keep their own sizing.
+- Image-only figures (`figure` holding an `img`, directly or inside a link or paragraph) shrink to the image, with a min-width of 26rem, centred; the caption is contained to that width (`contain: inline-size`), so it wraps under the image instead of widening the figure. An image narrower than the figure sits at its left edge, above the start of the caption. Tables, margin notes, subfigures, grids, layout rows and column-classed figures keep their own sizing.
 - A figure whose image carries a percentage width in its inline style (`style="width:50%"`) is not shrink-wrapped: the percentage stays a share of the text column, not of the image's natural width.
 - `figcaption` (and `.ltx_caption`, `figure.quarto-float figcaption`): sans .9rem / 1.5, colour ink 78% (not the muted grey), margin-top .75rem, text-align left. Table captions (`table caption`) use the same font and colour; they sit above the table with margin-bottom .5rem. `.caption-label`: weight 600 ink, margin-right .3em (keep "Figure 1." wording).
 - Figure grids and subfigures: unchanged, captions as above.
