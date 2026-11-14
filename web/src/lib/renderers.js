@@ -413,12 +413,12 @@ async function quartoFailure(error, tree, title) {
 
 // Labels may be Svelte proxies, which cannot cross a worker boundary.
 // Send only the compiler inputs, copied into ordinary maps.
-function renderTree(tree, settings) {
+function renderTree(tree, settings, { urls = true } = {}) {
   return {
     main: tree.main,
     texts: { ...tree.texts },
     assets: { ...tree.assets },
-    urls: { ...tree.urls },
+    urls: urls ? { ...tree.urls } : {},
     // Captured settings travel with historical trees. Current WASM modules
     // may ignore this field, while release-aware adapters can resolve it
     // without changing the worker ABI.
@@ -432,7 +432,7 @@ function renderTree(tree, settings) {
 // here so Reader never decodes a PDF through TextDecoder.
 async function renderTypst(tree, title, requestedFormat, moduleUrls, settings) {
   const result = await request("typst", "render", {
-    tree: renderTree(tree, settings),
+    tree: renderTree(tree, settings, { urls: false }),
     title,
     format: requestedFormat,
   }, moduleUrls);

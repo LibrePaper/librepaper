@@ -42,7 +42,7 @@ import { m } from "../paraglide/messages.js";
  * lastPage?: (path: string) => Promise<{ kind: string, identity?: string, bytes?: Uint8Array, html?: string, sources?: Array<string | null> } | null>,
  * onRendered?: (identity: string, projectDigest: string) => void, onEmpty?: () => void,
  * facts: () => PreviewFacts, tree: () => PreviewTree,
- * gather: (digests: Record<string, string>) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string> }, missing: string[] }>,
+ * gather: (digests: Record<string, string>, options?: { urls?: boolean }) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string> }, missing: string[] }>,
  * heading: (tree: PreviewTree) => Promise<string>, takeManual?: () => boolean, manualPending?: () => boolean,
  * onsynctex?: (map: unknown | null) => void, send?: (message: { type: string, html?: string }) => void,
  * clearDebounce?: () => void, refreshFrame?: () => void, debug?: (message: string, ...details: unknown[]) => void,
@@ -254,7 +254,12 @@ export function createPreviewRenderer({
       // document with holes in it and replace it a moment later, which reads
       // as a flicker rather than as progress.
       if (Object.keys(source.digests || {}).length) {
-        const { held, missing } = await gather(source.digests);
+        // Data URLs are only for flow pages that embed figures as HTML
+        // (Markdown, Org, Quarto draft, authored HTML). Typst and LaTeX take
+        // the bytes and ignore URLs, and a paged render never embeds them, so
+        // those skip building the URLs.
+        const needsUrls = !paged && format !== "typst" && format !== "latex";
+        const { held, missing } = await gather(source.digests, { urls: needsUrls });
         debug("preview: assets", Object.keys(held.assets || {}).length, missing);
         if (coordinator.superseded(guard)) return;
         // A flow page remains useful when an image blob is unavailable:
