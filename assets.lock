@@ -35,4 +35,4 @@ cascadia-code-italic.woff2     editor-fonts        v1.0.0    7b38c6e24c4f114ecdb
 opendyslexic.woff2             editor-fonts        v1.0.0    0441bc21071e42db57c217f93fbc48d3b55a2987c02814c94dc93621c42e8695
 opendyslexic-italic.woff2      editor-fonts        v1.0.0    b18685dcb99b4ba903549d215c0ae2ab39a5087097614fd4100ae6d387332b47
 opendyslexic-bold.woff2        editor-fonts        v1.0.0    b534a0b84ef3cca941ebdb506ce3f4e0010aa4ef881271bac8b6959dbf694fbf
-latex                wasm-latex          engines-2026.11.10  9bd92be7c356055cadff3594a64bcf3e82ebdeb6818aab27b8aa1a10dc270214
+latex                wasm-latex          engines-2026.11.14  d9bf63c7839a7c6b74f614ed5952049cdcdccd38d4a9676016c392cbfc803808
