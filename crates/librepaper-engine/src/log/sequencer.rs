@@ -1947,11 +1947,13 @@ impl Sequencer {
         skip: Option<u64>,
         payload: &serde_json::Value,
     ) {
-        let text = payload.to_string();
+        // One shared buffer for every recipient; cloning it is a reference
+        // count, not a copy of the text.
+        let frame = Outgoing::shared_text(payload.to_string());
         let mut inner = self.inner.lock().await;
         fan_out(&mut inner, false, |id, subscriber| {
             let wanted = Some(id) != skip && role.is_none_or(|wanted| wanted == subscriber.role);
-            wanted.then(|| Outgoing::shared_text(text.clone()))
+            wanted.then(|| frame.clone())
         });
     }
 
@@ -2891,24 +2893,42 @@ impl Sequencer {
     /// admitted. A separate reservation would double-count that cost rather
     /// than add a real one.
     fn emit_source_changed(&self, inner: &mut Inner) {
-        let digest: Option<String> = inner.cache.as_ref().map(|cache| {
-            librepaper_document::document::projection::project(
-                &cache.doc,
-                &librepaper_document::document::paths::rules(&self.config),
-            )
-            .projection
-            .digest()
-            .to_hex()
-        });
         // Set unconditionally: keeping this on the success path alone meant a
         // cold document never engaged the one-per-second throttle, so every
         // ingest called in and bailed.
         inner.last_source_changed = Some(Instant::now());
         inner.source_changed_owed = false;
-        let payload = json!({"type": "source-changed", "digest": digest}).to_string();
+        // The frame goes to readers only, and a reader that joins later does
+        // not get a digest from here: it fetches the projection. So with no
+        // reader there is nobody to tell, and projecting every text file just
+        // to hash it would be wasted work under the lock.
+        if !inner
+            .subscribers
+            .values()
+            .any(|subscriber| subscriber.role == SubscriberClass::Reader)
+        {
+            return;
+        }
+        // A resident projection is current whenever it is `Some` (ingest
+        // clears it before this runs), so reuse it rather than project again.
+        let digest: Option<String> = match (&inner.projection, &inner.cache) {
+            (Some(projected), Some(_)) => Some(projected.projection.digest().to_hex()),
+            (_, Some(cache)) => Some(
+                librepaper_document::document::projection::project(
+                    &cache.doc,
+                    &librepaper_document::document::paths::rules(&self.config),
+                )
+                .projection
+                .digest()
+                .to_hex(),
+            ),
+            _ => None,
+        };
+        let frame = Outgoing::shared_text(
+            json!({"type": "source-changed", "digest": digest}).to_string(),
+        );
         fan_out(inner, false, |_, subscriber| {
-            (subscriber.role == SubscriberClass::Reader)
-                .then(|| Outgoing::shared_text(payload.clone()))
+            (subscriber.role == SubscriberClass::Reader).then(|| frame.clone())
         });
     }
 }
@@ -2995,14 +3015,15 @@ fn fan_out(inner: &mut Inner, durable: bool, frame: impl Fn(u64, &Subscriber) ->
 /// Copies one frame to every editor but the sender.
 fn relay(inner: &mut Inner, skip: Option<u64>, bytes: &[u8]) {
     use base64::Engine as _;
-    let payload = json!({
-        "type": "doc-update",
-        "update": base64::engine::general_purpose::STANDARD.encode(bytes),
-    })
-    .to_string();
+    let frame = Outgoing::shared_text(
+        json!({
+            "type": "doc-update",
+            "update": base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+        .to_string(),
+    );
     fan_out(inner, false, |id, subscriber| {
-        (Some(id) != skip && subscriber.role == SubscriberClass::Editor)
-            .then(|| Outgoing::shared_text(payload.clone()))
+        (Some(id) != skip && subscriber.role == SubscriberClass::Editor).then(|| frame.clone())
     });
 }
 
@@ -3061,13 +3082,15 @@ fn acknowledge(inner: &mut Inner, acknowledged: &[(String, i64)]) {
 /// rather than source-log state.
 fn notify_durable(inner: &mut Inner) {
     use base64::Engine as _;
-    let payload = json!({
-        "type": "doc-durable",
-        "vector": base64::engine::general_purpose::STANDARD.encode(inner.log_vector.encode()),
-    })
-    .to_string();
+    let frame = Outgoing::shared_text(
+        json!({
+            "type": "doc-durable",
+            "vector": base64::engine::general_purpose::STANDARD.encode(inner.log_vector.encode()),
+        })
+        .to_string(),
+    );
     fan_out(inner, true, |_, subscriber| {
-        (subscriber.role == SubscriberClass::Editor).then(|| Outgoing::shared_text(payload.clone()))
+        (subscriber.role == SubscriberClass::Editor).then(|| frame.clone())
     });
 }
 
