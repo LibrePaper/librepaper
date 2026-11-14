@@ -2576,7 +2576,7 @@
   "room_submission_failed_status": "批注提交失败（{status}）",
   "settingsdialog_categories_label": "设置类别",
   "settingsdialog_nothing_matches": "没有匹配项。",
-  "settingsdialog_quarto_note": "Quarto 文档在浏览器中渲染草稿。点击“运行”即可在这台电脑上运行其代码。",
+  "settingsdialog_quarto_note": "Quarto 文档在浏览器中渲染草稿。点击“运行代码”即可在这台电脑上运行其代码。",
   "settingsdialog_search": "搜索",
   "settingsdialog_version": "版本 {version} · 这台电脑",
   "share_copy_manual_label": "需手动复制的文本",

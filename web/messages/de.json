@@ -2591,7 +2591,7 @@
   "room_submission_failed_status": "Senden des Kommentars fehlgeschlagen ({status})",
   "settingsdialog_categories_label": "Kategorien der Einstellungen",
   "settingsdialog_nothing_matches": "Keine Treffer.",
-  "settingsdialog_quarto_note": "Quarto-Dokumente werden im Browser als Entwurf gerendert. Drücken Sie „Ausführen“, um ihren Code auf diesem Computer auszuführen.",
+  "settingsdialog_quarto_note": "Quarto-Dokumente werden im Browser als Entwurf gerendert. Drücken Sie „Code ausführen“, um ihren Code auf diesem Computer auszuführen.",
   "settingsdialog_search": "Suchen",
   "settingsdialog_version": "Version {version} · Dieser Computer",
   "share_copy_manual_label": "Manuell zu kopierender Text",

@@ -2591,7 +2591,7 @@
   "room_submission_failed_status": "falha ao enviar o comentário ({status})",
   "settingsdialog_categories_label": "Categorias de configurações",
   "settingsdialog_nothing_matches": "Nada corresponde.",
-  "settingsdialog_quarto_note": "Os documentos Quarto renderizam um rascunho no navegador. Clique em Executar para executar o código deles neste computador.",
+  "settingsdialog_quarto_note": "Os documentos Quarto renderizam um rascunho no navegador. Clique em Executar código para executar o código deles neste computador.",
   "settingsdialog_search": "Pesquisar",
   "settingsdialog_version": "Versão {version} · Este computador",
   "share_copy_manual_label": "Texto para copiar manualmente",

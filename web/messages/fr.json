@@ -2591,7 +2591,7 @@
   "room_submission_failed_status": "L’envoi du commentaire a échoué ({status})",
   "settingsdialog_categories_label": "Catégories des paramètres",
   "settingsdialog_nothing_matches": "Aucun résultat.",
-  "settingsdialog_quarto_note": "Dans le navigateur, les documents Quarto produisent un brouillon. Appuyez sur « Exécuter » pour exécuter leur code sur cet ordinateur.",
+  "settingsdialog_quarto_note": "Dans le navigateur, les documents Quarto produisent un brouillon. Appuyez sur « Exécuter le code » pour exécuter leur code sur cet ordinateur.",
   "settingsdialog_search": "Rechercher",
   "settingsdialog_version": "Version {version} · Cet ordinateur",
   "share_copy_manual_label": "Texte à copier manuellement",

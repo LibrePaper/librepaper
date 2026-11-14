@@ -2591,7 +2591,7 @@
   "room_submission_failed_status": "error al enviar el comentario ({status})",
   "settingsdialog_categories_label": "Categorías de configuración",
   "settingsdialog_nothing_matches": "No hay coincidencias.",
-  "settingsdialog_quarto_note": "En el navegador, los documentos de Quarto se compilan como borrador. Pulse «Ejecutar» para ejecutar su código en este equipo.",
+  "settingsdialog_quarto_note": "En el navegador, los documentos de Quarto se compilan como borrador. Pulse «Ejecutar código» para ejecutar su código en este equipo.",
   "settingsdialog_search": "Buscar",
   "settingsdialog_version": "Versión {version} · Este equipo",
   "share_copy_manual_label": "Texto para copiar manualmente",

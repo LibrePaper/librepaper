@@ -2591,7 +2591,7 @@
   "room_submission_failed_status": "comment submission failed ({status})",
   "settingsdialog_categories_label": "Settings categories",
   "settingsdialog_nothing_matches": "Nothing matches.",
-  "settingsdialog_quarto_note": "Quarto documents render a draft in the browser. Press Run to run their code on this computer.",
+  "settingsdialog_quarto_note": "Quarto documents render a draft in the browser. Press Run code to run their code on this computer.",
   "settingsdialog_search": "Search settings",
   "settingsdialog_version": "Version {version} · This computer",
   "share_copy_manual_label": "Text to copy manually",
