@@ -57,17 +57,18 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 - `hr`: border 0, border-top 1px `--lp-rule`, margin 2.5rem 0.
 
 ## Callouts
-- Background `color-mix(in srgb, var(--k) 6%, var(--lp-paper))` (dark: 10%), border-left 3px solid `var(--k)`, radius 0 6px 6px 0, padding .8rem 1rem, margin 1.5rem 0.
+- Background `color-mix(in srgb, var(--k) 6%, var(--lp-paper))` (dark: 10%), a 1px border in `var(--k)` at 25% over paper, with a 3px solid `var(--k)` left edge, radius 8px (matches the code panels), padding .8rem 1rem, margin 1.5rem 0.
 - `.callout-title`: sans .85rem weight 600, colour `var(--k)`, margin 0 0 .25rem, sentence case — NO small caps, no uppercase.
 - Body: serif, ink; first/last child margins 0.
 - Collapsible (`details.callout`): summary with a small chevron (CSS-drawn, rotates when open), cursor pointer, no default marker.
-- `.callout-simple`: no background tint; `.callout-minimal`: no background, title hidden.
+- `.callout-simple`: no background tint; `.callout-minimal`: no background, title hidden. Both drop the box: no top, right or bottom border and no radius, so only the 3px left rule remains.
 
 ## Figures and tables
-- `figure` margin 1.75rem 0; images centred, max-width 100%, height auto.
-- `figcaption`: sans .85rem / 1.45, muted, margin-top .6rem (tables: caption above, margin-bottom .5rem), text-align left. `.caption-label`: weight 600 ink, margin-right .3em (keep "Figure 1." wording).
+- `figure` margin 2.25rem 0; images centred, max-width 100%, height auto, radius 6px, with a 1px `--lp-rule` outline drawn inside the image (outline-offset -1px) so light images keep an edge on white paper.
+- Image-only figures (`figure` holding an `img`, directly or inside a link or paragraph) shrink to the image, with a min-width of 26rem, centred; the caption is contained to that width (`contain: inline-size`), so it wraps under the image instead of widening the figure. Tables, margin notes, subfigures, grids, layout rows and column-classed figures keep their own sizing.
+- `figcaption` (and `.ltx_caption`, `figure.quarto-float figcaption`): sans .9rem / 1.5, colour ink 78% (not the muted grey), margin-top .75rem, text-align left. Table captions (`table caption`) use the same font and colour; they sit above the table with margin-bottom .5rem. `.caption-label`: weight 600 ink, margin-right .3em (keep "Figure 1." wording).
 - Figure grids and subfigures: unchanged, captions as above.
-- Tables: font-size .95rem, lining tabular nums, border-collapse; booktabs: top rule 1.5px ink 85%, header bottom 1px ink 60%, bottom rule 1.5px ink 85%; `th` serif weight 650 ink, vertical-align bottom; `td,th` padding .45rem .75rem; first/last column padding-left/right 0 so the rules align with the text; no zebra; right-aligned cells nowrap.
+- Tables: font-size .9rem, lining tabular nums, border-collapse, sans font (the table body is sans in v3; headers too). Booktabs with 1px rules: top rule 1px ink 85%, header bottom 1px ink 60%, bottom rule 1px ink 85%. Body rows are separated by a 1px `--lp-rule` line between rows (not zebra). `th` sans weight 600 ink, vertical-align bottom; header cells are sans .82rem muted so the header reads as labels, not data. `td,th` padding .5rem .75rem; first/last column padding-left/right 0 so the rules align with the text; no zebra; right-aligned cells nowrap. Wide tables keep their scroll (`display:block; width:max-content; overflow-x:auto`) on screen; print restores a normal table.
 - Equations (`.equation`): margin 1.4rem 0; `.equation-number` muted tabular lining.
 
 ## Theorems and proofs
@@ -75,7 +76,8 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 - `.proof-label`: italic; end of proof: `∎` in muted, placed at the end of the last line (float right).
 
 ## Code and output
-- Keep rq34 exactly (subtle code panel, verbatim output, error/warning rules). Code filename and fold summary: sans .8rem muted (not mono).
+- Keep rq34 exactly (subtle code panel, verbatim output, error/warning rules). Code panels (`pre`, `.ltx_listing`, `.ltx_verbatim`) now carry a 1px `--lp-rule` border, radius 8px, padding .8rem 1rem. A filename header (`.code-filename`) joins the panel above it: same border, radius 8px on its top corners, no bottom border; the `pre` under it drops its top border and rounds only its bottom corners. Code filename and fold summary: sans .8rem muted (not mono); the fold summary indents to 1rem, the same as the code text.
+- Cell outputs keep their left rule (2px) and sit at `calc(1rem - 1px)` so their text lines up with the code text, which is 1rem padding plus the 1px panel border in from the edge. Their `pre` stays borderless and unpadded.
 - Tab sets (`.tabset`): `.tab-title` sans .8rem 600 muted, margin 1rem 0 .35rem, no small caps, no rule.
 - pre: `hanging-punctuation: none`: WebKit would otherwise hang an opening bracket on the first line outside the box, where a cell output clips it (R's `[1]`).
 
@@ -90,6 +92,7 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 
 ## Dark mode
 - Same rules; check: callout tints readable, table rules visible (ink 85% on dark is light), mark not glaring, code panel distinct but quiet.
+- Images: the light palette is off by default (`--lp-img-pad: 0`, `--lp-img-filter: none`). Under `.lp-dark` (screen only, `@media not print`) images get `--lp-img-pad: .5rem` (a paper-coloured frame so pale plots do not glare on the dark page) and `--lp-img-filter: brightness(.9) contrast(1.05)`. The outline and radius apply in both themes.
 
 ## Adapters
 - LaTeXML and Typst adapters: map onto the same choices (title left-aligned, sans labels, no small caps, captions sans).
