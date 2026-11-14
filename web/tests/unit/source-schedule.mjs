@@ -76,12 +76,14 @@ function fakeClock() {
   assert.equal([...clock.timers.values()][0].ms, 2000);
 }
 
-// A hidden page does not run frames, so a zero timer stands in for one.
+// A hidden page does not run frames, so a zero timer stands in for one, and
+// that timer does not paint either: the render is held until the page shows.
 {
   const clock = fakeClock();
   let paints = 0;
+  let hiddenNow = true;
   const schedule = createSourceSchedule({
-    ...clock, editing: () => true, format: () => "typst", paint: () => paints++, hidden: () => true,
+    ...clock, editing: () => true, format: () => "typst", paint: () => paints++, hidden: () => hiddenNow,
   });
   schedule.changed();
   schedule.changed();
@@ -89,7 +91,80 @@ function fakeClock() {
   assert.equal(clock.timers.size, 1, "one zero timer stands in for the frame");
   assert.equal([...clock.timers.values()][0].ms, 0);
   clock.fireTimers();
+  assert.equal(paints, 0, "a hidden page does not paint");
+
+  hiddenNow = false;
+  schedule.resume();
+  assert.equal(paints, 1, "resume draws the skipped render once");
+  schedule.resume();
+  assert.equal(paints, 1, "a second resume draws nothing");
+}
+
+// A collaborator's edit while this browser is editing waits a second, and
+// further remote edits neither add a timer nor move the deadline.
+{
+  const clock = fakeClock();
+  let paints = 0;
+  const schedule = createSourceSchedule({
+    ...clock, editing: () => true, format: () => "markdown", paint: () => paints++, hidden: () => false, remoteDelay: 1000,
+  });
+  schedule.changed({ remote: true });
+  assert.equal(clock.frames.size, 0, "a remote change does not request a frame");
+  assert.equal(clock.timers.size, 1);
+  assert.equal([...clock.timers.values()][0].ms, 1000);
+  const [pendingId] = clock.timers.keys();
+  schedule.changed({ remote: true });
+  schedule.changed({ remote: true });
+  assert.deepEqual([...clock.timers.keys()], [pendingId], "further remote changes keep the one pending timer");
+  assert.equal(paints, 0);
+  clock.fireTimers();
+  assert.equal(paints, 1, "the timer paints once");
+  assert.equal(clock.timers.size, 0);
+}
+
+// A local edit while a remote timer is pending clears that timer and paints on
+// the frame, so the remote wait cannot delay this browser's own preview.
+{
+  const clock = fakeClock();
+  let paints = 0;
+  const schedule = createSourceSchedule({
+    ...clock, editing: () => true, format: () => "markdown", paint: () => paints++, hidden: () => false,
+  });
+  schedule.changed({ remote: true });
+  schedule.changed();
+  assert.equal(clock.timers.size, 0, "a local change clears the pending remote timer");
+  assert.equal(clock.frames.size, 1, "and requests a frame");
+  clock.fireFrames();
   assert.equal(paints, 1);
+}
+
+// A remote edit while a frame is already pending adds no timer: the frame will
+// paint the text.
+{
+  const clock = fakeClock();
+  const schedule = createSourceSchedule({
+    ...clock, editing: () => true, format: () => "markdown", hidden: () => false,
+  });
+  schedule.changed();
+  schedule.changed({ remote: true });
+  assert.equal(clock.frames.size, 1);
+  assert.equal(clock.timers.size, 0, "no remote timer while a frame is pending");
+}
+
+// Without continuous LaTeX, a remote edit waits the same debounce a local one
+// does.
+{
+  const pendingFor = (remote) => {
+    const clock = fakeClock();
+    const schedule = createSourceSchedule({
+      ...clock, editing: () => true, format: () => "latex", latexDebounce: () => 1500, continuous: () => false,
+      passive: 1000, hidden: () => false,
+    });
+    schedule.changed({ remote });
+    return { frames: clock.frames.size, waits: [...clock.timers.values()].map((t) => t.ms) };
+  };
+  assert.deepEqual(pendingFor(true), pendingFor(false), "remote LaTeX behaves exactly like local");
+  assert.deepEqual(pendingFor(true), { frames: 0, waits: [1500] });
 }
 
 // A page that is not editing waits the passive pause, and each change

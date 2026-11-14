@@ -1060,7 +1060,13 @@ export function createProjectSession({
 
     /// Called whenever the directory changes -- a file added, renamed,
     /// or removed -- so the list can be redrawn.
-    /** @param {(events: ProjectEvent[]) => void} watcher */
+    /**
+     * The watcher also gets the batch's origin as its second argument: "local"
+     * for this browser's own edits, "import" for a collaborator's, "checkout"
+     * for a checkout of an earlier version. A caller can tell a remote edit
+     * from its own.
+     * @param {(events: ProjectEvent[], by: string) => void} watcher
+     */
     onFiles(watcher) {
       // The watcher hears once per batch, not once per event. A rename moves a
       // path and a delete clears a digest in the same commit, and a file list
@@ -1079,7 +1085,7 @@ export function createProjectSession({
           (event) => (typeof event.path?.[0] === "string" && roots.has(event.path[0])) || directory.has(event.target),
         );
         if (relevantEvents.length > 0) {
-          watcher(relevantEvents);
+          watcher(relevantEvents, eventBatch.by);
         }
       });
       return unsub;
