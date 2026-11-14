@@ -2545,6 +2545,8 @@
   "registry_render_quarto_preview_terms": "quarto 既定 プレビュー pdf html 出力 default preview output",
   "registry_render_typst_pdf": "Typstコマンド",
   "registry_render_typst_pdf_terms": "typst コマンド pdf レンダリング このコンピューター 結果ファイル command render this computer result file",
+  "registry_render_typst_html": "Typst HTMLコマンド",
+  "registry_render_typst_html_terms": "typst html コマンド レンダリング このコンピューター 結果ファイル command render this computer result file",
   "registry_render_typst_preview": "Typstの既定のプレビュー",
   "registry_render_typst_preview_terms": "typst 既定 プレビュー pdf html 出力 default preview output",
   "registry_render_typst_where": "Typstのレンダリング先",
@@ -2566,6 +2568,7 @@
   "rename_invalid_chars": "この形式ではその名前は使えません",
   "rename_label": "{name} の名前を変更",
   "renderers_local_failed": "このコンピューターで{format}をレンダリングできませんでした。",
+  "renderers_calepin_outputs_hidden": "コードチャンクに最後の実行による出力がないため、出力は非表示になっています。実行を押すと再表示されます。",
   "renderers_quarto_failed": "Quarto のプレビューを表示できませんでした。",
   "renderersettings_aria": "{name}のレンダリング先",
   "renderersettings_description": "{name}ドキュメントは、このブラウザーで、または「コードを実行」がオンの間はこのコンピューターでレンダリングされます。",
@@ -3008,6 +3011,7 @@
   "runbutton_running_in": "{name} でコードを実行中…",
   "runbutton_running": "コードを実行中…",
   "runstatus_running": "Quarto を実行中 · {seconds} 秒",
+  "runstatus_running_calepin": "Calepin を実行中 · {seconds} 秒",
   "runbutton_stale": [
     {
       "declarations": [

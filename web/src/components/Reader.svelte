@@ -103,6 +103,7 @@
   import { locale } from "../lib/locale.js";
   import { createSharedResults } from "../lib/reader/shared-results.svelte.js";
   import { splitResults, staleCells } from "../lib/quarto-results.js";
+  import { isCalepinRecord, recordOf as calepinRecordOf, staleChunks, usesCalepin } from "../lib/calepin-results.js";
   import RunButton from "./reader/RunButton.svelte";
   import RunStatus from "./reader/RunStatus.svelte";
   import Avatar from "./Avatar.svelte";
@@ -306,7 +307,7 @@
       if (up && !mayEdit) void projection.refresh();
       // Shared results changed or deleted while the socket was down were
       // announced to nobody either.
-      if (up && sourceFormat === "quarto") void refreshResults();
+      if (up && runsExplicitly) void refreshResults();
     },
     onSession: (active) => {
       changesUnsubscribe?.();
@@ -442,8 +443,9 @@
   // code runs is not a preference and is never stored: it is off each time a
   // document opens.
   let localExecution = $state(false);
-  // A Quarto document's code runs only when Run is pressed. Between runs the
-  // preview is the browser's draft with the last run's output under each cell.
+  // A Quarto or Typst document's code runs only when Run is pressed. Between
+  // runs the preview is the browser's draft with the last run's output under
+  // each cell (or, for Typst, the files Calepin stored).
   let runPhase = $state("idle");
   // When the running Run began, for the preview corner's elapsed time.
   let runStartedAt = $state(0);
@@ -467,7 +469,7 @@
   // The running Run's controller, so Stop can end the job before it starts as
   // well as while it runs. Not reactive: nothing renders from it.
   let runAbort = null;
-  // A Quarto document needs a folder to run its code in. Its code never runs
+  // A Quarto or Typst document needs a folder to run its code in. Its code never runs
   // on this computer until Run is pressed and a folder is set.
   let runDirectory = $state("");
   const runDirectoryReady = $derived(runDirectory !== "");
@@ -504,8 +506,8 @@
   // Run code is the consent to run a document's code on this computer. It is
   // off whenever a document opens and is never remembered. While it is on, a
   // format set to this computer renders there; the pane is drawn again
-  // because the renderer that draws it changes hands. Quarto has no switch:
-  // its code runs once, on an explicit Run.
+  // because the renderer that draws it changes hands. Quarto and Typst have no
+  // switch: their code runs once, on an explicit Run.
   function toggleLocalExecution() {
     localExecution = !localExecution;
     stopRendering();
@@ -1486,7 +1488,7 @@
 
     if (lifecycle.receive(event)) return;
     if (event.type === "results-changed") {
-      if (sourceFormat === "quarto") void refreshResults();
+      if (runsExplicitly) void refreshResults();
       return;
     }
     if (event.type === "source-changed") {
@@ -2220,7 +2222,7 @@
           },
         };
       }),
-      provide("buildLog", () => (sourceFormat === "quarto" && runLog ? runLog : renderStatus.state.lastLog) || renderStatus.state.lastLatexResult?.log || ""),
+      provide("buildLog", () => (runsExplicitly && runLog ? runLog : renderStatus.state.lastLog) || renderStatus.state.lastLatexResult?.log || ""),
     ];
     return () => undo.forEach((unregister) => unregister());
   });
@@ -2239,18 +2241,21 @@
   const buildPreferences = $derived(buildSettings.state.preferences);
   // Where the toggle is offered: in the desktop app, for every editable
   // document whose format is set to this computer.
+  // Quarto and Typst run their code only on an explicit Run. Typst runs it
+  // with Calepin.
+  const runsExplicitly = $derived(sourceFormat === "quarto" || sourceFormat === "typst");
   const runCodeOffered = $derived(mayEdit && !suggestOnly && hasDesktop && buildPreferences.backend === "local");
-  // The Run directory is read whenever a Quarto document's code may be run
-  // here; reading it only asks the desktop app for the setting.
+  // The Run directory is read whenever a Quarto or Typst document's code may
+  // be run here; reading it only asks the desktop app for the setting.
   $effect(() => {
-    if (sourceFormat === "quarto" && runCodeOffered) untrack(() => runDir.load());
+    if (runsExplicitly && runCodeOffered) untrack(() => runDir.load());
     else untrack(() => runDir.reset());
   });
   // The Run directory page, opened from the Run button's menu, and by Run
   // itself when no folder is set.
   let runDirPageOpen = $state(false);
   $effect(() => {
-    if (!(sourceFormat === "quarto" && runCodeOffered)) runDirPageOpen = false;
+    if (!(runsExplicitly && runCodeOffered)) runDirPageOpen = false;
   });
   function openRunDirPage() {
     runDirPageOpen = true;
@@ -2287,9 +2292,10 @@
     if (format) untrack(() => buildSettings.follow({ format, user }));
   });
   const setBuildPreferences = (next) => buildSettings.choose(next, sourceFormat);
-  // Shared results: the output of the last local run of a Quarto document,
-  // kept by the server for collaborators who have no data of their own. Every
-  // role fetches it; only a run on this computer uploads it.
+  // Shared results: the output of the last local run of a Quarto or Typst
+  // document (Calepin's files for Typst, cells for Quarto), kept by the server
+  // for collaborators who have no data of their own. Every role fetches it;
+  // only a run on this computer uploads it.
   const sharedResults = createSharedResults(SLUG, () => authHeaders(KEY));
   let shareResults = $state(true);
   $effect(() => {
@@ -2313,26 +2319,32 @@
     void paintPreview();
   }
   $effect(() => {
-    if (sourceFormat === "quarto") untrack(() => { void refreshResults(); });
+    if (runsExplicitly) untrack(() => { void refreshResults(); });
   });
   // The saved output as the draft shows it, with the line that says whose
   // run it is and when: this person's last run here, else a collaborator's.
-  const quartoResults = $derived.by(() => {
-    if (sourceFormat !== "quarto") return null;
+  const runResults = $derived.by(() => {
+    if (!runsExplicitly) return null;
     const record = ownResults ?? sharedResults.state.record;
     if (!record) return null;
+    // A Typst document's results are the files Calepin stored; a Quarto
+    // document's are its cells. A record of the other kind is not this
+    // document's.
+    const files = isCalepinRecord(record);
+    if (files !== (sourceFormat === "typst")) return null;
     const when = new Date(record.updatedAt);
     const date = Number.isNaN(when.getTime()) ? "" : new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" }).format(when);
     return {
-      cells: record.cells,
+      ...(files ? { files: record.files } : { cells: record.cells }),
       path: String(record.path || ""),
       updatedAt: String(record.updatedAt || ""),
       note: ownResults ? m.readerd_results_note_own({ date }) : m.readerd_results_note({ name: record.uploaderName || "", date }),
     };
   });
-  // Run the document's code once on this computer. The page it makes is not
-  // the preview: its cell outputs are split out and spliced under the draft's
-  // cells, so the preview stays the browser draft between runs.
+  // Run the document's code once on this computer. For Quarto the page it
+  // makes is not the preview: its cell outputs are split out and spliced under
+  // the draft's cells. For Typst, Calepin's stored files are kept instead, and
+  // the browser's draft reads them back, so the preview stays the draft.
   async function runCode() {
     if (runPhase === "running" || readerDisposed) return;
     if (!runDir.usable) {
@@ -2373,16 +2385,49 @@
       }
       const heading = await headingOf(tree);
       if (gone()) return;
-      const toPdf = buildPreferences.output === "pdf";
+      const typst = sourceFormat === "typst";
+      // Typst keeps its own output choice; Markdown and Quarto share theirs.
+      const toPdf = typst ? typstOutput !== "html" : buildPreferences.output === "pdf";
       const rendered = await renderers.render(tree, heading, {
         buildPreferences: { ...buildPreferences, backend: "local", output: toPdf ? "pdf" : "html" },
         project: SLUG,
+        ...(typst ? { format: toPdf ? "pdf" : "html" } : {}),
         signal: controller.signal,
       });
       if (gone()) return;
       // The run's log is what Diagnostics shows, whether it worked or not.
       runLog = rendered?.log || rendered?.failure?.message || "";
       runDiagnostics = rendered?.diagnostics || [];
+      if (typst) {
+        const page = toPdf ? rendered?.pdf : rendered?.html;
+        if (rendered?.ok === false || !page) {
+          runPhase = "failed";
+          return;
+        }
+        const record = calepinRecordOf(rendered.results, tree.main);
+        if (record) {
+          // The files Calepin stored go into the browser's own draft, PDF or
+          // HTML, so the preview stays the draft between runs.
+          ownResults = { engine: "calepin", files: record.files, path: tree.main, updatedAt: new Date().toISOString() };
+          runPhase = "idle";
+          stopRendering();
+          void paintPreview();
+          if (shareResults && mayEdit) {
+            void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+          }
+          return;
+        }
+        // The command stored no results (an edited command, say), so there
+        // is nothing for the draft to read: show the run's own page until the
+        // next edit.
+        sharedResults.skip("none");
+        const digest = toPdf ? await renderers.snapshotDigest(tree) : "";
+        if (gone()) return;
+        runPhase = "idle";
+        lastPdfRunAt = new Date().toISOString();
+        showRunPage(tree, toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html });
+        return;
+      }
       if (toPdf) {
         if (rendered?.ok === false || !rendered?.pdf) {
           runPhase = "failed";
@@ -2462,9 +2507,9 @@
   // typing stops so that the parse does not follow every keystroke.
   $effect(() => {
     void outlineRevision;
-    const results = quartoResults;
+    const results = runResults;
     const main = previewPath;
-    if (sourceFormat !== "quarto" || !results || !main || results.path !== main) {
+    if (!runsExplicitly || !results || !main || results.path !== main) {
       staleCount = 0;
       return;
     }
@@ -2472,7 +2517,7 @@
     const timer = setTimeout(async () => {
       const texts = untrack(() => treeNow()).texts ?? {};
       const text = String(texts[main] ?? "");
-      const count = await staleCells(results.cells, text, { path: main, files: texts }).catch(() => 0);
+      const count = results.files ? staleChunks(results.files, text, { path: main }) : await staleCells(results.cells, text, { path: main, files: texts }).catch(() => 0);
       if (!cancelled && !readerDisposed) staleCount = count;
     }, 400);
     return () => {
@@ -2484,7 +2529,8 @@
     share: shareResults,
     onshare: setShareResults,
     shareStatus: sharedResults.state.status,
-    pdfOutput: ["pdf", "docx"].includes(buildPreferences.output),
+    // Calepin's results are published whatever the output.
+    pdfOutput: sourceFormat !== "typst" && ["pdf", "docx"].includes(buildPreferences.output),
   });
   const stopLatex = () => buildSettings.stopLatex();
 
@@ -2529,21 +2575,22 @@
       : renderState.failure ? renderState.failureReason || m.readerb_build_failed() : "",
   );
 
-  // A Quarto document with code is drawn as a draft until it has been run,
-  // so the desktop app says what produces the real output.
-  const quartoNeedsRun = $derived.by(() => {
-    if (sourceFormat !== "quarto" || !runCodeOffered || quartoResults || !previewPath) return false;
+  // A Quarto or Typst document with code is drawn as a draft until it has
+  // been run, so the desktop app says what produces the real output.
+  const needsRun = $derived.by(() => {
+    if (!runsExplicitly || !runCodeOffered || runResults || !previewPath) return false;
     void outlineRevision;
     const text = String(treeNow().texts?.[previewPath] ?? "");
+    if (sourceFormat === "typst") return usesCalepin({ [previewPath]: text });
     return quarto.executedCells(quarto.parseQuarto(text, { path: previewPath })).length > 0;
   });
 
   const localAppDiagnostics = $derived([
-    quartoNeedsRun ? { severity: "info", message: m.readerb_run_quarto_hint() } : null,
+    needsRun ?{ severity: "info", message: m.readerb_run_quarto_hint() } : null,
     runPhase === "failed" ? { severity: "error", message: m.readerb_run_failed() } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
-  ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })).concat(sourceFormat === "quarto" ? runDiagnostics : []));
+  ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })).concat(runsExplicitly ? runDiagnostics : []));
   // Backups that are off say nothing. Only a failing backup is reported.
   const backupDiagnostics = $derived.by(() => {
     const data = backupStatus.active ? backupStatus.data : null;
@@ -2721,7 +2768,7 @@
       buildPreferences,
       localExecution,
       runDirectory,
-      quartoResults,
+      runResults,
       latexContinuous: latexContinuous(),
       projectDigest: mayEdit ? "" : projection.state.project?.project_digest || "",
     }),
@@ -3148,14 +3195,14 @@
     can: () => can,
     editGroups: () => editGroups,
     outputs: () => ({ displayedFormat, latexOutput, typstOutput, markdownOutput }),
-    view: () => ({ linked, visual, runCodeOffered, localExecution, quarto: sourceFormat === "quarto", running: runPhase === "running" }),
+    view: () => ({ linked, visual, runCodeOffered, localExecution, explicitRun: runsExplicitly, running: runPhase === "running" }),
     insertMenu: () => insertMenu,
     refreshEditAvailability: () => refreshEditAvailability(),
     chooseFileCommand: (id) => chooseFileCommand(id),
     chooseEditCommand: (id) => chooseEditCommand(id),
     chooseViewCommand: (id) => chooseViewCommand(id),
     toggleLocalExecution: () => toggleLocalExecution(),
-    runQuarto: () => void runCode(),
+    runNow: () => void runCode(),
     stopRun: () => stopRun(),
     openSettings: () => openSettings(),
     runCommand: (id) => runCommand(id),
@@ -3351,11 +3398,11 @@
   // Whether the desktop app builds exports with the command for this format:
   // the same facts the preview routes a job by, so the menu offers what the
   // export makes. The browser route is taken for any file it has no command for.
-  // A Quarto export is itself an explicit request to run the code, so it needs
-  // no switch, only a folder to run in.
+  // A Quarto or Typst export is itself an explicit request to run the code, so
+  // it needs no switch, only a folder to run in.
   const exportsLocally = $derived(
     hasDesktop && mayEdit && !suggestOnly && buildPreferences.backend === "local"
-      && (sourceFormat === "quarto" ? runDirectoryReady : localExecution),
+      && (runsExplicitly ? runDirectoryReady : localExecution),
   );
 
   // Which exports the File menu can honour, for the file being previewed.
@@ -4298,10 +4345,10 @@
   {/if}
 {/snippet}
 {#snippet runStatus()}
-  {#if runPhase === "running"}<RunStatus since={runStartedAt} onstop={stopRun} />{/if}
+  {#if runPhase === "running"}<RunStatus since={runStartedAt} onstop={stopRun} tool={sourceFormat === "typst" ? "calepin" : "quarto"} />{/if}
 {/snippet}
 {#snippet localExecutionControl()}
-  {#if runCodeOffered && sourceFormat === "quarto"}
+  {#if runCodeOffered && runsExplicitly}
     <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun}
       share={shareResults} onshare={setShareResults}
       directoryName={runDir.status?.path ? leaf(runDir.status.path) : ""}
@@ -4524,7 +4571,7 @@
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
       onagent={agentOffered ? askDiagnostic : undefined}
-      log={sourceFormat === "quarto" && runLog ? runLog : renderState.lastLatexResult?.log || renderState.lastLog || ""}
+      log={runsExplicitly && runLog ? runLog : renderState.lastLatexResult?.log || renderState.lastLog || ""}
       logOpen={renderState.lastLatexResult ? undefined : false} />
   {/snippet}
 
@@ -4820,7 +4867,7 @@
            notice={previewChip ? previewNotice : undefined}
            cover={painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}
            status={runStatus}
-           dimmed={sourceFormat === "quarto" && (runPhase === "running" || runPhase === "failed")}
+           dimmed={runsExplicitly && (runPhase === "running" || runPhase === "failed")}
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
            away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || (noCompiler || failedBeforeRender) || Boolean(projection.state.unreadable) || Boolean(previewCard)} />

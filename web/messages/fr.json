@@ -2560,6 +2560,8 @@
   "registry_render_quarto_preview_terms": "aperçu par défaut sortie quarto default preview pdf html output",
   "registry_render_typst_pdf": "Commande Typst",
   "registry_render_typst_pdf_terms": "commande compiler cet ordinateur fichier résultat typst command pdf render this computer result file",
+  "registry_render_typst_html": "Commande Typst HTML",
+  "registry_render_typst_html_terms": "commande compiler cet ordinateur fichier résultat typst html command render this computer result file",
   "registry_render_typst_preview": "Aperçu par défaut de Typst",
   "registry_render_typst_preview_terms": "aperçu par défaut sortie typst default preview pdf html output",
   "registry_render_typst_where": "Typst se compile dans",
@@ -2581,6 +2583,7 @@
   "rename_invalid_chars": "Ce format n’accepte pas ce nom",
   "rename_label": "Renommer {name} en",
   "renderers_local_failed": "Le rendu en {format} sur cet ordinateur a échoué.",
+  "renderers_calepin_outputs_hidden": "Un bloc de code n’a pas de résultat de la dernière exécution, les résultats sont donc masqués. Appuyez sur Exécuter pour les afficher à nouveau.",
   "renderers_quarto_failed": "L’aperçu Quarto n’a pas pu être affiché.",
   "renderersettings_aria": "Rendu de {name} dans",
   "renderersettings_description": "Les documents {name} sont produits dans ce navigateur, ou sur cet ordinateur lorsque « Exécuter le code » est activé.",
@@ -3023,6 +3026,7 @@
   "runbutton_running_in": "Exécution du code dans {name}…",
   "runbutton_running": "Exécution du code…",
   "runstatus_running": "Exécution de Quarto · {seconds} s",
+  "runstatus_running_calepin": "Exécution de Calepin · {seconds} s",
   "runbutton_stale": [
     {
       "declarations": [

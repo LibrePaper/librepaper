@@ -61,6 +61,7 @@ export const CATEGORIES = [
       { id: "render-markdown-where", says: m.registry_render_markdown_where(), terms: m.registry_render_markdown_where_terms() },
       { id: "render-latex-pdf", says: m.registry_render_latex_pdf(), terms: m.registry_render_latex_pdf_terms() },
       { id: "render-typst-pdf", says: m.registry_render_typst_pdf(), terms: m.registry_render_typst_pdf_terms() },
+      { id: "render-typst-html", says: m.registry_render_typst_html(), terms: m.registry_render_typst_html_terms() },
       { id: "render-markdown-html", says: m.registry_render_markdown_html(), terms: m.registry_render_markdown_html_terms() },
       { id: "render-quarto-html", says: m.registry_render_quarto_html(), terms: m.registry_render_quarto_html_terms() },
     ],

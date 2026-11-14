@@ -95,8 +95,8 @@ assert.match(readerSource, /<SettingsDialog [^>]*runDirectory=\{runDir\} onchoos
 // Nothing resets a stored choice of this computer when a document opens, and
 // there is no live preview left to start or stop.
 assert.doesNotMatch(readerSource, /setQuartoPreviewMode|setTypstPreviewMode|startLocalExecution|stopLocalExecution|createLocalPreview/);
-assert.doesNotMatch(readerSource, /livePreviewOwnsPane|liveServing|liveTargets|liveShown|calepin/i);
-assert.doesNotMatch(previewSource, /livePreviewOwnsPane|calepin/i);
+assert.doesNotMatch(readerSource, /livePreviewOwnsPane|liveServing|liveTargets|liveShown/i);
+assert.doesNotMatch(previewSource, /livePreviewOwnsPane/i);
 // The switch sits in the top bar and the View menu, and it is the consent.
 assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?<RunButton phase=\{runPhase\}[\s\S]*?onrun=\{runCode\}[\s\S]*?\{:else if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
 // The switch is offered in the desktop app, for every document this person may

@@ -2560,6 +2560,8 @@
   "registry_render_quarto_preview_terms": "quarto pré-visualização padrão pdf html saída quarto default preview pdf html output",
   "registry_render_typst_pdf": "Comando Typst",
   "registry_render_typst_pdf_terms": "typst comando pdf renderizar este computador arquivo de resultado typst command pdf render this computer result file",
+  "registry_render_typst_html": "Comando HTML do Typst",
+  "registry_render_typst_html_terms": "typst html comando renderizar este computador arquivo de resultado typst html command render this computer result file",
   "registry_render_typst_preview": "Pré-visualização padrão do Typst",
   "registry_render_typst_preview_terms": "typst pré-visualização padrão pdf html saída typst default preview pdf html output",
   "registry_render_typst_where": "Typst renderiza em",
@@ -2581,6 +2583,7 @@
   "rename_invalid_chars": "Este formato não aceita esse nome",
   "rename_label": "Renomear {name} para",
   "renderers_local_failed": "Falha ao renderizar {format} neste computador.",
+  "renderers_calepin_outputs_hidden": "Um bloco de código não tem resultado da última execução, por isso os resultados estão ocultos. Prima Executar para os mostrar novamente.",
   "renderers_quarto_failed": "Não foi possível mostrar a pré-visualização do Quarto.",
   "renderersettings_aria": "{name} renderiza em",
   "renderersettings_description": "Os documentos {name} são renderizados neste navegador ou, com Executar código ativado, neste computador.",
@@ -3023,6 +3026,7 @@
   "runbutton_running_in": "A executar o código em {name}…",
   "runbutton_running": "A executar o código…",
   "runstatus_running": "A executar o Quarto · {seconds} s",
+  "runstatus_running_calepin": "A executar o Calepin · {seconds} s",
   "runbutton_stale": [
     {
       "declarations": [
