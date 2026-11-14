@@ -153,6 +153,13 @@ export function createFramePreview({
     sentFigures.clear();
   }
 
+  // The frame's document loaded again. A reload can keep the same address and
+  // epoch, as the browser's own "Reload frame" does, and the new document has
+  // none of the figures the old one was sent.
+  function forgetFigures() {
+    sentFigures.clear();
+  }
+
   return {
     navigate,
     markReady,
@@ -163,6 +170,7 @@ export function createFramePreview({
     refresh,
     invalidate,
     dispose,
+    forgetFigures,
     preview: () => latest,
     get epoch() { return epoch; },
     get contentGeneration() { return contentGeneration; },

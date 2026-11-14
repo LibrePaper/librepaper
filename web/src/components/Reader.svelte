@@ -2682,10 +2682,15 @@
 
   const navigateFrame = (force = false) => framePreview.navigate(force);
   const replayPreview = () => paintsTheFrame && framePreview.replay();
+  // A load event is a new document in the frame, even at the same address (the
+  // browser's "Reload frame"): it holds no page and no figures, so the figures
+  // are forgotten and the latest page is handed over again. The agent's own
+  // `ready` after each repaint is not a load and does not replay.
   const frameLoaded = () => {
-    const first = framePreview.markReady();
+    framePreview.forgetFigures();
+    framePreview.markReady();
     frameReady = true;
-    if (first) replayPreview();
+    replayPreview();
   };
 
   // The kind of frame follows the tree being displayed, including a
