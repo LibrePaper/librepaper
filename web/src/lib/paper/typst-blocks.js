@@ -3,6 +3,8 @@
 // markup between blank lines, or a heading, and each is a range of whole
 // lines. A block is compiled alone, so what the rest of the document gives it
 // (settings, definitions, numbers, reference text) is put in front of it.
+// A template's show rule frames every block, so typstFramePrefix gives the
+// renderer the frame's prefix to take the frame off.
 
 import { typstTree } from "../source-trees.js";
 import { typstFacts } from "../visual-markup/typst-facts.js";
@@ -212,12 +214,48 @@ function counterUpdates(numbered, block) {
  */
 export function typstBlockSource(text, block, blocks, files = null, path = "main.typ") {
   const context = contextOf(text, blocks, files, path);
+  return rulesBefore(text, blocks, block.from) + context.refs + counterUpdates(context.numbered, block) + text.slice(block.from, block.to);
+}
+
+/**
+ * The text of every preamble rule of the blocks that start before `offset`,
+ * each followed by a newline, in order.
+ * @param {string} text
+ * @param {PaperBlock[]} blocks
+ * @param {number} offset
+ * @returns {string}
+ */
+function rulesBefore(text, blocks, offset) {
   let preamble = "";
   for (const other of blocks) {
-    if (other.from >= block.from) break;
+    if (other.from >= offset) break;
     if (other.rules) for (const [from, to] of other.rules) preamble += text.slice(from, to) + "\n";
   }
-  return preamble + context.refs + counterUpdates(context.numbered, block) + text.slice(block.from, block.to);
+  return preamble;
+}
+
+// A rule that starts a whole-document show rule, `#show: template`, rather than a show rule for one element.
+const WHOLE_DOCUMENT_SHOW = /^#show\s*:/;
+
+/**
+ * The Typst that frames a body at `offset`: the preamble rules before it and
+ * the reference table, when one of those rules is a whole-document show rule
+ * (`#show: template`), which is what writes around the body. Null otherwise:
+ * nothing is written around the body, and there is no frame to take off.
+ * @param {string} text
+ * @param {number} offset
+ * @param {PaperBlock[]} blocks the result of splitTypstBlocks(text)
+ * @param {Record<string, string> | null} [files]
+ * @param {string} [path]
+ * @returns {string | null}
+ */
+export function typstFramePrefix(text, offset, blocks, files = null, path = "main.typ") {
+  const framed = blocks.some(
+    (other) =>
+      other.from < offset && other.rules?.some(([from, to]) => WHOLE_DOCUMENT_SHOW.test(text.slice(from, to))),
+  );
+  if (!framed) return null;
+  return rulesBefore(text, blocks, offset) + contextOf(text, blocks, files, path).refs;
 }
 
 /**

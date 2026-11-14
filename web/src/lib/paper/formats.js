@@ -3,10 +3,12 @@
 // the renderer module that draws it, and when the format can split text.
 // An adapter may also render the whole document at once (renderedBlocks), so
 // that footnotes and cross-references number as they do in the preview.
+// Two optional hooks, framePrefix and header, let a format name the source that
+// frames each block and draw a document header from what that source writes.
 
 import { blockSource, splitBlocks } from "./blocks.js";
 import { orgBlockSource, splitOrgBlocks } from "./org-blocks.js";
-import { splitTypstBlocks, typstBlockSource, typstPreamble } from "./typst-blocks.js";
+import { splitTypstBlocks, typstBlockSource, typstFramePrefix, typstPreamble } from "./typst-blocks.js";
 import { loadOrgSyntax } from "../org-language/module.js";
 import { loadTypstSyntax } from "../typst-language/module.js";
 import { markdownFolds, orgFolds, typstFolds } from "../visual/fold-finders.js";
@@ -20,6 +22,8 @@ import { markdownFolds, orgFolds, typstFolds } from "../visual/fold-finders.js";
  *   ready: () => Promise<void>,
  *   prepare?: (text: string, renderer: any, project: any, onUpdate: () => void) => void,
  *   folds: (text: string) => import("../visual/folds.js").Fold[],
+ *   framePrefix?: (text: string, block: import("./blocks.js").PaperBlock, blocks: import("./blocks.js").PaperBlock[], files: Record<string, string> | null, path: string) => string | null,
+ *   header?: (text: string, blocks: import("./blocks.js").PaperBlock[], folds: import("../visual/folds.js").Fold[], renderer: import("./renderer.js").PaperRenderer, files: Record<string, string> | null, path: string) => (import("./blocks.js").PaperBlock & { html: string }) | null,
  * }} PaperFormat
  */
 
@@ -97,6 +101,17 @@ const formats = {
     blockSource: typstBlockSource,
     ready: () => loadTypstSyntax().then(() => {}),
     folds: typstFolds,
+    framePrefix: (text, block, blocks, files, path) => typstFramePrefix(text, block.from, blocks, files, path),
+    // What the document's template writes before the body is the header's title block, drawn under the Preamble pill.
+    header(text, blocks, folds, renderer, files, path) {
+      const fold = folds.find((candidate) => candidate.kind === "preamble");
+      if (!fold || !renderer.frame) return null;
+      const prefix = typstFramePrefix(text, fold.to + 1, blocks, files, path);
+      if (prefix === null) return null;
+      const before = renderer.frame(prefix)?.before ?? "";
+      if (before.replace(/<[^>]*>/g, "").trim() === "" && !/<(img|svg)\b/.test(before)) return null;
+      return { from: fold.from, to: fold.to, kind: "TitleBlock", render: true, html: '<header class="title-block">' + before + "</header>" };
+    },
     // Fetches the images and packages the project needs, then asks for a redraw.
     prepare(text, renderer, project, onUpdate) {
       const blocks = splitTypstBlocks(text);
