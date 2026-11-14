@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { latexmlWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle } from "../../src/lib/house-style.js";
+import { houseStyleCss, latexmlWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle, withHouseStyle } from "../../src/lib/house-style.js";
 
 const css = "body { color: var(--lp-ink) }";
 
@@ -67,4 +67,37 @@ assert.equal(latexmlWithHouseStyle("<head><style data-latexml-css>a{}</style></h
   const page = (title) => `<html><head><style>.quarto-x{}</style></head><body><nav id="TOC"><h2 id="toc-title">${title}</h2></nav></body></html>`;
   assert.ok(quartoWithHouseStyle(page("Table of contents"), ":root{--lp-ink:#000}").includes('id="toc-title">Contents</h2>'));
   assert.ok(quartoWithHouseStyle(page("Inhalt"), ":root{--lp-ink:#000}").includes('id="toc-title">Inhalt</h2>'));
+}
+
+// The bundled stylesheet is the app's only copy.
+{
+  const bundled = await houseStyleCss();
+  assert.ok(bundled.includes("--lp-ink"));
+  assert.ok(bundled.includes("canonical and only copy"));
+}
+
+// A page from a wasm renderer gets the house style as the first stylesheet of its head.
+{
+  const tag = `<style data-lp-house>${css}</style>`;
+  // an old module's embedded copy is replaced
+  const old = withHouseStyle('<html><head><meta charset="utf-8"><style>:root{--lp-ink:#111}</style><style>.own{}</style></head><body>x</body></html>', css);
+  assert.equal(old, `<html><head><meta charset="utf-8">${tag}<style>.own{}</style></head><body>x</body></html>`);
+  // no style: inserted at the end of the head
+  assert.equal(withHouseStyle("<html><head><title>t</title></head><body>x</body></html>", css), `<html><head><title>t</title>${tag}</head><body>x</body></html>`);
+  // a renderer style, and a linked sheet, come after the house style
+  assert.equal(withHouseStyle("<head><style>.own{}</style></head>", css), `<head>${tag}<style>.own{}</style></head>`);
+  assert.equal(withHouseStyle('<head><title>t</title><link rel="stylesheet" href="a.css"></head>', css), `<head><title>t</title>${tag}<link rel="stylesheet" href="a.css"></head>`);
+  // a page that has it is unchanged
+  const had = `<html><head>${tag}<style>.own{}</style></head></html>`;
+  assert.equal(withHouseStyle(had, css), had);
+  // no head: one is made
+  assert.equal(withHouseStyle("<html><body>x</body></html>", css), `<html><head>${tag}</head><body>x</body></html>`);
+  assert.equal(withHouseStyle("<p>x</p>", css), `<head>${tag}</head><p>x</p>`);
+  // a style in the body is not mistaken for a head style
+  assert.equal(withHouseStyle("<head></head><body><style>.b{}</style></body>", css), `<head>${tag}</head><body><style>.b{}</style></body>`);
+  // a document's own styles that use the house tokens stay, in the head and the body
+  const own = '<html><head><style>.custom{color:var(--lp-ink)}</style></head><body><style>:root{--lp-ink:red}</style>x</body></html>';
+  assert.equal(withHouseStyle(own, css), `<html><head>${tag}<style>.custom{color:var(--lp-ink)}</style></head><body><style>:root{--lp-ink:red}</style>x</body></html>`);
+  // the bundled stylesheet is the default
+  assert.ok(withHouseStyle("<head></head>").includes("--lp-ink"));
 }

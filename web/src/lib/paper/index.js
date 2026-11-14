@@ -18,6 +18,7 @@ import { foldLayer, foldsOf, refreshFolds } from "../visual/folds.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
 import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
+import HOUSE_CSS from "../house-css.js";
 import { paperOverlays } from "./overlays.js";
 
 const refreshPaper = StateEffect.define();
@@ -235,17 +236,15 @@ function loaderFor(adapter, project) {
         if (update.docChanged) prepare();
       },
     };
-    // The page stylesheet is always the Markdown renderer's: it is the house
-    // style every format shares, whichever renderer draws this file.
-    const house = adapter.module === "markdown" ? null : loadPaperRenderer("markdown").catch(() => null);
-    Promise.all([loadPaperRenderer(adapter.module), adapter.ready(), house])
-      .then(([renderer, , markdown]) => {
+    // The page stylesheet is the app's house style, which every format shares,
+    // whichever renderer draws this file.
+    Promise.all([loadPaperRenderer(adapter.module), adapter.ready()])
+      .then(([renderer]) => {
         if (plugin.destroyed) return;
-        const pageCss = (adapter.module === "markdown" ? renderer : markdown)?.pageCss;
-        if (pageCss && !document.head.querySelector("style[data-librepaper-paper]")) {
+        if (!document.head.querySelector("style[data-librepaper-paper]")) {
           const style = document.createElement("style");
           style.setAttribute("data-librepaper-paper", "");
-          style.textContent = paperStylesheet(pageCss);
+          style.textContent = paperStylesheet(HOUSE_CSS);
           document.head.appendChild(style);
         }
         // The Markdown page stylesheet does not cover Typst's MathML, so Typst brings its own rules.

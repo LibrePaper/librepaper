@@ -17,6 +17,11 @@ registerHooks({
     }
   },
   load(url, context, next) {
+    // Vite's `?raw` import of a stylesheet: the file's text as the default export.
+    if (url.startsWith("file:") && /\.css\?raw$/.test(url)) {
+      const path = fileURLToPath(url.slice(0, url.indexOf("?")));
+      return { format: "module", source: `export default ${JSON.stringify(readFileSync(path, "utf8"))};`, shortCircuit: true };
+    }
     if (!url.startsWith("file:") || !url.endsWith(".ts")) return next(url, context);
     const source = readFileSync(fileURLToPath(url), "utf8");
     const { outputText } = ts.transpileModule(source, {

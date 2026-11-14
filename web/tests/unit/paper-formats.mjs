@@ -7,7 +7,6 @@ function fakeRenderer(result) {
   return {
     calls,
     render: () => "",
-    pageCss: "",
     renderBlocks(source, main) {
       calls.push({ source, main });
       return result;
