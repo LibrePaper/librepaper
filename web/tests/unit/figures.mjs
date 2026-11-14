@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import {
   __resetAssetTestState,
   __setAssetTestHooks,
+  figureReference,
   gather,
   keep,
+  referencedType,
   release,
 } from "../../src/lib/figures.js";
 import { ASSET_DATABASE } from "../../src/lib/local-data.js";
@@ -630,6 +632,48 @@ __resetAssetTestState();
     assert.equal(bytesStore.has(shaC), true);
   }, { indexedDB: fake, capBytes: 100 });
 }
+
+// The live preview's form: raster images and PDFs are named by reference, each
+// referenced figure's bytes are listed once, and an SVG keeps its data URL.
+// With `urls: true` nothing is referenced.
+assert.equal(referencedType("image/png"), true);
+assert.equal(referencedType("application/pdf"), true);
+assert.equal(referencedType("image/svg+xml"), false);
+assert.equal(referencedType("application/octet-stream"), false);
+assert.equal(figureReference("p"), "about:blank#librepaper-asset=p");
+await scenario((url) => {
+  if (isLink(url)) return noLink();
+  if (url === bytesUrl("p")) return reply(200, { bytes: Uint8Array.of(1, 2, 3) });
+  if (url === bytesUrl("q")) return reply(200, { bytes: Uint8Array.of(4, 5) });
+  if (url === bytesUrl("s")) return reply(200, { bytes: new TextEncoder().encode("<svg/>") });
+  if (url === bytesUrl("d")) return reply(200, { bytes: Uint8Array.of(9) });
+  throw new Error(`unexpected ${url}`);
+}, async () => {
+  const result = await gather("doc", {
+    "one.png": "p",
+    "again.png": "p",
+    "two.jpg": "q",
+    "vector.svg": "s",
+    "doc.pdf": "d",
+  }, {}, { urls: "reference" });
+  assert.equal(result.urls["one.png"], figureReference("p"));
+  assert.equal(result.urls["again.png"], figureReference("p"));
+  assert.equal(result.urls["two.jpg"], figureReference("q"));
+  assert.equal(result.urls["doc.pdf"], figureReference("d"));
+  assert.ok(result.urls["vector.svg"].startsWith("data:image/svg+xml;base64,"), "an SVG keeps its data URL");
+  assert.deepEqual(
+    result.references.map(({ sha, type }) => [sha, type]),
+    [["p", "image/png"], ["q", "image/jpeg"], ["d", "application/pdf"]],
+    "each referenced figure is listed once, and the SVG is not",
+  );
+  assert.deepEqual([...result.references[0].bytes], [1, 2, 3]);
+  assert.deepEqual([...result.assets["vector.svg"]], [...new TextEncoder().encode("<svg/>")]);
+  assert.deepEqual(result.missing, []);
+
+  const plain = await gather("doc", { "one.png": "p" });
+  assert.ok(plain.urls["one.png"].startsWith("data:image/png;base64,"), "urls: true still builds a data URL");
+  assert.deepEqual(plain.references, []);
+}, {});
 
 // After a sign-out nothing is written, and the store is not even opened. This
 // must stay the last test: the sign-out is for the rest of this process.

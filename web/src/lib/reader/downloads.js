@@ -6,7 +6,7 @@
 // knows and this decides.
 
 import { basename, inside } from "../file-manager.js";
-import { toBase64 } from "../figures.js";
+import { figureReference, toBase64 } from "../figures.js";
 import { m } from "../paraglide/messages.js";
 
 /// A page painted in this browser names its figures by object URL
@@ -36,6 +36,21 @@ export async function inlineBlobUrls(html, fetcher = fetch) {
     if (!pair) continue;
     const [url, data] = pair;
     out = out.split(url).join(data);
+  }
+  return out;
+}
+
+/// The live preview names a raster image or PDF by reference
+/// (`figures.figureReference`), and its frame holds the bytes, not the page. A
+/// download has to carry the bytes itself, so each reference becomes the data
+/// URL the tree already has for that path. A reference whose path has no data
+/// URL in the tree is left as it is: it loads nothing, like a missing figure.
+export function inlineFigureReferences(html, tree) {
+  let out = html;
+  for (const [path, sha] of Object.entries(tree.digests || {})) {
+    const url = tree.urls?.[path];
+    if (typeof url !== "string" || !url.startsWith("data:")) continue;
+    out = out.split(figureReference(sha)).join(url);
   }
   return out;
 }

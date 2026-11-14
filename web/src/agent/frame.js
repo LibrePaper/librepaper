@@ -630,10 +630,38 @@ import { morphChildren } from "./morph.js";
     }
   }
 
+  // The figures the reader sends for a preview, by digest, each as a blob URL
+  // made here. A page refers to a figure by `about:blank#librepaper-asset=<sha>`
+  // (see figures.js, which owns that format), and the preview substitutes the
+  // blob URL before the page is parsed, so the bytes cross the channel once
+  // rather than inside every keystroke's HTML.
+  const frameFigures = new Map();
+  // The types a figure may be given. The reader sends the type it worked out
+  // from the file name, and this end does not trust it: an SVG or HTML blob
+  // would run as this origin. figures.js has the other copy of this list.
+  const FRAME_FIGURE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"]);
+  const FIGURE_REFERENCE = /about:blank#librepaper-asset=([0-9A-Za-z%]+)/g;
+  function addFigures(items) {
+    if (!Array.isArray(items)) return;
+    for (const item of items) {
+      if (typeof item?.sha !== "string" || !(item.bytes instanceof Uint8Array) || typeof item.type !== "string") continue;
+      if (frameFigures.has(item.sha)) continue;
+      const type = FRAME_FIGURE_TYPES.has(item.type) ? item.type : "application/octet-stream";
+      frameFigures.set(item.sha, URL.createObjectURL(new Blob([item.bytes], { type })));
+    }
+  }
+  function withFigureUrls(html) {
+    return html.replace(FIGURE_REFERENCE, (whole, sha) => {
+      const url = frameFigures.get(sha);
+      return url ? `${url}#librepaper-asset=${sha}` : whole;
+    });
+  }
+
   addEventListener("message", (event) => {
     if (!READER || event.source !== parent || event.origin !== READER) return;
     const message = event.data;
     if (!message || message.librepaper !== true) return;
+    if (message.type === "figures") addFigures(message.items);
     // The frame can finish loading and publish before Svelte has bound the
     // iframe element used to authenticate its message source. The reader
     // acknowledges its own load event so that readiness is never a one-shot
@@ -666,7 +694,7 @@ import { morphChildren } from "./morph.js";
       // text exactly as it does for a document that builds itself in
       // JavaScript -- one code path for "the document changed", not two.
       if (message.pdf) return;
-      const parsed = new DOMParser().parseFromString(String(message.html || ""), "text/html");
+      const parsed = new DOMParser().parseFromString(withFigureUrls(String(message.html || "")), "text/html");
       // The frame this arrives in is an empty shell -- nothing rendered is
       // stored any more, so there is no page whose styles the body could
       // inherit. The page's own head comes with it, and is installed once:

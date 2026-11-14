@@ -42,7 +42,7 @@ import { m } from "../paraglide/messages.js";
  * lastPage?: (path: string) => Promise<{ kind: string, identity?: string, bytes?: Uint8Array, html?: string, sources?: Array<string | null> } | null>,
  * onRendered?: (identity: string, projectDigest: string) => void, onEmpty?: () => void,
  * facts: () => PreviewFacts, tree: () => PreviewTree,
- * gather: (digests: Record<string, string>, options?: { urls?: boolean }) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string> }, missing: string[] }>,
+ * gather: (digests: Record<string, string>, options?: { urls?: boolean | "reference" }) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string>, references: Array<{ sha: string, type: string, bytes: Uint8Array }> }, missing: string[] }>,
  * heading: (tree: PreviewTree) => Promise<string>, takeManual?: () => boolean, manualPending?: () => boolean,
  * onsynctex?: (map: unknown | null) => void, send?: (message: { type: string, html?: string }) => void,
  * clearDebounce?: () => void, refreshFrame?: () => void, debug?: (message: string, ...details: unknown[]) => void,
@@ -257,13 +257,18 @@ export function createPreviewRenderer({
       // already up stays up meanwhile: rendering without them would produce a
       // document with holes in it and replace it a moment later, which reads
       // as a flicker rather than as progress.
+      // The raster figures and PDFs a flow page refers to, which the frame
+      // needs once. They travel with the page, and the frame sends them ahead
+      // of the HTML that names them.
+      let figures = [];
       if (Object.keys(source.digests || {}).length) {
         // Data URLs are only for flow pages that embed figures as HTML
         // (Markdown, Org, Quarto draft, authored HTML). Typst and LaTeX take
         // the bytes and ignore URLs, and a paged render never embeds them, so
-        // those skip building the URLs.
+        // those skip building the URLs. A flow page names its raster figures
+        // and PDFs by reference instead, so each keystroke's HTML stays small.
         const needsUrls = !paged && format !== "typst" && format !== "latex";
-        const { held, missing } = await gather(source.digests, { urls: needsUrls });
+        const { held, missing } = await gather(source.digests, { urls: needsUrls ? "reference" : false });
         debug("preview: assets", Object.keys(held.assets || {}).length, missing);
         if (coordinator.superseded(guard)) return;
         // A flow page remains useful when an image blob is unavailable:
@@ -279,6 +284,7 @@ export function createPreviewRenderer({
         // of this render. Keep both inventories when the figure collector
         // returns its authenticated blob URLs.
         source.urls = { ...(source.urls || {}), ...held.urls };
+        figures = held.references ?? [];
       }
       // Keep a transient source identity for diagnostics and race checks. It
       // is never sent to the server as a rendering name; shared results are a
@@ -350,7 +356,7 @@ export function createPreviewRenderer({
           key: keyOf(identity),
           page: pdf
             ? { kind: /** @type {const} */ ("pdf"), sha: identity, bytes: new Uint8Array(buffer.slice(0)) }
-            : { kind: /** @type {const} */ ("html"), html, ...(Array.isArray(sources) ? { sources } : {}) },
+            : { kind: /** @type {const} */ ("html"), html, ...(Array.isArray(sources) ? { sources } : {}), ...(figures.length ? { figures } : {}) },
           diagnostics: contextual,
           latex: format === "latex" && !htmlPreview ? rendered : null,
           log: rendered?.log || "",

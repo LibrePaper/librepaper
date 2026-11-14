@@ -22,7 +22,7 @@ import { orgLatexTree } from "../pandoc/latex.js";
 import { compilerAvailable } from "../renderers.js";
 import { LOCAL_OUTPUTS } from "../desktop/client.js";
 import { parseQuarto } from "../engines/quarto.js";
-import { docxFile, inlineBlobUrls } from "./downloads.js";
+import { docxFile, inlineBlobUrls, inlineFigureReferences } from "./downloads.js";
 import { m } from "../paraglide/messages.js";
 
 export const EXPORT_TARGETS = ["pdf", "html", "docx"];
@@ -184,7 +184,9 @@ export async function exportFile({ target, format, tree, title, slug, project = 
       if (typeof source !== "string") throw new Error(m.exports_html_unreadable());
       return source;
     }
-    if (previewCurrent && preview?.kind === "html") return inlineBlobUrls(preview.html);
+    // The live preview names its figures by reference, which the download
+    // cannot use, so those become the data URLs the tree was gathered with.
+    if (previewCurrent && preview?.kind === "html") return inlineBlobUrls(inlineFigureReferences(preview.html, tree));
     const markdown = format === "markdown" || format === "quarto";
     const result = await render(tree, title, markdown
       ? { format: "html", project, buildPreferences: MARKDOWN_HTML }

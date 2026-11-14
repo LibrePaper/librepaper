@@ -4,10 +4,12 @@
 // fresh PDF buffer so replay cannot observe a detached one.
 
 /** `sources` maps each `data-sourcepos` source tag to a project-relative path, or null. It is optional and absent when the engine did not return it. */
-/** @typedef {{ kind: "html", html: string, sha?: string, presentation?: "document", sources?: Array<string | null> } | { kind: "pdf", sha: string | null, bytes: Uint8Array }} FramePreviewContent */
+/** `figures` are the raster images and PDFs the HTML names by reference. The frame gets their bytes once per frame, ahead of the first page that needs them. */
+/** @typedef {{ sha: string, type: string, bytes: Uint8Array }} FramePreviewFigure */
+/** @typedef {{ kind: "html", html: string, sha?: string, presentation?: "document", sources?: Array<string | null>, figures?: FramePreviewFigure[] } | { kind: "pdf", sha: string | null, bytes: Uint8Array }} FramePreviewContent */
 /** @typedef {FramePreviewContent & { generation: number }} FramePreviewPayload */
-/** @typedef {{ kind: "html", html: string, sha?: string, presentation?: "document", sources?: Array<string | null> } | { kind: "pdf", sha?: string | null, bytes: Uint8Array | ArrayBuffer }} FramePreviewInput */
-/** @typedef {{ type: "preview", html?: string, pdf?: ArrayBuffer, frameGeneration: number, presentation?: "document", sources?: Array<string | null> }} FrameMessage */
+/** @typedef {{ kind: "html", html: string, sha?: string, presentation?: "document", sources?: Array<string | null>, figures?: FramePreviewFigure[] } | { kind: "pdf", sha?: string | null, bytes: Uint8Array | ArrayBuffer }} FramePreviewInput */
+/** @typedef {{ type: "preview", html?: string, pdf?: ArrayBuffer, frameGeneration: number, presentation?: "document", sources?: Array<string | null> } | { type: "figures", items: FramePreviewFigure[] }} FrameMessage */
 
 /** @param {{
  * slug: string, getDocsOrigin: () => string | null, framePath: () => string,
@@ -37,6 +39,10 @@ export function createFramePreview({
   let contentGeneration = 0;
   let deliveredGeneration = 0;
   let disposed = false;
+  // The figures this frame already holds, by digest. A frame that loads again
+  // has lost them, so the set is emptied wherever the frame is replaced or
+  // reloaded: the same places readiness is.
+  const sentFigures = new Set();
 
   function navigate(force = false) {
     const docsOrigin = getDocsOrigin();
@@ -48,6 +54,7 @@ export function createFramePreview({
     epoch += 1;
     readyEpoch = -1;
     deliveredGeneration = 0;
+    sentFigures.clear();
     onNavigate({ epoch, kind });
     const base = `${docsOrigin}/${kind}/${slug}/?v=${++generation}`;
     source = base;
@@ -59,6 +66,7 @@ export function createFramePreview({
     if (disposed) return false;
     const first = readyEpoch !== epoch;
     readyEpoch = epoch;
+    if (first) sentFigures.clear();
     return first;
   }
 
@@ -70,6 +78,7 @@ export function createFramePreview({
       ...(payload.sha ? { sha: payload.sha } : {}),
       ...(payload.presentation === "document" ? { presentation: "document" } : {}),
       ...(Array.isArray(payload.sources) ? { sources: payload.sources.slice() } : {}),
+      ...(Array.isArray(payload.figures) ? { figures: payload.figures.slice() } : {}),
     };
     const bytes = payload.bytes instanceof Uint8Array ? payload.bytes : new Uint8Array(payload.bytes);
     return { kind: "pdf", sha: payload.sha || null, bytes: bytes.slice() };
@@ -86,6 +95,15 @@ export function createFramePreview({
       const buffer = payload.bytes.slice().buffer;
       send({ type: "preview", pdf: buffer, frameGeneration: payload.generation }, [buffer]);
     } else {
+      // The figures go ahead of the page that refers to them, and only once:
+      // the frame keeps the bytes it was given, so a keystroke sends the HTML
+      // alone. The bytes are not transferred, because the reader keeps them
+      // for the next frame.
+      const unsent = (payload.figures || []).filter((figure) => !sentFigures.has(figure.sha));
+      if (unsent.length) {
+        send({ type: "figures", items: unsent.map(({ sha, type, bytes }) => ({ sha, type, bytes })) });
+        for (const figure of unsent) sentFigures.add(figure.sha);
+      }
       send({ type: "preview", html: payload.html,
         frameGeneration: payload.generation,
         ...(payload.presentation === "document" ? { presentation: "document" } : {}),
@@ -125,12 +143,14 @@ export function createFramePreview({
 
   function invalidate() {
     readyEpoch = -1;
+    sentFigures.clear();
   }
 
   function dispose() {
     disposed = true;
     latest = null;
     readyEpoch = -1;
+    sentFigures.clear();
   }
 
   return {

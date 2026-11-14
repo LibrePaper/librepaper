@@ -8,13 +8,22 @@
 //
 // Two forms are needed, because the two renderers want different things. Typst
 // takes the bytes and writes the image into the page itself. Markdown produces
-// HTML a browser will fetch from, so it takes a data URL -- never the route
-// the bytes came from, which on a private document carries a credential and
-// would put it inside a rendered page. A data URL, unlike a blob URL made here,
-// loads in the document frame, which lives on another origin, and an SVG opened
-// from one in a tab of its own runs in an opaque origin rather than as the app.
-// PDFs stay blob URLs: the reader's figure view shows them in an <object>, and
-// browsers render them in a PDF viewer that is isolated from the page.
+// HTML a browser will fetch from, so it takes a URL -- never the route the
+// bytes came from, which on a private document carries a credential and would
+// put it inside a rendered page. For a download that URL is a data URL, which
+// is self-contained: it loads in the document frame, which lives on another
+// origin, and an SVG opened from one in a tab of its own runs in an opaque
+// origin rather than as the app. PDFs used as URLs are blob URLs, because the
+// reader's figure view shows them in an <object>, and browsers render them in a
+// PDF viewer that is isolated from the page.
+//
+// The live preview is the exception for raster images and PDFs. Every keystroke
+// would otherwise carry each figure's base64 inside the page, so those figures
+// are named by `figureReference(sha)` instead. The bytes travel to the preview
+// frame once, and the frame makes its own blob URLs. An SVG never takes that
+// route: an SVG blob URL made on the documents origin and opened in a tab of its
+// own would run as that origin, while browsers block a data URL opened at the
+// top level. So SVG, and every other type, keeps its data URL.
 //
 // Behind the memory map sits a persistent store (IndexedDB, keyed by digest)
 // so a figure survives a reload. Bytes are fetched from a signed link on the
@@ -412,13 +421,38 @@ export function typeOf(path) {
   return "application/octet-stream";
 }
 
-/// Fetches every figure a document names and returns them in both forms.
-/// `digests` is the path-to-digest map the shared document carries.
+/// The types a figure may be given by reference. The live preview names these
+/// by `figureReference`, and the preview frame makes its own blob URL from the
+/// bytes. SVG is left out on purpose (see the top of this file), and so is
+/// every type the store does not know.
+const REFERENCED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"]);
+
+/** Whether a figure of this MIME type is named by reference rather than given as a URL. @param {string} type */
+export function referencedType(type) {
+  return REFERENCED_TYPES.has(type);
+}
+
+/// The reference the live preview writes into its HTML for a figure. It loads
+/// nothing and makes no request, so a page that outlives its frame shows a
+/// broken image rather than fetching anything.
+/** @param {string} sha */
+export function figureReference(sha) {
+  return `about:blank#librepaper-asset=${encodeURIComponent(sha)}`;
+}
+
+/// Fetches every figure a document names and returns them in the forms asked
+/// for. `digests` is the path-to-digest map the shared document carries.
+///
+/// `urls` says what each path's URL is: `true` gives a data URL (a blob URL for
+/// a PDF), `"reference"` gives a `figureReference` for a raster image or PDF
+/// and the same as `true` for any other type, and `false` gives none. With
+/// `"reference"`, `references` lists each referenced figure once, with the
+/// bytes already held, so a caller can hand them to the frame.
 ///
 /// A figure that cannot be fetched is left out rather than failing the render:
 /// the rest of the document is still worth showing, and the image is broken in
 /// the page, which is what a missing figure looks like everywhere else.
-/** @param {string} slug @param {Record<string, string>} digests @param {HeadersInit} [headers] @param {{strict?: boolean, urls?: boolean}} [options] @returns {Promise<{assets: Record<string, Uint8Array>, urls: Record<string, string>, missing: string[]}>} */
+/** @param {string} slug @param {Record<string, string>} digests @param {HeadersInit} [headers] @param {{strict?: boolean, urls?: boolean | "reference"}} [options] @returns {Promise<{assets: Record<string, Uint8Array>, urls: Record<string, string>, missing: string[], references: Array<{sha: string, type: string, bytes: Uint8Array}>}>} */
 export async function gather(slug, digests, headers = {}, { strict = false, urls: wantUrls = true } = {}) {
   const wanted = Object.entries(digests || {});
   const got = await Promise.all(
@@ -428,9 +462,12 @@ export async function gather(slug, digests, headers = {}, { strict = false, urls
         const captured = generation;
         const body = await fetchOne(slug, sha, headers);
         if (generation !== captured) throw new Error("Asset authorization changed");
-        if (!wantUrls) return [path, body, null];
+        if (!wantUrls) return [path, body, null, null];
+        const type = typeOf(path);
+        if (wantUrls === "reference" && referencedType(type)) {
+          return [path, body, figureReference(sha), { sha, type }];
+        }
         if (!urls.has(key)) {
-          const type = typeOf(path);
           let url;
           if (type === "application/pdf") {
             url = URL.createObjectURL(new Blob([body], { type }));
@@ -442,7 +479,7 @@ export async function gather(slug, digests, headers = {}, { strict = false, urls
           // document agent.
           urls.set(key, `${url}#librepaper-asset=${encodeURIComponent(sha)}`);
         }
-        return [path, body, urls.get(key)];
+        return [path, body, urls.get(key), null];
       } catch {
         return null;
       }
@@ -454,11 +491,18 @@ export async function gather(slug, digests, headers = {}, { strict = false, urls
   const where = {};
   /** @type {string[]} */
   const missing = [];
+  /** @type {Array<{sha: string, type: string, bytes: Uint8Array}>} */
+  const references = [];
+  const referenced = new Set();
   for (const one of got) {
     if (!one) continue;
-    const [path, body, url] = one;
+    const [path, body, url, reference] = one;
     assets[path] = body;
     if (url) where[path] = url;
+    if (reference && !referenced.has(reference.sha)) {
+      referenced.add(reference.sha);
+      references.push({ sha: reference.sha, type: reference.type, bytes: body });
+    }
   }
   for (const [path] of wanted) {
     if (!Object.prototype.hasOwnProperty.call(assets, path)) missing.push(path);
@@ -466,7 +510,7 @@ export async function gather(slug, digests, headers = {}, { strict = false, urls
   if (strict && missing.length) {
     throw Object.assign(new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`), { missing });
   }
-  return { assets, urls: where, missing };
+  return { assets, urls: where, missing, references };
 }
 
 /// Whether every figure a document names is already here, which is what says a
