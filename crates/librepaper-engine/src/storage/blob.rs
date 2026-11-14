@@ -124,6 +124,8 @@ pub trait BlobStore: Send + Sync {
 /// What `signed_get` needs to sign a link. Holds the secret, so it has no `Debug`.
 struct S3Signing {
     base: String,
+    /// The endpoint's path without a trailing slash; empty for a bare host.
+    path_prefix: String,
     region: String,
     bucket: String,
     access_key_id: String,
@@ -182,13 +184,14 @@ impl ObjectBlobStore {
         if let Some(endpoint) = endpoint.filter(|value| !value.is_empty()) {
             builder = builder.with_endpoint(endpoint);
         }
-        let base = s3_base_url(endpoint, region, allow_http);
+        let (base, path_prefix) = s3_endpoint(endpoint, region, allow_http)?;
         Ok(Self {
             inner: Arc::new(builder.build().map_err(|error| error.to_string())?),
             description: format!("s3://{bucket}"),
             local_root: None,
             signer: Some(S3Signing {
                 base,
+                path_prefix,
                 region: region.to_owned(),
                 bucket: bucket.to_owned(),
                 access_key_id: access_key_id.expect("checked above").to_owned(),
@@ -202,22 +205,35 @@ impl ObjectBlobStore {
         ObjectPath::parse(key).map_err(|error| BlobError::Other(error.to_string()))
     }
 }
-/// The scheme, host and port that signed links are built on. The builder is
-/// path-style, so the bucket sits in the path, not the host.
-fn s3_base_url(endpoint: Option<&str>, region: &str, allow_http: bool) -> String {
-    match endpoint.filter(|value| !value.is_empty()) {
-        Some(endpoint) => {
-            let endpoint = endpoint.trim_end_matches('/');
-            if endpoint.contains("://") {
-                endpoint.to_owned()
-            } else if allow_http {
-                format!("http://{endpoint}")
-            } else {
-                format!("https://{endpoint}")
-            }
-        }
-        None => format!("https://s3.{region}.amazonaws.com"),
-    }
+/// The scheme, host and port that signed links are built on, and the path the
+/// endpoint sits under (empty for a bare host). The builder is path-style, so
+/// the bucket follows that path, not the host.
+fn s3_endpoint(
+    endpoint: Option<&str>,
+    region: &str,
+    allow_http: bool,
+) -> Result<(String, String), String> {
+    let Some(endpoint) = endpoint.filter(|value| !value.is_empty()) else {
+        return Ok((format!("https://s3.{region}.amazonaws.com"), String::new()));
+    };
+    let raw = if endpoint.contains("://") {
+        endpoint.to_owned()
+    } else if allow_http {
+        format!("http://{endpoint}")
+    } else {
+        format!("https://{endpoint}")
+    };
+    let url = url::Url::parse(&raw)
+        .map_err(|error| format!("storage.s3.endpoint is not a valid URL: {error}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "storage.s3.endpoint has no host".to_owned())?;
+    let base = match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    };
+    // `url` keeps the path percent-encoded, which is the form the request is sent in.
+    Ok((base, url.path().trim_end_matches('/').to_owned()))
 }
 
 fn map_error(error: object_store::Error) -> BlobError {
@@ -376,7 +392,11 @@ impl BlobStore for ObjectBlobStore {
             return Ok(None);
         };
         let object = Self::path(key)?;
-        let mut path = format!("/{}", sigv4::encode_path_segment(&signer.bucket));
+        let mut path = format!(
+            "{}/{}",
+            signer.path_prefix,
+            sigv4::encode_path_segment(&signer.bucket)
+        );
         for segment in object.as_ref().split('/') {
             path.push('/');
             path.push_str(&sigv4::encode_path_segment(segment));
@@ -524,6 +544,26 @@ mod tests {
         assert!(url.contains("X-Amz-Expires=300"));
         assert!(url.contains("response-content-disposition=attachment"));
         assert!(url.contains("response-content-type=application%2Foctet-stream"));
+    }
+
+    #[tokio::test]
+    async fn s3_signed_get_keeps_an_endpoint_path_prefix() {
+        let store = ObjectBlobStore::s3(
+            Some("https://minio.example:9000/s3"),
+            "us-east-1",
+            "my-bucket",
+            false,
+            Some("AK"),
+            Some("SK"),
+            None,
+        )
+        .expect("s3 store");
+        let url = store
+            .signed_get("ab/cd", std::time::Duration::from_secs(300))
+            .await
+            .expect("link")
+            .expect("s3 stores sign links");
+        assert!(url.starts_with("https://minio.example:9000/s3/my-bucket/ab/cd?"));
     }
 
     #[tokio::test]
