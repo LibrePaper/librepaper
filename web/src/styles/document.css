@@ -81,6 +81,7 @@ pre+.cell-output,div.sourceCode+.cell-output,details+.cell-output{margin-top:-.7
 figure{margin:2.25rem 0;text-align:center}figure img{display:block;margin:0 auto;box-sizing:border-box;padding:var(--lp-img-pad);border-radius:6px;outline:1px solid var(--lp-rule);outline-offset:-1px;filter:var(--lp-img-filter)}
 figure:is(:has(>img),:has(>p>img),:has(>a>img),:has(>div>img)):not(.table,.margin,.subfigure,.figure-grid,.figure-layout,[class*=column-]):not(:has(img[style*="%"])){width:fit-content;min-width:min(100%,26rem);max-width:100%;margin-left:auto;margin-right:auto}
 figure:is(:has(>img),:has(>p>img),:has(>a>img),:has(>div>img)):not(.table,.margin,.subfigure,.figure-grid,.figure-layout,[class*=column-]):not(:has(img[style*="%"]))>figcaption:not(.margin-caption){contain:inline-size}figure:is(:has(>img),:has(>p>img),:has(>a>img),:has(>div>img)):not(.table,.margin,.subfigure,.figure-grid,.figure-layout,[class*=column-]):not(:has(img[style*="%"])) img{margin-left:0}
+figure:has(img[style*="%"]):not(.table,.margin,.subfigure,.figure-grid,.figure-layout)>figcaption:not(.margin-caption){text-align:center}
 figcaption{font:.9rem/1.5 var(--lp-sans);color:color-mix(in srgb,var(--lp-ink) 78%,var(--lp-paper));margin-top:.75rem;text-align:left}
 .caption-label{font-weight:600;color:var(--lp-ink);margin-right:.3em}
 .figure-grid{display:grid;grid-template-columns:repeat(var(--lp-cols,2),1fr);gap:1rem;align-items:start}
