@@ -12,7 +12,9 @@ import { ORG_HEADER_KINDS, splitOrgBlocks } from "../paper/org-blocks.js";
 import { splitTypstBlocks } from "../paper/typst-blocks.js";
 import { orgTree } from "../source-trees.js";
 
-/** @typedef {{ from: number, to: number, kind: "preamble" | "include" | "comment" | "definitions", detail?: string, target?: string }} Fold */
+// For a preamble fold that a title block can stand for, `others` lists the header's
+// lines that the title block does not show; the paper layer shows it beside the pill.
+/** @typedef {{ from: number, to: number, kind: "preamble" | "include" | "comment" | "definitions", detail?: string, target?: string, others?: string }} Fold */
 
 // Details are short and muted: one line, at most 60 characters.
 const DETAIL_LIMIT = 60;
@@ -206,6 +208,35 @@ function frontMatterTitle(frontMatter) {
   return (quoted ? quoted[2] : value).trim();
 }
 
+// The front matter keys that a title block shows.
+const TITLE_BLOCK_KEYS = new Set([
+  "title",
+  "subtitle",
+  "author",
+  "authors",
+  "affiliations",
+  "date",
+  "abstract",
+  "keywords",
+  "keyword",
+  "doi",
+]);
+
+/**
+ * The top-level keys of a front matter that a title block does not show, each
+ * once, in order, as a detail: "bibliography · format".
+ * @param {string} frontMatter
+ */
+function frontMatterOthers(frontMatter) {
+  /** @type {string[]} */
+  const keys = [];
+  for (const line of frontMatter.split(/\r\n|\r|\n/)) {
+    const key = /^([A-Za-z_][\w-]*)[ \t]*:/.exec(line)?.[1];
+    if (key && !TITLE_BLOCK_KEYS.has(key) && !keys.includes(key)) keys.push(key);
+  }
+  return cut(keys.join(" · "));
+}
+
 /** @param {string} text @returns {Fold[]} */
 function markdownFoldsOf(text) {
   /** @type {Fold[]} */
@@ -214,7 +245,13 @@ function markdownFoldsOf(text) {
     const source = text.slice(block.from, block.to);
     const kind = block.kind;
     if (kind === "FrontMatter") {
-      folds.push({ from: block.from, to: block.to, kind: "preamble", detail: cut(frontMatterTitle(source)) });
+      folds.push({
+        from: block.from,
+        to: block.to,
+        kind: "preamble",
+        detail: cut(frontMatterTitle(source)),
+        others: frontMatterOthers(source),
+      });
     } else if (kind.includes("LinkReference")) {
       const label = /^\s*\[([^\]]+)\]/.exec(source)?.[1] ?? "";
       folds.push({ from: block.from, to: block.to, kind: "definitions", detail: cut(label ? `[${label}]` : "") });
@@ -275,6 +312,9 @@ function orgIncludeTarget(value) {
   return file && !file.includes("://") ? file : null;
 }
 
+// The Org keywords that a title block shows.
+const TITLE_BLOCK_KEYS_ORG = new Set(["title", "subtitle", "author", "date"]);
+
 /**
  * The folds of an Org source, or null while the Org syntax module is not loaded.
  * @param {string} text
@@ -294,7 +334,6 @@ function orgFoldsOf(text) {
   /** @type {Fold[]} */
   const folds = [];
   blocks.forEach((block, index) => {
-    // A title block gets no fold: the paper layer draws it in place of the header.
     const source = text.slice(block.from, block.to);
     const firstLine = source.split(/\r\n|\r|\n/)[0];
     const kind = block.kind;
@@ -317,6 +356,19 @@ function orgFoldsOf(text) {
       } else {
         folds.push({ from: block.from, to: block.to, kind: "definitions", detail: cut(`#+${key.toUpperCase()}`) });
       }
+    } else if (kind === "TitleBlock") {
+      // The title block stands for the header's title, author and date; its pill names the rest.
+      const others = keywords
+        .filter((item) => item.from >= block.from && item.from < block.to)
+        .map((item) => item.key.split("[")[0])
+        .filter((key) => !TITLE_BLOCK_KEYS_ORG.has(key));
+      folds.push({
+        from: block.from,
+        to: block.to,
+        kind: "preamble",
+        detail: documentTitle,
+        others: cut([...new Set(others)].map((key) => `#+${key.toUpperCase()}`).join(" · ")),
+      });
     } else if (kind.includes("Drawer")) {
       const name = /^\s*:([^:\s]+):/.exec(firstLine)?.[1] ?? kind;
       folds.push({ from: block.from, to: block.to, kind: "definitions", detail: cut(name) });
