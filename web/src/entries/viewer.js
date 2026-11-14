@@ -21,8 +21,11 @@ import { createFind } from "../lib/pdf/find.js";
 import { installInput } from "../lib/pdf/input.js";
 import { GUTTER } from "../lib/pdf/fit.js";
 import { markDocumentLanguage } from "../lib/locale.js";
+import { reloadOnStaleChunks } from "../lib/stale-chunks.js";
 
 markDocumentLanguage();
+// A deploy can leave this frame asking for chunks the server no longer has.
+reloadOnStaleChunks();
 
 let viewer = null; // the render module, once something has needed it
 let stage = null;

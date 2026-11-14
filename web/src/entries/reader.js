@@ -14,9 +14,12 @@ import { listenForSignOut } from "../lib/local-data.js";
 import { signedOutHref } from "../lib/api.js";
 import { markDocumentLanguage } from "../lib/locale.js";
 import { installTips } from "../lib/tip.js";
+import { reloadOnStaleChunks } from "../lib/stale-chunks.js";
 import loroWasmUrl from "loro-crdt/web/loro_wasm_bg.wasm?url";
 
 markDocumentLanguage();
+// A deploy can leave this tab asking for chunks the server no longer has.
+reloadOnStaleChunks();
 // The one tooltip, for every element that carries data-tip.
 installTips();
 

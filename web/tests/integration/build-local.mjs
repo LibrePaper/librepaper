@@ -104,20 +104,38 @@ client._testing.inject({ fetch: async (url, init = {}) => {
 } });
 await assert.rejects(client.runRender({ job: {}, tree, format: "latex", output: "pdf" }), /wrong (digest|size)/);
 
-// An aborted signal cancels the job, whether the abort lands between polls or
-// during one.
+// An abort that lands before the job is submitted stops the render there:
+// nothing has been sent, so nothing is cancelled.
+let posted = false;
+let cancelSent = false;
+client._testing.inject({ fetch: async (url, init = {}) => {
+  if (url.endsWith("/jobs") && init.method === "POST") { posted = true; return response(202, { id: "job-early" }); }
+  if (url.endsWith("/cancel")) { cancelSent = true; return response(200, {}); }
+  throw new Error(`unexpected pre-submission request ${url}`);
+} });
+const early = new AbortController();
+const beforeSubmit = client.runRender({ job: {}, tree, format: "latex", output: "pdf" }, { signal: early.signal });
+early.abort();
+await assert.rejects(beforeSubmit, (error) => error?.name === "Canceled");
+assert.equal(posted, false, "no job is submitted once the signal is aborted");
+assert.equal(cancelSent, false, "nothing is cancelled when nothing was submitted");
+
+// An abort that lands while the job is being polled cancels it.
 let canceled = false;
+let sawFirstPoll;
+const firstPoll = new Promise((resolve) => { sawFirstPoll = resolve; });
 client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs") && init.method === "POST") return response(202, { id: "job-2" });
-  if (url.endsWith("/jobs/job-2")) return response(200, { id: "job-2", status: "running" });
+  if (url.endsWith("/jobs/job-2")) { sawFirstPoll(); return response(200, { id: "job-2", status: "running" }); }
   if (url.endsWith("/jobs/job-2/cancel")) { canceled = true; return response(200, {}); }
   throw new Error(`unexpected cancellation request ${url}`);
 } });
 const controller = new AbortController();
 const pending = client.runRender({ job: {}, tree, format: "latex", output: "pdf" }, { signal: controller.signal });
+await firstPoll;
 controller.abort();
 await assert.rejects(pending, (error) => error?.name === "Canceled");
-assert.equal(canceled, true);
+assert.equal(canceled, true, "a job being polled is canceled when the signal aborts");
 
 let admitted = false;
 canceled = false;
