@@ -175,9 +175,21 @@ class Tab {
   /// for the whole browser, and several documents are open at once here.
   async evalInFrame(expression, slug, prefix = "raw") {
     const { targetInfos } = await this.send("Target.getTargets");
-    const frame = targetInfos.find(
+    const matching = targetInfos.filter(
       (one) => one.type === "iframe" && one.url.includes(`/${prefix}/` + slug + "/"),
     );
+    // Target.getTargets lists the frames of every tab, and two tabs on the same
+    // document have frames at the same address. A cross-origin frame's target
+    // names the frame that holds it (`parentFrameId`), and this tab's frame
+    // tree, which leaves such frames out, holds that frame: so it says which
+    // target is ours.
+    const own = new Set();
+    try {
+      const { frameTree } = await this.send("Page.getFrameTree");
+      const walk = (node) => { own.add(node.frame.id); for (const child of node.childFrames || []) walk(child); };
+      walk(frameTree);
+    } catch { /* fall back to the first match below */ }
+    const frame = matching.find((one) => own.has(one.parentFrameId)) || matching[0];
     if (!frame) return null;
     const { sessionId } = await this.send("Target.attachToTarget", {
       targetId: frame.targetId,
@@ -520,6 +532,10 @@ async function run() {
   await requiredUntil("the second tab", async () =>
     (await secondNotebook.evalInFrame("return document.body.innerText", notebook.slug))?.includes("original figure"),
   );
+  // The reader is the tab being looked at. A hidden tab skips its renders until
+  // it is shown, and headless Chromium shows only one tab of a window, so the
+  // reader is brought to the front the way a person would look at it.
+  await secondNotebook.send("Page.bringToFront");
   await setText(notebookTab, page.replace("The original figure.", "The revised figure."));
   const notebookLive = await until(
     "the html reader sees the edit",
@@ -1066,20 +1082,25 @@ async function run() {
   );
   check("a figure chosen from a disk joins the directory", Boolean(inTheList), JSON.stringify(inTheList));
 
-  // It reaches the page as a data URL in this browser, never as the route it
-  // came from: a rendered page must not carry a credential. A page drawn before
-  // the upload landed still names the figure by path, so the check waits for
-  // the render that has it.
+  // It reaches the page as a URL made in this browser, never as the route it
+  // came from: a rendered page must not carry a credential. A raster figure is
+  // sent to the preview frame once as bytes, and the frame shows it from a blob
+  // URL of its own, marked with the figure's digest. A page drawn before the
+  // upload landed still names the figure by path, so the check waits for the
+  // render that has it.
   let lastDrawn = null;
   const drawn = await until("the figure reaches the rendered page", async () => {
     lastDrawn = await illustrator.evalInFrame(
       `const img = document.querySelector("img"); return img ? img.src : null`,
       illustrated.slug,
     );
-    return typeof lastDrawn === "string" && lastDrawn.startsWith("data:") ? lastDrawn : null;
+    const local = typeof lastDrawn === "string"
+      && (lastDrawn.startsWith("data:") || (lastDrawn.startsWith("blob:") && lastDrawn.includes("#librepaper-asset=")))
+      && !lastDrawn.includes("/api/documents/");
+    return local ? lastDrawn : null;
   }, 20000);
   check(
-    "a markdown figure is rewritten to a data URL in this browser",
+    "a markdown figure is shown from a URL made in this browser",
     Boolean(drawn),
     String(drawn || lastDrawn).slice(0, 60),
   );
