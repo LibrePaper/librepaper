@@ -373,7 +373,9 @@ export function typstFacts(texts, main, open, entries = []) {
     return scans.has(path) ? path : null;
   };
 
-  const scanFile = (path, stack) => {
+  // `origin` is the position in the root file of the include that led to `path`,
+  // or null for the root itself. Each numbered item carries it as `rootAt`.
+  const scanFile = (path, stack, origin = null) => {
     for (const event of scans.get(path).events) {
       switch (event.type) {
         case "heading": {
@@ -385,7 +387,7 @@ export function typstFacts(texts, main, open, entries = []) {
           const values = symbolCount(pattern) >= 2 ? counters.slice(0, event.level) : [counters[event.level - 1]];
           const number = render(pattern, values);
           if (number && path === focus) headingNumbers.set(event.at, number);
-          if (number) numbered.push({ path, at: event.at, type: "heading", level: event.level });
+          if (number) numbered.push({ path, at: event.at, rootAt: origin ?? event.at, type: "heading", level: event.level });
           if (event.label && number) labels.set(event.label, { number, kind: "section" });
           break;
         }
@@ -395,7 +397,7 @@ export function typstFacts(texts, main, open, entries = []) {
           bump(globals, event.kind);
           bump(chapters, event.kind);
           const number = render(pattern, countValues(pattern, event.kind));
-          if (number) numbered.push({ path, at: event.at, type: "figure", kind: event.kind });
+          if (number) numbered.push({ path, at: event.at, rootAt: origin ?? event.at, type: "figure", kind: event.kind });
           if (event.label && number) labels.set(event.label, { number, kind: event.kind });
           break;
         }
@@ -404,7 +406,7 @@ export function typstFacts(texts, main, open, entries = []) {
           bump(globals, "equation");
           bump(chapters, "equation");
           const number = render(equationPattern, countValues(equationPattern, "equation"));
-          if (number) numbered.push({ path, at: event.at, type: "equation" });
+          if (number) numbered.push({ path, at: event.at, rootAt: origin ?? event.at, type: "equation" });
           if (event.label && number) labels.set(event.label, { number, kind: "equation" });
           break;
         }
@@ -431,7 +433,7 @@ export function typstFacts(texts, main, open, entries = []) {
           break;
         case "include": {
           const next = resolve(event.path, path);
-          if (next && !stack.includes(next)) scanFile(next, [...stack, next]);
+          if (next && !stack.includes(next)) scanFile(next, [...stack, next], origin ?? event.at);
           break;
         }
       }

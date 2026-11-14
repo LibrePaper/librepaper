@@ -113,6 +113,22 @@ if (!existsSync(syntaxWasm)) {
     assert.ok(!source.includes("#include"), source);
   }
 
+  // The numbered elements of an included file count before the blocks after its include, without replaying it.
+  {
+    const withInclude = '#set heading(numbering: "1.")\n\n= First\n\n#include "part.typ"\n\n= After\n';
+    const files = { "part.typ": "= Included\n" };
+    const blocks = splitTypstBlocks(withInclude);
+    const headings = blocks.filter((block) => block.kind === "Heading");
+    const after = typstBlockSource(withInclude, headings[1], blocks, files, "main.typ");
+    assert.ok(after.includes("#counter(heading).update((2,))"), after);
+    assert.ok(!after.includes("#include"), after);
+    const withoutFiles = typstBlockSource(withInclude, headings[1], blocks);
+    assert.ok(withoutFiles.includes("#counter(heading).update((1,))"), withoutFiles);
+    // A heading before the include is unaffected: nothing before it is counted.
+    const first = typstBlockSource(withInclude, headings[0], blocks, files, "main.typ");
+    assert.ok(!first.includes("#counter"), first);
+  }
+
   if (!existsSync(typstWasm)) {
     console.log("typst.wasm is missing; skipping the Typst paper renderer tests");
   } else {

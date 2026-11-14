@@ -15,7 +15,7 @@ import { markdownFolds, orgFolds, typstFolds } from "../visual/fold-finders.js";
  * @typedef {{
  *   module: "markdown" | "org" | "typst",
  *   splitBlocks: (text: string) => import("./blocks.js").PaperBlock[] | null,
- *   blockSource: (text: string, block: import("./blocks.js").PaperBlock, blocks: import("./blocks.js").PaperBlock[]) => string,
+ *   blockSource: (text: string, block: import("./blocks.js").PaperBlock, blocks: import("./blocks.js").PaperBlock[], files?: Record<string, string> | null, path?: string) => string,
  *   renderedBlocks?: (text: string, renderer: import("./renderer.js").PaperRenderer, path: string) => import("./blocks.js").PaperBlock[] | null,
  *   ready: () => Promise<void>,
  *   prepare?: (text: string, renderer: any, project: any, onUpdate: () => void) => void,
