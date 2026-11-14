@@ -42,7 +42,6 @@ const ROUTES: &[&str] = &[
     "api_assets",
     "api_other",
     "auth",
-    "published",
     "raw",
     "pdf",
     "other",
@@ -486,8 +485,6 @@ pub fn route_class(path: &str) -> &'static str {
         "api_other"
     } else if path.starts_with("/auth/") {
         "auth"
-    } else if path.starts_with("/published/") {
-        "published"
     } else if path.starts_with("/raw/") {
         "raw"
     } else if path.starts_with("/pdf/") {
@@ -903,6 +900,7 @@ mod tests {
             assert_ne!(class, "admin", "{path}: the path alone never says admin");
         }
         assert_eq!(route_class("/api/monitoring/host-check"), "api_other");
+        assert_eq!(route_class("/published/x"), "other");
 
         let metrics = Metrics::new();
         metrics.record_request("admin", "GET", 401, Duration::from_millis(1));
