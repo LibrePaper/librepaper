@@ -13,10 +13,10 @@
 # with an explicit repository and tag, then review the lockfile diff.
 #
 # module             repository          tag       sha256
-markdown.wasm        wasm-markdown       v0.4.1    79a78f006014176135f446cd097afc155063c657ea55150f18e5e799685f203a
-org.wasm             wasm-orgmode        v0.2.2    cfd43b3487254050c05b0e72df663facf88493a4123f0afc68d883fd7af2a003
-bibliography.wasm    wasm-bibliography   v0.1.3    f1b580e10c485297a451d2ce0ad9e4177c280aa12ecc1f17e9ebce3855758067
-citations.wasm       wasm-bibliography   v0.1.3    97deb807c0108553aef0a820c4b78d06f340f772b7c6ba772161ea87f56d3871
+markdown.wasm        wasm-markdown       v0.4.2    5e16b70754edfd8ffb5311e88be3d3cec0a4dfbe3b43060a6c4032ecb5ee37ee
+org.wasm             wasm-orgmode        v0.2.3    44fb6055c6b747c27f6fca7eea1354743c943b770b453ac013c4c8169fef64ae
+bibliography.wasm    wasm-bibliography   v0.1.4    f9131958017f83466229620632eafd9345c81924dc51e57d193240e86e6d524d
+citations.wasm       wasm-bibliography   v0.1.4    d58131b4486c0967da80109a83b815346e24a3a75ee0a0b6b812ece8c67dd1fc
 typst.wasm           wasm-typst          v0.6.1    f42a0c1f68fdaab1e90a608bc67a6c1d8df961f37fdb13d77ec30f65d1fb4d02
 typst-syntax.wasm    wasm-typst          v0.6.1    e38318d48a8d44c0a0edd8b73234baab10bc32f3d80f087cec00d2a9f416eeb2
 pandoc.wasm          wasm-upstream       v1.0.0    784497e55d1f23eb8bb5e21633cb76e6503360fede48536cad64a911fb623bbc
