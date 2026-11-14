@@ -224,17 +224,36 @@ const TITLE_BLOCK_KEYS = new Set([
 
 /**
  * The top-level keys of a front matter that a title block does not show, each
- * once, in order, as a detail: "bibliography · format".
+ * once, in order, uncut.
  * @param {string} frontMatter
+ * @returns {string[]}
  */
-function frontMatterOthers(frontMatter) {
+function frontMatterOtherKeys(frontMatter) {
   /** @type {string[]} */
   const keys = [];
   for (const line of frontMatter.split(/\r\n|\r|\n/)) {
     const key = /^([A-Za-z_][\w-]*)[ \t]*:/.exec(line)?.[1];
     if (key && !TITLE_BLOCK_KEYS.has(key) && !keys.includes(key)) keys.push(key);
   }
-  return cut(keys.join(" · "));
+  return keys;
+}
+
+/**
+ * The keys of a front matter that a title block does not show, as a detail:
+ * "bibliography · format".
+ * @param {string} frontMatter
+ */
+function frontMatterOthers(frontMatter) {
+  return cut(frontMatterOtherKeys(frontMatter).join(" · "));
+}
+
+/**
+ * The detail of a front matter fold: its title, then the keys that a title
+ * block does not show, as "T · bibliography · format".
+ * @param {string} frontMatter
+ */
+function frontMatterDetail(frontMatter) {
+  return cut([frontMatterTitle(frontMatter), ...frontMatterOtherKeys(frontMatter)].filter(Boolean).join(" · "));
 }
 
 /** @param {string} text @returns {Fold[]} */
@@ -249,7 +268,7 @@ function markdownFoldsOf(text) {
         from: block.from,
         to: block.to,
         kind: "preamble",
-        detail: cut(frontMatterTitle(source)),
+        detail: frontMatterDetail(source),
         others: frontMatterOthers(source),
       });
     } else if (kind.includes("LinkReference")) {
@@ -324,8 +343,6 @@ function orgFoldsOf(text) {
   const blocks = splitOrgBlocks(text);
   if (!blocks) return null;
   const keywords = keywordsOf(text);
-  const title = keywords.find((keyword) => keyword.key === "title");
-  const documentTitle = cut(title ? title.value.trim() : "");
 
   // The leading run: the blocks before the first one that is not a header block.
   let leading = 0;
@@ -333,6 +350,9 @@ function orgFoldsOf(text) {
 
   /** @type {Fold[]} */
   const folds = [];
+  // The keys each header fold names, in order, so that the fold's detail can grow with it.
+  /** @type {Map<Fold, string[]>} */
+  const headerKeys = new Map();
   blocks.forEach((block, index) => {
     const source = text.slice(block.from, block.to);
     const firstLine = source.split(/\r\n|\r|\n/)[0];
@@ -349,25 +369,40 @@ function orgFoldsOf(text) {
         }
       }
       if (index < leading) {
-        // The header is one fold: it grows over the keywords and comments of the leading run.
+        // The header is one fold: it grows over the keywords and comments of the leading run,
+        // and its detail names the keywords it hides.
         const previous = folds.at(-1);
-        if (previous?.kind === "preamble") previous.to = block.to;
-        else folds.push({ from: block.from, to: block.to, kind: "preamble", detail: documentTitle });
+        let header = previous && headerKeys.has(previous) ? previous : null;
+        if (!header) {
+          header = { from: block.from, to: block.to, kind: "preamble", detail: "" };
+          folds.push(header);
+          headerKeys.set(header, []);
+        }
+        header.to = block.to;
+        const keys = headerKeys.get(header) ?? [];
+        const name = `#+${key.split("[")[0].toUpperCase()}`;
+        if (!keys.includes(name)) keys.push(name);
+        headerKeys.set(header, keys);
+        header.detail = cut(keys.join(" · "));
       } else {
         folds.push({ from: block.from, to: block.to, kind: "definitions", detail: cut(`#+${key.toUpperCase()}`) });
       }
     } else if (kind === "TitleBlock") {
-      // The title block stands for the header's title, author and date; its pill names the rest.
-      const others = keywords
-        .filter((item) => item.from >= block.from && item.from < block.to)
-        .map((item) => item.key.split("[")[0])
-        .filter((key) => !TITLE_BLOCK_KEYS_ORG.has(key));
+      // The title block stands for the header's title, author and date. Its pill names the
+      // title it shows and the other keys, or, when it shows neither, the keys it hides.
+      const inside = keywords.filter((item) => item.from >= block.from && item.from < block.to);
+      const title = inside.find((item) => item.key === "title");
+      const titleText = title ? title.value.trim() : "";
+      const keys = [...new Set(inside.map((item) => item.key.split("[")[0]))];
+      const others = keys.filter((key) => !TITLE_BLOCK_KEYS_ORG.has(key)).map((key) => `#+${key.toUpperCase()}`);
+      const otherText = others.join(" · ");
+      const shown = [titleText, otherText].filter(Boolean).join(" · ");
       folds.push({
         from: block.from,
         to: block.to,
         kind: "preamble",
-        detail: documentTitle,
-        others: cut([...new Set(others)].map((key) => `#+${key.toUpperCase()}`).join(" · ")),
+        detail: cut(shown || keys.map((key) => `#+${key.toUpperCase()}`).join(" · ")),
+        others: cut(otherText),
       });
     } else if (kind.includes("Drawer")) {
       const name = /^\s*:([^:\s]+):/.exec(firstLine)?.[1] ?? kind;
