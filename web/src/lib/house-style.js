@@ -43,19 +43,6 @@ export function latexmlWithHouseStyle(html, css) {
 }
 
 /**
- * A page from a renderer that embeds an older copy of the stylesheet (the
- * pinned citations.wasm) with the house stylesheet in its place. A page that
- * already carries the house style is returned as it is.
- * @param {string} html
- * @param {string} css the house stylesheet
- * @returns {string}
- */
-export function pageWithHouseStyle(html, css) {
-  if (!css || html.includes("--lp-ink")) return html;
-  return swap(html, css, (style) => !/data-lp-house/.test(style));
-}
-
-/**
  * Typst's HTML page with the house stylesheet in place of its own rules. The
  * styles that carry MathML rules are Typst's, and stay.
  * @param {string} html

@@ -31,7 +31,7 @@ import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
 import { m } from "./paraglide/messages.js";
-import { houseStyleCss, latexmlWithHouseStyle, pageWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle } from "./house-style.js";
+import { houseStyleCss, latexmlWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle } from "./house-style.js";
 
 /// This browser's identity for a render tree -- `{ main, texts, digests }`
 /// -- used only as a transient cache key: whether a local build's job
@@ -340,20 +340,10 @@ export async function render(tree, title, { manual = false, format: requestedFor
   }
   const module = format === "markdown" && needsBibliography({ source }) ? "citations" : format;
   const renderable = format === "org" ? expandOrgIncludes(tree) : tree;
-  const result = await request(module, "render", {
+  return request(module, "render", {
     tree: renderTree(renderable, capturedSettings),
     title,
   }, capturedModules);
-  // citations.wasm and org.wasm embed the stylesheet of the wasm-helpers they
-  // were built on, which may predate the house style.
-  return module === "citations" || module === "org" ? withHouseStyle(result) : result;
-}
-
-// citations.wasm embeds the stylesheet of the wasm-helpers it was built on,
-// which may be older than the house style: the page gets the current one.
-async function withHouseStyle(result) {
-  if (!result?.html) return result;
-  return { ...result, html: pageWithHouseStyle(String(result.html), await houseStyleCss()) };
 }
 
 // Quarto cross references (@fig-x, @tbl-x, …) look like citations to
@@ -377,7 +367,7 @@ async function renderQuarto(tree, title, moduleUrls, settings, source) {
       title,
     }, moduleUrls);
     const mapped = quarto.mapDraftDiagnostics(result?.diagnostics || [], drafted.line_map, tree.main);
-    return withHouseStyle({ ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] });
+    return { ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] };
   }
   const result = await request("markdown", "render", { tree: renderTree(withSidecar, settings), title }, moduleUrls);
   return result ? { ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) } : result;
