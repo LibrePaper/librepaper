@@ -31,6 +31,7 @@ use super::sync::{
 };
 
 use crate::local::credentials;
+use crate::local::remote_grants::RemoteGrants;
 use crate::local::git::{validate, Limit, Output};
 
 use librepaper_base::http::Credentials;
@@ -468,12 +469,72 @@ async fn run_connect(inner: &Inner, connection: &Connection, url: &str) -> Resul
             "this project is already connected to a repository",
         ));
     }
+    allow_remote(inner, connection, url).await?;
     let made = clone_for(inner, connection, url).await;
     if made.is_err() {
         let _ = std::fs::remove_dir_all(&connection.dir);
     }
     made?;
     status_of(inner, connection).await
+}
+
+/// The refusal for a remote the person has not allowed.
+fn remote_refused(error: &str) -> Failure {
+    refuse_because(403, "remote-not-allowed", error)
+}
+
+/// Asks the person to allow `connection`'s project to use the remote `url`,
+/// naming both, and keeps the answer. Nothing runs against the remote before
+/// this returns, and a refusal stores nothing. A remote the project already
+/// holds a grant for is not asked about again.
+async fn allow_remote(inner: &Inner, connection: &Connection, url: &str) -> Result<(), Failure> {
+    let project = project_url(&connection.link);
+    let grants = RemoteGrants::new(&inner.state_home);
+    if grants.allows(&project, url) {
+        return Ok(());
+    }
+    let question = format!(
+        "Allow {project} to fetch from and push to the Git remote {} with your own credentials? \
+         Choose any folder to allow, or cancel to refuse.",
+        validate::display_url(url)
+    );
+    let allowed = {
+        let Ok(_dialog) = inner.folder_dialog.try_lock() else {
+            return Err((
+                409,
+                json!({"error": "A dialog is already open on this computer."}),
+            ));
+        };
+        inner
+            .approver
+            .approve(&question)
+            .await
+            .map_err(|why| refuse(400, &why))?
+    };
+    if !allowed {
+        return Err(remote_refused(
+            "The Git remote was not allowed on this computer.",
+        ));
+    }
+    grants
+        .allow(&project, url)
+        .map_err(|error| refuse(500, &format!("could not keep the permission: {error}")))
+}
+
+/// Refuses a network operation on the clone's remote unless the person
+/// allowed it when connecting. It never asks.
+fn require_remote_allowed(inner: &Inner, connection: &Connection) -> Result<(), Failure> {
+    let url = read_record(&connection.dir)?.url;
+    let allowed = url.is_some_and(|url| {
+        RemoteGrants::new(&inner.state_home).allows(&project_url(&connection.link), &url)
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(remote_refused(
+            "This Git remote was not allowed on this computer. Disconnect, then connect again.",
+        ))
+    }
 }
 
 /// The clone behind `run_connect`. The clone is made under `PARTIAL` and
@@ -1023,6 +1084,7 @@ async fn pull_from_repository(
     }
     refuse_uncommitted(&connection, &repo).await?;
     if connection.local_root().is_none() {
+        require_remote_allowed(inner, &connection)?;
         let fetched = pull_remote(&repo).await?;
         if fetched["status"] == "conflicts" {
             return stopped(inner, &connection).await;
@@ -1073,6 +1135,9 @@ async fn push_to_repository(
         return Err(merging(inner, &connection).await);
     }
     refuse_uncommitted(&connection, &repo).await?;
+    if connection.local_root().is_none() {
+        require_remote_allowed(inner, &connection)?;
+    }
     let pulled = web_pull(inner, &connection).await?;
     if merge_stopped(&pulled)? {
         return stopped(inner, &connection).await;
@@ -1461,6 +1526,114 @@ mod tests {
             key
         );
         assert!(!connection.connected());
+    }
+
+    /// Answers every question the same way and keeps what it was asked.
+    struct Answer {
+        allow: bool,
+        asked: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Approver for Answer {
+        async fn approve(&self, question: &str) -> Result<bool, String> {
+            self.asked.lock().unwrap().push(question.to_owned());
+            Ok(self.allow)
+        }
+    }
+
+    async fn asking(allow: bool) -> (Fixture, Arc<Answer>) {
+        let approver = Arc::new(Answer {
+            allow,
+            asked: std::sync::Mutex::new(Vec::new()),
+        });
+        let state = tempfile::tempdir().unwrap();
+        let inner = test_support::inner_asking(state.path(), state.path(), approver.clone()).await;
+        let fixture = Fixture {
+            inner,
+            scratch: tempfile::tempdir().unwrap(),
+            _state: state,
+        };
+        (fixture, approver)
+    }
+
+    #[tokio::test]
+    async fn connecting_asks_about_the_remote_and_keeps_the_answer() {
+        if !git_ready().await {
+            return;
+        }
+        let (fixture, approver) = asking(true).await;
+        let bare = bare_remote(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        run_connect(&fixture.inner, &connection, text(&bare))
+            .await
+            .unwrap();
+        let asked = approver.asked.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert!(asked[0].contains(PROJECT) && asked[0].contains(text(&bare)), "{asked:?}");
+        let grants = RemoteGrants::new(&fixture.inner.state_home);
+        assert!(grants.allows(PROJECT, text(&bare)));
+        // Allowed remotes are not asked about on a later pull or push.
+        assert!(require_remote_allowed(&fixture.inner, &connection).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_declined_remote_stores_nothing_and_runs_no_git() {
+        let (fixture, approver) = asking(false).await;
+        let connection = fixture.connection(PROJECT);
+        // Nothing exists at this address, so any attempt to reach it would
+        // fail as a network error and not as a refusal.
+        let url = "https://127.0.0.1:1/never.git";
+        let (status, body) = run_connect(&fixture.inner, &connection, url)
+            .await
+            .unwrap_err();
+        assert_eq!((status, &body["reason"]), (403, &json!("remote-not-allowed")), "{body}");
+        assert_eq!(approver.asked.lock().unwrap().len(), 1);
+        assert!(!RemoteGrants::new(&fixture.inner.state_home).allows(PROJECT, url));
+        assert!(!connection.dir.exists());
+    }
+
+    #[tokio::test]
+    async fn fetch_and_push_on_an_ungranted_remote_are_refused() {
+        if !git_ready().await {
+            return;
+        }
+        let (fixture, approver) = asking(true).await;
+        let bare = bare_remote(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        run_connect(&fixture.inner, &connection, text(&bare))
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(fixture.inner.state_home.join("remote-grants")).unwrap();
+        for failure in [
+            pull_from_repository(&fixture.inner, Some(PAGE), PROJECT)
+                .await
+                .unwrap_err(),
+            push_to_repository(&fixture.inner, Some(PAGE), PROJECT)
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                (failure.0, &failure.1["reason"]),
+                (403, &json!("remote-not-allowed")),
+                "{}",
+                failure.1
+            );
+        }
+        // Later operations never ask.
+        assert_eq!(approver.asked.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_grant_covers_one_site_one_project_and_one_remote() {
+        let (fixture, _approver) = asking(true).await;
+        let grants = RemoteGrants::new(&fixture.inner.state_home);
+        let url = "https://github.com/o/r.git";
+        grants.allow(PROJECT, url).unwrap();
+        assert!(grants.allows(PROJECT, url));
+        assert!(!grants.allows("https://other.example/docs/abc123", url));
+        assert!(!grants.allows("https://paper.example/docs/other", url));
+        assert!(!grants.allows(PROJECT, "https://github.com/o/other.git"));
     }
 
     #[tokio::test]
