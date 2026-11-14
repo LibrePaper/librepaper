@@ -73,7 +73,7 @@ assert.equal(latexmlWithHouseStyle("<head><style data-latexml-css>a{}</style></h
 {
   const bundled = await houseStyleCss();
   assert.ok(bundled.includes("--lp-ink"));
-  assert.ok(bundled.includes("canonical copy"));
+  assert.ok(bundled.includes("canonical and only copy"));
 }
 
 // A page from a wasm renderer gets the house style as the first stylesheet of its head.
