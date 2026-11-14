@@ -33,6 +33,7 @@
 // executable or Wasm bytes after they have been checked.
 
 import { evictOtherReleases, fetchVerified, readWorkingSet, writeWorkingSet } from "./resources.js";
+import { RETAIN_KINDS } from "./staging.js";
 
 const GZIP_MAGIC = [0x1f, 0x8b];
 
@@ -88,6 +89,10 @@ class EngineDriver {
     // all (setmainfile, settexliveurl, grace) never enqueues here.
     this.pending = new Map();
     this.madeDirs = new Set();
+    // The tree files `worker.js` last wrote into this engine (a Map of path to
+    // value), or null when the engine's `/work` is not known to match one.
+    // Owned by `staging.js`.
+    this.staged = null;
     // Resolver evidence for a package file (kpathsea format 26, `.sty`/
     // `.cls`) the bundle index itself says is not in the mirror -- with an index
     // loaded, "absent" is a lookup, not a 404,
@@ -311,6 +316,27 @@ class EngineDriver {
   /// bytes, which matters for a `.bbl`/`.bib`/font file that is not ASCII.
   async writeFile(path, bytesOrString) {
     await this._ask({ cmd: "writefile", url: path, src: bytesOrString }, "writefile");
+  }
+
+  /// Asks the controller to keep only `keep` (plus this engine's format file,
+  /// when it has one) under `/work`. Resolves to the kept paths the controller
+  /// found changed since the host last wrote them, or that are missing; those
+  /// are gone from `/work` now and must be written again by the caller.
+  async retain(keep) {
+    if (!RETAIN_KINDS.has(this.kind)) throw new Error("retain is not supported by " + this.kind);
+    const paths = new Set(keep);
+    if (this._fmtFilename) paths.add(this._fmtFilename);
+    const reply = await this._ask({ cmd: "retain", keep: [...paths] }, "retain");
+    // Directories may or may not survive the sweep; a mkdir again is harmless.
+    this.madeDirs.clear();
+    if (reply.result !== "ok") throw new Error(reply.error || `retain failed on ${this.kind}`);
+    const dirty = new Set(reply.dirty || []);
+    // The format file is kept, but if the sweep dropped it, put it back as
+    // `flushCache` does: the engine cannot compile without it.
+    if (this._fmtFilename && this._fmtBytes && dirty.has(this._fmtFilename)) {
+      await this.writeFile(this._fmtFilename, this._fmtBytes);
+    }
+    return dirty;
   }
 
   /// `binary` defaults true because most callers want bytes; the exception
