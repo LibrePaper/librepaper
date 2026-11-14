@@ -98,6 +98,21 @@ if (!existsSync(syntaxWasm)) {
     assert.ok(first.endsWith("= Intro <sec:intro>"));
   }
 
+  // An include is a block of its own: not drawn, and never replayed in later blocks.
+  {
+    const included = '#set text(size: 11pt)\n\n= Title\n\n#include "part.typ"\n\nAfter the include.\n';
+    const blocks = splitTypstBlocks(included);
+    const include = blocks.find((block) => block.kind === "ModuleInclude");
+    assert.ok(include, JSON.stringify(blocks));
+    assert.equal(include.render, false);
+    assert.equal(include.rules, undefined);
+    assert.equal(included.slice(include.from, include.to), '#include "part.typ"');
+    const after = blocks.find((block) => block.kind === "Text");
+    const source = typstBlockSource(included, after, blocks);
+    assert.ok(source.includes("#set text"), source);
+    assert.ok(!source.includes("#include"), source);
+  }
+
   if (!existsSync(typstWasm)) {
     console.log("typst.wasm is missing; skipping the Typst paper renderer tests");
   } else {
