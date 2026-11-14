@@ -611,6 +611,25 @@ import { morphChildren } from "./morph.js";
   }
 
 
+  // The app hands over the bundled fonts as bytes, since the document cannot
+  // fetch them from its own origin. Each face is registered once.
+  const addedFaces = new Set();
+  function addFonts(faces) {
+    if (!document.fonts || typeof FontFace === "undefined" || !Array.isArray(faces)) return;
+    for (const face of faces) {
+      if (typeof face?.family !== "string" || !(face.data instanceof ArrayBuffer)) continue;
+      const { style, weight, unicodeRange } = face.descriptors || {};
+      const key = [face.family, style, weight, unicodeRange].join("\n");
+      if (addedFaces.has(key)) continue;
+      try {
+        document.fonts.add(new FontFace(face.family, face.data, { style, weight, unicodeRange }));
+        addedFaces.add(key);
+      } catch {
+        // A face the browser refuses is left out; the others still load.
+      }
+    }
+  }
+
   addEventListener("message", (event) => {
     if (!READER || event.source !== parent || event.origin !== READER) return;
     const message = event.data;
@@ -626,6 +645,7 @@ import { morphChildren } from "./morph.js";
       setPaper(message.paper ?? message.mode);
       setSurface(message.surface);
     }
+    if (message.type === "fonts") addFonts(message.faces);
     if (message.type === "highlight") highlight(message.ranges || []);
     // The editor's live preview. The document being previewed is not yet
     // published, so it arrives as HTML over this channel rather than as a
