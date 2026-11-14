@@ -17,15 +17,18 @@ let last = null;
 const contexts = new WeakMap();
 
 // Rules that set the document up. They are never drawn and go in front of every block.
-const PREAMBLE = new Set(["SetRule", "ShowRule", "LetBinding", "ModuleImport", "ModuleInclude"]);
+// An include is not one of them: it emits the included file's content, and Typst does
+// not let definitions or set/show rules escape an included file, so it is never replayed.
+const PREAMBLE = new Set(["SetRule", "ShowRule", "LetBinding", "ModuleImport"]);
 const TRIVIA = new Set(["Space", "Parbreak", "LineComment", "BlockComment", "Label"]);
 const COMMENTS = new Set(["LineComment", "BlockComment"]);
 
 /**
  * Splits a Typst source into its top-level blocks, in order, each widened to
  * whole lines. Blocks that would share a line are merged. Set, show, let,
- * import and include rules and comments are kept as source, because the editor
- * never draws them alone. Null while typst-syntax.wasm is not loaded.
+ * import rules and comments are kept as source, because the editor never draws
+ * them alone. An include is a block of its own, kind `ModuleInclude`, that is
+ * not drawn and not replayed. Null while typst-syntax.wasm is not loaded.
  * @param {string} text
  * @returns {PaperBlock[] | null}
  */
@@ -81,6 +84,14 @@ export function splitTypstBlocks(text) {
       const rule = node.nextSibling;
       emit(node.from, rule.to, rule.name, false, false, [node.from, rule.to]);
       node = rule;
+      continue;
+    }
+    // An include is kept as its own block: it is not drawn, and no later block replays it.
+    if (name === "Hash" && node.nextSibling && node.nextSibling.name === "ModuleInclude") {
+      flush();
+      const include = node.nextSibling;
+      emit(node.from, include.to, "ModuleInclude", false);
+      node = include;
       continue;
     }
     if (name === "Heading") {
