@@ -5,6 +5,7 @@
   // position or the undo history.
   import { Compartment, Prec as vimPrec } from "@codemirror/state";
   import { ViewPlugin } from "@codemirror/view";
+  import { cursorAt } from "../lib/loro-cursor.js";
   import { undo as undoFn, redo as redoFn, undoManagerField as vimUndoManagerField } from "../lib/loro-undo.js";
   import { loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
   import { keymap } from "@codemirror/view";
@@ -1300,15 +1301,13 @@
     const loroText = getTextFromDoc(showing);
     if (!loroText) return null;
     const { from, to } = view.state.selection.main;
-    // Convert UTF-16 offsets to Unicode code points for cursor creation.
-    const fromUnicode = loroText.convertPos(from, "utf16", "unicode") ?? from;
-    const toUnicode = loroText.convertPos(to, "utf16", "unicode") ?? to;
     return {
       session,
       doc,
       file: showing,
-      fromCursor: loroText.getCursor(fromUnicode, 0),
-      toCursor: loroText.getCursor(toUnicode, 0),
+      // Loro's getCursor and getCursorPos both speak UTF-16 here, as CodeMirror does.
+      fromCursor: cursorAt(loroText, from, 0),
+      toCursor: cursorAt(loroText, to, 0),
       capturedText: view.state.sliceDoc(from, to),
     };
   }
@@ -1392,9 +1391,9 @@
       return false;
     }
 
-    // Convert back to UTF-16 for CodeMirror use.
-    const from = loroText.convertPos(Math.min(fromPos, toPos), "unicode", "utf16") ?? 0;
-    const to = loroText.convertPos(Math.max(fromPos, toPos), "unicode", "utf16") ?? 0;
+    // The offsets are already UTF-16, which is what CodeMirror uses.
+    const from = Math.min(fromPos, toPos);
+    const to = Math.max(fromPos, toPos);
 
     if (loroText.toString().slice(from, to) !== target.capturedText) return false;
     // One plan per file, keyed by container id rather than by the handle.

@@ -94,3 +94,19 @@ test("a position that is not a surrogate pair gets Loro's own answer", () => {
     assert.equal(cursorAt(text, pos, -1) === undefined, text.getCursor(pos, -1) === undefined, `pos ${pos}`);
   }
 });
+
+test("an insert target captured after an emoji resolves to the same UTF-16 offset", () => {
+  const { doc, text } = make("ab|c");
+  text.insert(1, "😀");
+  doc.commit();
+  assert.equal(text.toString(), "a😀b|c");
+  const from = 4; // UTF-16 offset of "|"; the code point offset would be 3
+  const to = 5;
+  const fromCursor = cursorAt(text, from, 0);
+  const toCursor = cursorAt(text, to, 0);
+  assert.equal(doc.getCursorPos(fromCursor).offset, from);
+  assert.equal(doc.getCursorPos(toCursor).offset, to);
+  text.insert(0, "xy");
+  doc.commit();
+  assert.equal(doc.getCursorPos(fromCursor).offset, from + 2);
+});
