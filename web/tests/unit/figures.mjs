@@ -208,6 +208,30 @@ __resetAssetTestState();
   }
 }
 
+// Without `urls`, the bytes come back and no URL is built. A later call that
+// wants URLs builds the data URL from the held bytes, with no second fetch.
+{
+  const body = Uint8Array.of(9, 8, 7);
+  const sha = await digestOf(body);
+  await scenario((url) => {
+    if (isLink(url)) return noLink();
+    if (url === bytesUrl(sha)) return reply(200, { bytes: body });
+    throw new Error(`unexpected ${url}`);
+  }, async (calls) => {
+    const bare = await gather("doc", { "fig.png": sha }, {}, { urls: false });
+    assert.deepEqual([...bare.assets["fig.png"]], [...body]);
+    assert.deepEqual(bare.urls, {});
+    assert.deepEqual(bare.missing, []);
+    const fetched = calls.length;
+
+    const withUrls = await gather("doc", { "fig.png": sha });
+    assert.deepEqual([...withUrls.assets["fig.png"]], [...body]);
+    assert.ok(withUrls.urls["fig.png"].startsWith("data:image/png;base64,"));
+    assert.ok(withUrls.urls["fig.png"].includes(`#librepaper-asset=${sha}`));
+    assert.equal(calls.length, fetched, "the URL is built from the held bytes, not fetched again");
+  });
+}
+
 // A link is asked for, and the bucket is fetched with no credentials and no
 // custom headers. The byte route is not used.
 {
