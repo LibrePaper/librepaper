@@ -2803,11 +2803,10 @@
     schedule.bump();
     painted.state.empty = false;
     refreshReview();
-    outlineRevision += 1;
+    outlineChanged();
     if (sourceFormat === "quarto" && session && previewPath) {
       const main = previewPath;
-      const parsed = quarto.parseQuarto(String(session.textOf(session.idOf(main))?.toString?.() ?? ""), { path: main });
-      const nextDiagnostics = parsed.diagnostics.map((item) => diagnosticContext(item, { main, texts: { [main]: parsed.source } }, ""));
+      const nextDiagnostics = quartoDiagnostics(main);
       const diagnosticsGeneration = schedule.generation;
       // Loro can notify this observer from inside CodeMirror's update
       // listener. Editor.setDiagnostics dispatches another update, which
@@ -2823,6 +2822,37 @@
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
     schedule.changed();
+  }
+
+  // The outline is worked out from the whole file, so a burst of typing
+  // recomputes it at most once per interval. The bump lands at the end of the
+  // interval and reads the text as it stands then, so the outline is never
+  // more than one interval behind the source.
+  const OUTLINE_INTERVAL_MS = 150;
+  let outlineTimer = 0;
+  function outlineChanged() {
+    if (outlineTimer || readerDisposed) return;
+    outlineTimer = setTimeout(() => {
+      outlineTimer = 0;
+      if (!readerDisposed) outlineRevision += 1;
+    }, OUTLINE_INTERVAL_MS);
+  }
+
+  // The Quarto diagnostics of the main file. Most source batches are edits to
+  // other files, which leave the main text as it was, so the parse runs only
+  // when that text or its path differs from the last parse.
+  let diagnosedMain = "";
+  let diagnosedText = null;
+  let diagnosedItems = [];
+  function quartoDiagnostics(main) {
+    const text = String(session.textOf(session.idOf(main))?.toString?.() ?? "");
+    if (main !== diagnosedMain || text !== diagnosedText) {
+      const parsed = quarto.parseQuarto(text, { path: main });
+      diagnosedItems = parsed.diagnostics.map((item) => diagnosticContext(item, { main, texts: { [main]: parsed.source } }, ""));
+      diagnosedMain = main;
+      diagnosedText = text;
+    }
+    return diagnosedItems;
   }
 
   /* ------------------------------------------------------- keeping in step */
@@ -4042,6 +4072,7 @@
       target.bump();
       renderers.cancelPreview();
       clearTimeout(reviewTimer);
+      clearTimeout(outlineTimer);
       schedule.dispose();
       projection.dispose();
       boot.dispose();
