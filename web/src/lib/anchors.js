@@ -1407,9 +1407,23 @@ export class AnchorIndex {
     return entry;
   }
 
+  // One pass asks for every comment's anchor, so a linear scan of each file's
+  // anchors made the pass quadratic. The lookup table is built per entry, and
+  // every write to #files stores a new entry object with a new anchors array
+  // (the anchors are never changed in place), so a table can never outlive the
+  // anchors it was built from.
+  #byId = new WeakMap();
+
   #locate(id) {
     for (const [fileId, entry] of this.#files) {
-      const anchor = entry.anchors.find((a) => a.id === id);
+      let table = this.#byId.get(entry);
+      if (!table) {
+        table = new Map();
+        // The first anchor with an id wins, as the scan it replaces did.
+        for (const a of entry.anchors) if (!table.has(a.id)) table.set(a.id, a);
+        this.#byId.set(entry, table);
+      }
+      const anchor = table.get(id);
       if (anchor) return { fileId, anchor };
     }
     return null;
