@@ -25,7 +25,6 @@
   import Modal from "./Modal.svelte";
   import TagSwatches from "./TagSwatches.svelte";
   import NewProject from "./NewProject.svelte";
-  import SettingsDialog from "./settings/SettingsDialog.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
   import Toasts from "./Toasts.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
@@ -49,15 +48,30 @@
   import { buildPreferenceUser, readDefaultPreview } from "../lib/build-preferences.js";
   import { warmReader } from "../lib/warm-reader.js";
   import { m } from "../lib/paraglide/messages.js";
+  import { lazyComponent } from "../lib/lazy-component.svelte.js";
 
   let { initialSettings = "" } = $props();
   const preferences = createPreferences();
+  // The settings dialog is only shown on request, so its code is loaded when
+  // it is first opened. `settingsOpen` can be true before the module arrives
+  // (an initial settings request, a menu or shortcut), and the dialog shows
+  // as soon as it is mounted.
+  const lazy = {
+    settings: lazyComponent(() => import("./settings/SettingsDialog.svelte")),
+  };
   let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "general"));
   function openSettings(category = "general") {
     settingsCategory = category;
     settingsOpen = true;
   }
+  $effect(() => {
+    if (!settingsOpen) return;
+    lazy.settings.load().catch(() => {
+      settingsOpen = false;
+      say(m.reader_panel_unavailable(), { kind: "problem", id: "landing:settings-unavailable" });
+    });
+  });
 
   // The desktop app asks for Settings from its menu and from Ctrl or Cmd+,.
   $effect(() => {
@@ -1740,15 +1754,18 @@
   </Page>
 {/if}
 
-<SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} account={me}
-                userId={buildPreferenceUser(me)}
-                keys={preferences.state.keys} onkeys={preferences.setKeys}
-                completion={preferences.state.completion} oncompletion={preferences.setCompletion}
-                brackets={preferences.state.brackets} onbrackets={preferences.setBrackets}
-                latexAssist={preferences.state.latexAssist} onlatexassist={preferences.setLatexAssist}
-                proofing={preferences.state.proofing} onproofing={preferences.setProofing}
-                dialect={preferences.state.dialect} ondialect={preferences.setDialect}
-                check={preferences.state.check} oncheck={preferences.setCheck} />
+{#if lazy.settings.component}
+  {@const SettingsDialog = lazy.settings.component}
+  <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} account={me}
+                  userId={buildPreferenceUser(me)}
+                  keys={preferences.state.keys} onkeys={preferences.setKeys}
+                  completion={preferences.state.completion} oncompletion={preferences.setCompletion}
+                  brackets={preferences.state.brackets} onbrackets={preferences.setBrackets}
+                  latexAssist={preferences.state.latexAssist} onlatexassist={preferences.setLatexAssist}
+                  proofing={preferences.state.proofing} onproofing={preferences.setProofing}
+                  dialect={preferences.state.dialect} ondialect={preferences.setDialect}
+                  check={preferences.state.check} oncheck={preferences.setCheck} />
+{/if}
 
 <Modal open={Boolean(renaming)} title={m.landing_rename_title()}
        description={m.landing_rename_description()}
