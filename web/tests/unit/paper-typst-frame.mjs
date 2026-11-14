@@ -23,6 +23,16 @@ if (!existsSync(typstWasm)) {
     assert.ok(html.includes("<p>Body.</p>"), html);
   }
 
+  // The content of the other layout containers is kept too: a grid's cells and a stack's children come one after another.
+  {
+    assert.equal(renderer.render("#pad(x: 1em)[Padded]"), "<p>Padded</p>");
+    assert.equal(renderer.render("#grid(columns: 2, grid.cell(colspan: 2)[One], [Two], grid.hline())"), "<p>One</p><p>Two</p>");
+    assert.equal(renderer.render("#stack(spacing: 1em, [Up], 2em, [Down])"), "<p>Up</p><p>Down</p>");
+    assert.ok(renderer.render("#rotate(5deg)[Turned]").includes("Turned"));
+    // A table is not a grid, and stays a table.
+    assert.ok(renderer.render("#table(columns: 2, [a], [b])").startsWith("<table>"));
+  }
+
   // A source that does not compile still draws nothing.
   assert.equal(renderer.render("#unknown-function()"), "");
 

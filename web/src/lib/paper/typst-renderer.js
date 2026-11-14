@@ -5,9 +5,10 @@
 // block costs a millisecond or so once the first compile has warmed it.
 //
 // Known gaps of Typst's HTML export: the number of a display equation is still
-// dropped, so a block shows none. `align` and `place` content would be dropped
-// too, so two rules in front of each source keep it (see KEEP_RULES). Text size
-// and weight are not exported.
+// dropped, so a block shows none. The content of layout containers (`align`,
+// `place`, `pad`, `grid`, `stack` and others) would be dropped too, so rules
+// in front of each source keep it (see KEEP_RULES); `layout(size => ...)` is
+// still dropped. Text size and weight are not exported.
 
 import { call, needsOf } from "../renderer-wasm.js";
 import { fetchNeeds as fetchPackages, ROUNDS } from "../needs.js";
@@ -20,13 +21,22 @@ const CACHE_LIMIT = 2000;
 const ASSET_LIMIT = 8 * 1024 * 1024;
 const TOTAL_LIMIT = 64 * 1024 * 1024;
 
-// Typst's HTML export drops the content of `align(...)` and `place(...)`. The
-// first rule keeps aligned content in a div with a `text-align` style, using
-// the alignment's horizontal side (`start` when it has none). The second keeps
-// placed content in the flow, where it reads as the rest of the block does.
+// Typst's HTML export drops the content of its layout containers. The first
+// rule keeps aligned content in a div with a `text-align` style, using the
+// alignment's horizontal side (`start` when it has none). The others keep a
+// container's content in the flow, where it reads as the rest of the block
+// does: a grid's cells and a stack's children come one after another.
 const KEEP_RULES =
   '#show align: it => { let a = repr(it.alignment); let side = if a.contains("center") { "center" } else if a.contains("right") { "right" } else if a.contains("end") { "end" } else if a.contains("left") { "left" } else { "start" }; html.elem("div", attrs: (style: "text-align: " + side), it.body) }\n' +
-  "#show place: it => it.body\n";
+  "#show place: it => it.body\n" +
+  "#show pad: it => it.body\n" +
+  "#show columns: it => it.body\n" +
+  "#show rect: it => it.body\n" +
+  "#show move: it => it.body\n" +
+  "#show scale: it => it.body\n" +
+  "#show rotate: it => it.body\n" +
+  "#show stack: it => it.children.filter(c => type(c) == content).join(parbreak())\n" +
+  '#show grid: it => it.children.map(c => if c.has("body") { c.body } else { none }).join(parbreak())\n';
 
 // A body that is one empty marked element, and the HTML it compiles to. A
 // prefix's frame is what it writes around this mark.
