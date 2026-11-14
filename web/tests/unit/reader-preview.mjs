@@ -118,6 +118,8 @@ assert.match(previewSource, /const explicitRun = format === "quarto" \|\| format
 assert.doesNotMatch(previewSource, /shareRun|runDirectoryReady/);
 // A Quarto document with code says what produces the real output.
 assert.match(readerSource, /Press Run code to run it on this computer/);
+// A Typst draft names a collaborator's run in the diagnostics, since it has no draft line for it.
+assert.match(readerSource, /sourceFormat === "typst" && runResults\?\.files && !ownResults \? \{ severity: "info", message: runResults\.note \}/);
 // The paged controls are the preview header's, and the frame is what says
 // what they should read: a zoom the frame could not honour -- a pane too
 // narrow for 150% -- must not leave the header claiming it did.
