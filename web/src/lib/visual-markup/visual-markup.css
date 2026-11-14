@@ -5,7 +5,7 @@
    is the editor's own font, so they stay monospaced. */
 .cm-editor.cm-lp-visual {
   --font-mono: var(--editor-font-family, var(--font-editor));
-  --doc-font: ui-serif, "Iowan Old Style", "Source Serif 4", Georgia, Cambria, serif;
+  --doc-font: "Source Serif 4", ui-serif, "Iowan Old Style", Georgia, Cambria, serif;
   --doc-font-size: 1.125em;
   --doc-line-height: 1.55;
   --doc-measure: 90ch;
