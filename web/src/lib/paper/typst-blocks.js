@@ -13,7 +13,7 @@ import { lineEnd, lineStart } from "./blocks.js";
 /** @type {{ text: string, blocks: PaperBlock[] } | null} the last split, by its text */
 let last = null;
 
-/** What a document gives every block, computed once per split. @type {WeakMap<PaperBlock[], { text: string, files: Record<string, string> | null, path: string, refs: string, numbered: any[] }>} */
+/** What a document gives every block, computed once per split. @type {WeakMap<PaperBlock[], { text: string, typst: Record<string, string>, path: string, refs: string, numbered: any[] }>} */
 const contexts = new WeakMap();
 
 // Rules that set the document up. They are never drawn and go in front of every block.
@@ -125,6 +125,13 @@ function kindWord(kind) {
   return KIND_WORDS[/** @type {keyof typeof KIND_WORDS} */ (kind)] ?? kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
+/** Whether two path-to-text maps hold the same texts. @param {Record<string, string>} a @param {Record<string, string>} b */
+function sameTexts(a, b) {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && a[key] === b[key]);
+}
+
 /**
  * What the whole document gives every block: its preamble-independent facts.
  * The open file is `text`, at project path `path`; `files` are the other project
@@ -135,23 +142,22 @@ function kindWord(kind) {
  * @param {string} path
  */
 function contextOf(text, blocks, files, path) {
-  const cached = contexts.get(blocks);
-  if (cached && cached.files === files && cached.path === path && cached.text === text) return cached;
   // Only Typst sources can be included; the rest of the project is not scanned.
   /** @type {Record<string, string>} */
   const typst = {};
-  for (const [name, body] of Object.entries(files || {})) if (name.endsWith(".typ")) typst[name] = body;
+  for (const [name, body] of Object.entries(files || {})) if (name.endsWith(".typ") && name !== path) typst[name] = body;
+  const cached = contexts.get(blocks);
+  // The editor hands over a fresh texts object on every call, so the cache is
+  // checked by content: a caret move or an edit elsewhere does not rescan.
+  if (cached && cached.text === text && cached.path === path && sameTexts(cached.typst, typst)) return cached;
   const facts = typstFacts({ ...typst, [path]: text }, path, path, []);
-  // A reference alone in a block cannot see its target, so the text it would
-  // read ("Equation 1") is given to every block as a table. A label with no
-  // number reads as its key in brackets, which is also how a citation looks.
   const entries = [...facts.labels].map(
     ([label, { number, kind }]) => `${JSON.stringify(label)}: ${JSON.stringify(`${kindWord(kind)} ${number}`)}`,
   );
   const refs =
     `#let __lp_refs = (${entries.length ? entries.join(", ") : ":"})\n` +
     '#show ref: it => link("#" + str(it.target), __lp_refs.at(str(it.target), default: "[" + str(it.target) + "]"))\n';
-  const context = { text, files, path, refs, numbered: facts.numbered };
+  const context = { text, typst, path, refs, numbered: facts.numbered };
   contexts.set(blocks, context);
   return context;
 }

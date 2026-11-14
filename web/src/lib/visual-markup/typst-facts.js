@@ -433,7 +433,14 @@ export function typstFacts(texts, main, open, entries = []) {
           break;
         case "include": {
           const next = resolve(event.path, path);
-          if (next && !stack.includes(next)) scanFile(next, [...stack, next], origin ?? event.at);
+          if (next && !stack.includes(next)) {
+            // A set rule inside an included file applies to that file's content
+            // only: the parent's numbering settings come back after it, while
+            // the counters it advanced stay advanced.
+            const saved = [headingPattern, figurePattern, equationPattern, setStyle];
+            scanFile(next, [...stack, next], origin ?? event.at);
+            [headingPattern, figurePattern, equationPattern, setStyle] = saved;
+          }
           break;
         }
       }
