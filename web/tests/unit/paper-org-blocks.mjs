@@ -79,6 +79,49 @@ const text = "#+title: T\n#+author: A\n\n* Heading\n:PROPERTIES:\n:ID: x\n:END:\
   assert.deepEqual(blocks.map((block) => block.kind), ["Keyword", "TitleBlock", "Paragraph"]);
 }
 
+// A table's name and caption are part of the table, one block drawn together.
+{
+  const attachText = ["Intro.", "", "#+NAME: tab:one", "#+CAPTION: A table.", "| a | b |", "| 1 | 2 |", "", "After.", ""].join("\n");
+  const blocks = splitOrgBlocks(attachText);
+  assert.deepEqual(blocks.map((block) => block.kind), ["Paragraph", "Table", "Paragraph"]);
+  assert.deepEqual(blocks.map((block) => block.render), [true, true, true]);
+  assert.equal(attachText.slice(blocks[1].from, blocks[1].to), "#+NAME: tab:one\n#+CAPTION: A table.\n| a | b |\n| 1 | 2 |");
+  assert.equal(orgBlockSource(attachText, blocks[1], blocks), "#+NAME: tab:one\n#+CAPTION: A table.\n| a | b |\n| 1 | 2 |");
+}
+
+// A blank line breaks the attachment, so the caption stays a keyword block.
+{
+  const lostText = ["#+CAPTION: Lost.", "", "| a |", ""].join("\n");
+  const blocks = splitOrgBlocks(lostText);
+  assert.deepEqual(blocks.map((block) => block.kind), ["Keyword", "Table"]);
+  assert.equal(lostText.slice(blocks[1].from, blocks[1].to), "| a |");
+}
+
+// A keyword that is not an affiliated key stays its own block.
+{
+  const tocText = ["Text.", "", "#+TOC: headlines 2", "| a |", ""].join("\n");
+  const blocks = splitOrgBlocks(tocText);
+  assert.deepEqual(blocks.map((block) => block.kind), ["Paragraph", "Keyword", "Table"]);
+}
+
+// The first element's affiliated keywords are part of its block, not of the header.
+{
+  const iconText = ["#+TITLE: T", "#+AUTHOR: A", "", "#+NAME: fig:icon", "#+CAPTION: The icon.", "#+ATTR_HTML: :width 24%", "[[file:icon.png]]", "", "Body.", ""].join("\n");
+  const blocks = splitOrgBlocks(iconText);
+  assert.deepEqual(blocks.map((block) => block.kind), ["TitleBlock", "Paragraph", "Paragraph"]);
+  assert.equal(iconText.slice(blocks[0].from, blocks[0].to), "#+TITLE: T\n#+AUTHOR: A");
+  const icon = iconText.slice(blocks[1].from, blocks[1].to);
+  assert.ok(icon.startsWith("#+NAME: fig:icon"));
+  assert.ok(icon.endsWith("[[file:icon.png]]"));
+}
+
+// Affiliated keywords above a comment are left alone, because the comment is not rendered.
+{
+  const commentText = ["Text.", "", "#+NAME: x", "# a comment", ""].join("\n");
+  const blocks = splitOrgBlocks(commentText);
+  assert.deepEqual(blocks.map((block) => block.kind), ["Paragraph", "Keyword", "Comment"]);
+}
+
 // The last split is remembered by its text, so a repeat call returns the same array.
 {
   assert.equal(splitOrgBlocks(text), splitOrgBlocks(text));

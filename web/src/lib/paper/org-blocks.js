@@ -2,7 +2,8 @@
 // of blocks.js. Sections are containers, so their headlines and body blocks
 // are the blocks, and each is a range of whole lines. A header whose keywords
 // set a title, subtitle, author or date is one TitleBlock, which visual mode
-// draws as the title block.
+// draws as the title block. Affiliated keywords (#+CAPTION:, #+NAME:, #+ATTR_…:)
+// directly above an element are part of that element's block.
 
 import { orgTree } from "../source-trees.js";
 import { lineEnd, lineStart } from "./blocks.js";
@@ -14,6 +15,9 @@ export const ORG_HEADER_KINDS = new Set(["TitleBlock", "Keyword", "Comment", "Co
 
 // A keyword line that includes or sets up another file.
 const INCLUDE_KEYWORD = /^\s*#\+(include|setupfile):/i;
+
+// A keyword line for a key that Org attaches to the element below it.
+const AFFILIATED_KEYWORD = /^\s*#\+(caption|name|header|headers|plot|results|attr_\w+)(\[[^\]\n]*\])?:/i;
 
 // A keyword line that sets a title, subtitle, author or date to a non-empty value.
 const TITLE_KEYWORD = /^\s*#\+(title|subtitle|author|date):[ \t]*\S/i;
@@ -28,9 +32,10 @@ const definitionsByBlocks = new WeakMap();
  * Splits an Org source into its top-level blocks, in order, each widened to
  * whole lines. Blocks that would share a line are merged. Keywords, drawers,
  * comments and footnote definitions are kept as source, because the editor
- * never draws them alone. The header's keywords become one TitleBlock, drawn
- * as the title block, when one of them sets a title, subtitle, author or date.
- * Null while the Org syntax module is not loaded.
+ * never draws them alone. Affiliated keywords directly above an element are
+ * part of that element's block. The header's keywords become one TitleBlock,
+ * drawn as the title block, when one of them sets a title, subtitle, author or
+ * date. Null while the Org syntax module is not loaded.
  * @param {string} text
  * @returns {PaperBlock[] | null}
  */
@@ -66,9 +71,35 @@ export function splitOrgBlocks(text) {
     }
   };
   visit(tree.topNode.firstChild);
+  attachAffiliated(text, blocks);
   foldTitleBlock(text, blocks);
   last = { text, blocks };
   return blocks;
+}
+
+/**
+ * Joins each rendered element to the affiliated keywords directly above it, so
+ * that the element and its keywords form one block. The renderer draws a
+ * caption only when it is given with its element, and the editor reveals them
+ * together. A run stops at a blank line, at a keyword that is not affiliated,
+ * and at an element that is not rendered, whose keywords stay blocks of their
+ * own. Mutates `blocks`.
+ * @param {string} text
+ * @param {PaperBlock[]} blocks
+ */
+function attachAffiliated(text, blocks) {
+  const isAffiliated = (/** @type {PaperBlock} */ block) => block.kind === "Keyword" && AFFILIATED_KEYWORD.test(text.slice(block.from, block.to));
+  const adjacent = (/** @type {PaperBlock} */ a, /** @type {PaperBlock} */ b) => /^(\r\n|\r|\n)$/.test(text.slice(a.to, b.from));
+  for (let i = 0; i < blocks.length; i++) {
+    const element = blocks[i];
+    if (element.kind === "Keyword" || element.render !== true) continue;
+    let start = i;
+    while (start > 0 && isAffiliated(blocks[start - 1]) && adjacent(blocks[start - 1], blocks[start])) start--;
+    if (start === i) continue;
+    blocks.splice(start, i - start + 1, { from: blocks[start].from, to: element.to, kind: element.kind, render: true });
+    // The merged block now sits at `start`, so the walk resumes after it.
+    i = start;
+  }
 }
 
 /**
