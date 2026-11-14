@@ -409,8 +409,9 @@
   .changes-panel :global(.tracking-toggle) { display: inline-flex; align-items: center; gap: .4rem; min-height: 2rem; color: var(--panel-muted); font-size: var(--panel-meta-size); white-space: nowrap; cursor: pointer; }
   .changes-toolbar, .bar-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-width: 0; min-height: 2rem; }
   /* The scope menu's trigger reads as text with a chevron. It takes the same
-     hover as a row, and has no border, so it is no taller than the text actions. */
-  .scope-trigger { display: inline-flex; align-items: center; gap: .25rem; flex: 0 1 auto; min-width: 0; min-height: 2rem; padding: 0 .35rem; border: 0; border-radius: var(--radius-base); background: none; color: inherit; font-size: var(--panel-font-size); font-weight: 400; cursor: pointer; }
+     hover as a row, and has no border, so it is no taller than the text actions.
+     Its words, not its hover box, share the left edge with the rows. */
+  .scope-trigger { display: inline-flex; align-items: center; gap: .25rem; flex: 0 1 auto; min-width: 0; min-height: 2rem; padding: 0 .35rem; margin-inline-start: -.35rem; border: 0; border-radius: var(--radius-base); background: none; color: inherit; font-size: var(--panel-font-size); font-weight: 400; cursor: pointer; }
   .scope-trigger:hover, .scope-trigger[data-state="open"] { background: var(--color-row-hover); }
   .scope-trigger :global(svg) { flex: none; color: var(--panel-muted); }
   .scope-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -437,7 +438,7 @@
   .row-action.reject { color: var(--color-error-text); }
   :is(.scope-trigger, .text-action, .bar-action, .row-action, .row-more):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
   /* Touch needs room for a thumb; a mouse does not. */
-  @media (pointer: coarse) { .scope-trigger, .text-action, .bar-action, .row-action { min-height: 2.25rem; } .row-action { width: 2.25rem; } }
+  @media (pointer: coarse) { .scope-trigger, .text-action, .bar-action, .row-action { min-height: 2.25rem; } .row-action { width: 2.25rem; } .row-meta { min-height: 2.25rem; line-height: 2.25rem; } }
   .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
   .panel-status { margin: 0; padding: .5rem 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
   /* The queue is the pane's scroller. It bleeds to the panel's edges so the
@@ -460,8 +461,9 @@
   @media (min-width: 768px) { .changes-panel:not(.selecting) .row-pick-hit { display: none; } }
   .row-main { display: block; flex: 1; min-width: 0; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
   .row-main:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: .2rem; }
-  /* The meta line is one line, and its right end is kept clear of the answers. */
-  .row-meta { display: block; min-width: 0; padding-right: 4rem; overflow: hidden; color: var(--panel-muted); font-size: var(--panel-meta-size); text-overflow: ellipsis; white-space: nowrap; }
+  /* The meta line is one line as tall as the answers beside it, so they never
+     reach down over the diff, and its right end is kept clear of them. */
+  .row-meta { display: block; min-width: 0; min-height: 1.75rem; line-height: 1.75rem; padding-right: 4rem; overflow: hidden; color: var(--panel-muted); font-size: var(--panel-meta-size); text-overflow: ellipsis; white-space: nowrap; }
   .row-run::before, .row-location + .row-author::before { content: "\00b7"; margin-inline: .3rem; }
   /* The diff quotes the source, so it wears the source's monospace at the
      panel's own size rather than a hand-set one. */
@@ -481,7 +483,7 @@
   /* The answers sit at the row's top right, on the meta line. They are hidden
      until the row is in use, and fade in on hover, focus, the active row or a
      decision in flight. Opacity, not display, keeps them in the tab order. */
-  .row-actions { position: absolute; top: .55rem; right: var(--panel-padding); z-index: 1; display: flex; gap: .25rem; opacity: 0; }
+  .row-actions { position: absolute; top: .75rem; right: var(--panel-padding); z-index: 1; display: flex; gap: .25rem; opacity: 0; }
   .change-row:hover .row-actions, .change-row:focus-within .row-actions, .change-row[aria-current="true"] .row-actions, .row-actions:has([aria-busy="true"]) { opacity: 1; }
   @media (hover: none) { .row-actions { opacity: 1; } }
   .changes-empty { padding: 2rem 0; text-align: center; text-wrap: balance; }
@@ -501,7 +503,7 @@
     .row-more { min-height: 2.75rem; }
     .row-more { display: flex; align-items: center; }
     /* Two finger-sized answers take the meta line's right end. */
-    .row-meta { padding-right: 6rem; }
+    .row-meta { min-height: 2.75rem; line-height: 2.75rem; padding-right: 6rem; }
     .row-action { width: 2.75rem; }
     .row-actions { opacity: 1; }
     .row-main { min-height: 2.75rem; }

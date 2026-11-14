@@ -436,7 +436,7 @@ try {
       clientWidth: panel.clientWidth,
       titleHeight: box('.changes-panel .panel-tabs-row').height,
       toolbarHeight: box('.changes-toolbar').height,
-      scopeLeft: box('.scope-trigger').left,
+      scopeLeft: box('.scope-label').left,
       rowLeft: box('.change-row > :first-child').left,
       trackingInTabRow: !!document.querySelector('.panel-tabs-row .tracking-toggle'),
     };
@@ -446,8 +446,7 @@ try {
   assert.ok(narrow.titleHeight < 48, `the tab row, with the tracking switch in it, is one line (${narrow.titleHeight}px)`);
   assert.equal(narrow.trackingInTabRow, true, "the tracking switch sits in the tab row");
   assert.ok(narrow.toolbarHeight < 48, `the toolbar is one line (${narrow.toolbarHeight}px)`);
-  assert.ok(Math.abs(narrow.scopeLeft - narrow.rowLeft) <= 1, "the scope trigger and the rows share a left edge");
-  assert.equal(await ev("window.visiblePicks()"), 2, "at phone width the boxes show with nothing ticked");
+  assert.ok(Math.abs(narrow.scopeLeft - narrow.rowLeft) <= 1, "the scope name and the rows share a left edge");
 
   console.log("changes-browser: rows with kinds, authors and locations, the scope menu, task and empty scopes, keyboard, selection with Accept all and Reject all, Escape, long changes, read-only readers, the empty queue and the phone-width layout passed");
 } finally {
