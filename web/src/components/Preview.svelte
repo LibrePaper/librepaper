@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { mode, onMode, onPalette, paperMode, onPaper } from "../lib/theme.js";
   import { createFrameMessageReceiver } from "../lib/frame-messages.js";
+  import { documentFonts } from "../lib/document-fonts.js";
   import { m } from "../lib/paraglide/messages.js";
   // The document, on its own origin, in a frame.
   //
@@ -102,6 +103,14 @@
     return tell({ type: "theme", mode: mode(), paper: paperMode(), surface: editorSurface() });
   }
 
+  /// The bundled document fonts, as bytes for the frame to register. Sent when
+  /// the frame loads, not with the theme: no transfer list, so the buffers stay
+  /// here and the next frame load can send them again.
+  async function sendFonts() {
+    const faces = await documentFonts();
+    if (faces.length) tell({ type: "fonts", faces });
+  }
+
   /// The editor's surface (background and text) as resolved colours, read from
   /// the theme tokens the editor itself uses, so the preview sits on the same
   /// ground in every palette. Null when the preview paper stays light in a dark
@@ -164,6 +173,7 @@
         onload?.();
         tell({ type: "reader-ready" });
         sendTheme();
+        sendFonts();
       }}
       class:dimmed
       style:pointer-events={grabbing ? "none" : null}

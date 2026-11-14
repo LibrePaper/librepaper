@@ -139,7 +139,7 @@
 	--typo-base--color-dark: var(--color-text);
 
 	/* Interface and source typography. A framed document keeps its own type. */
-	--typo-base--font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+	--typo-base--font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 	--typo-heading--font-family: var(--typo-base--font-family);
 	--typo-heading--font-weight: 650;
 	--typo-anchor--color-light: var(--color-link);

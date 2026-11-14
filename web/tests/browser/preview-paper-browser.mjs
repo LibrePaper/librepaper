@@ -4,7 +4,7 @@
 // new paper's wash when the paper changes.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -147,6 +147,30 @@ try {
   const lightWash = await page.evaluate('document.querySelector("mark[data-librepaper]").style.background');
   assert.notEqual(lightWash, darkWash);
   console.log(`preview-paper-browser: marks repaint with the paper (${darkWash} then ${lightWash})`);
+
+  // Fonts handed to the frame are registered once, and a new preview keeps them.
+  // The page starts with no fonts of its own, so the count starts at zero.
+  const fontFile = readdirSync(join(dist, "assets")).find((name) => name.startsWith("source-serif-4-latin-wght-normal-") && name.endsWith(".woff2"));
+  assert.ok(fontFile, "run `bun run build` first");
+  const fontBase64 = readFileSync(join(dist, "assets", fontFile)).toString("base64");
+  const serifCount = `[...document.fonts].filter((f) => f.family.replace(/["']/g, "") === "Source Serif 4").length`;
+  const sendFonts = () => page.evaluate(`(() => {
+    const bytes = Uint8Array.from(atob(${JSON.stringify(fontBase64)}), (c) => c.charCodeAt(0));
+    postMessage({ librepaper: true, type: "fonts", faces: [
+      { family: "Source Serif 4", descriptors: { style: "normal", weight: "200 900", unicodeRange: "U+0000-00FF" }, data: bytes.slice().buffer },
+      { family: "Broken", descriptors: { style: "normal", weight: "400" }, data: "not bytes" },
+      { family: 42, descriptors: { style: "normal", weight: "400" }, data: bytes.slice().buffer },
+    ] }, "*");
+  })()`);
+  await sendFonts();
+  await until("font face registered", () => page.evaluate(`${serifCount} === 1`), 5000);
+  assert.equal(await page.evaluate(serifCount), 1);
+  assert.equal(await page.evaluate('[...document.fonts].some((f) => f.family.replace(/["\']/g, "") === "Broken")'), false);
+  await sendFonts();
+  await preview("<!doctype html><html><head><title>P</title></head><body><p>Fonts survive.</p></body></html>");
+  await until("fonts preview published", () => page.evaluate('window.published.at(-1) === "Fonts survive."'), 5000);
+  assert.equal(await page.evaluate(serifCount), 1);
+  console.log("preview-paper-browser: fonts handed to the frame are registered once and survive a new preview");
 
   console.log("preview-paper-browser: paper colours, class, data-theme, author styles and marks follow the reader passed");
 } finally {

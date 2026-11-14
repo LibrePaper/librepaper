@@ -8,8 +8,9 @@ small caps, no ornament. It should feel like a well-made journal article on
 the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 
 ## Tokens
-- `--lp-serif`: "Charter", "Bitstream Charter", "Source Serif 4", "Source Serif Pro", "Sitka Text", "Noto Serif", Cambria, Georgia, serif  (drop "Iowan Old Style": old-style face)
-- `--lp-sans` (new): system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif
+- `--lp-serif`: "Source Serif 4", Charter, "Bitstream Charter", "Source Serif Pro", "Sitka Text", "Noto Serif", Cambria, Georgia, serif  (drop "Iowan Old Style": old-style face)
+- `--lp-sans` (new): Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif
+- Fonts: the app bundles Source Serif 4 and Inter (Latin and Latin Extended, OFL) and hands them to the page it shows; an exported or published page carries no font files and falls back along the stack.
 - `--lp-mono`: keep.
 - `--lp-math` (new): "STIX Two Math", "Cambria Math", "Latin Modern Math", "New Computer Modern Math", math. Set on `math` in the Typst adapter.
 - Colours: keep the neutral paper/ink and derived shades (rq34), muted text at 68% ink (was 62%). Accent: keep #1f5fa8 light / #8ab4f0 dark. Add `--lp-mark` modern highlight: light `color-mix(in srgb, #ffd84d 45%, transparent)`, dark `color-mix(in srgb, #ffd84d 25%, transparent)`.
