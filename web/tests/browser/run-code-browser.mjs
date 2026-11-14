@@ -89,7 +89,7 @@ try {
   const desktopUrl = `${origin}/docs/paper?desktop=1`;
   await b.resize(1280,900);
 
-  const runButton = `[role=group][aria-label="Run"] button[data-tip]`;
+  const runButton = `[role=group][aria-label="Run code"] button[data-tip]`;
   const runButtonExists = () => b.evaluate(`Boolean(document.querySelector('${runButton}'))`);
   const switchExists = () => b.evaluate(`Boolean(document.querySelector('button[role=switch][aria-label="Run code"]'))`);
   const renderCalls = () => b.evaluate(`(window.lpCalls || []).filter((path) => path.includes("/jobs")).length`);

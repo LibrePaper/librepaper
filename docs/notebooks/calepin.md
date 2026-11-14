@@ -19,9 +19,9 @@ If the desktop app does not find Calepin, install it or put it on PATH.
 
 ## Run
 
-In Settings → Rendering, set Typst to render on this computer. A **Run** button then appears at the top of the editor for Typst documents.
+In Settings → Rendering, set Typst to render on this computer. A **Run code** button then appears at the top of the editor for Typst documents.
 
-Code runs only when you press **Run**. Each press runs the whole document once. **Stop** ends a run. Nothing runs when a document opens or while you type.
+Code runs only when you press **Run code**. Each press runs the whole document once. **Stop** ends a run. Nothing runs when a document opens or while you type.
 
 A plain Typst document with no code runs the same way. Calepin compiles it.
 
@@ -29,7 +29,7 @@ The entry file should be at the top of the project. Calepin keeps its `.calepin`
 
 ## Run directory
 
-The first time, LibrePaper asks for a Run directory: a folder on your computer with your data and scripts. It is never uploaded. Each person picks their own. The suggested folder is `~/LibrePaper/<project>`. The **Run** button's menu shows the folder and lets you change it.
+The first time, LibrePaper asks for a Run directory: a folder on your computer with your data and scripts. It is never uploaded. Each person picks their own. The suggested folder is `~/LibrePaper/<project>`. The **Run code** button's menu shows the folder and lets you change it.
 
 Calepin runs chunks in the project's working copy on your computer. The contents of your Run directory are linked into it, so relative paths such as `read.csv("data/survey.csv")` find the files there. Hidden files and folders in the Run directory are not linked.
 
@@ -41,13 +41,13 @@ The project's Typst source and resources are stored on the server, and anyone yo
 
 Between runs, the preview is always the browser's own Typst draft, PDF or HTML, as chosen in the View menu. No code runs.
 
-After a run, the draft shows the results Calepin stored: output under each chunk, figures, and inline values. Prose edits show at once. A chunk whose code you changed keeps showing the code and output of the last run until you press **Run** again. The **Run** button shows how many chunks have changed since the last run.
+After a run, the draft shows the results Calepin stored: output under each chunk, figures, and inline values. Prose edits show at once. A chunk whose code you changed keeps showing the code and output of the last run until you press **Run code** again. The **Run code** button shows how many chunks have changed since the last run.
 
 If you add a chunk after a run, it has no stored output. The draft is drawn without outputs until the next run, and a note in Diagnostics says so. A notebook that has never been run still previews. Its code is shown without output.
 
 ## Publish results
 
-**Publish results** is a tick box in the **Run** button's menu. It is on by default, and each person sets it for each project.
+**Publish results** is a tick box in the **Run code** button's menu. It is on by default, and each person sets it for each project.
 
 While it is on, each run sends the stored results to the server. Collaborators see them in their own browser draft, including people without the desktop app or your data. Each run replaces the published results. Unlike Quarto, this works for PDF and HTML output alike, and inline values are included.
 
@@ -59,10 +59,10 @@ Published results count against the storage of the document's owner. To delete t
 
 **Calepin is not found.** The desktop app could not run it. Install Calepin or put it on PATH. Settings → Rendering shows the commands the app runs, `calepin compile {input} --format pdf` and `calepin compile {input} --format html`, and lets you edit them.
 
-**Outputs disappeared after adding a chunk.** A new chunk has no stored output until the next run. Press **Run**.
+**Outputs disappeared after adding a chunk.** A new chunk has no stored output until the next run. Press **Run code**.
 
 **A font is missing.** Fonts uploaded to the project are not passed to Calepin. Install the font on your computer, or edit the command in Settings → Rendering.
 
 ## Safety
 
-Calepin runs as you. It can read your files, use your packages and reach the internet. LibrePaper does not sandbox it. Code runs only when you press **Run**. Every editor can change the code, so press **Run** only on documents whose editors you trust.
+Calepin runs as you. It can read your files, use your packages and reach the internet. LibrePaper does not sandbox it. Code runs only when you press **Run code**. Every editor can change the code, so press **Run code** only on documents whose editors you trust.
