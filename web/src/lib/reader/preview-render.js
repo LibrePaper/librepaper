@@ -212,11 +212,13 @@ export function createPreviewRenderer({
       /** @param {string} id */
       const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution, start.runDirectory ?? "", start.runResults?.updatedAt ?? ""]);
       const held = finished.get(source.main);
+      /** @type {string | undefined} */
+      let early;
       if (held && !manualWaiting) {
         // The identity depends on the texts, their digests and the main path,
         // not on the bytes of any figure, so taking it before the figures are
         // gathered gives the value the compile would have taken.
-        const early = await snapshotDigest(source);
+        early = await snapshotDigest(source);
         if (coordinator.superseded(guard) || facts().disposed) return;
         if (keyOf(early) === held.key) {
           // Unchanged since it was drawn: no spinner, no compile, no fetch.
@@ -281,7 +283,9 @@ export function createPreviewRenderer({
       // Keep a transient source identity for diagnostics and race checks. It
       // is never sent to the server as a rendering name; shared results are a
       // separate upload of a local run's output, which this person can turn off.
-      identity = await snapshotDigest(source);
+      // The figures only add `assets` and `urls`, which the digest does not
+      // read, so a digest taken above is still this tree's identity.
+      identity = early ?? await snapshotDigest(source);
       debug("preview: rendering", format, identity);
       if (facts().disposed) return;
       const manual = takeManual();
