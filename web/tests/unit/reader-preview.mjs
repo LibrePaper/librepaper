@@ -117,7 +117,7 @@ assert.match(previewSource, /const explicitRun = format === "quarto" \|\| format
 // shares results any more: that happens from the Run action.
 assert.doesNotMatch(previewSource, /shareRun|runDirectoryReady/);
 // A Quarto document with code says what produces the real output.
-assert.match(readerSource, /Press Run to run it on this computer/);
+assert.match(readerSource, /Press Run code to run it on this computer/);
 // The paged controls are the preview header's, and the frame is what says
 // what they should read: a zoom the frame could not honour -- a pane too
 // narrow for 150% -- must not leave the header claiming it did.

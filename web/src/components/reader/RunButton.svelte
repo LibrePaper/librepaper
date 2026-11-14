@@ -30,14 +30,14 @@
   }
 </script>
 
-<div class="run-button" role="group" aria-label={m.runbutton_run()}>
+<div class="run-button" role="group" aria-label={m.readerd_run_code()}>
   <button type="button" class="run-main" data-tip={primaryTip} onclick={() => (running ? onstop() : onrun())}>
     {#if running}
       <span class="run-spin"><Icon name="loader-circle" size="0.875rem" /></span>
       <span class="run-label">{m.runbutton_stop()}</span>
     {:else}
       <Icon name="play" size="0.875rem" />
-      <span class="run-label">{m.runbutton_run()}</span>
+      <span class="run-label">{m.readerd_run_code()}</span>
       {#if stale > 0}
         <span class="run-stale" role="img" aria-label={staleLabel} data-tip={staleLabel}>{stale}</span>
       {/if}

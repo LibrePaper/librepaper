@@ -79,7 +79,7 @@ export function viewCommands(c) {
     { id: "visual-markup", label: labelOf("visual-markup"), checked: c.visual },
   ];
   // Quarto and Typst run their code on an explicit action rather than a switch.
-  if (c.runCodeOffered && c.explicitRun) markup.push({ id: "run-now", label: c.running ? m.runbutton_stop() : m.runbutton_run() });
+  if (c.runCodeOffered && c.explicitRun) markup.push({ id: "run-now", label: c.running ? m.runbutton_stop() : m.readerd_run_code() });
   else if (c.runCodeOffered) markup.push({ id: "run-code", label: m.readerd_run_code(), checked: c.localExecution });
 
   const size = [
