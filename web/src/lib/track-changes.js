@@ -35,7 +35,7 @@ const SETTLE_MS = 60_000;
 /**
  * @typedef {{ who: string, author: string }} Me
  * @typedef {{ from: number, to: number, insert: string }} Edit
- * @typedef {{ id?: string, change: string, text: string, rank?: number }} Fragment
+ * @typedef {{ id?: string, change: string, text: string, rank?: number, stale?: boolean }} Fragment
  * @typedef {{ id: string, change: string, text: string, rank: number, stale: boolean }} ResolvedFragment
  * @typedef {{ id: string, who: string, author: string, run: string | null, at: number, from: number, to: number }} Change
  * @typedef {Change & { stale: boolean, staleStart?: boolean, staleEnd?: boolean, hasCursor: boolean, legacy?: boolean, orphan?: boolean }} ResolvedChange
@@ -44,7 +44,7 @@ const SETTLE_MS = 60_000;
  * @typedef {{ id: string, change: string, text: string, rank: number, at: number, stale: boolean, who: any, author: any, run: any, when: any }} OrphanFragment
  * @typedef {{ changes: Change[], gaps: Gap[] }} FileState
  * @typedef {Change & { deleted: string }} Row
- * @typedef {Change & { state: "kept" | "set" | "removed", emptied?: boolean, orphan?: boolean }} PlannedChange
+ * @typedef {Change & { state: "kept" | "set" | "removed", emptied?: boolean, orphan?: boolean, legacy?: boolean, stale?: boolean, staleStart?: boolean, staleEnd?: boolean, hasCursor?: boolean }} PlannedChange
  * @typedef {Gap & { state: "kept" | "set" | "removed" }} PlannedGap
  * @typedef {{ changes: PlannedChange[], gaps: PlannedGap[] }} PlannedState
  */
@@ -1012,25 +1012,43 @@ export function plannedWrite(before, state, touched) {
 
 /**
  * The state `resolveFile` would read back from what `writePlanned` just wrote
- * for `plan`, derived from the plan and the records instead of resolving every
- * record again. `before` is the state the plan was made against and `written`
- * what `writePlanned` returned. A fragment's rank is read from its record when
- * its gap was written, since the writer may have chosen it, and a new
- * fragment's id is the one the writer gave it. Returns null whenever the plan
- * and the records do not obviously agree: a record that did not get written, a
- * fragment without an id, a rank or a change, a record of the earlier model, an
- * orphan fragment. Then the caller resolves for itself, because a state that is
- * wrong draws wrong marks. Flags of staleness are carried over and not
- * recomputed; only `prune` reads them, and it resolves on its own.
+ * for `plan`, derived from the plan, the records and the edits instead of
+ * resolving every record again. `before` is the state the plan was made
+ * against, `written` what `writePlanned` returned, and `edits` those of the one
+ * transaction the batch consists of, in its coordinates before it. A fragment's
+ * rank is read from its record when its gap was written, since the writer may
+ * have chosen it, and a new fragment's id is the one the writer gave it.
+ *
+ * What was not written is not taken from the plan: a kept change or gap keeps
+ * the cursors it had, so its place is where the state before the batch has it,
+ * moved by the edits, and the plan must agree. Returns null whenever that or
+ * anything else does not obviously hold: no edits to move things by, an edit
+ * touching a kept record, a record that did not get written, a fragment without
+ * an id, a rank or a live change, a fragment inside a span, a record of the
+ * earlier model, an orphan fragment. Then the caller resolves for itself,
+ * because a state that is wrong draws wrong marks. Flags of staleness are
+ * carried over and not recomputed; only `prune` reads them, and it resolves on
+ * its own.
  *
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {PlannedState} plan
  * @param {string[]} written
- * @param {{ orphans?: any[] }} before
+ * @param {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans?: any[] }} before
+ * @param {Edit[] | null} edits
  * @returns {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans: OrphanFragment[] } | null}
  */
-export function writtenState(doc, plan, written, before) {
-  if (before.orphans?.length) return null;
+export function writtenState(doc, plan, written, before, edits) {
+  if (!edits || before.orphans?.length) return null;
+  // Where a point before the batch is after it, or null when an edit touches
+  // it, as `shiftResolved` reads touching.
+  const moved = (from, to) => {
+    for (const e of edits) if (from <= e.to && to >= e.from) return null;
+    let d = 0;
+    for (const e of edits) if (from > e.to) d += e.insert.length - (e.to - e.from);
+    return d;
+  };
+  const was = new Map(before.changes.map((c) => [c.id, c]));
+  const wasGap = new Map(before.gaps.map((g) => [g.id, g]));
   const map = doc.getMap(CHANGES);
   const wrote = new Set(written);
   const live = new Set();
@@ -1038,11 +1056,23 @@ export function writtenState(doc, plan, written, before) {
     if (c.state === "removed") continue;
     if (c.legacy || c.orphan) return null;
     if (c.state === "set" && !wrote.has(c.id)) return null;
+    if (c.state === "kept") {
+      const old = was.get(c.id);
+      if (!old || old.legacy) return null;
+      const d = moved(old.from, old.to);
+      if (d === null || old.from + d !== c.from || old.to + d !== c.to) return null;
+    }
     live.add(c.id);
   }
   const byAt = new Map();
   for (const g of plan.gaps) {
     if (g.state === "removed") continue;
+    if (g.state === "kept") {
+      const old = wasGap.get(g.id);
+      if (!old) return null;
+      const d = moved(old.at, old.at);
+      if (d === null || old.at + d !== g.at) return null;
+    }
     let list = byAt.get(g.at);
     if (!list) byAt.set(g.at, (list = []));
     for (const f of g.fragments) {
@@ -1057,6 +1087,7 @@ export function writtenState(doc, plan, written, before) {
       list.push({ id: f.id, change: f.change, text: f.text, rank, stale: f.stale === true });
     }
   }
+  // As `resolveFile` orders them: gaps by position, fragments by rank.
   const gaps = [];
   for (const [at, fragments] of [...byAt].sort((a, b) => a[0] - b[0])) {
     if (fragments.length === 0) continue;
@@ -1076,6 +1107,16 @@ export function writtenState(doc, plan, written, before) {
     changes.push(out);
   }
   changes.sort((a, b) => a.from - b.from || a.to - b.to || (a.id < b.id ? -1 : 1));
+  // `resolveFile` moves a fragment found inside a span to the span's start.
+  // The planner does not leave one there, so none is looked for: if there is
+  // one, the plan is not understood.
+  const spans = changes.filter((c) => c.to > c.from);
+  let reach = -Infinity;
+  let k = 0;
+  for (const g of gaps) {
+    while (k < spans.length && spans[k].from < g.at) reach = Math.max(reach, spans[k++].to);
+    if (reach > g.at) return null;
+  }
   return { changes, gaps, orphans: [] };
 }
 

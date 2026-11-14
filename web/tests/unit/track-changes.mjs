@@ -1678,7 +1678,7 @@ function trackedKeystroke(doc, edits) {
     const planned = plannedWrite(snapshot, state, touched);
     result.kept = planned.gaps.filter((g) => g.state === "kept").length;
     const written = writePlanned(doc, "f1", planned);
-    const adopted = writtenState(doc, planned, written, snapshot);
+    const adopted = writtenState(doc, planned, written, snapshot, edits);
     if (adopted) {
       adoptResolved(doc, "f1", adopted);
       result.adopted = true;
@@ -1765,6 +1765,37 @@ function trackedKeystroke(doc, edits) {
   assert.equal(rank(farId), 99);
   assert.notEqual(rank(nearId), 99);
   assert.ok(doc.getMap(CHANGES).get(farId) instanceof LoroMap);
+}
+
+// A kept change is not written, so its place is what its cursors say, which
+// the plan can get wrong: a deletion just before an own insertion leaves the
+// planner with an empty record at the deletion, while the cursors moved with
+// the text and still hold the two characters. The state is then not adopted, or
+// is the one a fresh resolve gives.
+{
+  const doc = makeDoc("the quick brown fox jumps over the lazy dog", 1);
+  track(doc, 10, 10, "ab", ME);
+  const row = resolveFile(doc, "f1").changes.find((c) => c.to > c.from);
+  const text = doc.getMap("files").get("f1");
+  const snapshot = resolveFileCached(doc, "f1");
+  const before = text.toString();
+  const edits = [{ from: row.from - 1, to: row.from, insert: "" }];
+  text.delete(row.from - 1, 1);
+  const plan = planEdits(before, snapshot, edits, ME, { now: 9, mintId: () => crypto.randomUUID() });
+  const touched = new Set();
+  for (const item of [...plan.changes, ...plan.gaps]) if (item.state !== "kept") touched.add(item.id);
+  const state = { changes: plan.changes.filter((c) => c.state !== "removed"), gaps: plan.gaps.filter((g) => g.state !== "removed") };
+  const planned = plannedWrite(snapshot, state, touched);
+  const written = writePlanned(doc, "f1", planned);
+  const adopted = writtenState(doc, planned, written, snapshot, edits);
+  doc.commit();
+  if (adopted) assert.equal(shape(adopted), shape(resolveFile(doc, "f1")));
+  else assert.equal(adopted, null);
+  const again = makeDoc("the quick brown fox jumps over the lazy dog", 3);
+  track(again, 10, 10, "ab", ME);
+  const at = resolveFile(again, "f1").changes.find((c) => c.to > c.from).from;
+  trackedKeystroke(again, [{ from: at - 1, to: at, insert: "" }]);
+  assert.equal(shape(resolveFileCached(again, "f1")), shape(resolveFile(again, "f1")));
 }
 
 console.log("track-changes: ok");
