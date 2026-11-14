@@ -1090,8 +1090,10 @@ async function run() {
   // a path containing "/assets/", and matching the loose one made this check
   // pass against a JavaScript chunk.
   const figureRoute = `/api/documents/${illustrated.slug}/assets/`;
+  // The page first asks the same route for a direct link (`<digest>/link`),
+  // which is JSON, so the request wanted is the one that ends at the digest.
   const asked = await requiredUntil("the figure is fetched", async () =>
-    illustrator.requests.find((url) => url.includes(figureRoute)),
+    illustrator.requests.find((url) => url.includes(figureRoute) && /\/assets\/[0-9a-f]{64}$/.test(url)),
   );
   const stored = await fetch(asked, {
     headers: { "x-librepaper-client": "1", cookie: deployment.cookie },
