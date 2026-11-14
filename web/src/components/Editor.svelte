@@ -253,7 +253,7 @@
   import { commentMarks, setCommentMarks as setCommentMarksEffect } from "../lib/source-comment-marks.js";
   import { authorshipRuns, summarize, markSpans } from "../lib/authorship.js";
   import { authorshipMarks, setAuthorshipMarks } from "../lib/authorship-marks.js";
-  import { CHANGES, PRUNE_ORIGIN, planEdits, writePlanned, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, PRUNE_ORIGIN, planEdits, plannedWrite, writePlanned, writtenState, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory, projectPaths } from "../lib/projection.js";
@@ -569,28 +569,21 @@
             }
             if (touched.size) {
               // Everything the batch touched is written once, against the final
-              // text; the rest keeps its cursors.
-              // Gaps are named by position, which moves between steps, so every
-              // gap of the final state is handed over as set: a fragment whose
-              // cursor and rank already hold is not written again.
-              const keptChanges = new Set(state.changes.map((change) => change.id));
-              const planned = {
-                changes: [
-                  ...state.changes.map((change) => ({ ...change, state: touched.has(change.id) ? "set" : "kept" })),
-                  ...snapshot.changes.filter((change) => !keptChanges.has(change.id)).map((change) => ({ ...change, state: "removed" })),
-                ],
-                gaps: [
-                  ...state.gaps.map((gap) => ({ ...gap, state: "set" })),
-                  ...snapshot.gaps.map((gap) => ({ ...gap, state: "removed" })),
-                ],
-              };
-              writePlanned(doc, fileId, planned);
+              // text; the rest keeps its cursors, and so does a gap that no
+              // step touched.
+              const planned = plannedWrite(snapshot, state, touched);
+              const written = writePlanned(doc, fileId, planned);
+              // What was written is what the next read would resolve to, so it
+              // is handed to the cache instead of being read back. A plan the
+              // records do not obviously match is resolved, as before.
+              const adopted = writtenState(doc, planned, written, snapshot);
+              if (adopted) adoptResolved(doc, fileId, adopted);
               // The anchors plugin runs behind this one and needs the ids that
               // the deletions of this update were stored under. Gaps resolve in
               // position order and fragments in rank order, which is document
               // order.
               const known = new Set(snapshot.gaps.flatMap((gap) => gap.fragments.map((f) => f.id)));
-              created = resolveFileCached(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
+              created = (adopted ?? resolveFileCached(doc, fileId)).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
             }
           }
           // Pruning resolves every file, so it waits for a pause in typing.
