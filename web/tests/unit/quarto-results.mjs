@@ -68,3 +68,39 @@ assert.deepEqual(await splitResults(html, qmd.replace(/```\{r\}\nx <- 1:3[\s\S]*
 assert.deepEqual(await splitResults("<main id=\"quarto-document-content\"><p>none</p></main>", qmd), { ok: false, reason: "no-cells" });
 assert.deepEqual(await splitResults(html, "No code here.\n"), { ok: false, reason: "no-cells" });
 assert.deepEqual(await splitResults("<main id=\"quarto-document-content\"><div class=\"cell\"><p>open", qmd), { ok: false, reason: "parse" });
+
+// Cells in included files count, in document order, like the renderer splices them.
+{
+  const { expandedCells, quartoSidecar } = await import("../../src/lib/engines/quarto.js");
+  const cell = (n) => `\`\`\`{r}\n${n}\n\`\`\`\n`;
+  const files = {
+    "part.qmd": `---\ntitle: part\n---\n\nText\n\n${cell("part")}`,
+    "chap/a.qmd": `${cell("a")}\n{{< include b.qmd >}}\n`,
+    "chap/b.qmd": cell("b"),
+    "loop1.qmd": `${cell("l1")}\n{{< include loop2.qmd >}}\n`,
+    "loop2.qmd": `${cell("l2")}\n{{< include loop1.qmd >}}\n`,
+  };
+  const main = `${cell("m1")}\n{{< include part.qmd >}}\n\n${cell("m2")}`;
+  const cellsHtml = (n) => `<main id="quarto-document-content">${Array.from({ length: n }, (_, i) => `<div class="cell"><p>${i}</p></div>`).join("")}</main>`;
+
+  const split = await splitResults(cellsHtml(3), main, { path: "main.qmd", files });
+  assert.equal(split.ok, true);
+  assert.deepEqual(split.record.cells.map((c) => c.path ?? null), [null, "part.qmd", null]);
+  assert.equal((await splitResults(cellsHtml(2), main, { path: "main.qmd", files })).reason, "count-mismatch");
+  assert.equal((await splitResults(cellsHtml(2), main, { path: "main.qmd" })).ok, true, "without files the include contributes nothing");
+
+  const sidecar = await quartoSidecar(main, { path: "main.qmd", files, results: split.record });
+  assert.deepEqual(sidecar.outputs.map((o) => [o.line, o.path ?? null, o.stale]), [[1, null, false], [7, "part.qmd", false], [7, null, false]]);
+
+  const nested = expandedCells("{{< include chap/a.qmd >}}\n", { path: "main.qmd", files });
+  assert.deepEqual(nested.map((c) => c.file), ["chap/a.qmd", "chap/b.qmd"]);
+
+  const fenced = expandedCells("```\n{{< include part.qmd >}}\n```\n", { path: "main.qmd", files });
+  assert.equal(fenced.length, 0);
+
+  const cyclic = expandedCells("{{< include loop1.qmd >}}\n", { path: "main.qmd", files });
+  assert.deepEqual(cyclic.map((c) => c.file), ["loop1.qmd", "loop2.qmd"]);
+
+  assert.equal(expandedCells("{{< include ../x.qmd >}}\n", { path: "main.qmd", files: { "../x.qmd": cell("x") } }).length, 1, "falls back to the name as written");
+  assert.equal(expandedCells("{{< include /part.qmd >}}\n", { path: "main.qmd", files }).length, 0);
+}
