@@ -130,9 +130,14 @@ window.filter = async (label) => {
   press(item);
   await settle();
 };
-window.pick = (id) => {
-  mainOf(id).closest('.change-row').querySelector('.row-pick').click();
+// A Shift-click on the row's main part ticks it, which is how a desktop reader
+// starts a selection while the boxes are hidden.
+window.shiftClick = (id) => {
+  mainOf(id).dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, shiftKey: true }));
 };
+// The checkboxes a reader can see. On a desktop that is none until a selection
+// starts.
+window.visiblePicks = () => [...document.querySelectorAll('.row-pick')].filter((node) => node.getClientRects().length > 0).length;
 window.barButton = (word) => [...document.querySelectorAll('.select-bar button')]
   .find((node) => node.textContent.trim().startsWith(word)) || null;
 window.confirmButton = () => document.querySelector('.confirm-bar .bar-action.confirm');
@@ -286,15 +291,28 @@ try {
   await ev("document.querySelector('.tracking-toggle').click()");
   await waitFor("tracking asked", "window.tracked.length > 0");
 
-  // Every answerable row carries a checkbox from the start, so ticking needs no
-  // mode to enter. The selection bar of verbs appears once a box is ticked.
+  // Every answerable row carries a checkbox in the page, so ticking needs no
+  // mode to enter. On a desktop the boxes stay hidden until a selection starts:
+  // a Shift-click ticks a row and shows them all, and the x key ticks the
+  // active row the same way. The selection bar of verbs appears once a box is
+  // ticked.
   await ev("window.show()");
   assert.equal(await ev("window.canSelect()"), true, "with changes pending the select all control is offered");
-  assert.equal(await ev("window.picks()"), 3, "every answerable row has a checkbox from the start");
+  assert.equal(await ev("window.picks()"), 3, "every answerable row has a checkbox in the page");
+  assert.equal(await ev("window.visiblePicks()"), 0, "but on a desktop no box shows before a selection starts");
   assert.equal(await ev("!!document.querySelector('.select-bar')"), false, "no selection bar while nothing is ticked");
   assert.equal(await ev("!!document.querySelector('.scope-trigger')"), true, "and the scope menu is still offered");
-  await ev('window.pick("c1")');
-  await ev('window.pick("c2")');
+  await ev('window.shiftClick("c1")');
+  await waitFor("one ticked by shift", 'window.selectedCount() === "1 selected"');
+  assert.equal(await ev("window.visiblePicks()"), 3, "a selection shows every box");
+  assert.deepEqual((await ev("window.rows()")).filter((row) => row.picked).map((row) => row.id), ["c1"], "the shift-clicked row is ticked");
+  // The x key toggles the active row, which is the first row here.
+  await ev('window.key("x")');
+  await waitFor("x unticks the active row", "window.rows().filter((row) => row.picked).length === 0");
+  assert.equal(await ev("window.visiblePicks()"), 0, "with nothing ticked the boxes hide again");
+  await ev('window.key("x")');
+  await waitFor("x ticks the active row", 'window.selectedCount() === "1 selected"');
+  await ev('window.shiftClick("c2")');
   await waitFor("two ticked", 'window.selectedCount() === "2 selected"');
   assert.equal(await ev("!!document.querySelector('.select-start')"), false, "the select all control gives way to the selection bar");
   assert.equal(await ev("!!document.querySelector('.scope-trigger')"), false, "and the scope is not offered while ticking");
@@ -313,7 +331,7 @@ try {
 
   // A single ticked row is answered at once, with no confirmation in the way.
   await ev("window.show()");
-  await ev('window.pick("c3")');
+  await ev('window.shiftClick("c3")');
   await waitFor("one ticked", 'window.selectedCount() === "1 selected"');
   await ev("window.barButton('Accept').click()");
   await waitFor("single accepted", "window.accepted.length === 1");
@@ -420,16 +438,16 @@ try {
       toolbarHeight: box('.changes-toolbar').height,
       scopeLeft: box('.scope-trigger').left,
       rowLeft: box('.change-row > :first-child').left,
-      toggleRight: box('.tracking-toggle').right,
-      endRight: box('.toolbar-end').right,
+      trackingInTabRow: !!document.querySelector('.panel-tabs-row .tracking-toggle'),
     };
   })()`);
   await ev("document.body.style.width = ''");
   assert.ok(narrow.scrollWidth <= narrow.clientWidth, `the panel does not scroll sideways (${narrow.scrollWidth} against ${narrow.clientWidth})`);
-  assert.ok(narrow.titleHeight < 48, `the title strip is one line (${narrow.titleHeight}px)`);
+  assert.ok(narrow.titleHeight < 48, `the tab row, with the tracking switch in it, is one line (${narrow.titleHeight}px)`);
+  assert.equal(narrow.trackingInTabRow, true, "the tracking switch sits in the tab row");
   assert.ok(narrow.toolbarHeight < 48, `the toolbar is one line (${narrow.toolbarHeight}px)`);
   assert.ok(Math.abs(narrow.scopeLeft - narrow.rowLeft) <= 1, "the scope trigger and the rows share a left edge");
-  assert.ok(Math.abs(narrow.toggleRight - narrow.endRight) <= 1, "the tracking switch and the count end on one right edge");
+  assert.equal(await ev("window.visiblePicks()"), 2, "at phone width the boxes show with nothing ticked");
 
   console.log("changes-browser: rows with kinds, authors and locations, the scope menu, task and empty scopes, keyboard, selection with Accept all and Reject all, Escape, long changes, read-only readers, the empty queue and the phone-width layout passed");
 } finally {

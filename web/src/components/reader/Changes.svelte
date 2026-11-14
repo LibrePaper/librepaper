@@ -44,8 +44,9 @@
   }
   onDestroy(() => clearTimeout(feedbackTimer));
   // Every answerable row carries a checkbox, so several changes can be answered
-  // at once without a mode to enter. The bar of verbs takes the place of the
-  // header's toolbar while any box is ticked.
+  // at once without a mode to enter. On a desktop the boxes stay hidden until a
+  // selection starts, so the queue reads as text. The bar of verbs takes the
+  // place of the header's toolbar while any box is ticked.
   // A bulk verb held for one confirmation: the action, the rows it answers for,
   // and whether those are every pending change or only the ticked ones.
   let confirming = $state(null);
@@ -72,6 +73,9 @@
   // A change this long shows its first six lines until the reviewer asks for
   // the rest, so one large paste cannot push the queue out of view.
   const isLong = (item) => [item.before, item.after].some((text) => (text || "").length > 280 || (text || "").split("\n").length > 6);
+  // A short replacement reads on one line, with an arrow between its two sides:
+  // neither side has a line break and each is at most forty characters.
+  const isInline = (item) => Boolean(item.before && item.after) && [item.before, item.after].every((text) => !text.includes("\n") && text.length <= 40);
   // A scope string split into its kind and the value after the first colon.
   const scopeOf = (value) => { const [key, ...rest] = String(value).split(":"); return { key, answer: rest.join(":") }; };
 
@@ -105,6 +109,8 @@
   /// Whether a decision is in flight; the bulk verbs are disabled while one
   /// is, so a second click cannot answer for rows already being answered for.
   const busy = $derived(deciding.size > 0);
+  // Whether any change is ticked; the desktop shows the boxes only then.
+  const selecting = $derived(checked.size > 0);
   // Every pending change ticked in the all scope: the verbs then read "Accept
   // all" and "Reject all", and answering them asks first.
   const allChosen = $derived(scope === "all" && changes.length > 0 && selectedRows.length === changes.length);
@@ -178,6 +184,12 @@
     if (focus) focusRow(item.id);
   }
   function reveal(item) { activate(item, { focus: true }); }
+  // A Shift-, Ctrl- or Cmd-click ticks a row instead of opening it, so a
+  // selection can start from the queue itself.
+  function openRow(event, item) {
+    if ((event.shiftKey || event.ctrlKey || event.metaKey) && canReview && answerable(item)) { toggleChecked(item); return; }
+    reveal(item);
+  }
   function toggleChecked(item) { const next = new Set(checked); next.has(item.id) ? next.delete(item.id) : next.add(item.id); checked = next; }
   function toggleText(item) { const next = new Set(expandedText); next.has(item.id) ? next.delete(item.id) : next.add(item.id); expandedText = next; }
   function decisionPromise(item, action) {
@@ -269,14 +281,15 @@
     else if (event.key === "ArrowUp" || key === "k") { event.preventDefault(); move(-1); }
     else if (item && key === "a" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); void decide(item, "accept"); }
     else if (item && key === "r" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); void decide(item, "reject"); }
+    // X ticks the active row, as its box does, with no modifier held.
+    else if (item && key === "x" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && canReview && answerable(item)) { event.preventDefault(); toggleChecked(item); }
   }
 </script>
 
 {#snippet rowMain(item, isActive)}
-  <button id={`change-${item.id}`} type="button" class="row-main" aria-current={isActive ? "true" : undefined} onclick={() => reveal(item)}>
-    <span class="row-meta"><span class="row-kind">{kindName(item)}</span><span class="row-who"><span class="row-author">{whoLabel(item)}</span>{#if item.run}<span class="row-run">{runLabel(item.run)}</span>{/if}</span></span>
-    {#if locationOf(item)}<span class="row-location">{locationOf(item)}</span>{/if}
-    <span class="row-diff" class:clamped={isLong(item) && !expandedText.has(item.id)}>{#if item.before}<span class="deletion"><span class="sign" aria-hidden="true">−</span><del class="change-text">{item.before}</del></span>{/if}{#if item.after}<span class="insertion"><span class="sign" aria-hidden="true">+</span><ins class="change-text">{item.after}</ins></span>{/if}</span>
+  <button id={`change-${item.id}`} type="button" class="row-main" aria-current={isActive ? "true" : undefined} onclick={(event) => openRow(event, item)}>
+    <span class="row-meta"><span class="row-kind sr-only">{kindName(item)}</span>{#if locationOf(item)}<span class="row-location">{locationOf(item)}</span>{/if}<span class="row-author">{whoLabel(item)}</span>{#if item.run}<span class="row-run">{runLabel(item.run)}</span>{/if}</span>
+    <span class="row-diff" class:inline={isInline(item)} class:clamped={isLong(item) && !expandedText.has(item.id)}>{#if isInline(item)}<span class="deletion"><del class="change-text">{item.before}</del></span><span class="diff-arrow" aria-hidden="true">→</span><span class="insertion"><ins class="change-text">{item.after}</ins></span>{:else}{#if item.before}<span class="deletion"><span class="sign" aria-hidden="true">−</span><del class="change-text">{item.before}</del></span>{/if}{#if item.after}<span class="insertion"><span class="sign" aria-hidden="true">+</span><ins class="change-text">{item.after}</ins></span>{/if}{/if}</span>
   </button>
 {/snippet}
 
@@ -296,14 +309,14 @@
 <!-- A focusable review context keeps shortcuts out of source and discussion fields. -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="panel panel-tabbed changes-panel" role="application" tabindex="0" onkeydown={keydown} aria-label={m.changes_review_label()} aria-keyshortcuts="ArrowDown ArrowUp J K A R">
+<div class="panel panel-tabbed changes-panel" class:selecting role="application" tabindex="0" onkeydown={keydown} aria-label={m.changes_review_label()} aria-keyshortcuts="ArrowDown ArrowUp J K A R X">
   <PanelTabs id="changes" title={m.common_changes()}>
-    <!-- The header is one bar: the tracking switch on its own line under the
-         tab, then the scope menu with the count, or the selection or
-         confirmation bar while either is open. Nothing else sits above the
-         queue, so the first reviewable change is near the top. -->
+    {#snippet actions()}{#if canReview}{@render trackingSwitch()}{/if}{/snippet}
+    <!-- The header is one bar: the scope menu with the count, or the selection
+         or confirmation bar while either is open. The tracking switch sits in
+         the tab row above it, so nothing else stands over the queue and the
+         first reviewable change is near the top. -->
     <header class="changes-header">
-      {#if canReview}{@render trackingSwitch()}{/if}
       {#if confirming}<div class="confirm-bar" role="alertdialog" aria-labelledby="changes-confirm-text">
         <p class="confirm-text" id="changes-confirm-text">{confirmText(confirming)}</p>
         <div class="bar-buttons">
@@ -366,14 +379,14 @@
     <div class="changes-list" role="list" aria-label={m.changes_queue_label()}>
       {#each filteredRows as item (item.id)}
         {@const isActive = active === item.id}
-        <article class="change-row" class:lp-selected={isActive || checked.has(item.id)} aria-current={isActive ? "true" : undefined} role="listitem">
+        <article class="change-row" class:lp-selected={checked.has(item.id)} class:is-active={isActive} aria-current={isActive ? "true" : undefined} role="listitem">
           {#if canReview && answerable(item)}<div class="row-head"><label class="row-pick-hit"><input type="checkbox" class="row-pick" checked={checked.has(item.id)} aria-label={selectKind(item)} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} /></label>{@render rowMain(item, isActive)}</div>{:else}{@render rowMain(item, isActive)}{/if}
           {#if isLong(item)}<button type="button" class="row-more" aria-expanded={expandedText.has(item.id)} onclick={() => toggleText(item)}>{expandedText.has(item.id) ? m.changes_show_less() : m.changes_show_more()}</button>{/if}
-          <!-- Every change offers its answer, so a reviewer can act on any row
-               even while other rows are ticked. -->
+          <!-- Every change offers its answer as an icon on the row's top line, so a
+               reviewer can act on any row even while other rows are ticked. -->
           {#if canReview && answerable(item)}<div class="row-actions">
-            <button type="button" class="row-action reject" aria-label={rejectKind(item)} data-tip={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" />{deciding.has(item.id) ? m.changes_rejecting() : m.common_reject()}</button>
-            {#if !suggestOnly}<button type="button" class="row-action accept" aria-label={acceptKind(item)} data-tip={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" />{deciding.has(item.id) ? m.changes_accepting() : m.changes_accept()}</button>{/if}
+            <button type="button" class="row-action reject" aria-label={rejectKind(item)} aria-busy={deciding.has(item.id) ? "true" : undefined} data-tip={m.changes_reject_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "reject")}><Icon name="x" size="14px" /></button>
+            {#if !suggestOnly}<button type="button" class="row-action accept" aria-label={acceptKind(item)} aria-busy={deciding.has(item.id) ? "true" : undefined} data-tip={m.changes_accept_change()} disabled={deciding.has(item.id)} onclick={() => void decide(item, "accept")}><Icon name="check" size="14px" /></button>{/if}
           </div>{/if}
         </article>
       {/each}
@@ -389,17 +402,15 @@
   /* The header is one bar. Like the queue, it bleeds to the panel's edges so
      its divider runs full width, and takes the gutter back as padding, so the
      bars share the left edge with the rows. */
-  .changes-header { flex: 0 0 auto; display: flex; flex-direction: column; gap: .25rem; margin-inline: calc(var(--panel-padding) * -1); padding: 0 var(--panel-padding) .75rem; border-bottom: 1px solid var(--color-divider); }
-  /* The track and thumb are `.switch` in librepaper.css, worn here and in the
-     settings dialog alike; this is the word on the left and the switch at the
-     right edge, on its own line under the tab and above the toolbar. The
-     right edge lines up with the count below, both inside the header's
-     padding. */
-  .changes-panel :global(.tracking-toggle) { display: flex; justify-content: space-between; align-items: center; gap: .5rem; min-height: 2rem; color: var(--panel-muted); font-size: var(--panel-font-size); white-space: nowrap; cursor: pointer; }
+  .changes-header { flex: 0 0 auto; display: flex; flex-direction: column; gap: .25rem; margin-inline: calc(var(--panel-padding) * -1); padding: 0 var(--panel-padding) .4rem; border-bottom: 1px solid var(--color-divider); }
+  /* The tracking switch sits in the tab row, beside the tab. The track and
+     thumb are `.switch` in librepaper.css, worn here and in the settings dialog
+     alike; the word is small and muted so the row stays one line. */
+  .changes-panel :global(.tracking-toggle) { display: inline-flex; align-items: center; gap: .4rem; min-height: 2rem; color: var(--panel-muted); font-size: var(--panel-meta-size); white-space: nowrap; cursor: pointer; }
   .changes-toolbar, .bar-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-width: 0; min-height: 2rem; }
-  /* The scope menu's trigger is an outlined control that takes the same hover
-     as a row. */
-  .scope-trigger { display: inline-flex; align-items: center; gap: .25rem; flex: 0 1 auto; min-width: 0; min-height: 2rem; padding: 0 .5rem; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: none; color: inherit; font-size: var(--panel-font-size); font-weight: 400; cursor: pointer; }
+  /* The scope menu's trigger reads as text with a chevron. It takes the same
+     hover as a row, and has no border, so it is no taller than the text actions. */
+  .scope-trigger { display: inline-flex; align-items: center; gap: .25rem; flex: 0 1 auto; min-width: 0; min-height: 2rem; padding: 0 .35rem; border: 0; border-radius: var(--radius-base); background: none; color: inherit; font-size: var(--panel-font-size); font-weight: 400; cursor: pointer; }
   .scope-trigger:hover, .scope-trigger[data-state="open"] { background: var(--color-row-hover); }
   .scope-trigger :global(svg) { flex: none; color: var(--panel-muted); }
   .scope-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -418,36 +429,43 @@
   .confirm-text { margin: 0; min-height: 2rem; display: flex; align-items: center; font-size: var(--panel-font-size); line-height: var(--panel-line-height); }
   .bar-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
   .bar-action, .row-action { display: inline-flex; align-items: center; justify-content: center; gap: .25rem; min-height: 2rem; padding: 0 .75rem; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: none; color: inherit; font-size: var(--panel-meta-size); font-weight: 500; cursor: pointer; white-space: nowrap; }
-  .row-action { min-height: 1.75rem; padding: 0 .5rem; }
+  /* A row's answers are icon-only squares. */
+  .row-action { width: 1.75rem; min-height: 1.75rem; padding: 0; }
   .bar-action:hover:not(:disabled), .row-action:hover:not(:disabled) { background: var(--color-row-hover); }
   .bar-action:disabled, .row-action:disabled { opacity: .45; cursor: default; }
   .bar-action.accept, .row-action.accept { color: var(--color-success-text); }
+  .row-action.reject { color: var(--color-error-text); }
   :is(.scope-trigger, .text-action, .bar-action, .row-action, .row-more):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
   /* Touch needs room for a thumb; a mouse does not. */
-  @media (pointer: coarse) { .scope-trigger, .text-action, .bar-action, .row-action { min-height: 2.25rem; } }
+  @media (pointer: coarse) { .scope-trigger, .text-action, .bar-action, .row-action { min-height: 2.25rem; } .row-action { width: 2.25rem; } }
   .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
   .panel-status { margin: 0; padding: .5rem 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
   /* The queue is the pane's scroller. It bleeds to the panel's edges so the
      scrollbar and the row hairlines run full width; each row keeps its own
      gutter. */
   .changes-list { flex: 1 1 0; min-height: 0; margin-inline: calc(var(--panel-padding) * -1); overflow-y: auto; overscroll-behavior: contain; }
-  /* A row is the change and a line saying whose it is. No card, no border but
-     the hairline between one change and the next. */
+  /* A row is the change and one muted line saying where it is, whose it is and
+     which run made it. No card, no border but the hairline between one change
+     and the next. */
   .change-row { position: relative; content-visibility: auto; contain-intrinsic-size: 0 3.4rem; padding: .75rem var(--panel-padding); border-bottom: 1px solid var(--color-divider); }
   .change-row:hover { background: var(--color-row-hover); }
+  /* The active row is marked by a bar at its left edge, so a ticked row can keep
+     the grey fill of a selection without reading as the active one. */
+  .change-row.is-active { box-shadow: inset 3px 0 0 var(--color-brand); }
   .row-head { display: flex; align-items: flex-start; gap: .5rem; }
   .row-pick { flex: none; margin-top: .2rem; width: 1rem; height: 1rem; }
   .row-pick-hit { display: contents; }
+  /* On a desktop the boxes wait for a selection to start, so the queue reads as
+     text; phones keep them. */
+  @media (min-width: 768px) { .changes-panel:not(.selecting) .row-pick-hit { display: none; } }
   .row-main { display: block; flex: 1; min-width: 0; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
   .row-main:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: .2rem; }
-  .row-meta { display: flex; gap: .5rem; overflow: hidden; color: var(--panel-muted); font-size: var(--panel-meta-size); white-space: nowrap; }
-  .row-kind { flex: 0 0 auto; font-weight: 500; }
-  .row-who { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
-  .row-run::before { content: "\00b7"; margin-inline: .3rem; }
-  .row-location { display: block; margin-top: .1rem; overflow: hidden; color: var(--panel-muted); font-size: var(--panel-meta-size); text-overflow: ellipsis; white-space: nowrap; }
+  /* The meta line is one line, and its right end is kept clear of the answers. */
+  .row-meta { display: block; min-width: 0; padding-right: 4rem; overflow: hidden; color: var(--panel-muted); font-size: var(--panel-meta-size); text-overflow: ellipsis; white-space: nowrap; }
+  .row-run::before, .row-location + .row-author::before { content: "\00b7"; margin-inline: .3rem; }
   /* The diff quotes the source, so it wears the source's monospace at the
      panel's own size rather than a hand-set one. */
-  .row-diff { display: block; margin-top: .35rem; font-family: var(--font-editor); font-size: var(--panel-font-size); line-height: var(--panel-line-height); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .row-diff { display: block; max-width: 72ch; margin-top: .35rem; font-family: var(--font-editor); font-size: var(--panel-font-size); line-height: var(--panel-line-height); white-space: pre-wrap; overflow-wrap: anywhere; }
   .insertion, .deletion { display: block; padding: .1rem .35rem; border-radius: .2rem; }
   .deletion + .insertion { margin-top: .15rem; }
   .insertion { color: var(--color-success-text); background: color-mix(in srgb, var(--color-success-solid) 8%, transparent); }
@@ -455,9 +473,17 @@
   del.change-text { text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); }
   ins.change-text { text-decoration: none; }
   .sign { margin-right: .35rem; font-weight: 600; user-select: none; }
+  /* A short replacement sits on one line, the arrow standing between its sides. */
+  .row-diff.inline .insertion, .row-diff.inline .deletion { display: inline; padding: 0 .2rem; }
+  .diff-arrow { margin-inline: .35rem; color: var(--panel-muted); user-select: none; }
   .row-diff.clamped .insertion, .row-diff.clamped .deletion { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; line-clamp: 6; overflow: hidden; }
   .row-more { margin-top: .2rem; padding: .1rem 0; border: 0; background: none; color: var(--color-link, var(--color-brand)); font-size: var(--panel-meta-size); cursor: pointer; }
-  .row-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .5rem; }
+  /* The answers sit at the row's top right, on the meta line. They are hidden
+     until the row is in use, and fade in on hover, focus, the active row or a
+     decision in flight. Opacity, not display, keeps them in the tab order. */
+  .row-actions { position: absolute; top: .55rem; right: var(--panel-padding); z-index: 1; display: flex; gap: .25rem; opacity: 0; }
+  .change-row:hover .row-actions, .change-row:focus-within .row-actions, .change-row[aria-current="true"] .row-actions, .row-actions:has([aria-busy="true"]) { opacity: 1; }
+  @media (hover: none) { .row-actions { opacity: 1; } }
   .changes-empty { padding: 2rem 0; text-align: center; text-wrap: balance; }
   .changes-empty-title { margin: 0; font-weight: 500; font-size: var(--panel-font-size); }
   .changes-empty-note { margin: .2rem 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); }
@@ -474,6 +500,10 @@
     .row-action,
     .row-more { min-height: 2.75rem; }
     .row-more { display: flex; align-items: center; }
+    /* Two finger-sized answers take the meta line's right end. */
+    .row-meta { padding-right: 6rem; }
+    .row-action { width: 2.75rem; }
+    .row-actions { opacity: 1; }
     .row-main { min-height: 2.75rem; }
     ins.change-text { text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); }
   }
