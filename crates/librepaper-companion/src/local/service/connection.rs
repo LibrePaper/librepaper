@@ -31,8 +31,8 @@ use super::sync::{
 };
 
 use crate::local::credentials;
-use crate::local::remote_grants::RemoteGrants;
 use crate::local::git::{validate, Limit, Output};
+use crate::local::remote_grants::RemoteGrants;
 
 use librepaper_base::http::Credentials;
 use librepaper_sync::{
@@ -1570,7 +1570,10 @@ mod tests {
             .unwrap();
         let asked = approver.asked.lock().unwrap().clone();
         assert_eq!(asked.len(), 1, "{asked:?}");
-        assert!(asked[0].contains(PROJECT) && asked[0].contains(text(&bare)), "{asked:?}");
+        assert!(
+            asked[0].contains(PROJECT) && asked[0].contains(text(&bare)),
+            "{asked:?}"
+        );
         let grants = RemoteGrants::new(&fixture.inner.state_home);
         assert!(grants.allows(PROJECT, text(&bare)));
         // Allowed remotes are not asked about on a later pull or push.
@@ -1587,7 +1590,11 @@ mod tests {
         let (status, body) = run_connect(&fixture.inner, &connection, url)
             .await
             .unwrap_err();
-        assert_eq!((status, &body["reason"]), (403, &json!("remote-not-allowed")), "{body}");
+        assert_eq!(
+            (status, &body["reason"]),
+            (403, &json!("remote-not-allowed")),
+            "{body}"
+        );
         assert_eq!(approver.asked.lock().unwrap().len(), 1);
         assert!(!RemoteGrants::new(&fixture.inner.state_home).allows(PROJECT, url));
         assert!(!connection.dir.exists());
