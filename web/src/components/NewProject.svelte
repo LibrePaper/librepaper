@@ -18,7 +18,6 @@
   import { FORMATS, formatNamed, fillTemplate } from "../lib/starter.js";
   import { BUILT_IN, templateFiles } from "../lib/templates.js";
   import { droppedFiles } from "../lib/file-manager.js";
-  import { expandArchives } from "../lib/project-upload.js";
   import { belongsInRunDirectory } from "../lib/reader/run-directory.js";
   import { unzip } from "../lib/zip.js";
   import {
@@ -205,6 +204,9 @@
           continue;
         }
         const source = item.path.split("/").at(-1);
+        // Only an archive needs the upload module, which reads the project's
+        // opening file. A page that only drops plain files never loads it.
+        const { expandArchives } = await import("../lib/project-upload.js");
         try {
           const opened = await expandArchives([item], rules, unzip);
           for (const entry of opened.files) incoming.push({ path: entry.path, file: entry.file, source });
