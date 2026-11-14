@@ -369,7 +369,12 @@ async function s3Scenario(scratch) {
     const port = docker("port", container, "9000/tcp").stdout.split("\n")[0].split(":").pop().trim();
     const endpoint = `http://127.0.0.1:${port}`;
     await until("MinIO", async () => (await fetch(`${endpoint}/minio/health/live`)).ok, 30000);
-    await createBucket(endpoint, bucket, access, secret);
+    // MinIO accepts connections before it has finished starting and answers
+    // 503 XMinioServerNotInitialized meanwhile: retry until it is ready.
+    await until("MinIO ready for the bucket", async () => {
+      try { await createBucket(endpoint, bucket, access, secret); return true; }
+      catch (error) { if (/XMinioServerNotInitialized|ECONNREFUSED|fetch failed/.test(String(error?.message || error) + String(error?.cause?.code || ""))) return false; throw error; }
+    }, 60000);
     // MinIO answers every origin by default, so the CORS rule the spec asks
     // of a real bucket is already satisfied here.
 
