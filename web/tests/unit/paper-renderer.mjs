@@ -35,6 +35,17 @@ const renderer = await createPaperRenderer(bytes);
   assert.doesNotMatch(html, /<section><\/section>/);
 }
 
+// An Org header's title, author and date come out as the title block; a block without them has none.
+{
+  const orgRenderer = await createPaperRenderer(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)));
+  const header = orgRenderer.render("#+TITLE: T\n#+AUTHOR: A\n#+bibliography: refs.bib");
+  assert.match(header, /^<header class="title-block">/);
+  assert.match(header, /<h1 class="title">T<\/h1>/);
+  assert.match(header, /<p class="author">A<\/p>/);
+  assert.doesNotMatch(header, /refs\.bib/);
+  assert.doesNotMatch(orgRenderer.render("Some text."), /title-block/);
+}
+
 // A repeat render of the same source gives the same HTML.
 {
   assert.equal(renderer.render("# Same"), renderer.render("# Same"));

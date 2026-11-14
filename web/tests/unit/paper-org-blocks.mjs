@@ -9,38 +9,25 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
 const text = "#+title: T\n#+author: A\n\n* Heading\n:PROPERTIES:\n:ID: x\n:END:\n\nSome text[fn:1].\nMore text.\n\n** Sub\n- item\n- two\n\n| a | b |\n|---+---|\n\n#+begin_src python\nx = 1\n#+end_src\n\n#+begin_quote\nQuoted.\n#+end_quote\n\n# a comment\n\n$$x$$\n\n[fn:1] Note.\n";
 
 // Sections are containers: their headlines and body blocks come out in order,
-// with keywords, drawers, comments and footnote definitions kept as source.
+// with the header's keywords folded into one title block, and drawers, comments
+// and footnote definitions kept as source.
 {
   const blocks = splitOrgBlocks(text);
   assert.deepEqual(
     blocks.map((block) => block.kind),
-    [
-      "Keyword",
-      "Keyword",
-      "Headline",
-      "PropertyDrawer",
-      "Paragraph",
-      "Headline",
-      "List",
-      "Table",
-      "Block",
-      "Block",
-      "Comment",
-      "Paragraph",
-      "FootnoteDefinition",
-    ],
+    ["TitleBlock", "Headline", "PropertyDrawer", "Paragraph", "Headline", "List", "Table", "Block", "Block", "Comment", "Paragraph", "FootnoteDefinition"],
   );
   assert.deepEqual(
     blocks.map((block) => block.render),
-    [false, false, true, false, true, true, true, true, true, true, false, true, false],
+    [true, true, false, true, true, true, true, true, true, false, true, false],
   );
   // Each block is a range of whole lines.
   for (const block of blocks) {
     assert.ok(block.from === 0 || text[block.from - 1] === "\n", `starts a line: ${block.from}`);
     assert.ok(block.to === text.length || text[block.to] === "\n", `ends a line: ${block.to}`);
   }
-  assert.equal(text.slice(blocks[2].from, blocks[2].to), "* Heading");
-  assert.equal(text.slice(blocks[0].from, blocks[0].to), "#+title: T");
+  assert.equal(text.slice(blocks[1].from, blocks[1].to), "* Heading");
+  assert.equal(text.slice(blocks[0].from, blocks[0].to), "#+title: T\n#+author: A");
 }
 
 // A block's source is its own text, followed by the footnote definitions, so
@@ -49,7 +36,47 @@ const text = "#+title: T\n#+author: A\n\n* Heading\n:PROPERTIES:\n:ID: x\n:END:\
   const blocks = splitOrgBlocks(text);
   const paragraph = blocks.find((block) => block.kind === "Paragraph");
   assert.ok(orgBlockSource(text, paragraph, blocks).endsWith("[fn:1] Note."));
-  assert.equal(orgBlockSource(text, blocks[2], blocks), "* Heading\n\n[fn:1] Note.");
+  assert.equal(orgBlockSource(text, blocks[1], blocks), "* Heading\n\n[fn:1] Note.");
+}
+
+// A header with no title keyword stays source.
+{
+  const headerText = "#+OPTIONS: toc:nil\n#+STARTUP: overview\n\nBody.\n";
+  const blocks = splitOrgBlocks(headerText);
+  assert.deepEqual(blocks.map((block) => block.kind), ["Keyword", "Keyword", "Paragraph"]);
+  assert.deepEqual(blocks.map((block) => block.render), [false, false, true]);
+}
+
+// An empty title is not a title.
+{
+  const emptyText = "#+TITLE:\n#+OPTIONS: toc:nil\n\nBody.\n";
+  const blocks = splitOrgBlocks(emptyText);
+  assert.equal(blocks[0].kind, "Keyword");
+  assert.equal(blocks[1].kind, "Keyword");
+}
+
+// Comments among the header keywords are in the title block, a trailing comment is not.
+{
+  const commentText = ["#+TITLE: Notes", "# draft", "#+AUTHOR: A", "#+OPTIONS: toc:nil", "# after", "", "Body text.", ""].join("\n");
+  const blocks = splitOrgBlocks(commentText);
+  assert.deepEqual(blocks.map((block) => block.kind), ["TitleBlock", "Comment", "Paragraph"]);
+  assert.equal(commentText.slice(blocks[0].from, blocks[0].to), "#+TITLE: Notes\n# draft\n#+AUTHOR: A\n#+OPTIONS: toc:nil");
+}
+
+// An include splits the header, and the title block's source is still the whole header.
+{
+  const includeText = ["#+TITLE: My Doc", '#+INCLUDE: "intro.org"', "#+AUTHOR: A", "", "Body.", ""].join("\n");
+  const blocks = splitOrgBlocks(includeText);
+  assert.deepEqual(blocks.map((block) => block.kind), ["TitleBlock", "Keyword", "Keyword", "Paragraph"]);
+  assert.equal(includeText.slice(blocks[0].from, blocks[0].to), "#+TITLE: My Doc");
+  assert.equal(orgBlockSource(includeText, blocks[0], blocks), '#+TITLE: My Doc\n#+INCLUDE: "intro.org"\n#+AUTHOR: A');
+}
+
+// A title keyword after a leading include starts the title block after the include.
+{
+  const setupText = ["#+SETUPFILE: setup.org", "#+TITLE: T", "", "Body.", ""].join("\n");
+  const blocks = splitOrgBlocks(setupText);
+  assert.deepEqual(blocks.map((block) => block.kind), ["Keyword", "TitleBlock", "Paragraph"]);
 }
 
 // The last split is remembered by its text, so a repeat call returns the same array.
