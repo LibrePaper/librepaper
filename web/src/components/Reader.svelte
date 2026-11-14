@@ -644,8 +644,18 @@
   // `rendered: false` skips the search of the rendered text, for a pass where
   // that text has not changed since the last full pass (the attachments were
   // derived again, which is all that moved).
+  // Comments whose current placement is the source-passage fallback below, so a
+  // `rendered: false` pass can place again the ones whose hand attachment went.
+  const fallbackPlaced = new WeakSet();
   function anchorComments(list, { rendered = true } = {}) {
-    if (rendered) anchorAll(docText || "", list, docText === null ? null : docView);
+    if (rendered) {
+      for (const comment of list) fallbackPlaced.delete(comment);
+      anchorAll(docText || "", list, docText === null ? null : docView);
+    } else {
+      const released = list.filter((comment) => fallbackPlaced.has(comment) && !comment.attachment?.attached_by_hand);
+      for (const comment of released) fallbackPlaced.delete(comment);
+      if (released.length) anchorAll(docText || "", released, docText === null ? null : docView);
+    }
     if (mayEdit) {
       placeSources(session, list);
       for (const comment of list) {
@@ -667,6 +677,7 @@
           comment.start = range.start;
           comment.end = range.end;
           comment.orphaned = false;
+          fallbackPlaced.add(comment);
         }
       }
     }
