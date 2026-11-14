@@ -95,6 +95,9 @@ assert.equal(latexmlWithHouseStyle("<head><style data-latexml-css>a{}</style></h
   assert.equal(withHouseStyle("<p>x</p>", css), `<head>${tag}</head><p>x</p>`);
   // a style in the body is not mistaken for a head style
   assert.equal(withHouseStyle("<head></head><body><style>.b{}</style></body>", css), `<head>${tag}</head><body><style>.b{}</style></body>`);
+  // a document's own styles that use the house tokens stay, in the head and the body
+  const own = '<html><head><style>.custom{color:var(--lp-ink)}</style></head><body><style>:root{--lp-ink:red}</style>x</body></html>';
+  assert.equal(withHouseStyle(own, css), `<html><head>${tag}<style>.custom{color:var(--lp-ink)}</style></head><body><style>:root{--lp-ink:red}</style>x</body></html>`);
   // the bundled stylesheet is the default
   assert.ok(withHouseStyle("<head></head>").includes("--lp-ink"));
 }

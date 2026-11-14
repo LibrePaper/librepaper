@@ -39,16 +39,23 @@ const FIRST_SHEET = /<style\b|<link\b[^>]*\brel\s*=\s*["']?stylesheet/i;
 /**
  * A page from one of the wasm renderers with the house stylesheet as the first
  * stylesheet of its head, so the renderer's own styles come after it. A page
- * that has it is returned as it is; an old module's embedded copy (a style
- * that defines `--lp-ink`) is removed first.
+ * that has it is returned as it is; an old module's embedded copy (a head
+ * style that defines `--lp-ink`) is removed first.
  * @param {string} html
  * @param {string} [css] the house stylesheet; the bundled one by default
  * @returns {string}
  */
 export function withHouseStyle(html, css = HOUSE_CSS) {
   if (!css || typeof html !== "string" || HOUSE_MARK.test(html)) return html;
-  const page = html.replace(STYLE, (style) => (style.includes("--lp-ink") ? "" : style));
   const tag = houseTag(css);
+  // An old module's embedded copy is a head stylesheet that defines the house
+  // tokens; a document's own style that only uses them stays.
+  const head = /<head\b[^>]*>[\s\S]*?<\/head>/i.exec(html);
+  const page = head
+    ? html.slice(0, head.index)
+      + head[0].replace(STYLE, (style) => (/--lp-ink\s*:/.test(style) ? "" : style))
+      + html.slice(head.index + head[0].length)
+    : html;
   const open = /<head\b[^>]*>/i.exec(page);
   if (!open) {
     const root = /<html\b[^>]*>/i.exec(page);
