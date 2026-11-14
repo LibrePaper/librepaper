@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { Cursor, LoroDoc, LoroMap, LoroText } from "loro-crdt";
 import {
   CHANGES,
+  PRUNE_ORIGIN,
   accept,
   adoptResolved,
   listChanges,
@@ -1555,6 +1556,44 @@ function untrackedKeystroke(doc, edit) {
   assert.equal(row.to, row.from);
   assert.equal(after.changes.some((c) => c.stale) || after.gaps.some((g) => g.stale), false);
   assert.equal(record.get("stale"), undefined);
+}
+
+// Prune resolves every file before it writes: resolving a stale cursor commits
+// what is pending, so a write followed by another file's resolve would escape
+// the caller's origin. The heals of two files stay pending until the caller
+// commits them once, under the prune origin.
+{
+  const doc = new LoroDoc();
+  for (const id of ["f1", "f2"]) {
+    doc.getMap("files").setContainer(id, new LoroText()).insert(0, "the quick brown fox");
+    trackedSplice(doc, id, 4, 9, "slow", ME, {});
+  }
+  doc.commit();
+  for (const id of ["f1", "f2"]) {
+    const row = resolveFile(doc, id).changes.find((c) => c.to > c.from);
+    doc.getMap("files").get(id).delete(row.from, 1);
+    doc.getMap("files").get(id).delete(row.to - 2, 1);
+  }
+  doc.commit();
+  const now = Date.now();
+  for (const id of ["f1", "f2"]) assert.equal(resolveFile(doc, id).changes.some((c) => c.stale) || resolveFile(doc, id).gaps.some((g) => g.stale), true);
+  prune(doc, now);
+  doc.commit();
+  assert.equal(doc.getPendingTxnLength(), 0);
+  const events = [];
+  const off = doc.subscribe((e) => events.push(e));
+  prune(doc, now + 120_000);
+  assert.ok(doc.getPendingTxnLength() > 0, "prune left its writes pending");
+  assert.equal(events.length, 0, "nothing committed during prune");
+  doc.commit({ origin: PRUNE_ORIGIN });
+  await Promise.resolve();
+  off();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].origin, PRUNE_ORIGIN);
+  for (const id of ["f1", "f2"]) {
+    const after = resolveFile(doc, id);
+    assert.equal(after.changes.some((c) => c.stale) || after.gaps.some((g) => g.stale), false);
+  }
 }
 
 console.log("track-changes: ok");

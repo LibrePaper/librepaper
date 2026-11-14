@@ -383,15 +383,19 @@ export function resolveFile(doc, fileId) {
     let from = 0;
     let to = 0;
     let stale = false;
+    let staleStart = false;
+    let staleEnd = false;
     if (c.end instanceof Uint8Array) {
       const s0 = cursorPos(doc, c.start);
       const e0 = cursorPos(doc, c.end);
       if (!s0 || !e0) continue;
       from = s0.offset;
-      stale = s0.stale || e0.stale;
+      staleStart = s0.stale;
+      staleEnd = e0.stale;
+      stale = staleStart || staleEnd;
       to = Math.max(from, e0.stale ? e0.offset : e0.offset + charWidth(body, e0.offset));
     }
-    changes.push({ id: c.id, who: c.who, author: c.author, run: c.run ?? null, at: c.at, from, to, stale, hasCursor: true, legacy: true });
+    changes.push({ id: c.id, who: c.who, author: c.author, run: c.run ?? null, at: c.at, from, to, stale, staleStart, staleEnd, hasCursor: true, legacy: true });
   }
   for (const [id, entry] of doc.getMap(CHANGES).entries()) {
     if (!(entry instanceof loroClasses.LoroMap)) continue;
@@ -417,21 +421,25 @@ export function resolveFile(doc, fileId) {
       let from = 0;
       let to = 0;
       let stale = false;
+      let staleStart = false;
+      let staleEnd = false;
       if (startBytes instanceof Uint8Array) {
         const s = cursorPos(doc, startBytes);
         if (!s) continue;
         from = s.offset;
         to = from;
+        staleStart = s.stale;
         stale = s.stale;
         if (endBytes instanceof Uint8Array) {
           const e = cursorPos(doc, endBytes);
           if (!e) continue;
+          staleEnd = e.stale;
           if (e.stale) stale = true;
           to = e.stale ? e.offset : e.offset + charWidth(body, e.offset);
           if (to < from) to = from;
         }
       }
-      changes.push({ id, who: value.get("who"), author: value.get("author"), run: value.get("run") ?? null, at: value.get("at"), from, to, stale, hasCursor: startBytes instanceof Uint8Array });
+      changes.push({ id, who: value.get("who"), author: value.get("author"), run: value.get("run") ?? null, at: value.get("at"), from, to, stale, staleStart, staleEnd, hasCursor: startBytes instanceof Uint8Array });
     }
   }
   // A fragment whose change is gone was written while someone accepted that
@@ -682,7 +690,7 @@ function deletedOf(gaps, id) {
  */
 export function resolveChanges(doc, fileId) {
   const { changes, gaps } = resolveFileCached(doc, fileId);
-  return changes.map(({ stale, hasCursor, legacy, ...c }) => ({ ...c, deleted: deletedOf(gaps, c.id) }));
+  return changes.map(({ stale, staleStart, staleEnd, hasCursor, legacy, ...c }) => ({ ...c, deleted: deletedOf(gaps, c.id) }));
 }
 
 /**
@@ -744,11 +752,20 @@ function writeChange(doc, text, fileId, c, heal = false) {
   // same moment both keep their write. Nothing is written over a cursor with
   // null: a span emptied in this view may have grown in another.
   if (start) {
-    const have = resolvedSpan(doc, text, record);
-    const staleStart = heal && cursorPos(doc, record.get("start"))?.stale;
-    const staleEnd = heal && cursorPos(doc, record.get("end"))?.stale;
-    if (!have || have.from !== c.from || staleStart) record.set("start", start.encode());
-    if (!have || have.to !== c.to || staleEnd) record.set("end", end.encode());
+    if (heal && typeof c.staleStart === "boolean" && typeof c.staleEnd === "boolean") {
+      // `resolveFile` already read both ends, so nothing is resolved here:
+      // resolving a stale cursor commits whatever is pending, and prune must
+      // leave its writes for the caller's commit. The span it resolved is `c`.
+      const has = record.get("start") instanceof Uint8Array && record.get("end") instanceof Uint8Array;
+      if (!has || c.staleStart) record.set("start", start.encode());
+      if (!has || c.staleEnd) record.set("end", end.encode());
+    } else {
+      const have = resolvedSpan(doc, text, record);
+      const staleStart = heal && cursorPos(doc, record.get("start"))?.stale;
+      const staleEnd = heal && cursorPos(doc, record.get("end"))?.stale;
+      if (!have || have.from !== c.from || staleStart) record.set("start", start.encode());
+      if (!have || have.to !== c.to || staleEnd) record.set("end", end.encode());
+    }
   } else if (record.get("start") === undefined) {
     record.set("start", null);
     record.set("end", null);
@@ -852,7 +869,10 @@ function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = f
   if (f.change !== id && record.get("change") !== f.change) record.set("change", f.change);
   if (record.get("text") !== f.text) record.set("text", f.text);
   if (startBytes) {
-    if (heal && cursorPos(doc, record.get("start"))?.stale) record.set("start", startBytes);
+    if (heal && typeof f.stale === "boolean") {
+      // Staleness was read by `resolveFile`; a live cursor already resolves to `at`.
+      if (f.stale || !(record.get("start") instanceof Uint8Array)) record.set("start", startBytes);
+    } else if (heal && cursorPos(doc, record.get("start"))?.stale) record.set("start", startBytes);
     else moveCursor(doc, record, "start", startBytes, at);
   }
   if (record.get("rank") !== rank) record.set("rank", rank);
@@ -1176,13 +1196,21 @@ export function prune(doc, now = Date.now()) {
   let count = 0;
   const files = new Set();
   for (const [, v] of map.entries()) { const file = v instanceof loroClasses.LoroMap ? v.get("file") : /** @type {any} */ (v)?.file; if (typeof file === "string") files.add(file); }
+  // Resolving a stale cursor commits whatever is pending, so every file is
+  // resolved before the first write: the caller commits what prune wrote, once,
+  // under its own origin.
+  const resolved = [];
   for (const file of files) {
     const text = fileText(doc, file);
+    if (!text) { resolved.push({ file, text: null, changes: [], gaps: [] }); continue; }
+    const { changes, gaps } = resolveFile(doc, file);
+    resolved.push({ file, text, changes, gaps });
+  }
+  for (const { file, text, changes, gaps } of resolved) {
     if (!text) {
       for (const [id, v] of [...map.entries()]) { if (v instanceof loroClasses.LoroMap && v.get("file") === file) { map.delete(id); count += 1; } }
       continue;
     }
-    const { changes, gaps } = resolveFile(doc, file);
     const liveIds = new Set(changes.map((c) => c.id));
     for (const g of gaps) for (const f of g.fragments) liveIds.add(f.id);
     // An empty record is dropped only once it has rested empty for a while: its
