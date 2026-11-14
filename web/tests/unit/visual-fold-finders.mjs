@@ -91,6 +91,30 @@ function assertWellFormed(folds, text) {
     named.some((fold) => fold.kind === "include" && fold.detail === "chapters/intro.qmd" && fold.target === "chapters/intro.qmd"),
   );
   assert.equal(named.length, 5, JSON.stringify(named));
+  assert.equal(folds[0].others, "");
+}
+
+// The front matter keys that a title block does not show are named beside its pill.
+{
+  const text = [
+    "---",
+    "title: T",
+    "author:",
+    "  - name: A",
+    "bibliography: refs.bib",
+    "format:",
+    "  html: default",
+    "date: 2026-01-01",
+    "bibliography: again.bib",
+    "---",
+    "",
+    "Body.",
+    "",
+  ].join("\n");
+  const [front] = markdownFolds(text);
+  assert.equal(front.kind, "preamble");
+  assert.equal(front.detail, "T");
+  assert.equal(front.others, "bibliography · format");
 }
 
 // ---- Org ------------------------------------------------------------------
@@ -134,22 +158,41 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
   ].join("\n");
   const folds = orgFolds(text);
   assertWellFormed(folds, text);
+  assert.equal(folds[0].others, "");
   const named = plain(folds, text);
-  // The first keyword is the title block, which the paper layer draws, so it has no fold.
   assert.deepEqual(named, [
+    { kind: "preamble", text: "#+TITLE: My Doc", detail: "My Doc" },
     { kind: "include", text: '#+INCLUDE: "chapters/intro.org::*Start"', detail: "chapters/intro.org", target: "chapters/intro.org" },
     { kind: "preamble", text: "#+AUTHOR: A", detail: "My Doc" },
     { kind: "definitions", text: ":PROPERTIES:", detail: "PROPERTIES" },
-    { kind: "definitions", text: "#+NAME: table-one", detail: "#+NAME" },
+    // A #+NAME: keyword is attached to the table below it, so it no longer folds on its own.
     { kind: "comment", text: "# a comment", detail: "a comment" },
     { kind: "definitions", text: "[fn:1] Note.", detail: "[fn:1]" },
   ]);
 }
 
-// A header with title keywords is drawn as the title block, so it has no fold.
+// A header with a title is one preamble fold that names its other keywords.
 {
   const text = ["#+TITLE: Notes", "# draft", "#+AUTHOR: A", "#+OPTIONS: toc:nil", "", "Body text.", ""].join("\n");
-  assert.deepEqual(orgFolds(text), []);
+  const folds = orgFolds(text);
+  assertWellFormed(folds, text);
+  assert.equal(folds.length, 1);
+  assert.equal(folds[0].kind, "preamble");
+  assert.equal(folds[0].detail, "Notes");
+  assert.equal(folds[0].others, "#+OPTIONS");
+  assert.equal(
+    text.slice(folds[0].from, folds[0].to),
+    ["#+TITLE: Notes", "# draft", "#+AUTHOR: A", "#+OPTIONS: toc:nil"].join("\n"),
+  );
+}
+
+// The other keywords of a title block are named once each, with their optional parts cut off.
+{
+  const text = ["#+TITLE: T", "#+bibliography: refs.bib", "#+OPTIONS: toc:nil", "#+options: num:nil", "", "Body.", ""].join("\n");
+  const folds = orgFolds(text);
+  assertWellFormed(folds, text);
+  assert.equal(folds.length, 1);
+  assert.equal(folds[0].others, "#+BIBLIOGRAPHY · #+OPTIONS");
 }
 
 // An Org header of several keywords, with a comment among them, and no title keywords is one fold.

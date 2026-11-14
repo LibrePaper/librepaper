@@ -1,7 +1,7 @@
 // Pure fold arithmetic, kept free of imports so that node tests load it
 // without CodeMirror or the message catalogue.
 
-/** @typedef {{ from: number, to: number, kind: "preamble" | "include" | "comment" | "definitions", detail?: string, target?: string }} Fold */
+/** @typedef {{ from: number, to: number, kind: "preamble" | "include" | "comment" | "definitions", detail?: string, target?: string, others?: string }} Fold */
 
 // The detail a pill shows is one line; longer text is cut to this many characters.
 const DETAIL_LIMIT = 80;
