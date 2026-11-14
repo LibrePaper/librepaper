@@ -520,9 +520,10 @@ impl Server {
             Ok(auth) => auth.entry,
             Err(refusal) => return access::deny(&refusal),
         };
-        let room = match self.rooms.get(slug).await {
-            Ok(room) => room,
-            Err(error) => return refused("open the room", &error),
+        // The room is not opened: its admission and anchor backfill are work
+        // this read does not need, because the document id is all it wants.
+        let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {
+            return plain(404, "not found");
         };
         let (after, limit, named) = query
             .map(|raw| {
@@ -544,12 +545,12 @@ impl Server {
         let page = if named {
             self.store
                 .catalog
-                .named_label_page(room.document_id, after, limit)
+                .named_label_page(document_id, after, limit)
                 .await
         } else {
             self.store
                 .catalog
-                .label_page(room.document_id, after, limit)
+                .label_page(document_id, after, limit)
                 .await
         };
         let rows = match page {
@@ -560,8 +561,11 @@ impl Server {
             .then(|| rows.last().map(|row| row.sequence))
             .flatten();
         let labels: Vec<_> = rows.iter().map(label_wire).collect();
-        let state = room.log().log_state().await;
-        let head = match head_digest(&state.head_vector) {
+        let head_vector = match self.rooms.registry().head_vector(document_id).await {
+            Ok(vector) => vector,
+            Err(error) => return refused("read the head", &error.into()),
+        };
+        let head = match head_digest(&head_vector) {
             Ok(head) => head,
             Err(error) => {
                 return refused(
@@ -604,20 +608,22 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        if let Err(refusal) = self
+        let entry = match self
             .authorize::<access::rung::Edit>(context, headers, slug, None)
             .await
         {
-            return access::deny(&refusal);
-        }
-        let room = match self.rooms.get(slug).await {
-            Ok(room) => room,
-            Err(error) => return refused("open the room", &error),
+            Ok(auth) => auth.entry,
+            Err(refusal) => return access::deny(&refusal),
+        };
+        // The room is not opened: its admission and anchor backfill are work
+        // this read does not need, because the document id is all it wants.
+        let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {
+            return plain(404, "not found");
         };
         let authors = match self
             .store
             .catalog
-            .document_peer_authors(room.document_id)
+            .document_peer_authors(document_id)
             .await
         {
             Ok(authors) => authors,
