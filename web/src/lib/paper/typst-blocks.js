@@ -13,19 +13,22 @@ import { lineEnd, lineStart } from "./blocks.js";
 /** @type {{ text: string, blocks: PaperBlock[] } | null} the last split, by its text */
 let last = null;
 
-/** What a document gives every block, computed once per split. @type {WeakMap<PaperBlock[], { text: string, refs: string, numbered: any[] }>} */
+/** What a document gives every block, computed once per split. @type {WeakMap<PaperBlock[], { text: string, typst: Record<string, string>, path: string, refs: string, numbered: any[] }>} */
 const contexts = new WeakMap();
 
 // Rules that set the document up. They are never drawn and go in front of every block.
-const PREAMBLE = new Set(["SetRule", "ShowRule", "LetBinding", "ModuleImport", "ModuleInclude"]);
+// An include is not one of them: it emits the included file's content, and Typst does
+// not let definitions or set/show rules escape an included file, so it is never replayed.
+const PREAMBLE = new Set(["SetRule", "ShowRule", "LetBinding", "ModuleImport"]);
 const TRIVIA = new Set(["Space", "Parbreak", "LineComment", "BlockComment", "Label"]);
 const COMMENTS = new Set(["LineComment", "BlockComment"]);
 
 /**
  * Splits a Typst source into its top-level blocks, in order, each widened to
  * whole lines. Blocks that would share a line are merged. Set, show, let,
- * import and include rules and comments are kept as source, because the editor
- * never draws them alone. Null while typst-syntax.wasm is not loaded.
+ * import rules and comments are kept as source, because the editor never draws
+ * them alone. An include is a block of its own, kind `ModuleInclude`, that is
+ * not drawn and not replayed. Null while typst-syntax.wasm is not loaded.
  * @param {string} text
  * @returns {PaperBlock[] | null}
  */
@@ -83,6 +86,14 @@ export function splitTypstBlocks(text) {
       node = rule;
       continue;
     }
+    // An include is kept as its own block: it is not drawn, and no later block replays it.
+    if (name === "Hash" && node.nextSibling && node.nextSibling.name === "ModuleInclude") {
+      flush();
+      const include = node.nextSibling;
+      emit(node.from, include.to, "ModuleInclude", false);
+      node = include;
+      continue;
+    }
     if (name === "Heading") {
       flush();
       emit(node.from, node.to, name, true);
@@ -114,21 +125,39 @@ function kindWord(kind) {
   return KIND_WORDS[/** @type {keyof typeof KIND_WORDS} */ (kind)] ?? kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
-/** What the whole document gives every block: its preamble-independent facts. */
-function contextOf(text, blocks) {
-  let context = contexts.get(blocks);
-  if (context) return context;
-  const facts = typstFacts({ "main.typ": text }, "main.typ", "main.typ", []);
-  // A reference alone in a block cannot see its target, so the text it would
-  // read ("Equation 1") is given to every block as a table. A label with no
-  // number reads as its key in brackets, which is also how a citation looks.
+/** Whether two path-to-text maps hold the same texts. @param {Record<string, string>} a @param {Record<string, string>} b */
+function sameTexts(a, b) {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && a[key] === b[key]);
+}
+
+/**
+ * What the whole document gives every block: its preamble-independent facts.
+ * The open file is `text`, at project path `path`; `files` are the other project
+ * texts, so that the numbered elements of included files count too.
+ * @param {string} text
+ * @param {PaperBlock[]} blocks
+ * @param {Record<string, string> | null} files
+ * @param {string} path
+ */
+function contextOf(text, blocks, files, path) {
+  // Only Typst sources can be included; the rest of the project is not scanned.
+  /** @type {Record<string, string>} */
+  const typst = {};
+  for (const [name, body] of Object.entries(files || {})) if (name.endsWith(".typ") && name !== path) typst[name] = body;
+  const cached = contexts.get(blocks);
+  // The editor hands over a fresh texts object on every call, so the cache is
+  // checked by content: a caret move or an edit elsewhere does not rescan.
+  if (cached && cached.text === text && cached.path === path && sameTexts(cached.typst, typst)) return cached;
+  const facts = typstFacts({ ...typst, [path]: text }, path, path, []);
   const entries = [...facts.labels].map(
     ([label, { number, kind }]) => `${JSON.stringify(label)}: ${JSON.stringify(`${kindWord(kind)} ${number}`)}`,
   );
   const refs =
     `#let __lp_refs = (${entries.length ? entries.join(", ") : ":"})\n` +
     '#show ref: it => link("#" + str(it.target), __lp_refs.at(str(it.target), default: "[" + str(it.target) + "]"))\n';
-  context = { text, refs, numbered: facts.numbered };
+  const context = { text, typst, path, refs, numbered: facts.numbered };
   contexts.set(blocks, context);
   return context;
 }
@@ -136,7 +165,8 @@ function contextOf(text, blocks) {
 /**
  * The counter updates that put the numbering where it stands before `block`:
  * the heading numbers in force, and how many figures of each kind and display
- * equations have gone by.
+ * equations have gone by. An item of an included file counts at the include
+ * that brings it in (its `rootAt`), so it is before a block that follows the include.
  * @param {any[]} numbered
  * @param {PaperBlock} block
  */
@@ -145,7 +175,7 @@ function counterUpdates(numbered, block) {
   /** @type {Map<string, number>} */
   const counts = new Map();
   for (const item of numbered) {
-    if (item.at >= block.from) break;
+    if ((item.rootAt ?? item.at) >= block.from) break;
     if (item.type === "heading") {
       headings[item.level - 1] += 1;
       headings.fill(0, item.level);
@@ -171,13 +201,17 @@ function counterUpdates(numbered, block) {
 /**
  * The Typst to compile for one block: every preamble rule before it, then the
  * reference table and the counter updates, then its own text.
+ * `files` are the project's texts (null when there are none) and `path` the open
+ * file's project path, so that the numbering counts what the included files number.
  * @param {string} text
  * @param {PaperBlock} block
  * @param {PaperBlock[]} blocks the result of splitTypstBlocks(text)
+ * @param {Record<string, string> | null} [files]
+ * @param {string} [path]
  * @returns {string}
  */
-export function typstBlockSource(text, block, blocks) {
-  const context = contextOf(text, blocks);
+export function typstBlockSource(text, block, blocks, files = null, path = "main.typ") {
+  const context = contextOf(text, blocks, files, path);
   let preamble = "";
   for (const other of blocks) {
     if (other.from >= block.from) break;
