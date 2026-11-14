@@ -21,6 +21,7 @@
  *   setTimer?: (run: () => void, ms: number) => unknown,
  *   clearTimer?: (id: unknown) => void,
  *   passive?: number,
+ *   remoteDelay?: number,
  *   targetPause?: number,
  * }} options
  */
@@ -47,6 +48,10 @@ export function createSourceSchedule({
   // A source that is not actively being edited in this browser waits for a
   // pause, so remote changes and preview-only views do not render every word.
   passive = 1000,
+  // A collaborator's edit while this browser is editing waits this long, not
+  // for a frame, so the preview keeps up with a colleague without repainting
+  // on every one of their keystrokes.
+  remoteDelay = 1000,
   // Any edit can change which file includes which, so the preview target is
   // worked out again once typing pauses, so the texts are read once per pause
   // and not once per keystroke.
@@ -56,35 +61,61 @@ export function createSourceSchedule({
   let previewTimer = null;
   let previewFrame = null;
   let targetTimer = null;
+  // Set when a paint was due while the page was hidden. The paint is held
+  // back rather than run, because a hidden tab renders nothing; `resume()`
+  // draws it once the tab is shown again.
+  let stale = false;
+
+  // Every paint goes through here, so a hidden page never paints and records
+  // that it skipped one.
+  function run() {
+    if (hidden()) {
+      stale = true;
+      return;
+    }
+    paint();
+  }
 
   // Fast formats paint on the next animation frame, so every keystroke in one
   // frame shares one request and the coordinator queues at most one more.
   // Frames do not run in a hidden tab, so a hidden page uses a zero timer.
   // Returns a function that cancels the pending paint.
-  function requestPreviewFrame(run) {
+  function requestPreviewFrame(paintLater) {
     if (typeof requestFrame === "function" && !hidden()) {
-      const id = requestFrame(run);
+      const id = requestFrame(paintLater);
       return () => cancelFrame(id);
     }
-    const id = setTimer(run, 0);
+    const id = setTimer(paintLater, 0);
     return () => clearTimer(id);
   }
 
-  function changed() {
+  function changed({ remote = false } = {}) {
     // Fast formats use a short bounded preview cadence. Only LaTeX owns its
     // longer compiler debounce; postponing this timer for every Typst
     // keystroke would starve the preview indefinitely.
     if (editing() && (format() !== "latex" || continuous())) {
-      // A debounce timer left over from before continuous mode began is
-      // finished with; it must not hold the frame path shut.
-      if (format() === "latex" && previewTimer !== null) {
+      if (remote) {
+        // A render is already coming. Leaving the timer alone, rather than
+        // pushing it back, lets a collaborator typing without a pause still
+        // show up about once per second.
+        if (previewFrame !== null || previewTimer !== null) return;
+        previewTimer = setTimer(() => {
+          previewTimer = null;
+          run();
+        }, remoteDelay);
+        return;
+      }
+      // A remote timer left pending must not hold back this browser's own
+      // edit, so it is cleared. A debounce timer left over from before
+      // continuous mode began is finished with for the same reason.
+      if (previewTimer !== null) {
         clearTimer(previewTimer);
         previewTimer = null;
       }
-      if (previewFrame !== null || previewTimer !== null) return;
+      if (previewFrame !== null) return;
       previewFrame = requestPreviewFrame(() => {
         previewFrame = null;
-        paint();
+        run();
       });
       return;
     }
@@ -101,7 +132,13 @@ export function createSourceSchedule({
       format() === "latex"
         ? Math.max(latexDebounce(), editing() ? 0 : passive)
         : passive;
-    previewTimer = setTimer(paint, wait);
+    // The timer is cleared on the way out, so a fired id is nulled here. A
+    // stale id would otherwise make the remote check above wait on a timer
+    // that is no longer pending.
+    previewTimer = setTimer(() => {
+      previewTimer = null;
+      run();
+    }, wait);
   }
 
   return {
@@ -113,6 +150,13 @@ export function createSourceSchedule({
       clearTimer(previewTimer);
       previewTimer = null;
     },
+    // Paints a render that a hidden page skipped. Called when the page is
+    // shown again.
+    resume() {
+      if (!stale) return;
+      stale = false;
+      paint();
+    },
     scheduleTarget() {
       clearTimer(targetTimer);
       targetTimer = setTimer(() => retarget(), targetPause);
@@ -121,6 +165,7 @@ export function createSourceSchedule({
       clearTimer(previewTimer);
       clearTimer(targetTimer);
       previewTimer = null;
+      stale = false;
     },
   };
 }

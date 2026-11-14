@@ -331,7 +331,7 @@
         if (!readerDisposed && active === session) void paintPreview();
       });
     },
-    onFiles: (events, active) => filesChanged(events, active),
+    onFiles: (events, active, by) => filesChanged(events, active, by),
     onAwareness: () => { if (!readerDisposed) refreshPeers(); },
     onDocumentChanged: () => {
       location.reload();
@@ -2798,7 +2798,7 @@
     },
   });
 
-  function sourceChanged() {
+  function sourceChanged({ remote = false } = {}) {
     if (readerDisposed) return;
     schedule.bump();
     painted.state.empty = false;
@@ -2821,7 +2821,7 @@
     }
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
-    schedule.changed();
+    schedule.changed({ remote });
   }
 
   // The outline is worked out from the whole file, so a burst of typing
@@ -3173,6 +3173,9 @@
     const track = () => {
       hidden = document.visibilityState === "hidden";
       if (!hidden && !mayEdit) projection.resume();
+      // A hidden tab skipped its renders; draw once now rather than wait for
+      // the next edit.
+      if (!hidden) schedule.resume();
     };
     document.addEventListener("visibilitychange", track);
     return () => document.removeEventListener("visibilitychange", track);
@@ -3769,14 +3772,14 @@
   // rendered again, because every one of those changes what a compiler would
   // produce. An edit to the text of any file is a source change too, because
   // it can alter the render of whichever file the preview is drawing.
-  function filesChanged(events, active = session) {
+  function filesChanged(events, active = session, by = "local") {
     if (!active || active !== session) return;
     // Nested text edits change the preview, but not the file list. Which
     // events are the directory's is the session's to say: the list moves with
     // four maps, not one.
     if (active.directoryChanged(events)) refreshFiles();
     if (needsSourceRefresh(events)) {
-      sourceChanged();
+      sourceChanged({ remote: by === "import" });
       schedule.scheduleTarget();
     }
   }

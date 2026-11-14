@@ -59,7 +59,7 @@ const capability = (document_) => JSON.stringify([
  * onPeers?: (count: number) => void, onState?: (state: CollaborationState) => void,
  * onSession?: (session: ReaderSession) => void,
  * onDocumentChanged?: (reason: string) => void,
- * onFiles?: (events: DirectoryEvents, session: ReaderSession) => void,
+ * onFiles?: (events: DirectoryEvents, session: ReaderSession, by?: string) => void,
  * onAwareness?: (session: ReaderSession) => void,
  * sourceSync?: boolean, standalone?: boolean, retryMs?: number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout,
  * }} options
@@ -166,7 +166,7 @@ export function createReaderCollaboration({
       ...(standalone ? { standalone: true, persistence: null } : {}),
     });
     const active = session;
-    filesCleanup = active.onFiles((events) => { if (live()) onFiles(events, active); });
+    filesCleanup = active.onFiles((events, by) => { if (live()) onFiles(events, active, by); });
     presenceCleanup = active.ephemeral.subscribe(() => { if (live()) onAwareness(active); });
     onSession(active);
     // Reader/commenter sessions use this socket only for rendered
