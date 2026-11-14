@@ -4,6 +4,7 @@
 //   1. opening the project (on a note that shows no figure) requests every
 //      figure exactly once;
 //   2. switching files requests nothing;
+//   2b. the preview frame shows note 0's figures from blob URLs it made itself, with no PNG data URL in the page;
 //   3. a second load of the project (empty memory, warm IndexedDB) makes no
 //      byte-route request;
 //   4. signing out deletes `librepaper-assets-v1`;
@@ -269,6 +270,29 @@ async function fileStoreScenarios(scratch) {
     const mark = (await resourceNames(tab)).length;
     await switchToNote(tab, 0);
     await settle();
+
+    // 2b. Note 0's two figures reach the preview frame as blob: URLs that the
+    // frame makes itself. A data: URL in the page would mean the bytes were
+    // embedded in the preview source instead.
+    const figures = `JSON.stringify([...document.images].map((img) => ({ src: img.src.slice(0, 40), blob: img.src.startsWith("blob:"), ok: img.complete && img.naturalWidth > 0 })))`;
+    let shown = [];
+    try {
+      await until("two blob figures in the preview frame", async () => {
+        try {
+          shown = JSON.parse(await tab.frameEvaluate(figures));
+          return shown.length >= 2 && shown.every((one) => one.ok && one.blob);
+        } catch {
+          return false; // the frame is still loading
+        }
+      }, 20000);
+    } catch {
+      fail("scenario 2b (figures in the preview frame)", "two blob: images that decode and no PNG data URL", JSON.stringify(shown));
+    }
+    if (await tab.frameEvaluate(`document.body.innerHTML.includes("data:image/png")`)) {
+      fail("scenario 2b (figures in the preview frame)", "two blob: images that decode and no PNG data URL", JSON.stringify(shown));
+    }
+    log(`2b preview frame figures: ${shown.length} images by blob URL`);
+
     await switchToNote(tab, 7);
     await settle();
     const switched = classify((await resourceNames(tab)).slice(mark), slug);
