@@ -106,13 +106,15 @@ function search(text, { exact, prefix = "", suffix = "", position = null, requir
   } else {
     // Score each candidate by how much of the recorded context still matches
     // on either side, and prefer a strict winner.
+    // The prefix is the same for every candidate, so it is reversed once.
+    const reversedPrefix = reverse(prefix);
     const scored = positions
       .map((candidate) => {
         const before = text.slice(Math.max(0, candidate - prefix.length), candidate);
         const after = text.slice(candidate + exact.length, candidate + exact.length + suffix.length);
         return {
           candidate,
-          score: commonPrefix(reverse(prefix), reverse(before)) + commonPrefix(suffix, after),
+          score: commonPrefix(reversedPrefix, reverse(before)) + commonPrefix(suffix, after),
         };
       })
       .sort((a, b) => b.score - a.score);

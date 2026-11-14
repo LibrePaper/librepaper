@@ -139,10 +139,12 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     return changed;
   }
 
-  // Derives the attachments now, and repaints only when one changed.
+  // Derives the attachments now, and repaints only when one changed. The
+  // rendered text has not changed here, so the anchor skips its text search:
+  // the last full pass still holds.
   function deriveNow() {
     if (!derive(list())) return;
-    anchor(list());
+    anchor(list(), { rendered: false });
     publish();
     repaint();
   }

@@ -153,6 +153,29 @@ assert.equal(annotations.receive({ type: "attachments", attachments: [] }), fals
   });
 }
 
+// A derivation changes attachments, not the rendered text, so it asks the
+// anchor for the attachment pass only. Every other pass stays a full one.
+{
+  const passes = [];
+  let deriving = false;
+  const plain = { status: "exact", resolved_file_id: "f1", resolved_range_utf16: [4, 7], tree_digest: "" };
+  const spied = createAnnotations({
+    slug: "anchor-options",
+    anchor: (items, options) => passes.push(options),
+    repaint: () => {},
+    send: () => {},
+    attachmentOf: () => (deriving ? { ...plain, attached_by_hand: true } : undefined),
+  });
+  spied.seed(
+    [{ id: "spy", body: "Passage", replies: [], attachment: { ...plain } }],
+    { total: 1, open: 1, replies: 0, revision: "s1", complete: true },
+  );
+  passes.length = 0;
+  deriving = true;
+  spied.deriveNow();
+  assert.deepEqual(passes, [{ rendered: false }], "deriveNow skips the rendered-text search");
+}
+
 // The editor's derived attachment carries `attached_by_hand`, which server rows
 // never do. A server row that repeats the same status, file and range must not
 // keep its own unflagged copy over the browser's.

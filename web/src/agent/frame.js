@@ -418,8 +418,19 @@ import { morphChildren } from "./morph.js";
     document.body.normalize();
   }
 
+  // What the marks were last painted for, and on which body. A repaint asked
+  // for the same ranges on the same body changes nothing, so it is skipped.
+  // `bodyGeneration` moves whenever the body is replaced, and the painted key
+  // is cleared whenever something outside painting may have removed marks.
+  let bodyGeneration = 0;
+  let paintedKey = null;
+  let paintedGeneration = -1;
+
   function highlight(ranges) {
     lastRanges = ranges;
+    const key = JSON.stringify(ranges);
+    if (key === paintedKey && paintedGeneration === bodyGeneration) return;
+    paintedKey = null;
     quietly(() => {
       removeMarks();
     });
@@ -449,8 +460,11 @@ import { morphChildren } from "./morph.js";
     }
 
     quietly(() => {
+      // One live Range instead of one per piece, because the browser updates
+      // every live Range on each DOM change, and the pieces are wrapped one
+      // after another.
+      const range = document.createRange();
       for (const { piece, covering } of plan.reverse()) {
-        const range = document.createRange();
         range.setStart(piece.node, piece.from);
         range.setEnd(piece.node, piece.to);
         const mark = document.createElement("mark");
@@ -478,6 +492,8 @@ import { morphChildren } from "./morph.js";
       }
     });
     quietly(applySelected);
+    paintedKey = key;
+    paintedGeneration = bodyGeneration;
     // surroundContents splits the text nodes it wraps, so the table built above
     // no longer describes the document. A selection made after a highlight
     // would land in a node the table has never seen, and report offsets against
@@ -700,6 +716,9 @@ import { morphChildren } from "./morph.js";
       // text exactly as it does for a document that builds itself in
       // JavaScript -- one code path for "the document changed", not two.
       if (message.pdf) return;
+      // The body is about to be replaced or morphed, so marks painted on the
+      // old one no longer count as painted.
+      bodyGeneration += 1;
       const parsed = new DOMParser().parseFromString(withFigureUrls(String(message.html || "")), "text/html");
       // The frame this arrives in is an empty shell -- nothing rendered is
       // stored any more, so there is no page whose styles the body could
@@ -1084,6 +1103,8 @@ import { morphChildren } from "./morph.js";
     clearTimeout(lazyPending);
     lazyPending = setTimeout(() => {
       scan();
+      // The swap dropped marks on the page, so the painted key no longer holds.
+      paintedKey = null;
       if (lastRanges && lastRanges.length) highlight(lastRanges);
     }, 250);
   };
@@ -1092,6 +1113,9 @@ import { morphChildren } from "./morph.js";
     return Boolean(element?.closest?.(".page[data-page]"));
   };
   const onMutations = (records) => {
+    // Any change the observer sees was not made by painting, so it may have
+    // unwrapped marks: the next highlight must paint again.
+    paintedKey = null;
     if (records.every((record) => withinPage(record.target))) lazyBuilt();
     else republish();
   };
