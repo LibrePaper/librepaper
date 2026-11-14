@@ -220,13 +220,13 @@ function todoEdit(state, forward) {
 
 /* ------------------------------------------------- checkbox and fold */
 
-// [ ] and [-] become [X]; [X] becomes [ ].
+// A done box ([X] or [x]) becomes [ ]; every other box ([ ], [-], [/]) becomes [X].
 function checkboxEdit(state) {
   const item = listItemOn(state, state.selection.main.head);
   const box = item && child(item, "Checkbox");
   if (!box) return null;
   const text = state.sliceDoc(box.from, box.to);
-  const insert = text === "[ ]" || text === "[-]" ? "[X]" : "[ ]";
+  const insert = text === "[X]" || text === "[x]" ? "[ ]" : "[X]";
   return { changes: { from: box.from, to: box.to, insert } };
 }
 
