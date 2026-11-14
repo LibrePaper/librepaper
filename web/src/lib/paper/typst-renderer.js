@@ -4,8 +4,11 @@
 // waits for each answer. The compiler keeps its caches between calls, so a
 // block costs a millisecond or so once the first compile has warmed it.
 //
-// Known gaps of Typst's HTML export: the number of a display equation and
-// `align` content are dropped, so a block shows neither.
+// Known gaps of Typst's HTML export: the number of a display equation is still
+// dropped, so a block shows none. The content of layout containers (`align`,
+// `place`, `pad`, `grid`, `stack` and others) would be dropped too, so rules
+// in front of each source keep it (see KEEP_RULES); `layout(size => ...)` is
+// still dropped. Text size and weight are not exported.
 
 import { call, needsOf } from "../renderer-wasm.js";
 import { fetchNeeds as fetchPackages, ROUNDS } from "../needs.js";
@@ -18,6 +21,28 @@ const CACHE_LIMIT = 2000;
 const ASSET_LIMIT = 8 * 1024 * 1024;
 const TOTAL_LIMIT = 64 * 1024 * 1024;
 
+// Typst's HTML export drops the content of its layout containers. The first
+// rule keeps aligned content in a div with a `text-align` style, using the
+// alignment's horizontal side (`start` when it has none). The others keep a
+// container's content in the flow, where it reads as the rest of the block
+// does: a grid's cells and a stack's children come one after another.
+const KEEP_RULES =
+  '#show align: it => { let a = repr(it.alignment); let side = if a.contains("center") { "center" } else if a.contains("right") { "right" } else if a.contains("end") { "end" } else if a.contains("left") { "left" } else { "start" }; html.elem("div", attrs: (style: "text-align: " + side), it.body) }\n' +
+  "#show place: it => it.body\n" +
+  "#show pad: it => it.body\n" +
+  "#show columns: it => it.body\n" +
+  "#show rect: it => it.body\n" +
+  "#show move: it => it.body\n" +
+  "#show scale: it => it.body\n" +
+  "#show rotate: it => it.body\n" +
+  "#show stack: it => it.children.filter(c => type(c) == content).join(parbreak())\n" +
+  '#show grid: it => it.children.map(c => if c.has("body") { c.body } else { none }).join(parbreak())\n';
+
+// A body that is one empty marked element, and the HTML it compiles to. A
+// prefix's frame is what it writes around this mark.
+const FRAME_MARK_SOURCE = '\n\n#html.elem("div", attrs: (id: "lp-frame-mark"))\n';
+const FRAME_MARK_HTML = '<div id="lp-frame-mark"></div>';
+
 /**
  * What the paper view knows of the project.
  * `texts` maps project paths to text; `assets` maps asset paths to a version
@@ -26,6 +51,8 @@ const TOTAL_LIMIT = 64 * 1024 * 1024;
  * @typedef {{ main: string, texts: Record<string, string>, assets?: Record<string, string>, assetUrl?: (path: string) => Promise<string | null> | string | null }} PaperProject
  * @typedef {{
  *   render: (source: string) => string,
+ *   frame: (prefix: string) => { before: string, after: string } | null,
+ *   unframe: (html: string, prefix: string) => string,
  *   mathCss: string,
  *   setProject: (project: PaperProject) => void,
  *   prepare: (project: PaperProject, preamble: string, onUpdate?: () => void) => Promise<boolean>,
@@ -137,9 +164,45 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
   function render(source) {
     const hit = cache.get(source);
     if (hit !== undefined) return hit;
-    const html = bodyOf(compilePage(source));
+    let html = bodyOf(compilePage(KEEP_RULES + source));
+    // The rules can make a source fail that compiles without them. A source
+    // with no output gives "" either way, so compiling it alone costs little.
+    if (html === "") html = bodyOf(compilePage(source));
     cache.set(source, html);
     if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value);
+    return html;
+  }
+
+  /**
+   * What `prefix` writes around a document's body: the HTML before it and the
+   * HTML after it. A template (`#show: article.with(...)`) writes a title
+   * before the body and may write more after it. Null when the prefix does
+   * not compile, or the body does not come out.
+   * @param {string} prefix the Typst in front of the body
+   * @returns {{ before: string, after: string } | null}
+   */
+  function frame(prefix) {
+    const html = render(prefix + FRAME_MARK_SOURCE);
+    const at = html.indexOf(FRAME_MARK_HTML);
+    if (at === -1) return null;
+    return { before: html.slice(0, at), after: html.slice(at + FRAME_MARK_HTML.length) };
+  }
+
+  /**
+   * `html`, the HTML of a block compiled after `prefix`, without the frame
+   * the prefix writes around every body. A block the frame does not fit is
+   * returned as it is.
+   * @param {string} html
+   * @param {string} prefix
+   * @returns {string}
+   */
+  function unframe(html, prefix) {
+    const shape = frame(prefix);
+    if (!shape || (shape.before === "" && shape.after === "")) return html;
+    const { before, after } = shape;
+    if (html.length >= before.length + after.length && html.startsWith(before) && html.endsWith(after)) {
+      return html.slice(before.length, html.length - after.length);
+    }
     return html;
   }
 
@@ -237,7 +300,7 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
   }
 
   const mathCss = styleOf(compilePage("$x$"));
-  return { render, mathCss, setProject, prepare };
+  return { render, frame, unframe, mathCss, setProject, prepare };
 }
 
 /** The bytes at a URL, or null. @param {string} url */

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { loadTypstSyntax } from "../../src/lib/typst-language/module.js";
-import { splitTypstBlocks, typstBlockSource } from "../../src/lib/paper/typst-blocks.js";
+import { splitTypstBlocks, typstBlockSource, typstFramePrefix } from "../../src/lib/paper/typst-blocks.js";
 import { createTypstPaperRenderer } from "../../src/lib/paper/typst-renderer.js";
 
 const syntaxWasm = new URL("../../wasm/typst-syntax.wasm", import.meta.url);
@@ -127,6 +127,54 @@ if (!existsSync(syntaxWasm)) {
     // A heading before the include is unaffected: nothing before it is counted.
     const first = typstBlockSource(withInclude, headings[0], blocks, files, "main.typ");
     assert.ok(!first.includes("#counter"), first);
+  }
+
+  // A whole-document show rule frames every block after it: its prefix carries the rules before the block.
+  {
+    const framed = [
+      "#let article(title: none, body) = { title; body }",
+      "#show: article.with(title: [T])",
+      "",
+      "First paragraph.",
+      "",
+      "#set text(11pt)",
+      "",
+      "Second paragraph.",
+      "",
+    ].join("\n");
+    const blocks = splitTypstBlocks(framed);
+    const first = blocks.find((block) => framed.slice(block.from, block.to) === "First paragraph.");
+    const second = blocks.find((block) => framed.slice(block.from, block.to) === "Second paragraph.");
+    const prefix = typstFramePrefix(framed, first.from, blocks);
+    assert.ok(
+      prefix.startsWith("#let article(title: none, body) = { title; body }\n#show: article.with(title: [T])\n"),
+      prefix,
+    );
+    assert.ok(prefix.includes("__lp_refs"), prefix);
+    assert.ok(!prefix.includes("#set text(11pt)"), prefix);
+    assert.ok(typstFramePrefix(framed, second.from, blocks).includes("#set text(11pt)"));
+    // The block's source is the same as before: the rules, then its own text.
+    const source = typstBlockSource(framed, first, blocks);
+    assert.ok(source.startsWith("#let article(title: none, body) = { title; body }\n#show: article.with(title: [T])\n"), source);
+    assert.ok(source.endsWith("First paragraph."), source);
+  }
+
+  // Without a whole-document show rule, nothing is written around a block: there is no frame.
+  {
+    const plain = ["#set text(11pt)", "#show heading: set text(navy)", "", "Text.", ""].join("\n");
+    const blocks = splitTypstBlocks(plain);
+    const text = blocks.find((block) => plain.slice(block.from, block.to) === "Text.");
+    assert.equal(typstFramePrefix(plain, text.from, blocks), null);
+  }
+
+  // A show rule after a block does not frame it.
+  {
+    const late = ["Text.", "", "#show: body => body", "", "More.", ""].join("\n");
+    const blocks = splitTypstBlocks(late);
+    const text = blocks.find((block) => late.slice(block.from, block.to) === "Text.");
+    const more = blocks.find((block) => late.slice(block.from, block.to) === "More.");
+    assert.equal(typstFramePrefix(late, text.from, blocks), null);
+    assert.ok(typstFramePrefix(late, more.from, blocks).includes("#show: body => body"));
   }
 
   if (!existsSync(typstWasm)) {

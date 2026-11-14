@@ -468,7 +468,8 @@ function typstFoldsOf(text) {
   const folds = [];
   if (last >= 0) {
     const detail = directivesOf(blocks.slice(0, last + 1));
-    folds.push({ from: blocks[0].from, to: blocks[last].to, kind: "preamble", detail: cut(detail) });
+    // When the paper layer draws the template's title under this pill, the pill still names the rules it hides.
+    folds.push({ from: blocks[0].from, to: blocks[last].to, kind: "preamble", detail: cut(detail), others: cut(detail) });
   }
 
   // Comments inside the leading run up to its last rule belong to the preamble fold.

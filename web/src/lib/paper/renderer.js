@@ -23,6 +23,8 @@ const decoder = new TextDecoder();
  *   mathCss?: string,
  *   setProject?: (project: any) => void,
  *   prepare?: (project: any, preamble: string, onUpdate: () => void) => Promise<boolean>,
+ *   frame?: (prefix: string) => { before: string, after: string } | null,
+ *   unframe?: (html: string, prefix: string) => string,
  * }} PaperRenderer
  */
 
