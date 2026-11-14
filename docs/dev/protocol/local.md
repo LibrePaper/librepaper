@@ -26,7 +26,7 @@ For the full rules, see [SPEC-wire.md](../../../SPEC-wire.md).
 
 ## Run directory (3.2.0)
 
-A Quarto document with "Run code" on runs with a folder of the person's own as
+Pressing "Run code" on a Quarto document runs its code with a folder of the person's own as
 its working directory, so `read.csv("data/x.csv")` and `source("R/helpers.R")`
 work as they do in RStudio. The companion keeps one such folder, the Run
 directory, per origin and project. It is stored on the computer only and never
