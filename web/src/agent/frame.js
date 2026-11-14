@@ -428,7 +428,9 @@ import { morphChildren } from "./morph.js";
 
   function highlight(ranges) {
     lastRanges = ranges;
-    const key = JSON.stringify(ranges);
+    // The washes are mixed from the paper, so a change of paper is a change of
+    // paint even when the ranges are the same.
+    const key = `${paper}\n${JSON.stringify(ranges)}`;
     if (key === paintedKey && paintedGeneration === bodyGeneration) return;
     paintedKey = null;
     quietly(() => {
