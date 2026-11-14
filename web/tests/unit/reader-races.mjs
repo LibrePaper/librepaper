@@ -674,7 +674,7 @@ for (const invalidate of [null, "navigation", "main"]) {
     refreshReview: () => { reviewed += 1; },
     bundle: { keepCurrent: () => { rescheduled += 1; } },
   });
-  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
+  vm.runInContext(body("  function sourceChanged({ remote = false } = {})", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
   assert.equal(ctx.schedule.generation, 1);
   assert.equal(reviewed, 1, "an edit refreshes the rows of the Changes panel");
@@ -734,7 +734,7 @@ for (const invalidate of [null, "navigation", "main"]) {
     diagnosticPainter: { typed: () => {} }, diagnosticContext,
     editing: true, pdfOutput: false,
   });
-  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
+  vm.runInContext(body("  function sourceChanged({ remote = false } = {})", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
   inEditorUpdate = false;
   await new Promise(queueMicrotask);
