@@ -1798,4 +1798,24 @@ function trackedKeystroke(doc, edits) {
   assert.equal(shape(resolveFileCached(again, "f1")), shape(resolveFile(again, "f1")));
 }
 
+// A fragment whose cursor lies inside another change's span, as concurrent
+// edits leave it, reads at the span's start. A keystroke that splits the span
+// sends it back to its cursor, so the written state is not adopted for it and
+// the next read resolves.
+{
+  const doc = makeDoc("abcdefghijklmnop", 1);
+  const text = doc.getMap("files").get("f1");
+  putRecord(doc, "span", { kind: "change", file: "f1", who: "alice", author: "Alice", run: null, at: 1, start: text.getCursor(1, -1).encode(), end: text.getCursor(4, 1).encode() });
+  putRecord(doc, "gone", { kind: "change", file: "f1", who: "bob", author: "Bob", run: null, at: 1, start: null, end: null });
+  putRecord(doc, "frag", { kind: "fragment", file: "f1", who: "bob", author: "Bob", run: null, at: 1, change: "gone", text: "zz", rank: 0, start: text.getCursor(3, -1).encode() });
+  doc.commit();
+  const before = resolveFile(doc, "f1");
+  const gap = before.gaps.find((g) => g.fragments.some((f) => f.id === "frag"));
+  assert.equal(gap.at, 1, "the fragment reads at the span's start");
+  assert.equal(gap.relocated, true, "and its gap says it was moved there");
+  const result = trackedKeystroke(doc, [{ from: 2, to: 3, insert: "Q" }]);
+  assert.equal(result.adopted, false, "a relocated gap is not adopted");
+  assert.equal(shape(resolveFileCached(doc, "f1")), shape(resolveFile(doc, "f1")));
+}
+
 console.log("track-changes: ok");
