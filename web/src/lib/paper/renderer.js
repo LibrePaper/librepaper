@@ -23,7 +23,6 @@ const decoder = new TextDecoder();
  *   mathCss?: string,
  *   setProject?: (project: any) => void,
  *   prepare?: (project: any, preamble: string, onUpdate: () => void) => Promise<boolean>,
- *   pageCss: string,
  * }} PaperRenderer
  */
 
@@ -154,12 +153,7 @@ export async function createPaperRenderer(bytes) {
     return blocks;
   }
 
-  // The stylesheet is the page's own, from an empty document. A `<style>`
-  // element carries no document content, so compiling nothing is enough.
-  const style = /<style[^>]*>([\s\S]*?)<\/style>/.exec(compilePage(wasm, ""));
-  const pageCss = style ? style[1].trim() : "";
-
-  return { render, renderBlocks, pageCss };
+  return { render, renderBlocks };
 }
 
 /**

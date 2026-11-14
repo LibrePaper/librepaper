@@ -34,7 +34,11 @@ const PALETTE = /^src\/styles\/palettes\/[a-z]+\.css$/;
 // of the application's theme; only this shared palette may define them.
 // The plain-text preview page is painted on the documents origin, so its
 // highlighting colours travel with the page.
-const OUTSIDE = [/^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/, /^src\/lib\/text-page\.js$/];
+// The document stylesheet is the house style documents are shown in, not the
+// application's: it travels with each page into the documents frame, and its
+// class names are the renderers' vocabulary (wasm-helpers docs/classes.md).
+const DOCUMENT_CSS = "src/styles/document.css";
+const OUTSIDE = [/^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/, /^src\/lib\/text-page\.js$/, /^src\/styles\/document\.css$/];
 
 function files(dir) {
   return readdirSync(dir).flatMap((name) => {
@@ -98,6 +102,7 @@ for (const path of files(join(ROOT, "node_modules/@skeletonlabs/skeleton/src")))
 for (const path of files(join(SRC, "styles"))) {
   if (!path.endsWith(".css")) continue;
   const name = portableRelative(ROOT, path);
+  if (name === DOCUMENT_CSS) continue;
   const source = readFileSync(path, "utf8");
   source.split("\n").forEach((line, index) => {
     for (const found of line.matchAll(/\.([a-zA-Z][\w-]*)/g)) {

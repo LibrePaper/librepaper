@@ -91,5 +91,6 @@ assert.equal(workers.length, before, "rendering starts no worker: completion alr
 const citingMessage = citing1.messages.at(-1);
 assert.equal(citingMessage.url, "https://example.org/citations.wasm");
 citing1.reply(citingMessage, { html: "<p>Doe</p>", diagnostics: [] });
-assert.equal((await citing).html, "<p>Doe</p>");
+const citingHtml = (await citing).html;
+assert.ok(citingHtml.endsWith("<p>Doe</p>") && citingHtml.includes("<style data-lp-house>"), "the page gets the house style");
 console.log("bibliography routing (reuse, standalone, fallback) and citation rendering passed");
