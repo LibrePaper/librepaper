@@ -42,7 +42,7 @@ li.task-cancelled>input[type=checkbox]::before{background:linear-gradient(45deg,
 li.task-done,li.task-cancelled{color:var(--lp-muted)}li:is(.task-done,.task-cancelled)>:is(ul,ol){color:var(--lp-ink)}
 dl dt{font-weight:650;margin-top:.9rem}dl dd{margin:.2rem 0 0 1.25rem}dl>dt>p,dl>dd>p{margin:0}
 /* code */
-pre{background:var(--lp-code-bg);color:var(--lp-code-ink);border-radius:4px;padding:.6rem .85rem;overflow-x:auto;font:400 .875rem/1.5 var(--lp-mono);letter-spacing:normal}
+pre{background:var(--lp-code-bg);color:var(--lp-code-ink);border-radius:4px;padding:.6rem .85rem;overflow-x:auto;font:400 .875rem/1.5 var(--lp-mono);letter-spacing:normal;hanging-punctuation:none}
 pre code{background:none;padding:0;border-radius:0;font:inherit;letter-spacing:inherit}
 .code-filename{font:.78rem var(--lp-sans);color:var(--lp-muted);background:var(--lp-code-bg);border-radius:4px 4px 0 0;padding:.45rem .85rem 0;margin:0}
 .code-filename+pre{border-radius:0 0 4px 4px;margin-top:0;padding-top:.3rem}
