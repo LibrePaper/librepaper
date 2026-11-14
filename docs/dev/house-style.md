@@ -1,9 +1,9 @@
 <!-- The design notes for web/src/styles/document.css, the house stylesheet every LibrePaper HTML document is shown in. Moved from LibrePaper/wasm-helpers (docs/style.md) when the stylesheet moved into the app (kata 6y41). The class vocabulary the renderers emit stays in wasm-helpers: docs/classes.md. -->
 
-# House style v2 — modern serif, intentional choices for every element
+# House style v3 — sans headings over a serif body
 
-Direction: a contemporary academic web document. Serif for reading, a quiet
-system sans for interface-like labels, lining numerals, neutral surfaces, no
+Direction: a contemporary academic web document. Serif for reading, the system sans for headings, the title block and
+interface-like labels, lining numerals, neutral surfaces, no
 small caps, no ornament. It should feel like a well-made journal article on
 the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 
@@ -11,26 +11,27 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 - `--lp-serif`: "Charter", "Bitstream Charter", "Source Serif 4", "Source Serif Pro", "Sitka Text", "Noto Serif", Cambria, Georgia, serif  (drop "Iowan Old Style": old-style face)
 - `--lp-sans` (new): system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif
 - `--lp-mono`: keep.
-- Colours: keep the neutral paper/ink and derived shades (rq34). Accent: keep #1f5fa8 light / #8ab4f0 dark. Add `--lp-mark` modern highlight: light `color-mix(in srgb, #ffd84d 45%, transparent)`, dark `color-mix(in srgb, #ffd84d 25%, transparent)`.
+- `--lp-math` (new): "STIX Two Math", "Cambria Math", "Latin Modern Math", "New Computer Modern Math", math. Set on `math` in the Typst adapter.
+- Colours: keep the neutral paper/ink and derived shades (rq34), muted text at 68% ink (was 62%). Accent: keep #1f5fa8 light / #8ab4f0 dark. Add `--lp-mark` modern highlight: light `color-mix(in srgb, #ffd84d 45%, transparent)`, dark `color-mix(in srgb, #ffd84d 25%, transparent)`.
 - Numerals: body `font-variant-numeric: lining-nums proportional-nums`; tables, equation numbers, section numbers, TOC numbers, footnote numbers: `lining-nums tabular-nums`. No oldstyle-nums anywhere.
 - No `font-variant: small-caps` / `font-variant-caps` anywhere except `.smallcaps`. No `text-transform: uppercase` labels.
 
 ## Page
-- body: serif 1.0625rem / 1.65, ink on paper, max-width 68ch, margin auto, padding 3rem 1.25rem 5rem (phone: 1.5rem 1rem 3rem). `text-wrap: pretty`, `hanging-punctuation: first`, `-webkit-font-smoothing: antialiased`.
+- body: serif 1.125rem / 1.6, ink on paper, max-width 44rem, margin auto, padding 3rem 1.25rem 5rem (phone: 1.5rem 1rem 3rem). `text-wrap: pretty`, `hanging-punctuation: first`, `-webkit-font-smoothing: antialiased`.
 - Paragraph spacing 1em; no indents.
 - Selection colour: accent at 20%.
 
 ## Headings
-- Serif, weight 650, `letter-spacing: -0.012em`, `text-wrap: balance`, line-height 1.2, ink colour. No rules/borders under any heading.
-- Sizes (body headings; the document title is separate): h1 1.75rem (margin 2.6rem 0 .8rem), h2 1.35rem (2.2rem 0 .6rem), h3 1.125rem (1.8rem 0 .5rem), h4 1rem (1.5rem 0 .4rem), h5/h6 1rem regular italic.
-- Section number (`.section-number[data-number]::before`): same font and size, weight 400, colour muted, tabular lining, margin-right .5em.
+- Sans (`--lp-sans`), weight 650, `letter-spacing: -0.017em`, `text-wrap: balance`, line-height 1.2, ink colour. No rules/borders under any heading.
+- Sizes (body headings; the document title is separate): h1 1.9rem (margin 2.8rem 0 .8rem), h2 1.5rem (2.75rem 0 .7rem), h3 1.2rem (2rem 0 .5rem), h4 1.05rem (1.5rem 0 .4rem), h5/h6 1rem regular italic serif.
+- Section number (`.section-number[data-number]::before`): same font and size, weight 600, colour muted, tabular lining, margin-right .5em.
 - Anchors (`a.anchor`): hidden.
 
 ## Title block (`header.title-block`)
 - Left-aligned (not centred), no rules inside; a single hairline (`--lp-rule`) below the whole block, padding-bottom 1.5rem, margin-bottom 2rem.
-- `.title`: serif 650, `font-size: clamp(1.8rem, 1.2rem + 2.4vw, 2.5rem)`, line-height 1.12, letter-spacing -0.02em, margin 0 0 .4rem.
-- `.subtitle`: serif regular (not italic), 1.2rem, muted, margin 0 0 1rem.
-- `.author`: serif 1rem ink; `.affiliation-ref` sup in sans .7em muted.
+- `.title`: sans 700, `font-size: clamp(1.8rem, 1.2rem + 2.4vw, 2.5rem)`, line-height 1.08, letter-spacing -0.028em, margin 0 0 .4rem.
+- `.subtitle`: sans regular (not italic), 1.15rem, muted, margin 0 0 1rem.
+- `.author`: sans 500 1rem ink; `.affiliation-ref` sup in sans .7em muted.
 - `.affiliations`, `.date`: sans .85rem muted, margin .2rem 0.
 - `.abstract`: margin 1.25rem 0 0; `.abstract-title`: sans .8rem weight 600 ink, letter-spacing .01em, margin 0 0 .3rem (sentence case "Abstract"); abstract text serif 1rem, ink.
 - `.keywords`: sans .85rem muted; `.keywords-label` weight 600 ink.
@@ -56,17 +57,18 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 - `hr`: border 0, border-top 1px `--lp-rule`, margin 2.5rem 0.
 
 ## Callouts
-- Background `color-mix(in srgb, var(--k) 6%, var(--lp-paper))` (dark: 10%), border-left 3px solid `var(--k)`, radius 0 6px 6px 0, padding .8rem 1rem, margin 1.5rem 0.
+- Background `color-mix(in srgb, var(--k) 6%, var(--lp-paper))` (dark: 10%), a 1px border in `var(--k)` at 25% over paper, with a 3px solid `var(--k)` left edge, radius 8px (matches the code panels), padding .8rem 1rem, margin 1.5rem 0.
 - `.callout-title`: sans .85rem weight 600, colour `var(--k)`, margin 0 0 .25rem, sentence case — NO small caps, no uppercase.
 - Body: serif, ink; first/last child margins 0.
 - Collapsible (`details.callout`): summary with a small chevron (CSS-drawn, rotates when open), cursor pointer, no default marker.
-- `.callout-simple`: no background tint; `.callout-minimal`: no background, title hidden.
+- `.callout-simple`: no background tint; `.callout-minimal`: no background, title hidden. Both drop the box: no top, right or bottom border and no radius, so only the 3px left rule remains.
 
 ## Figures and tables
-- `figure` margin 1.75rem 0; images centred, max-width 100%, height auto.
-- `figcaption`: sans .85rem / 1.45, muted, margin-top .6rem (tables: caption above, margin-bottom .5rem), text-align left. `.caption-label`: weight 600 ink, margin-right .3em (keep "Figure 1." wording).
+- `figure` margin 2.25rem 0; images centred, max-width 100%, height auto, radius 6px, with a 1px `--lp-rule` outline drawn inside the image (outline-offset -1px) so light images keep an edge on white paper.
+- Image-only figures (`figure` holding an `img`, directly or inside a link or paragraph) shrink to the image, with a min-width of 26rem, centred; the caption is contained to that width (`contain: inline-size`), so it wraps under the image instead of widening the figure. Tables, margin notes, subfigures, grids, layout rows and column-classed figures keep their own sizing.
+- `figcaption` (and `.ltx_caption`, `figure.quarto-float figcaption`): sans .9rem / 1.5, colour ink 78% (not the muted grey), margin-top .75rem, text-align left. Table captions (`table caption`) use the same font and colour; they sit above the table with margin-bottom .5rem. `.caption-label`: weight 600 ink, margin-right .3em (keep "Figure 1." wording).
 - Figure grids and subfigures: unchanged, captions as above.
-- Tables: font-size .95rem, lining tabular nums, border-collapse; booktabs: top rule 1.5px ink 85%, header bottom 1px ink 60%, bottom rule 1.5px ink 85%; `th` serif weight 650 ink, vertical-align bottom; `td,th` padding .45rem .75rem; first/last column padding-left/right 0 so the rules align with the text; no zebra; right-aligned cells nowrap.
+- Tables: font-size .9rem, lining tabular nums, border-collapse, sans font (the table body is sans in v3; headers too). Booktabs with 1px rules: top rule 1px ink 85%, header bottom 1px ink 60%, bottom rule 1px ink 85%. Body rows are separated by a 1px `--lp-rule` line between rows (not zebra). `th` sans weight 600 ink, vertical-align bottom; header cells are sans .82rem muted so the header reads as labels, not data. `td,th` padding .5rem .75rem; first/last column padding-left/right 0 so the rules align with the text; no zebra; right-aligned cells nowrap. Wide tables keep their scroll (`display:block; width:max-content; overflow-x:auto`) on screen; print restores a normal table.
 - Equations (`.equation`): margin 1.4rem 0; `.equation-number` muted tabular lining.
 
 ## Theorems and proofs
@@ -74,7 +76,8 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 - `.proof-label`: italic; end of proof: `∎` in muted, placed at the end of the last line (float right).
 
 ## Code and output
-- Keep rq34 exactly (subtle code panel, verbatim output, error/warning rules). Code filename and fold summary: sans .8rem muted (not mono).
+- Keep rq34 exactly (subtle code panel, verbatim output, error/warning rules). Code panels (`pre`, `.ltx_listing`, `.ltx_verbatim`) now carry a 1px `--lp-rule` border, radius 8px, padding .8rem 1rem. A filename header (`.code-filename`) joins the panel above it: same border, radius 8px on its top corners, no bottom border; the `pre` under it drops its top border and rounds only its bottom corners. Code filename and fold summary: sans .8rem muted (not mono); the fold summary indents to 1rem, the same as the code text.
+- Cell outputs keep their left rule (2px) and sit at `calc(1rem - 1px)` so their text lines up with the code text, which is 1rem padding plus the 1px panel border in from the edge. Their `pre` stays borderless and unpadded.
 - Tab sets (`.tabset`): `.tab-title` sans .8rem 600 muted, margin 1rem 0 .35rem, no small caps, no rule.
 - pre: `hanging-punctuation: none`: WebKit would otherwise hang an opening bracket on the first line outside the box, where a cell output clips it (R's `[1]`).
 
@@ -89,10 +92,12 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 
 ## Dark mode
 - Same rules; check: callout tints readable, table rules visible (ink 85% on dark is light), mark not glaring, code panel distinct but quiet.
+- Images: the light palette is off by default (`--lp-img-pad: 0`, `--lp-img-filter: none`). Under `.lp-dark` (screen only, `@media not print`) images get `--lp-img-pad: .5rem` (a paper-coloured frame so pale plots do not glare on the dark page) and `--lp-img-filter: brightness(.9) contrast(1.05)`. The outline and radius apply in both themes.
 
 ## Adapters
 - LaTeXML and Typst adapters: map onto the same choices (title left-aligned, sans labels, no small caps, captions sans).
 - Quarto page adapter (`.lp-quarto`): same — `.callout-title-container` sans 600 sentence case, `#title-block-header` left-aligned, `#TOC` like nav.toc, `figcaption.quarto-float-caption` sans muted.
+- LaTeXML and Quarto title and section headings follow the same sans scale as Headings, with the title block sans 700; paragraph and theorem labels stay serif.
 
 ## Print
 - Light palette (as now); body 11pt / 1.45; links ink without underline; no page-breaks inside figures/tables/callouts/theorems.
