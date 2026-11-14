@@ -144,6 +144,9 @@ function build(state, path, imageUrl, adapter, project) {
   if (!blocks) return { decorations: Decoration.none, rendered: [], gaps: new Set() };
   // Every block the renderer draws, the selected ones too, so that numbers do not move when the caret enters an equation.
   const htmls = new Map();
+  // The project's texts and the open path, read once: a Typst block counts what its included files number.
+  const files = project ? project().texts : null;
+  const openPath = path();
   for (const block of blocks) {
     if (!block.render) continue;
     let html = "";
@@ -151,7 +154,7 @@ function build(state, path, imageUrl, adapter, project) {
       html = block.html ?? "";
     } else {
       try {
-        html = renderer.render(adapter.blockSource(text, block, blocks));
+        html = renderer.render(adapter.blockSource(text, block, blocks, files, openPath));
       } catch {
         continue;
       }

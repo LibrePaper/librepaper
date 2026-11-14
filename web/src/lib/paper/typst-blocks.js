@@ -13,7 +13,7 @@ import { lineEnd, lineStart } from "./blocks.js";
 /** @type {{ text: string, blocks: PaperBlock[] } | null} the last split, by its text */
 let last = null;
 
-/** What a document gives every block, computed once per split. @type {WeakMap<PaperBlock[], { text: string, refs: string, numbered: any[] }>} */
+/** What a document gives every block, computed once per split. @type {WeakMap<PaperBlock[], { text: string, files: Record<string, string> | null, path: string, refs: string, numbered: any[] }>} */
 const contexts = new WeakMap();
 
 // Rules that set the document up. They are never drawn and go in front of every block.
@@ -125,11 +125,23 @@ function kindWord(kind) {
   return KIND_WORDS[/** @type {keyof typeof KIND_WORDS} */ (kind)] ?? kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
-/** What the whole document gives every block: its preamble-independent facts. */
-function contextOf(text, blocks) {
-  let context = contexts.get(blocks);
-  if (context) return context;
-  const facts = typstFacts({ "main.typ": text }, "main.typ", "main.typ", []);
+/**
+ * What the whole document gives every block: its preamble-independent facts.
+ * The open file is `text`, at project path `path`; `files` are the other project
+ * texts, so that the numbered elements of included files count too.
+ * @param {string} text
+ * @param {PaperBlock[]} blocks
+ * @param {Record<string, string> | null} files
+ * @param {string} path
+ */
+function contextOf(text, blocks, files, path) {
+  const cached = contexts.get(blocks);
+  if (cached && cached.files === files && cached.path === path && cached.text === text) return cached;
+  // Only Typst sources can be included; the rest of the project is not scanned.
+  /** @type {Record<string, string>} */
+  const typst = {};
+  for (const [name, body] of Object.entries(files || {})) if (name.endsWith(".typ")) typst[name] = body;
+  const facts = typstFacts({ ...typst, [path]: text }, path, path, []);
   // A reference alone in a block cannot see its target, so the text it would
   // read ("Equation 1") is given to every block as a table. A label with no
   // number reads as its key in brackets, which is also how a citation looks.
@@ -139,7 +151,7 @@ function contextOf(text, blocks) {
   const refs =
     `#let __lp_refs = (${entries.length ? entries.join(", ") : ":"})\n` +
     '#show ref: it => link("#" + str(it.target), __lp_refs.at(str(it.target), default: "[" + str(it.target) + "]"))\n';
-  context = { text, refs, numbered: facts.numbered };
+  const context = { text, files, path, refs, numbered: facts.numbered };
   contexts.set(blocks, context);
   return context;
 }
@@ -147,7 +159,8 @@ function contextOf(text, blocks) {
 /**
  * The counter updates that put the numbering where it stands before `block`:
  * the heading numbers in force, and how many figures of each kind and display
- * equations have gone by.
+ * equations have gone by. An item of an included file counts at the include
+ * that brings it in (its `rootAt`), so it is before a block that follows the include.
  * @param {any[]} numbered
  * @param {PaperBlock} block
  */
@@ -156,7 +169,7 @@ function counterUpdates(numbered, block) {
   /** @type {Map<string, number>} */
   const counts = new Map();
   for (const item of numbered) {
-    if (item.at >= block.from) break;
+    if ((item.rootAt ?? item.at) >= block.from) break;
     if (item.type === "heading") {
       headings[item.level - 1] += 1;
       headings.fill(0, item.level);
@@ -182,13 +195,17 @@ function counterUpdates(numbered, block) {
 /**
  * The Typst to compile for one block: every preamble rule before it, then the
  * reference table and the counter updates, then its own text.
+ * `files` are the project's texts (null when there are none) and `path` the open
+ * file's project path, so that the numbering counts what the included files number.
  * @param {string} text
  * @param {PaperBlock} block
  * @param {PaperBlock[]} blocks the result of splitTypstBlocks(text)
+ * @param {Record<string, string> | null} [files]
+ * @param {string} [path]
  * @returns {string}
  */
-export function typstBlockSource(text, block, blocks) {
-  const context = contextOf(text, blocks);
+export function typstBlockSource(text, block, blocks, files = null, path = "main.typ") {
+  const context = contextOf(text, blocks, files, path);
   let preamble = "";
   for (const other of blocks) {
     if (other.from >= block.from) break;

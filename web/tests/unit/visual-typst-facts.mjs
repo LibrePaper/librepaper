@@ -17,6 +17,18 @@ await loadTypstSyntaxForTests();
   assert.equal(unnumbered.labels.get("bg")?.number ?? null, null);
 }
 
+// A numbered element of an included file carries the root position of the include that brings it in.
+{
+  const main = '#set heading(numbering: "1.")\n\n= First\n\n#include "part.typ"\n\n= After\n';
+  const facts = typstFacts({ "main.typ": main, "part.typ": "= Included\n" }, "main.typ", "main.typ", []);
+  const include = main.indexOf("#include");
+  const included = facts.numbered.find((item) => item.path === "part.typ");
+  assert.equal(included.rootAt, include);
+  assert.equal(included.at, 0);
+  const first = facts.numbered.find((item) => item.path === "main.typ");
+  assert.equal(first.rootAt, first.at);
+}
+
 // Figures are numbered by kind: an image and a table count separately. A label
 // right after a figure binds to that figure.
 {
