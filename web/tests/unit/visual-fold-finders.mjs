@@ -247,6 +247,7 @@ if (!existsSync(typstWasm)) {
   const named = plain(folds, text);
   assert.equal(named[0].kind, "preamble");
   assert.equal(named[0].detail, "#import · #set · #show");
+  assert.equal(folds[0].others, folds[0].detail);
   // A comment after the last setup rule is not part of the preamble.
   assert.deepEqual(named.slice(1), [
     { kind: "comment", text: "// a leftover comment", detail: "a leftover comment" },
