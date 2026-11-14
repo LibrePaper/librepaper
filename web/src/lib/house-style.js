@@ -1,9 +1,11 @@
 // The house style: one stylesheet for every HTML document LibrePaper shows.
-// Markdown, Quarto and Org pages carry it already (the wasm renderers embed
-// it). LaTeXML and Typst HTML come from engines with their own stylesheets,
-// which are swapped for the house one here, before the page is painted.
+// The app holds the only copy (house-css.js). Markdown, Quarto, Org and
+// bibliography pages from the wasm renderers get it put in here, as the first
+// stylesheet of the head. LaTeXML and Typst HTML come from engines with their
+// own stylesheets, which are swapped for the house one, before the page is
+// painted.
 
-import { loadPaperRenderer } from "./paper/renderer.js";
+import HOUSE_CSS from "./house-css.js";
 
 const STYLE = /<style\b[^>]*>[\s\S]*?<\/style>/gi;
 const LATEXML_STYLE = /<style\b[^>]*\bdata-latexml-css\b[^>]*>/i;
@@ -29,6 +31,37 @@ function swap(html, css, drop) {
   if (placed) return out;
   if (/<\/head>/i.test(out)) return out.replace(/<\/head>/i, () => `${tag}</head>`);
   return tag + out;
+}
+
+const HOUSE_MARK = /<style\b[^>]*\bdata-lp-house\b[^>]*>/i;
+const FIRST_SHEET = /<style\b|<link\b[^>]*\brel\s*=\s*["']?stylesheet/i;
+
+/**
+ * A page from one of the wasm renderers with the house stylesheet as the first
+ * stylesheet of its head, so the renderer's own styles come after it. A page
+ * that has it is returned as it is; an old module's embedded copy (a style
+ * that defines `--lp-ink`) is removed first.
+ * @param {string} html
+ * @param {string} [css] the house stylesheet; the bundled one by default
+ * @returns {string}
+ */
+export function withHouseStyle(html, css = HOUSE_CSS) {
+  if (!css || typeof html !== "string" || HOUSE_MARK.test(html)) return html;
+  const page = html.replace(STYLE, (style) => (style.includes("--lp-ink") ? "" : style));
+  const tag = houseTag(css);
+  const open = /<head\b[^>]*>/i.exec(page);
+  if (!open) {
+    const root = /<html\b[^>]*>/i.exec(page);
+    if (!root) return `<head>${tag}</head>${page}`;
+    const at = root.index + root[0].length;
+    return `${page.slice(0, at)}<head>${tag}</head>${page.slice(at)}`;
+  }
+  const from = open.index + open[0].length;
+  const close = /<\/head>/i.exec(page.slice(from));
+  const end = close ? from + close.index : page.length;
+  const sheet = FIRST_SHEET.exec(page.slice(from, end));
+  const at = sheet ? from + sheet.index : end;
+  return page.slice(0, at) + tag + page.slice(at);
 }
 
 /**
@@ -125,14 +158,9 @@ export function quartoWithHouseStyle(html, css) {
 }
 
 /**
- * The house stylesheet as the Markdown module embeds it, or "" when this
- * deployment has no Markdown module (the page then keeps its own styles).
+ * The house stylesheet, as bundled with the app.
  * @returns {Promise<string>}
  */
 export async function houseStyleCss() {
-  try {
-    return (await loadPaperRenderer("markdown")).pageCss || "";
-  } catch {
-    return "";
-  }
+  return HOUSE_CSS;
 }

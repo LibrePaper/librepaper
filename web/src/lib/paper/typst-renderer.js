@@ -26,7 +26,6 @@ const TOTAL_LIMIT = 64 * 1024 * 1024;
  * @typedef {{ main: string, texts: Record<string, string>, assets?: Record<string, string>, assetUrl?: (path: string) => Promise<string | null> | string | null }} PaperProject
  * @typedef {{
  *   render: (source: string) => string,
- *   pageCss: string,
  *   mathCss: string,
  *   setProject: (project: PaperProject) => void,
  *   prepare: (project: PaperProject, preamble: string, onUpdate?: () => void) => Promise<boolean>,
@@ -52,9 +51,9 @@ function bodyOf(page) {
 }
 
 /**
- * Instantiates the Typst module and returns its paper renderer. `pageCss` and
- * `mathCss` are both the page's own stylesheet (the MathML rules): the
- * Markdown page stylesheet does not apply to Typst.
+ * Instantiates the Typst module and returns its paper renderer. `mathCss` is the
+ * page's own stylesheet (the MathML rules): the house stylesheet does not
+ * cover Typst's MathML.
  * @param {BufferSource} bytes the verified module bytes
  * @returns {Promise<TypstPaperRenderer>}
  */
@@ -238,7 +237,7 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
   }
 
   const mathCss = styleOf(compilePage("$x$"));
-  return { render, pageCss: mathCss, mathCss, setProject, prepare };
+  return { render, mathCss, setProject, prepare };
 }
 
 /** The bytes at a URL, or null. @param {string} url */

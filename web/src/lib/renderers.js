@@ -31,7 +31,7 @@ import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
 import { m } from "./paraglide/messages.js";
-import { houseStyleCss, latexmlWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle } from "./house-style.js";
+import { houseStyleCss, latexmlWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle, withHouseStyle } from "./house-style.js";
 
 /// This browser's identity for a render tree -- `{ main, texts, digests }`
 /// -- used only as a transient cache key: whether a local build's job
@@ -340,10 +340,16 @@ export async function render(tree, title, { manual = false, format: requestedFor
   }
   const module = format === "markdown" && needsBibliography({ source }) ? "citations" : format;
   const renderable = format === "org" ? expandOrgIncludes(tree) : tree;
-  return request(module, "render", {
+  return housed(await request(module, "render", {
     tree: renderTree(renderable, capturedSettings),
     title,
-  }, capturedModules);
+  }, capturedModules));
+}
+
+// The wasm renderers' pages carry no house stylesheet of their own: the app
+// puts it in, so the preview and every export of the page have it.
+function housed(result) {
+  return typeof result?.html === "string" ? { ...result, html: withHouseStyle(result.html) } : result;
 }
 
 // Quarto cross references (@fig-x, @tbl-x, …) look like citations to
@@ -367,10 +373,10 @@ async function renderQuarto(tree, title, moduleUrls, settings, source) {
       title,
     }, moduleUrls);
     const mapped = quarto.mapDraftDiagnostics(result?.diagnostics || [], drafted.line_map, tree.main);
-    return { ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] };
+    return housed({ ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] });
   }
   const result = await request("markdown", "render", { tree: renderTree(withSidecar, settings), title }, moduleUrls);
-  return result ? { ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) } : result;
+  return result ? housed({ ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) }) : result;
 }
 
 // The module's Quarto draft of a tree, as Markdown with its line map.
@@ -452,7 +458,8 @@ export async function failurePage(title, format) {
   if (producesPdf(format)) return null;
   // A data file never fails to preview.
   if (format === "text") return null;
-  return request(format === "quarto" ? "markdown" : format, "failure", { title });
+  const page = await request(format === "quarto" ? "markdown" : format, "failure", { title });
+  return typeof page === "string" && page ? withHouseStyle(page) : page;
 }
 
 /// The document's first heading, which names a document that was never given a

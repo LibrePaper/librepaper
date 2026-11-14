@@ -40,11 +40,6 @@ const renderer = await createPaperRenderer(bytes);
   assert.equal(renderer.render("# Same"), renderer.render("# Same"));
 }
 
-// The page CSS is the preview page's own stylesheet, so it styles the body.
-{
-  assert.match(renderer.pageCss, /body/);
-}
-
 // Before anything has loaded, there is no renderer to hand out, and loading
 // with no module URL configured rejects.
 {
