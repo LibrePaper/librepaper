@@ -1,4 +1,4 @@
-//! HTTP coverage for shared Quarto results.
+//! HTTP coverage for shared results (Quarto and Calepin records).
 //!
 //! `/api/documents/{slug}/results`: GET (Read), PUT and DELETE (Edit). The
 //! record is not a project file; its bytes count toward the owner's storage.
@@ -176,6 +176,19 @@ impl Served {
     }
 }
 
+fn calepin_record() -> Value {
+    json!({
+        "version": 1,
+        "path": "paper.typ",
+        "engine": "calepin",
+        "cells": [],
+        "files": [
+            {"path": ".calepin/calepin.typ", "text": "#let x = 1"},
+            {"path": ".calepin/paper/figure-1.png", "base64": "iVBORw0KGgo="},
+        ],
+    })
+}
+
 fn fingerprint(seed: char) -> String {
     seed.to_string().repeat(64)
 }
@@ -286,6 +299,79 @@ async fn an_invalid_record_is_refused() {
         .call("PUT", &owner, Some("not json".to_string()))
         .await;
     assert_eq!(status, 400, "not json");
+    let (status, _) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 404, "nothing was stored");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_owner_puts_and_gets_a_calepin_record() {
+    let Some(deployment) = deployment("results-calepin").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let (status, put) = served
+        .call("PUT", &owner, Some(calepin_record().to_string()))
+        .await;
+    assert_eq!(status, 200, "{put}");
+
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert_eq!(got["engine"], "calepin");
+    assert_eq!(got["path"], "paper.typ");
+    assert_eq!(got["cells"], json!([]));
+    let files = got["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["path"], ".calepin/calepin.typ");
+    assert_eq!(files[0]["text"], "#let x = 1");
+    assert_eq!(files[1]["base64"], "iVBORw0KGgo=");
+    assert_eq!(got["uploaderName"], "Owner");
+    assert!(got["updatedAt"].is_string());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_invalid_calepin_record_is_refused() {
+    let Some(deployment) = deployment("results-calepin-invalid").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let mut outside = calepin_record();
+    outside["files"][0]["path"] = json!("main.typ");
+    let mut dotdot = calepin_record();
+    dotdot["files"][0]["path"] = json!(".calepin/../x");
+    let mut both = calepin_record();
+    both["files"][0]["base64"] = json!("AAAA");
+    let mut neither = calepin_record();
+    neither["files"][0] = json!({"path": ".calepin/calepin.typ"});
+    let mut with_cells = calepin_record();
+    with_cells["cells"] = json!([
+        {"fingerprint": fingerprint('a'), "label": null, "html": "<p>x</p>"}
+    ]);
+    let mut quarto_with_files = record();
+    quarto_with_files["files"] = calepin_record()["files"].clone();
+    let mut unknown_engine = calepin_record();
+    unknown_engine["engine"] = json!("knitr");
+    let mut repeated = calepin_record();
+    repeated["files"][1]["path"] = json!(".calepin/calepin.typ");
+
+    for (name, body) in [
+        ("path outside .calepin", outside),
+        ("path with ..", dotdot),
+        ("text and base64", both),
+        ("neither text nor base64", neither),
+        ("calepin with cells", with_cells),
+        ("quarto record with files", quarto_with_files),
+        ("unknown engine", unknown_engine),
+        ("repeated path", repeated),
+    ] {
+        let (status, _) = served.call("PUT", &owner, Some(body.to_string())).await;
+        assert_eq!(status, 400, "{name}");
+    }
     let (status, _) = served.call("GET", &owner, None).await;
     assert_eq!(status, 404, "nothing was stored");
 }
