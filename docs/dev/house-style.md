@@ -76,6 +76,7 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 ## Code and output
 - Keep rq34 exactly (subtle code panel, verbatim output, error/warning rules). Code filename and fold summary: sans .8rem muted (not mono).
 - Tab sets (`.tabset`): `.tab-title` sans .8rem 600 muted, margin 1rem 0 .35rem, no small caps, no rule.
+- pre: `hanging-punctuation: none`: WebKit would otherwise hang an opening bracket on the first line outside the box, where a cell output clips it (R's `[1]`).
 
 ## Footnotes (`section.footnotes`)
 - Margin-top 3rem, border-top 1px `--lp-rule`, padding-top 1rem, sans .85rem / 1.5, muted; `ol` padding-left 1.25rem; backref inline immediately after the text (no gap), accent, no underline.
