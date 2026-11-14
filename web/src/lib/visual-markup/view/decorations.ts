@@ -153,17 +153,40 @@ function bodyTokens(parsed: Token[]): Token[] {
   return body > 0 ? parsed.slice(body) : parsed;
 }
 
+// The lines a selection or a reveal range touches, before any widening.
+function seedLines(state: EditorState): Set<number> {
+  const doc = state.doc;
+  const seed = new Set<number>();
+  for (const range of [...revealingSelection(state), ...state.facet(revealRanges)]) {
+    const last = doc.lineAt(Math.min(range.to, doc.length)).number;
+    for (let n = doc.lineAt(Math.min(range.from, doc.length)).number; n <= last; n++) seed.add(n);
+  }
+  return seed;
+}
+
+function sameSet(a: Set<number>, b: Set<number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const n of a) if (!b.has(n)) return false;
+  return true;
+}
+
+// Whether two states of one document, parsed to `parsed`, reveal the same
+// lines. The revealed lines are the only way the selection reaches
+// buildDecorations (widgets read no selection), so equal sets mean equal
+// output. The unwidened lines are compared first: a move within a line, the
+// common case, is settled without walking the tokens.
+export function sameReveal(before: EditorState, after: EditorState, language: Language, parsed: Token[]): boolean {
+  if (sameSet(seedLines(before), seedLines(after))) return true;
+  return sameSet(revealedLines(before, language, parsed), revealedLines(after, language, parsed));
+}
+
 // The lines drawn as plain source: every line a selection or a reveal range
 // touches, widened to the whole of any block that is drawn as more than one
 // line (an environment, list, callout, code block, figure, table, widget).
 // The document environment covers the whole body and never widens.
 export function revealedLines(state: EditorState, language: Language, parsed: Token[]): Set<number> {
   const doc = state.doc;
-  const revealed = new Set<number>();
-  for (const range of [...revealingSelection(state), ...state.facet(revealRanges)]) {
-    const last = doc.lineAt(Math.min(range.to, doc.length)).number;
-    for (let n = doc.lineAt(Math.min(range.from, doc.length)).number; n <= last; n++) revealed.add(n);
-  }
+  const revealed = seedLines(state);
 
   const blocks: Array<[number, number]> = [];
   const visit = (list: Token[]) => {

@@ -28,7 +28,10 @@ const foldField = StateField.define({
     const refresh = tr.effects.some((effect) => effect.is(refreshFolds));
     const ranges = takenOf(tr.state);
     if (!tr.docChanged && !tr.selection && !refresh && ranges === value.taken) return value;
-    return foldState(tr.state, tr.docChanged || refresh ? findIn(tr.state) : value.folds);
+    const next = foldState(tr.state, tr.docChanged || refresh ? findIn(tr.state) : value.folds);
+    // A move that leaves the same folds drawn keeps the old set, so nothing is redrawn.
+    if (!tr.docChanged && !refresh && ranges === value.taken && sameDrawn(next.drawn, value.drawn)) return value;
+    return next;
   },
   provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
 });
@@ -72,7 +75,11 @@ function foldState(state, folds) {
       Decoration.replace({ widget: new FoldWidget(fold, openInclude), block: true }).range(fold.from, fold.to),
     ),
   );
-  return { folds, decorations, taken };
+  return { folds, drawn, decorations, taken };
+}
+
+function sameDrawn(a, b) {
+  return a.length === b.length && a.every((fold, i) => fold === b[i]);
 }
 
 function kindLabel(kind) {
