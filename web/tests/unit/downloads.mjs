@@ -188,4 +188,21 @@ await assert.rejects(
   assert.equal(inlineFigureReferences("<p>no figures</p>", tree), "<p>no figures</p>");
 }
 
+// A PDF figure is gathered as a blob URL. Its reference becomes that blob URL,
+// and the blob pass that follows embeds the bytes, so the download carries it.
+{
+  const tree = {
+    digests: { "plot.pdf": "dd" },
+    urls: { "plot.pdf": "blob:https://app/pdf-1#librepaper-asset=dd" },
+  };
+  const page = '<embed src="about:blank#librepaper-asset=dd">';
+  const referenced = inlineFigureReferences(page, tree);
+  assert.equal(referenced, '<embed src="blob:https://app/pdf-1#librepaper-asset=dd">');
+  const fetcher = async (url) => {
+    assert.equal(url, "blob:https://app/pdf-1");
+    return { ok: true, headers: { get: () => "application/pdf" }, arrayBuffer: async () => Uint8Array.of(37, 80, 68, 70).buffer };
+  };
+  assert.equal(await inlineBlobUrls(referenced, fetcher), '<embed src="data:application/pdf;base64,JVBERg==">');
+}
+
 console.log("downloads: file exports follow transient output handed to the frame");

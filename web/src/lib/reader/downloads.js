@@ -42,14 +42,15 @@ export async function inlineBlobUrls(html, fetcher = fetch) {
 
 /// The live preview names a raster image or PDF by reference
 /// (`figures.figureReference`), and its frame holds the bytes, not the page. A
-/// download has to carry the bytes itself, so each reference becomes the data
-/// URL the tree already has for that path. A reference whose path has no data
-/// URL in the tree is left as it is: it loads nothing, like a missing figure.
+/// download has to carry the bytes itself, so each reference becomes the URL
+/// the tree already has for that path: a data URL, or for a PDF a blob URL,
+/// which `inlineBlobUrls` then turns into a data URL. A reference whose path
+/// has neither is left as it is: it loads nothing, like a missing figure.
 export function inlineFigureReferences(html, tree) {
   let out = html;
   for (const [path, sha] of Object.entries(tree.digests || {})) {
     const url = tree.urls?.[path];
-    if (typeof url !== "string" || !url.startsWith("data:")) continue;
+    if (typeof url !== "string" || !(url.startsWith("data:") || url.startsWith("blob:"))) continue;
     out = out.split(figureReference(sha)).join(url);
   }
   return out;
