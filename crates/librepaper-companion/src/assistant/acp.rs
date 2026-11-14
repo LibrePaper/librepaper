@@ -547,7 +547,10 @@ fn prepare_pi(directory: &Path, executable: &Path, pi: &str) -> Result<PathBuf, 
     #[cfg(unix)]
     let (name, script) = {
         let quoted = format!("'{}'", pi.replace('\'', "'\\''"));
-        ("pi-launch", format!("#!/bin/sh\nexec {quoted} --approve \"$@\"\n"))
+        (
+            "pi-launch",
+            format!("#!/bin/sh\nexec {quoted} --approve \"$@\"\n"),
+        )
     };
     #[cfg(windows)]
     let (name, script) = (
@@ -910,8 +913,6 @@ fn translate_update(update: SessionUpdate) -> Update {
 mod tests {
     use super::*;
 
-    /// The bridge environment holds only LIBREPAPER_* additions to the given
-    /// environment, and no entry carries a grant value.
     #[test]
     fn pi_acp_is_recognised_wherever_it_sits_in_the_command() {
         assert!(is_pi_acp(&["/some/path/pi-acp".into()]));
@@ -940,12 +941,13 @@ mod tests {
     #[test]
     fn the_launcher_quotes_the_pi_command() {
         let directory = tempfile::tempdir().unwrap();
-        let launcher =
-            prepare_pi(directory.path(), Path::new("/opt/librepaper"), "it's").unwrap();
+        let launcher = prepare_pi(directory.path(), Path::new("/opt/librepaper"), "it's").unwrap();
         let script = std::fs::read_to_string(launcher).unwrap();
         assert!(script.contains("exec 'it'\\''s' --approve"));
     }
 
+    /// The bridge environment holds only LIBREPAPER_* additions to the given
+    /// environment, and no entry carries a grant value.
     #[test]
     fn the_bridge_environment_adds_only_librepaper_variables() {
         let agent = vec![(
