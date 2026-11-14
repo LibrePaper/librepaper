@@ -246,7 +246,7 @@ pub(super) fn refusal(reason: &str, scope: &str) -> Reply {
 /// transfer permit. A signed link (`/api/.../assets/{sha}/link`) does no byte
 /// work, so it is not a transfer path.
 fn transfer_path(path: &str) -> bool {
-    if path.starts_with("/published/") || path.starts_with("/assets/") {
+    if path.starts_with("/assets/") {
         return true;
     }
     path.starts_with("/api/") && path.contains("/assets/") && !path.ends_with("/link")
@@ -1184,7 +1184,7 @@ mod transfer_admission_tests {
     #[test]
     fn transfer_paths_are_the_relayed_ones_and_not_signed_links() {
         assert!(transfer_path("/assets/app.js"));
-        assert!(transfer_path("/published/x"));
+        assert!(!transfer_path("/published/x"));
         let digest = "a".repeat(64);
         assert!(transfer_path(&format!(
             "/api/documents/abc/assets/{digest}"
