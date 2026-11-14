@@ -113,8 +113,16 @@ function assertWellFormed(folds, text) {
   ].join("\n");
   const [front] = markdownFolds(text);
   assert.equal(front.kind, "preamble");
-  assert.equal(front.detail, "T");
+  assert.equal(front.detail, "T · bibliography · format");
   assert.equal(front.others, "bibliography · format");
+}
+
+// A front matter without a title names the keys it hides.
+{
+  const text = ["---", "bibliography: references.bib", "bibliography-style: apa", "---", "", "# Heading", ""].join("\n");
+  const [front] = markdownFolds(text);
+  assert.equal(front.kind, "preamble");
+  assert.equal(front.detail, "bibliography · bibliography-style");
 }
 
 // ---- Org ------------------------------------------------------------------
@@ -131,7 +139,7 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
   const folds = orgFolds(lateHeader);
   assert.equal(folds.length, 1);
   assert.equal(folds[0].kind, "preamble");
-  assert.ok(!folds[0].detail);
+  assert.equal(folds[0].detail, "#+OPTIONS · #+STARTUP");
 }
 
 {
@@ -163,7 +171,7 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
   assert.deepEqual(named, [
     { kind: "preamble", text: "#+TITLE: My Doc", detail: "My Doc" },
     { kind: "include", text: '#+INCLUDE: "chapters/intro.org::*Start"', detail: "chapters/intro.org", target: "chapters/intro.org" },
-    { kind: "preamble", text: "#+AUTHOR: A", detail: "My Doc" },
+    { kind: "preamble", text: "#+AUTHOR: A", detail: "#+AUTHOR" },
     { kind: "definitions", text: ":PROPERTIES:", detail: "PROPERTIES" },
     // A #+NAME: keyword is attached to the table below it, so it no longer folds on its own.
     { kind: "comment", text: "# a comment", detail: "a comment" },
@@ -171,14 +179,14 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
   ]);
 }
 
-// A header with a title is one preamble fold that names its other keywords.
+// A header with a title is one preamble fold that names its title and other keywords.
 {
   const text = ["#+TITLE: Notes", "# draft", "#+AUTHOR: A", "#+OPTIONS: toc:nil", "", "Body text.", ""].join("\n");
   const folds = orgFolds(text);
   assertWellFormed(folds, text);
   assert.equal(folds.length, 1);
   assert.equal(folds[0].kind, "preamble");
-  assert.equal(folds[0].detail, "Notes");
+  assert.equal(folds[0].detail, "Notes · #+OPTIONS");
   assert.equal(folds[0].others, "#+OPTIONS");
   assert.equal(
     text.slice(folds[0].from, folds[0].to),
@@ -192,6 +200,7 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
   const folds = orgFolds(text);
   assertWellFormed(folds, text);
   assert.equal(folds.length, 1);
+  assert.equal(folds[0].detail, "T · #+BIBLIOGRAPHY · #+OPTIONS");
   assert.equal(folds[0].others, "#+BIBLIOGRAPHY · #+OPTIONS");
 }
 
@@ -202,6 +211,7 @@ await loadOrgSyntax(readFileSync(new URL("../../wasm/org.wasm", import.meta.url)
   assertWellFormed(folds, text);
   assert.equal(folds.length, 1);
   assert.equal(folds[0].kind, "preamble");
+  assert.equal(folds[0].detail, "#+OPTIONS · #+STARTUP · #+LATEX_HEADER");
   assert.equal(
     text.slice(folds[0].from, folds[0].to),
     ["#+OPTIONS: toc:nil", "# draft", "#+STARTUP: overview", "#+LATEX_HEADER: \\usepackage{x}"].join("\n"),
