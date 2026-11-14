@@ -7,7 +7,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::{
@@ -490,8 +490,8 @@ impl Drop for Agent {
 /// LIBREPAPER_RUNNER_GRANT_FILE names the private file holding the scoped
 /// grant the bridge must authenticate with. Only the path travels here, never
 /// the grant. An agent that drops the `mcpServers` of `session/new` (pi-acp)
-/// still passes this environment on to a `librepaper mcp` server the user
-/// configured in the agent itself.
+/// still passes this environment on to the `librepaper mcp` server that
+/// `prepare_pi` configures for Pi.
 pub(super) fn bridge_environment(
     environment: &[(String, String)],
     connection: &str,
@@ -514,18 +514,64 @@ pub(super) fn bridge_environment(
     bridge
 }
 
+/// Whether the agent command starts pi-acp, the adapter that drops the
+/// client's MCP servers.
+fn is_pi_acp(command: &[String]) -> bool {
+    command.iter().any(|part| {
+        Path::new(part)
+            .file_stem()
+            .is_some_and(|name| name == "pi-acp")
+    })
+}
+
+/// pi-acp never hands the client's MCP servers to Pi, so the document tools
+/// reach Pi another way: Pi reads `.pi/mcp.json` in its working directory,
+/// but only in a project it trusts. The session directory is the app's own,
+/// so this writes the server there and returns a launcher that starts Pi
+/// with `--approve`, for pi-acp to run through `PI_ACP_PI_COMMAND`.
+fn prepare_pi(directory: &Path, executable: &Path, pi: &str) -> Result<PathBuf, String> {
+    let fail = |error: std::io::Error| format!("could not prepare Pi's document tools: {error}");
+    let pi_directory = directory.join(".pi");
+    std::fs::create_dir_all(&pi_directory).map_err(fail)?;
+    let config = serde_json::json!({
+        "mcpServers": {
+            "librepaper": {
+                "command": executable.to_string_lossy(),
+                "args": ["mcp"],
+                "exposure": "direct",
+            }
+        }
+    });
+    std::fs::write(pi_directory.join("mcp.json"), config.to_string()).map_err(fail)?;
+
+    #[cfg(unix)]
+    let (name, script) = {
+        let quoted = format!("'{}'", pi.replace('\'', "'\\''"));
+        ("pi-launch", format!("#!/bin/sh\nexec {quoted} --approve \"$@\"\n"))
+    };
+    #[cfg(windows)]
+    let (name, script) = (
+        "pi-launch.cmd",
+        format!("@echo off\r\n\"{pi}\" --approve %*\r\n"),
+    );
+    let launcher = directory.join(name);
+    std::fs::write(&launcher, script).map_err(fail)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700))
+            .map_err(fail)?;
+    }
+    Ok(launcher)
+}
+
 /// An agent that answers `session/new` with an authentication error needs its
 /// own login. Say which one, and keep the agent's message.
 fn login_hint(error: &str, command: &[String]) -> String {
     if !error.to_lowercase().contains("authentication") {
         return error.to_string();
     }
-    let is_pi = command.iter().any(|part| {
-        Path::new(part)
-            .file_stem()
-            .is_some_and(|name| name == "pi-acp")
-    });
-    let step = if is_pi {
+    let step = if is_pi_acp(command) {
         "run `pi` in a terminal and type /login"
     } else {
         "log in with the agent's own login command"
@@ -561,6 +607,14 @@ impl Agent {
         let bridge = bridge_environment(environment, connection, state_home, grant_file);
         for (name, value) in &bridge {
             config = config.env(name, value);
+        }
+        if is_pi_acp(command) {
+            let pi = std::env::var("PI_ACP_PI_COMMAND")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "pi".into());
+            let launcher = prepare_pi(directory, executable, &pi)?;
+            config = config.env("PI_ACP_PI_COMMAND", launcher.to_string_lossy());
         }
         // ACP carries the authoritative cwd on session/new. PWD also keeps
         // agents that consult the conventional environment aligned with it.
@@ -858,6 +912,40 @@ mod tests {
 
     /// The bridge environment holds only LIBREPAPER_* additions to the given
     /// environment, and no entry carries a grant value.
+    #[test]
+    fn pi_acp_is_recognised_wherever_it_sits_in_the_command() {
+        assert!(is_pi_acp(&["/some/path/pi-acp".into()]));
+        assert!(is_pi_acp(&["npx".into(), "-y".into(), "pi-acp".into()]));
+        assert!(!is_pi_acp(&["opencode".into(), "acp".into()]));
+    }
+
+    #[test]
+    fn pi_is_configured_with_the_document_server_and_a_launcher() {
+        let directory = tempfile::tempdir().unwrap();
+        let launcher = prepare_pi(directory.path(), Path::new("/opt/librepaper"), "pi").unwrap();
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(directory.path().join(".pi").join("mcp.json")).unwrap(),
+        )
+        .unwrap();
+        let server = &config["mcpServers"]["librepaper"];
+        assert_eq!(server["command"], "/opt/librepaper");
+        assert_eq!(server["args"], serde_json::json!(["mcp"]));
+        assert_eq!(server["exposure"], "direct");
+        assert!(std::fs::read_to_string(&launcher)
+            .unwrap()
+            .contains("--approve"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_launcher_quotes_the_pi_command() {
+        let directory = tempfile::tempdir().unwrap();
+        let launcher =
+            prepare_pi(directory.path(), Path::new("/opt/librepaper"), "it's").unwrap();
+        let script = std::fs::read_to_string(launcher).unwrap();
+        assert!(script.contains("exec 'it'\\''s' --approve"));
+    }
+
     #[test]
     fn the_bridge_environment_adds_only_librepaper_variables() {
         let agent = vec![(

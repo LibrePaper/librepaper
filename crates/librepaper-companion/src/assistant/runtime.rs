@@ -380,7 +380,7 @@ fn bridge_timeout_message(agent: &[String]) -> String {
         .collect();
     let base = "agent session started, but its document bridge did not discover the required LibrePaper tools within 25 seconds";
     match () {
-        _ if names.contains(&"pi-acp") => format!("{base}. Install pi-mcp-adapter and add the librepaper server to ~/.config/mcp/mcp.json (see the Agents docs)"),
+        _ if names.contains(&"pi-acp") => format!("{base}. Pi reads the document tools through its built-in MCP support: update Pi (`pi update`), then start the assistant again"),
         _ if names.contains(&"opencode") => format!("{base}. Check that opencode has a provider configured (opencode auth login) and see its log in ~/.local/share/opencode/log"),
         _ => base.into(),
     }

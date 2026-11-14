@@ -89,23 +89,13 @@ npm install -g @agentclientprotocol/codex-acp
 
 ### Pi
 
-Pi needs an extension to reach the document tools.
-
 ```sh
-# Install the extension
-pi install npm:pi-mcp-adapter
 # Log in to a model provider: start pi, then type /login
 pi
 ```
 
-Then add this entry to `~/.config/mcp/mcp.json`:
-
-```json
-{ "mcpServers": { "librepaper": { "command": "librepaper", "args": ["mcp"], "lifecycle": "keep-alive", "directTools": true } } }
-```
-
-- Use this global file. Pi ignores project files when LibrePaper starts it.
-- With the macOS `.dmg`, set `command` to `/Applications/LibrePaper.app/Contents/MacOS/librepaper`, because the `.dmg` does not put `librepaper` on your PATH.
+- LibrePaper hands Pi the document tools itself. This needs a Pi with built-in MCP support; run `pi update` if the agent reports that it found no LibrePaper tools.
+- If you added a `librepaper` entry to `~/.config/mcp/mcp.json` for an earlier version, remove it.
 
 ### opencode
 
