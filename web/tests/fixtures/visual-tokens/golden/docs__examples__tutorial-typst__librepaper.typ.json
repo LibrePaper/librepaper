@@ -426,60 +426,60 @@
   {
     "from": 1632,
     "kind": "text",
-    "to": 2052
+    "to": 2096
   },
   {
     "args": [
       {
-        "from": 2066,
-        "to": 2082
+        "from": 2110,
+        "to": 2126
       }
     ],
     "body": {
-      "from": 2066,
-      "to": 2127
+      "from": 2110,
+      "to": 2171
     },
     "children": [
       {
         "body": {
-          "from": 2067,
-          "to": 2081
+          "from": 2111,
+          "to": 2125
         },
-        "from": 2066,
+        "from": 2110,
         "kind": "raw",
         "name": "string",
-        "to": 2082
+        "to": 2126
       },
       {
-        "from": 2082,
+        "from": 2126,
         "kind": "raw",
         "name": "separator",
-        "to": 2084
+        "to": 2128
       },
       {
-        "from": 2084,
+        "from": 2128,
         "kind": "raw",
         "name": "argument",
-        "to": 2090
+        "to": 2134
       },
       {
-        "from": 2090,
+        "from": 2134,
         "kind": "raw",
         "name": "separator",
-        "to": 2091
+        "to": 2135
       },
       {
         "body": {
-          "from": 2092,
-          "to": 2126
+          "from": 2136,
+          "to": 2170
         },
-        "from": 2091,
+        "from": 2135,
         "kind": "raw",
         "name": "string",
-        "to": 2127
+        "to": 2171
       }
     ],
-    "from": 2052,
+    "from": 2096,
     "kind": "command",
     "meta": {
       "arg:style": "\"american-psychological-association\"",
@@ -489,15 +489,15 @@
     "name": "bibliography",
     "named": {
       "style": {
-        "from": 2091,
-        "to": 2127
+        "from": 2135,
+        "to": 2171
       }
     },
-    "to": 2128
+    "to": 2172
   },
   {
-    "from": 2128,
+    "from": 2172,
     "kind": "text",
-    "to": 2129
+    "to": 2173
   }
 ]
