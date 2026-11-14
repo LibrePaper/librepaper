@@ -68,7 +68,7 @@ function page(overrides = {}) {
     chooseEditCommand: (id) => calls.push(["edit", id]),
     chooseViewCommand: (id) => calls.push(["view", id]),
     toggleLocalExecution: () => calls.push(["toggle"]),
-    runQuarto: () => calls.push(["run-quarto"]),
+    runNow: () => calls.push(["run-now"]),
     stopRun: () => calls.push(["stop-run"]),
     openSettings: () => calls.push(["settings"]),
     runCommand: (id) => calls.push(["run", id]),
@@ -232,7 +232,7 @@ function page(overrides = {}) {
   assert.deepEqual(ids(phone.commandGroups), ["undo"]);
   state.mobileCommand = "view";
   assert.ok(ids(phone.commandGroups).includes("run-code"));
-  assert.ok(!ids(phone.commandGroups).includes("run-quarto"));
+  assert.ok(!ids(phone.commandGroups).includes("run-now"));
   assert.equal(phone.outputFormat, "pdf");
   assert.equal(phone.outputSelectable, true);
   state.mobileCommand = "insert";
@@ -266,8 +266,8 @@ function page(overrides = {}) {
   phone.chooseCommand("run-code");
   assert.deepEqual(calls.at(-1), ["toggle"]);
   assert.equal(state.mobileCommand, "view", "a toggle keeps the list open");
-  phone.chooseCommand("run-quarto");
-  assert.deepEqual(calls.at(-1), ["run-quarto"]);
+  phone.chooseCommand("run-now");
+  assert.deepEqual(calls.at(-1), ["run-now"]);
   assert.equal(state.mobileCommand, "", "Run closes the list");
   phone.openCommand("view");
   phone.chooseCommand("outline");

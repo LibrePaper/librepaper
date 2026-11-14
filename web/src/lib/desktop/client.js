@@ -501,7 +501,7 @@ async function fetchVerifiedOutput(id, name, status) {
 /** The outputs each format has a command for on this computer. */
 export const LOCAL_OUTPUTS = Object.freeze({
   latex: Object.freeze(["pdf"]),
-  typst: Object.freeze(["pdf"]),
+  typst: Object.freeze(["pdf", "html"]),
   markdown: Object.freeze(["html", "pdf", "docx"]),
   quarto: Object.freeze(["html", "pdf", "docx"]),
 });
@@ -511,7 +511,8 @@ export const rendererKey = (format, output) => `${format}.${output}`;
 
 /** Render one document with the command the desktop app holds for its
  * format and output. The page sends a job and never a command. Resolves with
- * the result file, the SyncTeX file when the tool wrote one, and the log.
+ * the result file, the SyncTeX file when the tool wrote one, the files a
+ * Calepin run stored when there are any, and the log.
  * @param {{ job?: DesktopJob, tree: DesktopTree, format: string, output: string, entrypoint?: string }} input
  * @param {BuildCallbacks} [callbacks] */
 export async function runRender({ job = {}, tree, format, output, entrypoint = "" }, { signal, onProgress } = {}) {
@@ -540,12 +541,14 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
   const { id, status } = finished;
   const artifact = await fetchVerifiedOutput(id, "artifact", status);
   const synctex = await fetchVerifiedOutput(id, "synctex", status);
+  const results = await fetchVerifiedOutput(id, "results", status);
   const log = await fetchVerifiedOutput(id, "log", status);
   onProgress?.({ done: 1, total: 1, scope });
   return {
     ok: status.status === "done" && status.exit === 0 && artifact != null,
     artifact,
     synctex,
+    results,
     log: log ? new TextDecoder().decode(log) : "",
     exit: status.exit,
     error: status.error,
