@@ -256,7 +256,7 @@
   import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
-  import { projectDirectory, projectPaths } from "../lib/projection.js";
+  import { projectDirectory } from "../lib/projection.js";
   import { openingFile, resolveInclude } from "../lib/opening.js";
   import { toLf, healLineEndings, LINE_ENDINGS_ORIGIN } from "../lib/line-endings.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
@@ -1801,16 +1801,18 @@
     return text?.kind?.() === "Text" ? text : null;
   }
 
+  // Both read the cached directory from treeForDoc, so a keystroke does not
+  // sort and walk every file of the project to find one path.
   function pathOfDoc(doc, id) {
     if (!doc || !id) return "";
-    for (const [path, file] of projectPaths(doc, rules ?? null).files) {
+    for (const [path, file] of Object.entries(treeForDoc(doc).files)) {
       if (file.kind === "text" && file.id === id) return path;
     }
     return "";
   }
   function textIdForPath(doc, path) {
     if (!doc || !path) return "";
-    const file = projectPaths(doc, rules ?? null).files.get(path);
+    const file = treeForDoc(doc).files[path];
     return file?.kind === "text" ? file.id : "";
   }
   // Project facts for completion sources. The format comes from the edited
@@ -1857,7 +1859,13 @@
       },
     };
   }
+  // The project directory as the editor reads it. For the session's own doc
+  // this is session.tree(), which caches the projection by the document's
+  // version and its rules, so the several refreshes that follow one edit share
+  // one build. Its top-level maps are fresh per call and its texts are strings,
+  // so callers may read them freely. Any other doc is projected directly.
   function treeForDoc(doc) {
+    if (session && doc === session.doc) return session.tree();
     const projection = projectDirectory(doc, rules ?? null);
     const texts = Object.create(null), files = Object.create(null), digests = Object.create(null);
     for (const [path, file] of projection.files) {
