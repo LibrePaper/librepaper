@@ -437,3 +437,42 @@ async fn the_storage_status_counts_shared_results() {
         before["usage"]["chargedBytes"]
     );
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_cell_from_an_included_file_keeps_its_path() {
+    let Some(deployment) = deployment("results-cell-path").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let mut included = record();
+    included["cells"][1]["path"] = json!("sections/part.qmd");
+    let (status, put) = served.call("PUT", &owner, Some(included.to_string())).await;
+    assert_eq!(status, 200, "{put}");
+
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert_eq!(got["cells"][1]["path"], "sections/part.qmd");
+    assert!(got["cells"][0].get("path").is_none(), "{got}");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_unsafe_cell_path_is_refused() {
+    let Some(deployment) = deployment("results-cell-path-invalid").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    for path in ["../part.qmd", "/etc/passwd", ""] {
+        let mut body = record();
+        body["cells"][1]["path"] = json!(path);
+        let (status, _) = served.call("PUT", &owner, Some(body.to_string())).await;
+        assert_eq!(status, 400, "cell path {path:?}");
+    }
+    let (status, _) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 404, "nothing was stored");
+}

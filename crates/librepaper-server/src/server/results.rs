@@ -32,12 +32,15 @@ struct ResultsRecord {
     files: Vec<ResultsFile>,
 }
 
+/// A cell from a file pulled in with `{{< include >}}` names that file in `path`.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ResultsCell {
     fingerprint: String,
     label: Option<String>,
     html: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -94,6 +97,14 @@ fn validate_cells(cells: &[ResultsCell]) -> Result<(), &'static str> {
             .is_some_and(|l| l.len() > MAX_LABEL_BYTES)
         {
             return Err("a cell label is too long");
+        }
+        if let Some(path) = &cell.path {
+            if path.is_empty()
+                || path.len() > MAX_PATH_BYTES
+                || !librepaper_base::paths::RelPath::is_local(path)
+            {
+                return Err("a cell path must be a safe relative path");
+            }
         }
     }
     Ok(())
