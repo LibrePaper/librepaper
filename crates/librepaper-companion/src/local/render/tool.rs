@@ -174,20 +174,19 @@ const DEFAULTS: &[(Format, Output, &[&str], &str)] = &[
         ],
         "{stem}.pdf",
     ),
+    // Calepin runs the code chunks of a `.typ` file and leaves its stored
+    // results in `.calepin/` beside the document.
     (
         Format::Typst,
         Output::Pdf,
-        &[
-            "typst",
-            "compile",
-            "--root",
-            ".",
-            "--font-path",
-            ".",
-            "{input}",
-            "{stem}.pdf",
-        ],
+        &["calepin", "compile", "{input}", "--format", "pdf"],
         "{stem}.pdf",
+    ),
+    (
+        Format::Typst,
+        Output::Html,
+        &["calepin", "compile", "{input}", "--format", "html"],
+        "{stem}.html",
     ),
     (Format::Quarto, Output::Html, QUARTO_HTML, "{stem}.html"),
     (Format::Quarto, Output::Pdf, QUARTO_PDF, "{stem}.pdf"),
@@ -339,7 +338,7 @@ mod tests {
     fn a_pair_with_no_record_is_refused() {
         assert!(Key::parse("latex.html").is_err());
         assert!(Key::parse("latex.docx").is_err());
-        assert!(Key::parse("typst.html").is_err());
+        Key::parse("typst.html").unwrap();
         assert!(Key::parse_parts("typst", "docx").is_err());
         Key::parse_parts("markdown", "docx").unwrap();
     }
@@ -352,6 +351,7 @@ mod tests {
             [
                 "latex.pdf",
                 "typst.pdf",
+                "typst.html",
                 "markdown.pdf",
                 "markdown.html",
                 "markdown.docx",
@@ -377,17 +377,15 @@ mod tests {
         let typst = default_record(Key::parse("typst.pdf").unwrap()).unwrap();
         assert_eq!(
             typst.command,
-            [
-                "typst",
-                "compile",
-                "--root",
-                ".",
-                "--font-path",
-                ".",
-                "{input}",
-                "{stem}.pdf"
-            ]
+            ["calepin", "compile", "{input}", "--format", "pdf"]
         );
+        assert_eq!(typst.result, "{stem}.pdf");
+        let typst_html = default_record(Key::parse("typst.html").unwrap()).unwrap();
+        assert_eq!(
+            typst_html.command,
+            ["calepin", "compile", "{input}", "--format", "html"]
+        );
+        assert_eq!(typst_html.result, "{stem}.html");
         let html = default_record(Key::parse("quarto.html").unwrap()).unwrap();
         assert_eq!(
             html.command,
@@ -430,7 +428,8 @@ mod tests {
             .unwrap()
             .expand("paper.typ")
             .unwrap();
-        assert_eq!(&typst.command[6..], ["paper.typ", "paper.pdf"]);
+        assert_eq!(&typst.command[2..], ["paper.typ", "--format", "pdf"]);
+        assert_eq!(typst.result, "paper.pdf");
     }
 
     #[test]
