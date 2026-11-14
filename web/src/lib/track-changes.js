@@ -472,6 +472,85 @@ export function resolveFile(doc, fileId) {
   return { changes: out, gaps, orphans: fragments.filter((f) => !known.has(f.change)) };
 }
 
+// A file's resolved state is a pure function of the document version, and
+// resolving it costs time in proportion to the document's edit history, so it
+// is kept per document and file, tagged with the version it was read at.
+// `opCount` moves with every op, pending ones included. Whoever moves the
+// version either hands over the exact new state (`adoptResolved`) or the next
+// read finds the tag behind and resolves again. Callers get the cached object
+// itself and must not change it.
+/** @type {WeakMap<object, Map<string, { clock: number, state: any }>>} */
+const resolvedCache = new WeakMap();
+
+/**
+ * `resolveFile`, read at most once per document version. The result is shared:
+ * treat it as read-only.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} fileId
+ * @returns {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans: OrphanFragment[] }}
+ */
+export function resolveFileCached(doc, fileId) {
+  const clock = doc.opCount();
+  const entry = resolvedCache.get(doc)?.get(fileId);
+  if (entry && entry.clock === clock) return entry.state;
+  const state = resolveFile(doc, fileId);
+  adoptAt(doc, fileId, clock, state);
+  return state;
+}
+
+function adoptAt(doc, fileId, clock, state) {
+  let files = resolvedCache.get(doc);
+  if (!files) resolvedCache.set(doc, (files = new Map()));
+  files.set(fileId, { clock, state });
+}
+
+/**
+ * Stores a state the caller derived for the document's current version, so the
+ * next read of it costs nothing. The caller vouches that it equals what
+ * `resolveFile` would return now.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} fileId
+ * @param {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans?: OrphanFragment[] }} state
+ */
+export function adoptResolved(doc, fileId, state) {
+  adoptAt(doc, fileId, doc.opCount(), { ...state, orphans: state.orphans ?? [] });
+}
+
+/**
+ * The state after edits that touch no change span and no gap: everything after
+ * an edit only moves. Returns null when an edit touches a span or a gap, which
+ * is for `planEdits` to settle. The edits are those of one transaction, in the
+ * coordinates before it, in order.
+ *
+ * @param {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans?: OrphanFragment[] }} state
+ * @param {Edit[]} edits
+ */
+export function shiftResolved(state, edits) {
+  const cuts = [];
+  for (const e of edits) {
+    for (const c of state.changes) {
+      if (c.to > c.from ? c.from <= e.to && c.to >= e.from : c.from >= e.from && c.from <= e.to) return null;
+    }
+    for (const g of state.gaps) if (g.at >= e.from && g.at <= e.to) return null;
+    cuts.push([e.to, e.insert.length - (e.to - e.from)]);
+  }
+  const map = (p) => {
+    let d = 0;
+    for (const [to, delta] of cuts) if (p > to) d += delta;
+    return p + d;
+  };
+  return {
+    changes: state.changes.map((c) => ({ ...c, from: map(c.from), to: map(c.to) })),
+    gaps: state.gaps.map((g) => {
+      const at = map(g.at);
+      return { ...g, id: `gap@${at}`, at };
+    }),
+    orphans: state.orphans ?? [],
+  };
+}
+
 // The plain-value records of the earlier model in one file, by id.
 function legacyRecords(doc, fileId) {
   /** @type {Map<string, any>} */
@@ -597,7 +676,7 @@ function deletedOf(gaps, id) {
  * @returns {Row[]}
  */
 export function resolveChanges(doc, fileId) {
-  const { changes, gaps } = resolveFile(doc, fileId);
+  const { changes, gaps } = resolveFileCached(doc, fileId);
   return changes.map(({ stale, hasCursor, legacy, ...c }) => ({ ...c, deleted: deletedOf(gaps, c.id) }));
 }
 
@@ -1088,6 +1167,7 @@ export function rejectMany(doc, ids) {
  */
 export function prune(doc, now = Date.now()) {
   const map = doc.getMap(CHANGES);
+  const clock = doc.opCount();
   let count = 0;
   const files = new Set();
   for (const [, v] of map.entries()) { const file = v instanceof loroClasses.LoroMap ? v.get("file") : /** @type {any} */ (v)?.file; if (typeof file === "string") files.add(file); }
@@ -1134,8 +1214,23 @@ export function prune(doc, now = Date.now()) {
     for (const c of changes) {
       if (c.orphan) continue;
       if (!c.stale) { unmark(c.id); continue; }
-      if (c.to > c.from && staleSettled(c.id) && writeChange(doc, text, file, c, true)) unmark(c.id);
+      if (c.to > c.from) {
+        if (staleSettled(c.id) && writeChange(doc, text, file, c, true)) unmark(c.id);
+        continue;
+      }
+      // A change whose span is gone but which still owns fragments has no live
+      // text to re-anchor to, and its cursors would stay stale for good, each
+      // read replaying history for them. Without cursors it reads at its first
+      // gap (`resolveFile`), which is where it is shown anyway.
+      if (c.hasCursor && staleSettled(c.id)) {
+        const v = map.get(c.id);
+        if (v instanceof loroClasses.LoroMap) { v.delete("start"); v.delete("end"); unmark(c.id); }
+      }
     }
   }
+  // A prune that wrote moved the version, and what it wrote can move what
+  // resolves, so the cache tags already stop matching; dropping them frees the
+  // old states. A prune that wrote nothing leaves them valid.
+  if (doc.opCount() !== clock) resolvedCache.delete(doc);
   return count;
 }

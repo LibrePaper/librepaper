@@ -17,6 +17,7 @@ import { Cursor, LoroDoc, LoroMap, LoroText } from "loro-crdt";
 import {
   CHANGES,
   accept,
+  adoptResolved,
   listChanges,
   planEdits,
   prune,
@@ -26,6 +27,8 @@ import {
   rejectRestoring,
   resolveChanges,
   resolveFile,
+  resolveFileCached,
+  shiftResolved,
   trackedSplice,
   untrackedSplice,
   writePlanned,
@@ -1428,6 +1431,130 @@ twoPeers("touching");
   const rows = listChanges(doc);
   assert.deepEqual(rows.map((r) => [r.file, r.who, r.deleted, r.inserted]), [["f1", "alice", "c", ""]]);
   assert.equal([...doc.getMap(CHANGES).values()].every((v) => !(v instanceof LoroMap)), true);
+}
+
+// ---------------------------------------------------------------------------
+// The resolved state is cached per document version
+
+const shape = (s) => JSON.stringify({
+  changes: s.changes.map((c) => [c.id, c.from, c.to]),
+  gaps: s.gaps.map((g) => [g.at, g.fragments.map((f) => [f.id, f.change, f.text, f.rank])]),
+});
+
+// The state the editor reaches after an untracked edit, whichever way it takes:
+// shifted when the edit touches no record, else planned, written and read back.
+function untrackedKeystroke(doc, edit) {
+  const text = doc.getMap("files").get("f1");
+  const snapshot = resolveFileCached(doc, "f1");
+  const before = text.toString();
+  if (edit.to > edit.from) text.delete(edit.from, edit.to - edit.from);
+  if (edit.insert) text.insert(edit.from, edit.insert);
+  const shifted = shiftResolved(snapshot, [edit]);
+  if (shifted) {
+    adoptResolved(doc, "f1", shifted);
+    return true;
+  }
+  const plan = planEdits(before, snapshot, [edit], { who: "", author: "" }, { now: Date.now(), mintId: () => crypto.randomUUID(), untracked: true });
+  writePlanned(doc, "f1", plan);
+  return false;
+}
+
+// Randomized: after 200 untracked edits, many of them at record boundaries, the
+// cached state equals a fresh resolve every time.
+{
+  const rng = random(9);
+  const doc = makeDoc("the quick brown fox jumps over the lazy dog ".repeat(40), 1);
+  for (let i = 0; i < 60; i++) {
+    const at = 10 + i * 25 + (i % 7);
+    if (i % 2) track(doc, at, at + 6, "", BOB);
+    else track(doc, at, at, "new", ME);
+  }
+  let shiftedCount = 0;
+  for (let i = 0; i < 200; i++) {
+    const state = resolveFileCached(doc, "f1");
+    const len = doc.getMap("files").get("f1").length;
+    let from;
+    if (rng.rnd() < 0.5 && state.changes.length) {
+      const c = state.changes[rng.pick(state.changes.length)];
+      from = [c.from, c.to, c.from - 1, c.to + 1, c.from + 1][rng.pick(5)];
+    } else from = rng.pick(len);
+    from = Math.max(0, Math.min(len - 10, from));
+    const del = rng.rnd() < 0.4 ? rng.pick(6) : 0;
+    const insert = rng.rnd() < 0.7 ? "xyz".slice(0, 1 + rng.pick(3)) : "";
+    if (!del && !insert) continue;
+    if (untrackedKeystroke(doc, { from, to: from + del, insert })) shiftedCount += 1;
+    doc.commit();
+    assert.equal(shape(resolveFileCached(doc, "f1")), shape(resolveFile(doc, "f1")), `edit ${i} at ${from}`);
+  }
+  assert.ok(shiftedCount > 20, `the shift path ran ${shiftedCount} times`);
+}
+
+// A change imported from another document moves the version, so the cached
+// state is not served for it.
+{
+  const a = makeDoc("hello world again", 1);
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  track(a, 6, 11, "", ME);
+  const first = resolveFileCached(a, "f1");
+  assert.equal(resolveFileCached(a, "f1"), first);
+  track(b, 0, 0, "oh ", BOB);
+  a.import(b.export({ mode: "update" }));
+  const second = resolveFileCached(a, "f1");
+  assert.notEqual(second, first);
+  assert.equal(shape(second), shape(resolveFile(a, "f1")));
+}
+
+// shiftResolved gives up on an edit that touches a span or a gap, and moves
+// whatever lies after an edit that does not.
+{
+  const doc = makeDoc("0123456789abcdefghij", 1);
+  track(doc, 10, 10, "NEW", ME);
+  track(doc, 3, 5, "", BOB);
+  const state = resolveFile(doc, "f1");
+  const [gap] = state.gaps;
+  const [span] = state.changes.filter((c) => c.to > c.from);
+  assert.equal(shiftResolved(state, [{ from: span.from + 1, to: span.from + 1, insert: "q" }]), null);
+  assert.equal(shiftResolved(state, [{ from: span.to, to: span.to, insert: "q" }]), null);
+  assert.equal(shiftResolved(state, [{ from: gap.at, to: gap.at, insert: "q" }]), null);
+  assert.equal(shiftResolved(state, [{ from: gap.at - 1, to: gap.at, insert: "" }]), null);
+  const moved = shiftResolved(state, [{ from: 0, to: 0, insert: "ab" }]);
+  assert.equal(moved.gaps[0].at, gap.at + 2);
+  assert.equal(moved.gaps[0].id, `gap@${gap.at + 2}`);
+  const movedSpan = moved.changes.find((c) => c.id === span.id);
+  assert.deepEqual([movedSpan.from, movedSpan.to], [span.from + 2, span.to + 2]);
+  const between = shiftResolved(state, [{ from: gap.at + 2, to: gap.at + 4, insert: "" }]);
+  assert.equal(between.gaps[0].at, gap.at);
+  assert.equal(between.changes.find((c) => c.id === span.id).from, span.from - 2);
+}
+
+// A change whose span was deleted again keeps only its fragment. Its cursors
+// stay stale, and once the mark has rested prune drops them: the row is read at
+// its gap from then on and nothing is stale.
+{
+  const doc = makeDoc("the quick brown fox", 1);
+  track(doc, 4, 9, "", ME);
+  track(doc, 4, 4, "slow", ME);
+  const inserted = resolveFile(doc, "f1").changes.find((c) => c.to > c.from);
+  track(doc, inserted.from, inserted.to, "", ME);
+  const id = inserted.id;
+  const now = Date.now();
+  assert.equal(resolveFile(doc, "f1").changes.some((c) => c.id === id), true);
+  prune(doc, now);
+  doc.commit();
+  prune(doc, now + 120_000);
+  doc.commit();
+  const record = doc.getMap(CHANGES).get(id);
+  assert.equal(record.get("start") instanceof Uint8Array, false);
+  assert.equal(record.get("end") instanceof Uint8Array, false);
+  const after = resolveFile(doc, "f1");
+  const row = after.changes.find((c) => c.id === id);
+  assert.ok(row, "the row is still listed");
+  assert.equal(row.from, after.gaps[0].at);
+  assert.equal(row.to, row.from);
+  assert.equal(after.changes.some((c) => c.stale) || after.gaps.some((g) => g.stale), false);
+  assert.equal(record.get("stale"), undefined);
 }
 
 console.log("track-changes: ok");

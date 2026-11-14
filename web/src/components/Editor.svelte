@@ -253,7 +253,7 @@
   import { commentMarks, setCommentMarks as setCommentMarksEffect } from "../lib/source-comment-marks.js";
   import { authorshipRuns, summarize, markSpans } from "../lib/authorship.js";
   import { authorshipMarks, setAuthorshipMarks } from "../lib/authorship-marks.js";
-  import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, planEdits, writePlanned, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory, projectPaths } from "../lib/projection.js";
@@ -371,7 +371,7 @@
     } else drawnEmpty = null;
     view.dispatch({
       effects: setChangeMarks.of({
-        ...resolveFile(session.doc, showing),
+        ...resolveFileCached(session.doc, showing),
         me,
         selected: selectedChange,
       }),
@@ -459,6 +459,43 @@
   /// nothing and changes no text, but pending spans shrink, move or split
   /// around it, and the gaps it collapses merge in order. With no records in
   /// the document, nothing is planned.
+  // Prune tidies records that have rested; it need not run on a keystroke. It
+  // runs a few seconds after the last local edit, and at most about every 30
+  // seconds of continuous typing, when the browser is idle.
+  const PRUNE_QUIET_MS = 4000;
+  const PRUNE_MAX_WAIT_MS = 30000;
+  let pruneTimer = null;
+  let pruneIdle = null;
+  let pruneWaitingSince = 0;
+  function scheduleIdlePrune() {
+    const now = Date.now();
+    if (!pruneWaitingSince) pruneWaitingSince = now;
+    clearTimeout(pruneTimer);
+    pruneTimer = setTimeout(runIdlePrune, Math.max(0, Math.min(PRUNE_QUIET_MS, pruneWaitingSince + PRUNE_MAX_WAIT_MS - now)));
+  }
+  function runIdlePrune() {
+    pruneTimer = null;
+    pruneWaitingSince = 0;
+    const run = () => {
+      pruneIdle = null;
+      const doc = session?.doc;
+      if (!doc || !doc.getMap(CHANGES).size) return;
+      prune(doc);
+      doc.commit();
+    };
+    pruneIdle = typeof globalThis.requestIdleCallback === "function"
+      ? { idle: globalThis.requestIdleCallback(run, { timeout: 5000 }) }
+      : { timer: setTimeout(run, 0) };
+  }
+  function cancelIdlePrune() {
+    clearTimeout(pruneTimer);
+    pruneTimer = null;
+    pruneWaitingSince = 0;
+    if (pruneIdle?.idle !== undefined) globalThis.cancelIdleCallback?.(pruneIdle.idle);
+    if (pruneIdle?.timer !== undefined) clearTimeout(pruneIdle.timer);
+    pruneIdle = null;
+  }
+
   function trackChanges(fileId) {
     /** @type {{changes: any[], gaps: any[]}} */
     let snapshot = { changes: [], gaps: [] };
@@ -472,7 +509,7 @@
       const doc = session.doc;
       return {
         update(update) {
-          if (isLocal(update) && doc.getMap(CHANGES).size) snapshot = resolveFile(doc, fileId);
+          if (isLocal(update) && doc.getMap(CHANGES).size) snapshot = resolveFileCached(doc, fileId);
         },
       };
     });
@@ -489,7 +526,26 @@
           let state = snapshot;
           const touched = new Set();
           const now = Date.now();
-          if (tracked || snapshot.changes.length || snapshot.gaps.length) {
+          // An untracked edit that touches no span and no gap only moves what
+          // lies after it, so the resolved state is shifted instead of planned,
+          // written and read back. The text is already in the LoroText, so the
+          // version it is stored under is the one after the edit.
+          let shifted = null;
+          if (!tracked && (snapshot.changes.length || snapshot.gaps.length)
+            && update.transactions.every((transaction) => !transaction.docChanged || transaction.annotation(loroSyncAnnotation) === undefined)) {
+            shifted = snapshot;
+            for (const transaction of update.transactions) {
+              if (!transaction.docChanged) continue;
+              const edits = [];
+              transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
+                edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
+              });
+              shifted = shiftResolved(shifted, edits);
+              if (!shifted) break;
+            }
+            if (shifted) adoptResolved(doc, fileId, shifted);
+          }
+          if (!shifted && (tracked || snapshot.changes.length || snapshot.gaps.length)) {
             for (const transaction of update.transactions) {
               if (!transaction.docChanged || transaction.annotation(loroSyncAnnotation) !== undefined) continue;
               const edits = [];
@@ -532,10 +588,11 @@
               // position order and fragments in rank order, which is document
               // order.
               const known = new Set(snapshot.gaps.flatMap((gap) => gap.fragments.map((f) => f.id)));
-              created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
+              created = resolveFileCached(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
             }
           }
-          if (doc.getMap(CHANGES).size) prune(doc);
+          // Pruning resolves every file, so it waits for a pause in typing.
+          if (doc.getMap(CHANGES).size) scheduleIdlePrune();
           doc.commit();
           snapshot = { changes: [], gaps: [] };
         },
@@ -2057,6 +2114,7 @@
         clearTimeout(factsTimer);
         clearTimeout(indexTimer);
         clearTimeout(authorshipTimer);
+        cancelIdlePrune();
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         unsubscribeChanges();
         unsubscribeMode();
