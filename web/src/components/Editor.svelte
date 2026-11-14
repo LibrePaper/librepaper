@@ -253,7 +253,7 @@
   import { commentMarks, setCommentMarks as setCommentMarksEffect } from "../lib/source-comment-marks.js";
   import { authorshipRuns, summarize, markSpans } from "../lib/authorship.js";
   import { authorshipMarks, setAuthorshipMarks } from "../lib/authorship-marks.js";
-  import { CHANGES, planEdits, writePlanned, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, PRUNE_ORIGIN, planEdits, writePlanned, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory, projectPaths } from "../lib/projection.js";
@@ -481,7 +481,9 @@
       const doc = session?.doc;
       if (!doc || !doc.getMap(CHANGES).size) return;
       prune(doc);
-      doc.commit();
+      // Under its own origin, so undo leaves the tidying out (see the
+      // UndoManager below) and the view does not reconcile for it.
+      doc.commit({ origin: PRUNE_ORIGIN });
     };
     pruneIdle = typeof globalThis.requestIdleCallback === "function"
       ? { idle: globalThis.requestIdleCallback(run, { timeout: 5000 }) }
@@ -1556,8 +1558,9 @@
     if (undoManagerDoc !== bound) {
       // The comment anchors are not undone either: their commits are labelled
       // ANCHORS_ORIGIN and follow the text back as undo and redo move it. The
-      // line-ending heal is not undone either.
-      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN, ANCHORS_ORIGIN, LINE_ENDINGS_ORIGIN] });
+      // line-ending heal is not undone either, and nor is the idle prune of
+      // tracked-change records, which runs apart from any keystroke.
+      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN, ANCHORS_ORIGIN, LINE_ENDINGS_ORIGIN, PRUNE_ORIGIN] });
       undoManagerDoc = bound;
     }
     const manager = undoManager;
@@ -2096,7 +2099,7 @@
         if (batch.by === "local") {
           // A commit that came from typing in this view cannot have diverged
           // from it; only writes from elsewhere (the Changes panel) need it.
-          if (batch.origin !== ANCHORS_ORIGIN) {
+          if (batch.origin !== ANCHORS_ORIGIN && batch.origin !== PRUNE_ORIGIN) {
             if (viewEdited) viewEdited = false;
             else reconcileShown();
           }

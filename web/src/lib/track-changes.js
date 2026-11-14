@@ -21,6 +21,11 @@ import { cursorAt } from "./loro-cursor.js";
 
 export const CHANGES = "changes";
 
+// The origin an idle prune commits under. Its writes tidy records nobody typed,
+// so the editor's undo manager leaves them out, and the view does not take the
+// commit for a write from outside it.
+export const PRUNE_ORIGIN = "track-changes-prune";
+
 // How long a record rests before prune drops it when empty, or re-anchors its
 // stale cursors, so that its author's other session has time to sync.
 const SETTLE_MS = 60_000;
