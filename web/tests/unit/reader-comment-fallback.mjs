@@ -32,6 +32,9 @@ const other = { attachment: {}, start: 5, end: 6, sourceStart: null };
 context.anchorComments([comment, other]);
 assert.equal(comment.start, 50, "a hand attachment is placed by its source passage");
 anchored.length = 0;
+// The stub's full pass placed `other` too; put it back where its quotation is.
+other.start = 5;
+other.end = 6;
 
 comment.attachment = { attached_by_hand: false };
 context.anchorComments([comment, other], { rendered: false });
