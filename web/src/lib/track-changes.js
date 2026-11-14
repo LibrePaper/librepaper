@@ -84,8 +84,10 @@ export function planEdits(before, state, edits, me, { run = null, now, mintId, u
     const insert = edit.insert;
     if (ef === et && insert.length === 0) continue;
     const step = planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untracked);
-    for (const c of changes) if (!step.changes.some((x) => x.id === c.id) && originalChanges.has(c.id)) removedChanges.set(c.id, { ...c, state: "removed" });
-    for (const g of gaps) if (!step.gaps.some((x) => x.id === g.id) && originalGaps.has(g.id)) removedGaps.set(g.id, { ...g, state: "removed" });
+    const stepChanges = new Set(step.changes.map((x) => x.id));
+    const stepGaps = new Set(step.gaps.map((x) => x.id));
+    for (const c of changes) if (!stepChanges.has(c.id) && originalChanges.has(c.id)) removedChanges.set(c.id, { ...c, state: "removed" });
+    for (const g of gaps) if (!stepGaps.has(g.id) && originalGaps.has(g.id)) removedGaps.set(g.id, { ...g, state: "removed" });
     changes = step.changes;
     gaps = step.gaps;
     cur = cur.slice(0, ef) + insert + cur.slice(et);
@@ -109,6 +111,16 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   // Own changes this edit touches: a span overlapping or adjacent, or a
   // fragment in a gap inside the closed range.
   const swallowedGaps = gaps.filter((g) => g.at >= ef && g.at <= et);
+  // Looked up by id many times below. The first of two with one id wins, as a
+  // linear search would have it.
+  const byId = new Map();
+  for (const c of changes) if (!byId.has(c.id)) byId.set(c.id, c);
+  // The swallowed gaps by position, in their order, for the walk below.
+  const swallowedAt = new Map();
+  for (const g of swallowedGaps) {
+    const list = swallowedAt.get(g.at);
+    if (list) list.push(g); else swallowedAt.set(g.at, [g]);
+  }
   const owned = new Set();
   // A span of mine joins when it touches the edit. A change of mine with no
   // span joins when one of its fragments sits in a swallowed gap. A span of
@@ -122,14 +134,36 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
     .sort((a, b) => a.from - b.from || (a.id < b.id ? -1 : 1));
   if (touching.length > 0) owned.add(touching[0].id);
   for (const g of swallowedGaps) for (const f of g.fragments) {
-    const c = changes.find((x) => x.id === f.change);
+    const c = byId.get(f.change);
     // A fragment read as a change of its own is not joined: it has no record
     // to merge into, and it never leaves the gap it is in.
     if (c && c.who === me.who && !hasSpan(c) && !c.orphan) owned.add(c.id);
   }
   // Pure deletion of text inside inserted spans only, by nobody of mine: the
   // spans shrink and nothing is recorded, unless original text is involved.
-  const spanAt = (p) => changes.find((c) => hasSpan(c) && c.from <= p && p < c.to);
+  // Which span covers each character of the edit: the first of them in the
+  // order of `changes`, which is what decides where an overlapping pair ends.
+  // Only spans reaching into the range matter, and most edits have none. Each
+  // character is filled once, by the first span to cover it, and a jump table
+  // skips what is filled, so the cost is the range plus the spans.
+  let cover = null;
+  if (et > ef) {
+    const reaching = changes.filter((c) => hasSpan(c) && c.from < et && c.to > ef);
+    if (reaching.length > 0) {
+      cover = new Array(et - ef).fill(undefined);
+      const jump = new Int32Array(et - ef + 1);
+      for (let i = 0; i <= et - ef; i++) jump[i] = i;
+      const find = (i) => {
+        while (jump[i] !== i) { jump[i] = jump[jump[i]]; i = jump[i]; }
+        return i;
+      };
+      for (const c of reaching) {
+        const end = Math.min(c.to, et) - ef;
+        for (let i = find(Math.max(c.from, ef) - ef); i < end; i = find(i)) { cover[i] = c; jump[i] = i + 1; }
+      }
+    }
+  }
+  const spanAt = (p) => (cover ? cover[p - ef] : undefined);
   const originalRuns = [];
   {
     let p = ef;
@@ -150,7 +184,7 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   if (untracked) owned.clear();
   let mine = null;
   if (records) {
-    const first = [...owned].map((id) => changes.find((c) => c.id === id)).sort((a, b) => a.from - b.from)[0];
+    const first = [...owned].map((id) => byId.get(id)).sort((a, b) => a.from - b.from)[0];
     mine = first
       ? { ...first, run: run ?? first.run, at: now, state: "set" }
       : { id: mintId(), who: me.who, author: me.author, run, at: now, from: ef, to: ef, state: "set" };
@@ -179,7 +213,7 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   for (let p = ef; p <= et; p++) {
     const target = splitAtEnd && p === et ? after : merged;
     // Untracked edits can leave two gaps on one point; every one of them is taken.
-    for (const g of swallowedGaps) if (g.at === p) for (const f of g.fragments) pushFragment(target, mine && owned.has(f.change) ? mine.id : f.change, f.text, f.id, f.rank);
+    for (const g of swallowedAt.get(p) ?? []) for (const f of g.fragments) pushFragment(target, mine && owned.has(f.change) ? mine.id : f.change, f.text, f.id, f.rank);
     if (p < et && !spanAt(p) && records) pushFragment(merged, mine.id, cur[p]);
   }
   // Spans.
@@ -229,7 +263,7 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
     let from = ef;
     let to = ef + len;
     for (const id of owned) {
-      const c = changes.find((x) => x.id === id);
+      const c = byId.get(id);
       if (!hasSpan(c)) continue;
       if (c.from < from) from = c.from;
       if (c.to > et) to = Math.max(to, c.to + delta);
@@ -283,8 +317,10 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   live.sort((a, b) => a.from - b.from || a.to - b.to);
   outGaps.sort((a, b) => a.at - b.at);
   // Pure-deletion changes take their place from their first fragment.
+  const firstGap = new Map();
+  for (const g of outGaps) for (const f of g.fragments) if (!firstGap.has(f.change)) firstGap.set(f.change, g);
   for (const c of live) if (!hasSpan(c)) {
-    const g = outGaps.find((x) => x.fragments.some((f) => f.change === c.id));
+    const g = firstGap.get(c.id);
     if (g && c.from !== g.at) { c.from = g.at; c.to = g.at; }
   }
   return { changes: live, gaps: outGaps };
@@ -921,6 +957,126 @@ export function writePlanned(doc, fileId, plan) {
     else if (c.state === "set" && !c.orphan && writeChange(doc, text, fileId, c)) written.push(c.id);
   }
   return written;
+}
+
+/**
+ * The plan a batch of local edits is written with, from the state before the
+ * batch, the final state `planEdits` chained to, and `touched`, the ids of the
+ * changes and gaps any step did not leave as it found them. Changes the batch
+ * touched are set, the rest kept. A gap is kept when no step touched it and its
+ * fragments are those of a gap before the batch, with the same ids, texts and
+ * ranks: its cursors are anchored in the text and moved with it, so its records
+ * are still right wherever the edits left it, and checking them again would
+ * cost a cursor resolution per gap per keystroke. Every other gap is set, and a
+ * fragment whose cursor and rank already hold is not written again. Gaps are
+ * named by position, which moves between steps, so no gap is matched by its
+ * place.
+ *
+ * @param {{ changes: any[], gaps: any[] }} before
+ * @param {{ changes: any[], gaps: any[] }} state
+ * @param {Set<string>} touched
+ * @returns {PlannedState}
+ */
+export function plannedWrite(before, state, touched) {
+  const kept = new Set(state.changes.map((change) => change.id));
+  const was = new Map();
+  for (const gap of before.gaps) if (gap.fragments.length && gap.fragments[0].id) was.set(gap.fragments[0].id, gap);
+  const unchanged = (gap) => {
+    if (touched.has(gap.id) || gap.fragments.length === 0) return null;
+    const old = was.get(gap.fragments[0].id);
+    if (!old || old.id !== gap.id || old.fragments.length !== gap.fragments.length) return null;
+    for (let i = 0; i < gap.fragments.length; i++) {
+      const f = gap.fragments[i];
+      const o = old.fragments[i];
+      if (!f.id || f.id !== o.id || f.change !== o.change || f.text !== o.text || f.rank !== o.rank) return null;
+    }
+    return old;
+  };
+  const same = new Set();
+  const gaps = state.gaps.map((gap) => {
+    const old = unchanged(gap);
+    if (old) same.add(old);
+    return { ...gap, state: old ? "kept" : "set" };
+  });
+  return {
+    changes: [
+      ...state.changes.map((change) => ({ ...change, state: touched.has(change.id) ? "set" : "kept" })),
+      ...before.changes.filter((change) => !kept.has(change.id)).map((change) => ({ ...change, state: "removed" })),
+    ],
+    gaps: [
+      ...gaps,
+      ...before.gaps.filter((gap) => !same.has(gap)).map((gap) => ({ ...gap, state: "removed" })),
+    ],
+  };
+}
+
+/**
+ * The state `resolveFile` would read back from what `writePlanned` just wrote
+ * for `plan`, derived from the plan and the records instead of resolving every
+ * record again. `before` is the state the plan was made against and `written`
+ * what `writePlanned` returned. A fragment's rank is read from its record when
+ * its gap was written, since the writer may have chosen it, and a new
+ * fragment's id is the one the writer gave it. Returns null whenever the plan
+ * and the records do not obviously agree: a record that did not get written, a
+ * fragment without an id, a rank or a change, a record of the earlier model, an
+ * orphan fragment. Then the caller resolves for itself, because a state that is
+ * wrong draws wrong marks. Flags of staleness are carried over and not
+ * recomputed; only `prune` reads them, and it resolves on its own.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {PlannedState} plan
+ * @param {string[]} written
+ * @param {{ orphans?: any[] }} before
+ * @returns {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans: OrphanFragment[] } | null}
+ */
+export function writtenState(doc, plan, written, before) {
+  if (before.orphans?.length) return null;
+  const map = doc.getMap(CHANGES);
+  const wrote = new Set(written);
+  const live = new Set();
+  for (const c of plan.changes) {
+    if (c.state === "removed") continue;
+    if (c.legacy || c.orphan) return null;
+    if (c.state === "set" && !wrote.has(c.id)) return null;
+    live.add(c.id);
+  }
+  const byAt = new Map();
+  for (const g of plan.gaps) {
+    if (g.state === "removed") continue;
+    let list = byAt.get(g.at);
+    if (!list) byAt.set(g.at, (list = []));
+    for (const f of g.fragments) {
+      if (!f.id || typeof f.text !== "string" || f.text === "" || !live.has(f.change)) return null;
+      let rank = f.rank;
+      if (g.state === "set") {
+        const record = map.get(f.id);
+        if (!(record instanceof loroClasses.LoroMap) || record.get("text") !== f.text) return null;
+        rank = record.get("rank");
+      }
+      if (typeof rank !== "number") return null;
+      list.push({ id: f.id, change: f.change, text: f.text, rank, stale: f.stale === true });
+    }
+  }
+  const gaps = [];
+  for (const [at, fragments] of [...byAt].sort((a, b) => a[0] - b[0])) {
+    if (fragments.length === 0) continue;
+    fragments.sort(byRank);
+    gaps.push({ id: `gap@${at}`, at, fragments, stale: fragments.some((f) => f.stale) });
+  }
+  const first = new Map();
+  for (const g of gaps) for (const f of g.fragments) if (!first.has(f.change)) first.set(f.change, g.at);
+  const changes = [];
+  for (const { state: _state, emptied: _emptied, ...c } of plan.changes.filter((x) => x.state !== "removed")) {
+    const out = { ...c, stale: c.stale ?? false, staleStart: c.staleStart ?? false, staleEnd: c.staleEnd ?? false, hasCursor: c.hasCursor === true || c.to > c.from };
+    if (out.to === out.from) {
+      // A change with no span reads at its first gap, and with no fragments it is not read at all.
+      if (!first.has(out.id)) continue;
+      out.from = out.to = first.get(out.id);
+    }
+    changes.push(out);
+  }
+  changes.sort((a, b) => a.from - b.from || a.to - b.to || (a.id < b.id ? -1 : 1));
+  return { changes, gaps, orphans: [] };
 }
 
 /**
