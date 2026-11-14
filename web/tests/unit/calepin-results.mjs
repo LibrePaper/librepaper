@@ -190,7 +190,7 @@ test("rawLangs falls back to the default list", () => {
 test("rawLangs finds the config of a document in a subfolder", () => {
   const files = [
     {
-      path: ".calepin/chapters/intro/runtime-config.typ",
+      path: ".calepin/intro/runtime-config.typ",
       text: '"raw-langs": ("julia",),',
     },
   ];
@@ -242,6 +242,16 @@ test("staleChunks counts duplicated code once per stored copy", () => {
   ];
   const source = [block("print(1)"), block("print(1)"), block("print(1)")].join("\n");
   assert.equal(staleChunks(files, source, { path: "paper.typ" }), 1);
+});
+
+test("staleChunks picks the stored notebook named after the document's file", () => {
+  const files = [
+    { path: ".calepin/a/results.json", text: JSON.stringify({ chunks: { one: { source: "print(1)\n" } } }) },
+    { path: ".calepin/b/results.json", text: JSON.stringify({ chunks: { two: { source: "print(2)\n" } } }) },
+  ];
+  const source = block("print(2)");
+  assert.equal(staleChunks(files, source, { path: "chapters/b.typ" }), 0);
+  assert.equal(staleChunks(files, source, { path: "chapters/a.typ" }), 1);
 });
 
 test("staleChunks treats every chunk as stale when results.json is unreadable", () => {
