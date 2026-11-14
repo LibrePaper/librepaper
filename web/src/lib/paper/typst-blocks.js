@@ -137,7 +137,11 @@ function kindWord(kind) {
 function contextOf(text, blocks, files, path) {
   const cached = contexts.get(blocks);
   if (cached && cached.files === files && cached.path === path && cached.text === text) return cached;
-  const facts = typstFacts({ ...(files || {}), [path]: text }, path, path, []);
+  // Only Typst sources can be included; the rest of the project is not scanned.
+  /** @type {Record<string, string>} */
+  const typst = {};
+  for (const [name, body] of Object.entries(files || {})) if (name.endsWith(".typ")) typst[name] = body;
+  const facts = typstFacts({ ...typst, [path]: text }, path, path, []);
   // A reference alone in a block cannot see its target, so the text it would
   // read ("Equation 1") is given to every block as a table. A label with no
   // number reads as its key in brackets, which is also how a citation looks.
