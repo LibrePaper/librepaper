@@ -112,7 +112,7 @@ assert.doesNotMatch(readerSource, /pdfNeedsLocalTool|pdfNeedsLocalExecution|PDF 
 // `typeof` guard, because the only way to test it was to slice it out of the
 // component into a context that had never declared the name; it is an argument
 // now.
-assert.match(previewSource, /const build = format !== "quarto" && current\.localExecution \? current\.buildPreferences : \{ \.\.\.current\.buildPreferences, backend: "browser" \};/);
+assert.match(previewSource, /const explicitRun = format === "quarto" \|\| format === "typst";[\s\S]*?const build = !explicitRun && current\.localExecution \? current\.buildPreferences : \{ \.\.\.current\.buildPreferences, backend: "browser" \};/);
 // Quarto never renders on this computer from the preview, and nothing there
 // shares results any more: that happens from the Run action.
 assert.doesNotMatch(previewSource, /shareRun|runDirectoryReady/);

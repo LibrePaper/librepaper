@@ -2560,8 +2560,6 @@
   "registry_render_quarto_preview_terms": "aperçu par défaut sortie quarto default preview pdf html output",
   "registry_render_typst_pdf": "Commande Typst",
   "registry_render_typst_pdf_terms": "commande compiler cet ordinateur fichier résultat typst command pdf render this computer result file",
-  "registry_render_typst_html": "Commande Typst HTML",
-  "registry_render_typst_html_terms": "commande compiler cet ordinateur fichier résultat typst html command render this computer result file",
   "registry_render_typst_preview": "Aperçu par défaut de Typst",
   "registry_render_typst_preview_terms": "aperçu par défaut sortie typst default preview pdf html output",
   "registry_render_typst_where": "Typst se compile dans",

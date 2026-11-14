@@ -32,7 +32,11 @@ pub(super) fn results(root: &Path, entrypoint: &str) -> Option<Vec<u8>> {
     }
     let mut walk = Walk::default();
     collect(&dir, "", 0, &mut walk)?;
-    if !walk.files.keys().any(|path| path.ends_with("/results.json")) {
+    if !walk
+        .files
+        .keys()
+        .any(|path| path.ends_with("/results.json"))
+    {
         return None;
     }
     let files: Vec<_> = walk

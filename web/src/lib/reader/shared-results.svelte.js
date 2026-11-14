@@ -1,7 +1,7 @@
 import { authHeaders } from "../api.js";
 import { sha256 } from "../results-hash.js";
 
-// The shared results of a run document: one record the owner's storage
+// The shared results of a document that runs code: one record the owner's storage
 // holds, uploaded after a local run and fetched by everyone who opens the
 // document. A Quarto record holds per-cell HTML, and a Typst record holds the
 // files Calepin stored. Nothing here throws into the preview path.

@@ -400,7 +400,11 @@ async fn quarto_without_a_run_directory_is_refused_before_anything_runs() {
 async fn a_typst_run_without_a_run_directory_is_refused_before_anything_runs() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let fixture = fixture("typst", "pdf", "paper.typ");
-    script("typst.pdf", "touch ran; echo '%PDF' > paper.pdf", "{stem}.pdf");
+    script(
+        "typst.pdf",
+        "touch ran; echo '%PDF' > paper.pdf",
+        "{stem}.pdf",
+    );
     let outcome = run_fixture_in(&fixture, None).await;
     assert_eq!(outcome.status.status, JobState::Failed);
     assert_eq!(

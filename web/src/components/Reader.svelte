@@ -469,8 +469,8 @@
   // The running Run's controller, so Stop can end the job before it starts as
   // well as while it runs. Not reactive: nothing renders from it.
   let runAbort = null;
-  // A Quarto or Typst document needs a folder to run its code in. Its code never runs
-  // on this computer until Run is pressed and a folder is set.
+  // A Quarto or Typst document needs a folder to run its code in. Its code
+  // never runs on this computer until Run is pressed and a folder is set.
   let runDirectory = $state("");
   const runDirectoryReady = $derived(runDirectory !== "");
   // Run was pressed before a folder was set: choosing one carries on with it.
@@ -1595,6 +1595,9 @@
   // They are reads only: every write goes through `target`.
   const previewPath = $derived(target.state.path);
   const sourceFormat = $derived(target.state.format);
+  // Quarto and Typst run their code only on an explicit Run. Typst runs it
+  // with Calepin.
+  const runsExplicitly = $derived(sourceFormat === "quarto" || sourceFormat === "typst");
   const previewReason = $derived(target.state.reason);
   const previewChoices = $derived(target.state.choices);
   const lockedFile = $derived(target.state.lockedFile);
@@ -2241,9 +2244,6 @@
   const buildPreferences = $derived(buildSettings.state.preferences);
   // Where the toggle is offered: in the desktop app, for every editable
   // document whose format is set to this computer.
-  // Quarto and Typst run their code only on an explicit Run. Typst runs it
-  // with Calepin.
-  const runsExplicitly = $derived(sourceFormat === "quarto" || sourceFormat === "typst");
   const runCodeOffered = $derived(mayEdit && !suggestOnly && hasDesktop && buildPreferences.backend === "local");
   // The Run directory is read whenever a Quarto or Typst document's code may
   // be run here; reading it only asks the desktop app for the setting.
@@ -2335,7 +2335,8 @@
     const when = new Date(record.updatedAt);
     const date = Number.isNaN(when.getTime()) ? "" : new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" }).format(when);
     return {
-      ...(files ? { files: record.files } : { cells: record.cells }),
+      cells: files ? null : record.cells,
+      files: files ? record.files : null,
       path: String(record.path || ""),
       updatedAt: String(record.updatedAt || ""),
       note: ownResults ? m.readerd_results_note_own({ date }) : m.readerd_results_note({ name: record.uploaderName || "", date }),
@@ -2586,7 +2587,7 @@
   });
 
   const localAppDiagnostics = $derived([
-    needsRun ?{ severity: "info", message: m.readerb_run_quarto_hint() } : null,
+    needsRun ? { severity: "info", message: m.readerb_run_quarto_hint() } : null,
     runPhase === "failed" ? { severity: "error", message: m.readerb_run_failed() } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.

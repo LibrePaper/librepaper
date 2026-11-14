@@ -2560,8 +2560,6 @@
   "registry_render_quarto_preview_terms": "quarto default preview pdf html output",
   "registry_render_typst_pdf": "Typst command",
   "registry_render_typst_pdf_terms": "typst command pdf render this computer result file",
-  "registry_render_typst_html": "Typst HTML command",
-  "registry_render_typst_html_terms": "typst html command render this computer result file",
   "registry_render_typst_preview": "Typst default preview",
   "registry_render_typst_preview_terms": "typst default preview pdf html output",
   "registry_render_typst_where": "Typst renders in",

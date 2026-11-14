@@ -62,9 +62,10 @@ const all = (...formats) => (format) => formats.includes(format);
   assert.equal(exportAvailability("latex", "html", { ...withLatex, local: true }).ok, true);
   assert.equal(exportAvailability("latex", "docx", { ...withLatex, local: true }).ok, true);
   assert.equal(exportAvailability("latex", "docx", { pandoc: false, compiler: all("latex"), local: true }).ok, false, "a Word file needs Pandoc when the command does not make it");
-  // Typst the same.
+  // The Typst commands (Calepin) make a PDF and an HTML page; the Word file follows the browser rule.
   assert.equal(exportAvailability("typst", "pdf", { pandoc: true, compiler: all("latex"), local: true }).ok, true);
-  assert.equal(exportAvailability("typst", "html", { pandoc: true, compiler: all("latex"), local: true }).ok, false);
+  assert.equal(exportAvailability("typst", "html", { pandoc: true, compiler: all("latex"), local: true }).ok, true);
+  assert.equal(exportAvailability("typst", "docx", { pandoc: true, compiler: all("latex"), local: true }).ok, false);
   // Quarto has no browser engine on a deployment without one, and its commands make every output.
   const bare = { pandoc: false, compiler: all() };
   for (const target of EXPORT_TARGETS) {

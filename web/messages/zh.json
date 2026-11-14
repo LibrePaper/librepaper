@@ -2545,8 +2545,6 @@
   "registry_render_quarto_preview_terms": "quarto 默认预览 pdf html 输出 quarto default preview pdf html output",
   "registry_render_typst_pdf": "Typst 命令",
   "registry_render_typst_pdf_terms": "typst 命令 pdf 编译 这台电脑 结果文件 typst command pdf render this computer result file",
-  "registry_render_typst_html": "Typst HTML 命令",
-  "registry_render_typst_html_terms": "typst html 命令 渲染 这台电脑 结果文件 typst command html render this computer result file",
   "registry_render_typst_preview": "Typst 默认预览",
   "registry_render_typst_preview_terms": "typst 默认预览 pdf html 输出 typst default preview pdf html output",
   "registry_render_typst_where": "Typst 编译位置",
