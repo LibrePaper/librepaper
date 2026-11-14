@@ -256,7 +256,7 @@
   import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
-  import { projectDirectory } from "../lib/projection.js";
+  import { projectDirectory, projectPaths } from "../lib/projection.js";
   import { openingFile, resolveInclude } from "../lib/opening.js";
   import { toLf, healLineEndings, LINE_ENDINGS_ORIGIN } from "../lib/line-endings.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
@@ -1801,18 +1801,19 @@
     return text?.kind?.() === "Text" ? text : null;
   }
 
-  // Both read the cached directory from treeForDoc, so a keystroke does not
-  // sort and walk every file of the project to find one path.
+  // These ask for the paths alone, without the texts: they run on every
+  // keystroke, some of them inside an open transaction, where the session's
+  // tree is not cached and would read every file.
   function pathOfDoc(doc, id) {
     if (!doc || !id) return "";
-    for (const [path, file] of Object.entries(treeForDoc(doc).files)) {
+    for (const [path, file] of projectPaths(doc, rules ?? null).files) {
       if (file.kind === "text" && file.id === id) return path;
     }
     return "";
   }
   function textIdForPath(doc, path) {
     if (!doc || !path) return "";
-    const file = treeForDoc(doc).files[path];
+    const file = projectPaths(doc, rules ?? null).files.get(path);
     return file?.kind === "text" ? file.id : "";
   }
   // Project facts for completion sources. The format comes from the edited
