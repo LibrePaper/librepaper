@@ -261,6 +261,9 @@ struct Active {
     /// The agent did something other than answer since the last chunk, so the
     /// next chunk starts a new message and needs a paragraph break.
     answer_break: bool,
+    /// The agent streamed text, reported an activity or asked for permission
+    /// during this task. A turn that ends without any of these did nothing.
+    acted: bool,
     last_answer_emit: tokio::time::Instant,
     pending: VecDeque<PendingInput>,
     /// Pieces of the request still to send, one turn each, once the current
@@ -380,6 +383,22 @@ fn bridge_timeout_message(agent: &[String]) -> String {
         _ if names.contains(&"pi-acp") => format!("{base}. Install pi-mcp-adapter and add the librepaper server to ~/.config/mcp/mcp.json (see the Agents docs)"),
         _ if names.contains(&"opencode") => format!("{base}. Check that opencode has a provider configured (opencode auth login) and see its log in ~/.local/share/opencode/log"),
         _ => base.into(),
+    }
+}
+
+/// What to say when a turn ended normally but the agent neither answered nor
+/// did anything. Agents that swallow a provider error end a turn this way
+/// (opencode does), so point at the agent's own log.
+fn silent_turn_hint(agent: &[String]) -> String {
+    let names: Vec<&str> = agent
+        .iter()
+        .filter_map(|part| Path::new(part).file_stem()?.to_str())
+        .collect();
+    let base = "The agent ended its turn without answering or doing anything. Its model provider may have refused the request";
+    if names.contains(&"opencode") {
+        format!("{base}. See opencode's log in ~/.local/share/opencode/log")
+    } else {
+        format!("{base}. See the agent's own log")
     }
 }
 
@@ -862,6 +881,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                     answer_truncated: false,
                                     answer_dirty: false,
                                     answer_break: false,
+                                    acted: false,
                                     last_answer_emit: tokio::time::Instant::now(),
                                     pending: VecDeque::new(),
                                     segments,
@@ -1120,9 +1140,11 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 push_bounded_utf8(&mut current.answer, &chunk, super::protocol::MAX_ANSWER_BYTES);
                                 current.answer_truncated |= current.answer.len() - before < chunk.len();
                                 current.answer_dirty = true;
+                                current.acted = true;
                             }
                             acp::Update::Activity(detail) => {
                                 current.answer_break = true;
+                                current.acted = true;
                                 let id=current.id.clone();
                                 let changed=state.task_mut(&id).is_some_and(|task| task.set_activity(detail));
                                 if changed { report_task(&transport,&mut state,&id,&lease.location.state).await?; }
@@ -1131,6 +1153,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         }
                     }
                     acp::Event::Permission { handle, message, options, details, option_ids, tool, allow_once, turn } => {
+                        if let Some(current) = active.as_mut() { current.acted = true; }
                         match permission_decision(
                             turn != turns_ended,
                             active.as_ref().map(|current| current.cancelling),
@@ -1211,6 +1234,18 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 let refused = results["refused"].as_u64().unwrap_or(0);
                                 let answer=current.answer.trim().to_string();
                                 let answer_truncated = current.answer_truncated;
+                                let acted = current.acted;
+                                let silent = answer.is_empty()
+                                    && !acted
+                                    && unresolved_count == 0
+                                    && refused == 0
+                                    && results["confirmed_omitted"].as_u64().unwrap_or(0) == 0
+                                    && results["changes"].as_array().is_none_or(|changes| changes.is_empty())
+                                    && results["confirmed"].as_array().is_none_or(|confirmed| confirmed.is_empty());
+                                if silent {
+                                    if let Some(task)=state.task_mut(&id){ task.results=results; }
+                                    finish(&mut state,&id,TaskStatus::Failed,&silent_turn_hint(&config.agent));
+                                } else {
                                 if let Some(task)=state.task_mut(&id){
                                     task.answer=Some(if answer.is_empty() {"Finished.".into()} else {bounded_answer(&answer, answer_truncated)});
                                     task.answer_truncated=answer_truncated;
@@ -1224,6 +1259,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                     "Finished; some operations were refused"
                                 };
                                 finish(&mut state,&id,TaskStatus::Completed,detail);
+                                }
                             }
                             Ok(agent_client_protocol::schema::v1::StopReason::Cancelled) => {
                                 if let Some(task) = state.task_mut(&id) { task.results = terminal_results.clone(); }
@@ -1600,6 +1636,15 @@ mod tests {
         );
         assert!(truncated.ends_with("… [answer truncated at 2 MiB]"));
         assert!(truncated.len() <= crate::assistant::protocol::MAX_ANSWER_BYTES);
+    }
+
+    #[test]
+    fn silent_turn_hint_points_at_the_agents_own_log() {
+        let opencode = silent_turn_hint(&["opencode".to_string(), "acp".to_string()]);
+        assert!(opencode.contains("~/.local/share/opencode/log"));
+        let other = silent_turn_hint(&["/x/claude-code-acp".to_string()]);
+        assert!(!other.contains("opencode"));
+        assert!(other.contains("own log"));
     }
 
     #[test]
