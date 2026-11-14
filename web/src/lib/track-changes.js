@@ -38,7 +38,7 @@ const SETTLE_MS = 60_000;
  * @typedef {{ id?: string, change: string, text: string, rank?: number }} Fragment
  * @typedef {{ id: string, change: string, text: string, rank: number, stale: boolean }} ResolvedFragment
  * @typedef {{ id: string, who: string, author: string, run: string | null, at: number, from: number, to: number }} Change
- * @typedef {Change & { stale: boolean, hasCursor: boolean, legacy?: boolean, orphan?: boolean }} ResolvedChange
+ * @typedef {Change & { stale: boolean, staleStart?: boolean, staleEnd?: boolean, hasCursor: boolean, legacy?: boolean, orphan?: boolean }} ResolvedChange
  * @typedef {{ id: string, at: number, fragments: Fragment[] }} Gap
  * @typedef {{ id: string, at: number, fragments: ResolvedFragment[], stale: boolean }} ResolvedGap
  * @typedef {{ id: string, change: string, text: string, rank: number, at: number, stale: boolean, who: any, author: any, run: any, when: any }} OrphanFragment
