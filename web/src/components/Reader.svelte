@@ -641,8 +641,11 @@
   // A comment attached by hand is painted from its source range and from
   // nothing else, since its rendered quotation names the passage it used to be
   // about. Its page match is dropped before the fallback runs.
-  function anchorComments(list) {
-    anchorAll(docText || "", list, docText === null ? null : docView);
+  // `rendered: false` skips the search of the rendered text, for a pass where
+  // that text has not changed since the last full pass (the attachments were
+  // derived again, which is all that moved).
+  function anchorComments(list, { rendered = true } = {}) {
+    if (rendered) anchorAll(docText || "", list, docText === null ? null : docView);
     if (mayEdit) {
       placeSources(session, list);
       for (const comment of list) {
