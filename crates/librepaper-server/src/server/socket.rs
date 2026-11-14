@@ -1282,14 +1282,25 @@ impl Server {
             self.disconnect_connection(slug, socket_id).await;
             return false;
         }
-        let cached = {
+        // One registry lookup serves both the shortcut and the full check:
+        // a recently authorized socket is answered without cloning its
+        // `Connection` (and its header map), and any other is cloned once,
+        // because the lock cannot be held across the catalogue lookup below.
+        let connection = {
             let connections = self.connections.lock().await;
-            connections.get(&socket_id).cloned()
+            match connections.get(&socket_id) {
+                Some(connection)
+                    if connection.slug == slug
+                        && connection.authorized_at.elapsed() < Duration::from_secs(1) =>
+                {
+                    return true;
+                }
+                Some(connection) => connection.clone(),
+                None => return false,
+            }
         };
-        if cached.as_ref().is_some_and(|connection| {
-            connection.slug == slug && connection.authorized_at.elapsed() < Duration::from_secs(1)
-        }) {
-            return true;
+        if connection.slug != slug {
+            return false;
         }
         let entry = match self.store.get_result(slug).await {
             Ok(entry) => entry,
@@ -1302,16 +1313,6 @@ impl Server {
                 return false;
             }
         };
-        let connection = {
-            let connections = self.connections.lock().await;
-            connections.get(&socket_id).cloned()
-        };
-        let Some(connection) = connection else {
-            return false;
-        };
-        if connection.slug != slug {
-            return false;
-        }
         let allowed = match &entry {
             Some(entry) => {
                 let who = self
@@ -1334,6 +1335,9 @@ impl Server {
             self.disconnect_connection(slug, socket_id).await;
         } else if let Some(connection) = self.connections.lock().await.get_mut(&socket_id) {
             connection.authorized_at = tokio::time::Instant::now();
+        } else {
+            // The socket left while the lookup ran; there is nothing to authorize.
+            return false;
         }
         allowed
     }
