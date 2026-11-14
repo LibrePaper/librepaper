@@ -62,6 +62,21 @@ function harness(kind = "raw") {
   assert.deepEqual(types(sent), ["figures", "preview"], "the frame is ready again, so the replay sends the figures");
 }
 
+// A reload at the same address keeps the epoch, so readiness says nothing new;
+// the load itself forgets the figures, and the replay sends them again.
+{
+  const { preview, sent } = harness();
+  preview.publish({ kind: "html", html: "<p>a</p>", figures: [figure("aa")] });
+  sent.length = 0;
+  preview.forgetFigures();
+  assert.equal(preview.markReady(), false, "the same epoch is not a first ready");
+  preview.replay();
+  assert.deepEqual(types(sent), ["figures", "preview"], "the reloaded frame gets its figures again");
+  sent.length = 0;
+  preview.publish({ kind: "html", html: "<p>b</p>", figures: [figure("aa")] });
+  assert.deepEqual(types(sent), ["preview"], "and they are not sent a third time");
+}
+
 // A PDF is delivered as bytes and names no figures, so no figures message goes.
 {
   const { preview, sent } = harness("pdf");
