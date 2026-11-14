@@ -674,6 +674,17 @@ async fn real_typst_renders_a_pdf_with_its_default_command() {
         outcome.status.log_tail
     );
     assert!(outcome.files["artifact"].starts_with(b"%PDF-"));
+    // Calepin's stored results come back beside the PDF, named from the
+    // entry file's own folder.
+    let results: serde_json::Value = serde_json::from_slice(&outcome.files["results"]).unwrap();
+    let paths: Vec<&str> = results["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.contains(&".calepin/calepin.typ"), "{paths:?}");
+    assert!(paths.contains(&".calepin/paper/results.json"), "{paths:?}");
 }
 
 #[tokio::test]
