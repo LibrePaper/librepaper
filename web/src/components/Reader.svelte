@@ -662,6 +662,10 @@
         if (!comment.attachment?.attached_by_hand) continue;
         comment.start = comment.end = null;
         comment.orphaned = true;
+        // Its quotation placement is suppressed now, whether or not the source
+        // fallback below finds the passage, so it is placed by the quotation
+        // again once the attachment goes.
+        fallbackPlaced.add(comment);
       }
     }
     if (mayEdit && docText !== null) {
