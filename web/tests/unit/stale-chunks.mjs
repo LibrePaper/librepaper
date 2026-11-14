@@ -46,7 +46,8 @@ function fakeStorage() {
   assert.equal(win.reloads, 2, "after 60 s the page reloads again");
 }
 
-// With storage throwing, the first failure reloads and a second does not.
+// Without storage that survives a reload, there is no guard against a loop:
+// the error surfaces and the page does not reload.
 {
   const win = fakeWindow();
   const throwing = {
@@ -55,10 +56,32 @@ function fakeStorage() {
   };
   reloadOnStaleChunks({ win, storage: throwing, now: () => 0 });
   const first = win.fire();
-  assert.equal(win.reloads, 1);
-  assert.equal(first.prevented, true);
+  assert.equal(win.reloads, 0, "no reload without a stamp that survives it");
+  assert.equal(first.prevented, false);
+}
+
+// A stamp that cannot be written: no reload either.
+{
+  const win = fakeWindow();
+  const readOnly = { getItem() { return null; }, setItem() { throw new Error("quota"); } };
+  reloadOnStaleChunks({ win, storage: readOnly, now: () => 0 });
   win.fire();
-  assert.equal(win.reloads, 1, "without storage, only one reload per page load");
+  assert.equal(win.reloads, 0, "no reload when the stamp cannot be written");
+}
+
+// Across simulated page loads with working storage: one reload, then the
+// error surfaces until a minute has passed.
+{
+  const store = new Map();
+  const storage = { getItem: (key) => store.get(key) ?? null, setItem: (key, value) => store.set(key, value) };
+  let total = 0;
+  for (const at of [0, 1000, 2000]) {
+    const win = fakeWindow();
+    reloadOnStaleChunks({ win, storage, now: () => at });
+    win.fire();
+    total += win.reloads;
+  }
+  assert.equal(total, 1, "three page loads failing in a row reload once");
 }
 
 console.log("stale-chunks: one reload on a stale lazy chunk, then the error surfaces");

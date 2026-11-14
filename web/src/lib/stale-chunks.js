@@ -37,24 +37,18 @@ export function reloadOnStaleChunks({
   storage = defaultStorage(),
   now = () => Date.now(),
 } = {}) {
-  // Only used when storage cannot hold the stamp, so a page with no storage
-  // still reloads once and no more.
-  let reloadedHere = false;
   win.addEventListener("vite:preloadError", (event) => {
     const time = now();
     const stamp = readStamp(storage);
-    if (stamp === undefined || stamp === null) {
-      if (reloadedHere) return;
-    } else if (time - stamp < WINDOW_MS) {
+    // Without a stamp that survives the reload there is no way to tell a
+    // stale chunk from a missing one, and reloading could loop: leave the
+    // error to surface, as it did before.
+    if (stamp === undefined) return;
+    if (stamp !== null && time - stamp < WINDOW_MS) return;
+    try {
+      storage.setItem(KEY, String(time));
+    } catch {
       return;
-    }
-    reloadedHere = true;
-    if (stamp !== undefined) {
-      try {
-        storage.setItem(KEY, String(time));
-      } catch {
-        // The flag above still holds for this page load.
-      }
     }
     event.preventDefault();
     win.location.reload();
