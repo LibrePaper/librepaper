@@ -620,12 +620,7 @@ impl Server {
         let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {
             return plain(404, "not found");
         };
-        let authors = match self
-            .store
-            .catalog
-            .document_peer_authors(document_id)
-            .await
-        {
+        let authors = match self.store.catalog.document_peer_authors(document_id).await {
             Ok(authors) => authors,
             Err(error) => return refused("read the catalogue", &error.into()),
         };

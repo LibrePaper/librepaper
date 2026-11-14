@@ -2924,9 +2924,8 @@ impl Sequencer {
             ),
             _ => None,
         };
-        let frame = Outgoing::shared_text(
-            json!({"type": "source-changed", "digest": digest}).to_string(),
-        );
+        let frame =
+            Outgoing::shared_text(json!({"type": "source-changed", "digest": digest}).to_string());
         fan_out(inner, false, |_, subscriber| {
             (subscriber.role == SubscriberClass::Reader).then(|| frame.clone())
         });
