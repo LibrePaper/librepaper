@@ -8,7 +8,7 @@
 import { latexCommands, readArguments } from "../latex-language/args.js";
 import { m } from "../paraglide/messages.js";
 import { splitBlocks } from "../paper/blocks.js";
-import { splitOrgBlocks } from "../paper/org-blocks.js";
+import { ORG_HEADER_KINDS, splitOrgBlocks } from "../paper/org-blocks.js";
 import { splitTypstBlocks } from "../paper/typst-blocks.js";
 import { orgTree } from "../source-trees.js";
 
@@ -287,13 +287,14 @@ function orgFoldsOf(text) {
   const title = keywords.find((keyword) => keyword.key === "title");
   const documentTitle = cut(title ? title.value.trim() : "");
 
-  // The leading run: the blocks before the first one that is not a keyword or a comment.
+  // The leading run: the blocks before the first one that is not a header block.
   let leading = 0;
-  while (leading < blocks.length && ["Keyword", "Comment", "CommentBlock"].includes(blocks[leading].kind)) leading++;
+  while (leading < blocks.length && ORG_HEADER_KINDS.has(blocks[leading].kind)) leading++;
 
   /** @type {Fold[]} */
   const folds = [];
   blocks.forEach((block, index) => {
+    // A title block gets no fold: the paper layer draws it in place of the header.
     const source = text.slice(block.from, block.to);
     const firstLine = source.split(/\r\n|\r|\n/)[0];
     const kind = block.kind;

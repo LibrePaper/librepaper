@@ -56,6 +56,11 @@ If `assets.lock` is unchanged, there is no mirror update to publish.
    mirrors, checks GitHub release visibility, and runs the Chromium tutorial
    smoke without loading credentials or changing the bucket. Resolve failures,
    then run `tools/assets/mirror publish` to upload.
+
+   When only a wasm module or font pin moved, run
+   `tools/assets/mirror publish --no-latex` instead. It publishes the pinned
+   files alone and skips the LaTeX check, smoke test and upload, so `MIRROR`
+   is not needed.
 5. Commit the reviewed `assets.lock` pin changes and build/deploy a server
    binary with those pins. Publish assets before deploying that binary.
 

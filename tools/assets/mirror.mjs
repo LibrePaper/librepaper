@@ -690,7 +690,7 @@ if (invoked) {
     console.log("Usage: mirror <command> [args]\n");
     console.log("Commands:");
     console.log("  check <dir|url>    Validate LaTeX mirror directory or URL");
-    console.log("  publish            Check and publish wasm, font and LaTeX mirrors to S3");
+    console.log("  publish            Check and publish wasm, font and LaTeX mirrors to S3 (MIRRORS_NO_LATEX=1 skips LaTeX)");
     console.log("  credentials        Resolve S3 credentials from SOPS secrets (stdin)");
     process.exit(command ? 0 : 2);
   }
@@ -717,9 +717,15 @@ if (invoked) {
           }
           const dryRun = process.env.MIRRORS_DRY_RUN === "1";
 
+          if (![undefined, "", "0", "1"].includes(process.env.MIRRORS_NO_LATEX)) {
+            throw new Error("MIRRORS_NO_LATEX must be 0 or 1");
+          }
+          const noLatex = process.env.MIRRORS_NO_LATEX === "1";
+
           const staged = await stagePinnedMirrors(assetsDirectory, assetsLock);
           try {
-            const mirrors = [...staged.mirrors, { dir: mirrorPath, prefix: "latex" }];
+            // With MIRRORS_NO_LATEX=1 only the pinned wasm modules and fonts are checked and published.
+            const mirrors = noLatex ? staged.mirrors : [...staged.mirrors, { dir: mirrorPath, prefix: "latex" }];
 
             // Validate both trees before either publisher makes a remote call
             let env = process.env;

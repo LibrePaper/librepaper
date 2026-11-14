@@ -21,6 +21,7 @@ async function fixture(corsOrigin) {
   const awsCalls = join(root, 'aws-calls');
   const sopsCalls = join(root, 'sops-calls');
   const publisherEnvironment = join(root, 'publisher-environment.json');
+  const makeCalls = join(root, 'make-calls');
   await mkdir(bin);
   const lock = await readFile(join(repo, 'assets.lock'), 'utf8');
   const latex = lock.split('\n').map((line) => line.trim().split(/\s+/)).find(([name]) => name === 'latex');
@@ -57,13 +58,17 @@ else if (args[0] === 'tools/assets/mirror.mjs' && args[1] === 'credentials') {
   if (values.some((value) => typeof value !== 'string' || !value || /[\\x00-\\x1f]/.test(value))) process.exit(1);
   process.stdout.write(values.join('\\n'));
 } else if (args[0] === 'tools/assets/mirror.mjs' && args[1] === 'publish') {
-  fs.writeFileSync(process.env.PUBLISHER_ENVIRONMENT, JSON.stringify({
+  const data = {
     endpoint: process.env.S3_ENDPOINT, region: process.env.S3_REGION, bucket: process.env.S3_BUCKET,
     accessKey: process.env.AWS_ACCESS_KEY_ID, secretKey: process.env.AWS_SECRET_ACCESS_KEY,
-  }));
+  };
+  if (process.env.MIRRORS_NO_LATEX === '1') data.noLatex = '1';
+  fs.writeFileSync(process.env.PUBLISHER_ENVIRONMENT, JSON.stringify(data));
 }
 `);
-  await mock('make', '');
+  await mock('make', `
+require('node:fs').appendFileSync(process.env.MAKE_CALLS, 'make\\n');
+`);
   await mock('psql', '');
   await mock('openssl', '');
   await mock('sops', `
@@ -81,7 +86,7 @@ const url = args[args.length - 1];
 fs.appendFileSync(process.env.CURL_CALLS, url + '\\n');
 if (args.some((arg) => /^-[a-zA-Z]*I/.test(arg))) {
   process.stdout.write('200');
-} else if (url.includes('/test/') || url.endsWith('/release.json')) {
+} else if (url.includes('/test/') || url.includes('/wasm/') || url.endsWith('/release.json')) {
   const origin = process.env.CORS_ORIGIN;
   process.stdout.write('HTTP/1.1 200 OK\\r\\n');
   if (origin) process.stdout.write('Access-Control-Allow-Origin: ' + origin + '\\r\\n');
@@ -106,13 +111,14 @@ if (args.some((arg) => /^-[a-zA-Z]*I/.test(arg))) {
     AWS_CALLS: awsCalls,
     SOPS_CALLS: sopsCalls,
     PUBLISHER_ENVIRONMENT: publisherEnvironment,
+    MAKE_CALLS: makeCalls,
     LIBREPAPER_TEST_POSTGRES_URL: 'postgres://unused',
   };
-  return { root, calls, awsCalls, sopsCalls, publisherEnvironment, env, latexId: latex[3] };
+  return { root, calls, awsCalls, sopsCalls, publisherEnvironment, makeCalls, env, latexId: latex[3] };
 }
 
-function run(f, env = f.env) {
-  return spawnSync(deploy, ['publish'], { cwd: repo, env, encoding: 'utf8' });
+function run(f, env = f.env, args = []) {
+  return spawnSync(deploy, ['publish', ...args], { cwd: repo, env, encoding: 'utf8' });
 }
 
 test('publish uses an explicit public base for custom S3 endpoints and accepts matching CORS origin', async () => {
@@ -160,6 +166,37 @@ test('publish rejects absent and mismatched CORS origins after the public probe'
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }
+  }
+});
+
+test('publish --no-latex uploads the pinned files and skips every LaTeX step', async () => {
+  const f = await fixture('*');
+  try {
+    await rm(join(f.root, 'mirror'), { recursive: true, force: true });
+    const result = run(f, f.env, ['--no-latex']);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /3\/6 smoke test skipped/);
+    await assert.rejects(readFile(f.makeCalls, 'utf8'));
+    const calls = (await readFile(f.calls, 'utf8')).trim().split('\n');
+    assert.ok(calls.includes('https://cdn.custom.invalid/public-assets/test/markdown.wasm'));
+    assert.ok(calls.some((url) => /\/public-assets\/wasm\/[0-9a-f]{64}\/org\.wasm$/.test(url)));
+    assert.ok(calls.every((url) => !url.includes('/latex/')));
+    assert.doesNotMatch(await readFile(f.awsCalls, 'utf8'), /test\/release\.json/);
+    assert.equal(JSON.parse(await readFile(f.publisherEnvironment, 'utf8')).noLatex, '1');
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('publish --no-latex --dry-run stops before credentials', async () => {
+  const f = await fixture('*');
+  try {
+    const result = run(f, f.env, ['--no-latex', '--dry-run']);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /dry-run complete/);
+    await assert.rejects(readFile(f.sopsCalls, 'utf8'));
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
   }
 });
 
