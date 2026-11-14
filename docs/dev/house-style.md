@@ -51,7 +51,7 @@ the web, not a facsimile of a printed book, and not like Bootstrap/Quarto.
 
 ## Blocks
 - Blockquote: not italic; border-left 3px `--lp-rule`, padding .1rem 0 .1rem 1.1rem, margin 1.5rem 0, colour ink at 85% (color-mix ink 85% into paper). Last paragraph that starts with an em dash is the attribution: sans .85rem muted (selector: `blockquote p:last-child` when it begins with "—" can't be detected in CSS — just style `blockquote footer, blockquote cite` and leave paragraphs as body).
-- Lists: padding-left 1.4rem; markers muted (`::marker { color: var(--lp-muted) }`); `li + li` margin .25rem; nested lists margin .25rem 0. Task lists: `input[type=checkbox]` accent-color accent, margin-right .45em, vertical-align -0.1em; list-style none for task items (`li:has(> input[type=checkbox])`).
+- Lists: padding-left 1.4rem; markers muted (`::marker { color: var(--lp-muted) }`); `li + li` margin .25rem; nested lists margin .25rem 0. Task lists: `input[type=checkbox]` accent-color accent, margin-right .45em, vertical-align -0.1em; list-style none for task items (`li:has(> input[type=checkbox])`). Renderer task items are `li.task` with one of `task-todo`, `task-doing`, `task-done`, `task-cancelled`; every box is the same outlined square (1em, 1.5px muted border, radius 3px) hung in the list gutter and centred on the first line, with one mark inside drawn in CSS (no images): none for to do, a check for done, a dot for in progress, a cross for cancelled; done and cancelled items are muted, and their nested lists go back to the ink colour.
 - Definition lists: `dt` weight 650 margin-top .9rem; `dd` margin .2rem 0 0 1.25rem.
 - `hr`: border 0, border-top 1px `--lp-rule`, margin 2.5rem 0.
 

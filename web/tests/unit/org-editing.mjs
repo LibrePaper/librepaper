@@ -179,6 +179,8 @@ function folds(state) {
   assert.equal(run(toggleCheckbox, stateOf(boxes, 10)).doc, "- [ ] a\n- [ ] b\n- [-] c\n");
   assert.equal(run(toggleCheckbox, stateOf(boxes, 18)).doc, "- [ ] a\n- [X] b\n- [X] c\n", "a partial box becomes done");
   assert.equal(run(toggleCheckbox, stateOf("- plain\n", 3)).applied, false, "an item without a box has nothing to toggle");
+  assert.equal(run(toggleCheckbox, stateOf("- [/] a\n- [x] b\n", 2)).doc, "- [X] a\n- [x] b\n", "an in-progress box becomes done");
+  assert.equal(run(toggleCheckbox, stateOf("- [/] a\n- [x] b\n", 10)).doc, "- [/] a\n- [ ] b\n", "a done box becomes to do");
 }
 
 /* ------------------------------------------------------------ fold cycle */
