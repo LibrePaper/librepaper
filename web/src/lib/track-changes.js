@@ -40,7 +40,7 @@ const SETTLE_MS = 60_000;
  * @typedef {{ id: string, who: string, author: string, run: string | null, at: number, from: number, to: number }} Change
  * @typedef {Change & { stale: boolean, staleStart?: boolean, staleEnd?: boolean, hasCursor: boolean, legacy?: boolean, orphan?: boolean }} ResolvedChange
  * @typedef {{ id: string, at: number, fragments: Fragment[] }} Gap
- * @typedef {{ id: string, at: number, fragments: ResolvedFragment[], stale: boolean }} ResolvedGap
+ * @typedef {{ id: string, at: number, fragments: ResolvedFragment[], stale: boolean, relocated?: boolean }} ResolvedGap
  * @typedef {{ id: string, change: string, text: string, rank: number, at: number, stale: boolean, who: any, author: any, run: any, when: any }} OrphanFragment
  * @typedef {{ changes: Change[], gaps: Gap[] }} FileState
  * @typedef {Change & { deleted: string }} Row
@@ -497,7 +497,10 @@ export function resolveFile(doc, fileId) {
   // before the span.
   for (const f of live) {
     const inside = changes.find((c) => c.to > c.from && c.from < f.at && f.at < c.to);
-    if (inside) f.at = inside.from;
+    if (inside) {
+      f.at = inside.from;
+      f.relocated = true;
+    }
   }
   const gaps = [];
   for (const f of live.sort((x, y) => x.at - y.at || byRank(x, y))) {
@@ -505,7 +508,8 @@ export function resolveFile(doc, fileId) {
     if (last && last.at === f.at) {
       last.fragments.push({ id: f.id, change: f.change, text: f.text, rank: f.rank, stale: f.stale });
       if (f.stale) last.stale = true;
-    } else gaps.push({ id: `gap@${f.at}`, at: f.at, fragments: [{ id: f.id, change: f.change, text: f.text, rank: f.rank, stale: f.stale }], stale: f.stale });
+      if (f.relocated) last.relocated = true;
+    } else gaps.push({ id: `gap@${f.at}`, at: f.at, fragments: [{ id: f.id, change: f.change, text: f.text, rank: f.rank, stale: f.stale }], stale: f.stale, ...(f.relocated ? { relocated: true } : {}) });
   }
   const out = [];
   for (const c of changes) {
@@ -1039,6 +1043,11 @@ export function plannedWrite(before, state, touched) {
  */
 export function writtenState(doc, plan, written, before, edits) {
   if (!edits || before.orphans?.length) return null;
+  // A gap read at a span's start, though its cursor lies inside the span, is
+  // shown where its cursor is not; an edit that splits the span moves it back
+  // to the cursor, which no mapping of the shown position can follow. That
+  // only arises from concurrent edits, so the state is resolved instead.
+  if (before.gaps.some((g) => g.relocated)) return null;
   // Where a point before the batch is after it, or null when an edit touches
   // it, as `shiftResolved` reads touching.
   const moved = (from, to) => {
