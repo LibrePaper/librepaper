@@ -116,7 +116,7 @@ async function readLink(deployment, slug) {
   const response = await fetch(`${deployment.base}/api/documents/${slug}/share`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-librepaper-client": "1", cookie: deployment.cookie },
-    body: JSON.stringify({ create: { kind: "link", role: "reader", until: "1d", name: "Reader" } }),
+    body: JSON.stringify({ create: { kind: "link", role: "reader", until: "1d", name: "Reader", anonymous: true } }),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.created?.url) throw new Error(`read link failed: ${response.status} ${JSON.stringify(payload)}`);
@@ -191,7 +191,9 @@ async function signIn(tab, deployment) {
 async function openProject(tab, deployment, slug, { file = noteName(5), path = null } = {}) {
   await tab.resize(1300, 900);
   await tab.navigate(path ? `${deployment.browserBase}${path}` : `${deployment.browserBase}/docs/${slug}?file=${encodeURIComponent(file)}`);
-  await until("the editor", () => tab.evaluate(`Boolean(document.querySelector(".cm-content"))`), 45000);
+  // An editor gets the source editor; a reader gets the project's file list
+  // and the preview, with no editor.
+  await until("the project", () => tab.evaluate(`Boolean(document.querySelector(".cm-content") || document.querySelector(".explorer-name"))`), 45000);
 }
 
 const settle = () => pause(SETTLE);
@@ -243,7 +245,8 @@ async function warmedBytes(tab, slug, scenario, mark = 0) {
 // --- scenarios on a file store -------------------------------------------
 
 async function fileStoreScenarios(scratch) {
-  const deployment = await startDeployment({ label: "transport_files", binary });
+  // Scenario 5 opens a read link in a fresh profile, without signing in.
+  const deployment = await startDeployment({ label: "transport_files", binary, advanced: "anonymous_reads = true\n" }); // appended inside the helper's [access] table
   if (!deployment) return log("no binary; skipping") ?? false;
   if (deployment.unavailable) return log(`${deployment.unavailable}; skipping`) ?? false;
   const tabs = [];
@@ -284,8 +287,17 @@ async function fileStoreScenarios(scratch) {
     await tab.navigate(deployment.browserBase);
     await until("the account menu", () => tab.evaluate(`Boolean(document.querySelector("button.account"))`), 30000);
     await click(tab, `document.querySelector("button.account")`, "the account menu");
-    await until("the sign-out item", () => tab.evaluate(`[...document.querySelectorAll('[role="menuitem"]')].some((one) => /sign out/i.test(one.textContent))`), 5000);
-    await click(tab, `[...document.querySelectorAll('[role="menuitem"]')].find((one) => /sign out/i.test(one.textContent))`, "the Sign out item");
+    await until("the sign-out item", () => tab.evaluate(`[...document.querySelectorAll('[role="menuitem"]')].some((one) => /sign out/i.test(one.textContent) && one.getClientRects().length > 0)`), 5000);
+    // The menu (Skeleton, zag.js) selects on pointer events after the item is
+    // highlighted, so hover it first, then press and release.
+    const item = `[...document.querySelectorAll('[role="menuitem"]')].find((one) => /sign out/i.test(one.textContent) && one.getClientRects().length > 0)`;
+    await pause(300);
+    const at = await tab.evaluate(`(() => { const box = (${item}).getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; })()`);
+    await tab.command("Input.dispatchMouseEvent", { type: "mouseMoved", ...at });
+    await pause(200);
+    await tab.command("Input.dispatchMouseEvent", { type: "mousePressed", ...at, button: "left", clickCount: 1 });
+    await pause(50);
+    await tab.command("Input.dispatchMouseEvent", { type: "mouseReleased", ...at, button: "left", clickCount: 1 });
     await until("the sign-in page", () => tab.evaluate(`location.pathname.startsWith("/auth/")`), 15000);
     const left = await databases(tab);
     log(`4 sign out: databases left ${JSON.stringify(left)}`);
