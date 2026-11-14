@@ -451,8 +451,9 @@ console.log("reader-races: all checks passed");
   const active = { files,
     directoryChanged: (events) => !Array.isArray(events) || events.some((event) => directory.has(event.target)) };
   let targets = 0;
-  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, schedule: { scheduleTarget: () => targets++ } });
-  vm.runInContext(body("  function filesChanged(events, active = session)", "  function refreshPeers()"), ctx);
+  const origins = [];
+  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: (options) => { changes++; origins.push(Boolean(options?.remote)); }, schedule: { scheduleTarget: () => targets++ } });
+  vm.runInContext(body("  function filesChanged(events, active = session, by = \"local\")", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: "cid:2@1:Text" }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(refreshes, 0, "an edit inside a file does not rebuild the directory");
@@ -466,6 +467,12 @@ console.log("reader-races: all checks passed");
   vm.runInContext("filesChanged({})", ctx);
   assert.equal(refreshes, 2, "a change to the directory rebuilds it");
   assert.equal(changes, 4);
+  assert.deepEqual(origins, [false, false, false, false], "this browser's own edits are local");
+  // A collaborator's batch arrives as an import, and the repaint is told so.
+  ctx.events = [{ target: "cid:2@1:Text" }];
+  vm.runInContext("filesChanged(events, session, 'import')", ctx);
+  assert.equal(origins.at(-1), true, "an imported edit is a remote one");
+  changes -= 1;
   // One commit is one batch, so a batch that touches both an included file and
   // the directory rebuilds the list once and repaints once.
   // A rename moves a name in `paths` and touches nothing else. The list used

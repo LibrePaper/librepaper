@@ -213,20 +213,24 @@ function fakeClock() {
   assert.equal([...clock.timers.values()][0].ms, 2500, "latex.debounce() wins when it is longer");
 }
 
-// While a timer paint is pending, a fast-format change does not start a frame,
-// so continuous typing cannot keep moving the timer's deadline forever.
+// A passive timer left from before editing began gives way to this browser's
+// own edit: the timer is cleared and one frame paints, so continuous typing
+// can neither keep moving a deadline nor stack frames.
 {
   const clock = fakeClock();
   let editing = false;
+  let paints = 0;
   const schedule = createSourceSchedule({
-    ...clock, editing: () => editing, format: () => "typst", hidden: () => false,
+    ...clock, editing: () => editing, format: () => "typst", paint: () => paints++, hidden: () => false,
   });
   schedule.changed();
   editing = true;
   schedule.changed();
   schedule.changed();
-  assert.equal(clock.frames.size, 0, "no frame while the debounce timer is pending");
-  assert.equal(clock.timers.size, 1);
+  assert.equal(clock.timers.size, 0, "the passive timer is cleared");
+  assert.equal(clock.frames.size, 1, "one frame for the burst");
+  clock.fireFrames();
+  assert.equal(paints, 1);
 }
 
 // cancel() stops a pending timer paint. It leaves a pending frame alone.
