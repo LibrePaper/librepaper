@@ -49,7 +49,7 @@ export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
 export const desktop = () => window.__LIBREPAPER_DESKTOP__ ?? null;
 export const negotiation = () => "ok";
 export const mismatchText = () => "";
-export const LOCAL_OUTPUTS = { latex: ["pdf"], typst: ["pdf"], markdown: ["html", "pdf", "docx"], quarto: ["html", "pdf", "docx"] };
+export const LOCAL_OUTPUTS = { latex: ["pdf"], typst: ["pdf", "html"], markdown: ["html", "pdf", "docx"], quarto: ["html", "pdf", "docx"] };
 export const rendererKey = (format, output) => format + "." + output;
 export async function setRenderer() { return {}; }
 export async function resetRenderer() { return {}; }
