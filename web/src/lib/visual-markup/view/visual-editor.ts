@@ -6,7 +6,7 @@ import { getLanguage } from '../core/language';
 import { Token } from '../core/tokens';
 import { onOrgSyntax, onTypstSyntax } from '../../source-trees.js';
 import { refreshFolds } from '../../visual/folds.js';
-import { buildDecorations, caretParked, revealRanges } from './decorations';
+import { buildDecorations, caretParked, revealRanges, sameReveal } from './decorations';
 import { createTheme } from './theme';
 import './widgets';
 
@@ -89,8 +89,13 @@ const decorationField = StateField.define<VisualDecorations>({
 
     // A cursor move keeps the parse. A stale mapped set cannot be used here,
     // since its atomic ranges would make the caret jump over stale widgets.
+    // The selection reaches the build only through the lines it reveals, so a
+    // move that reveals the same lines leaves the set as it is (the document
+    // is unchanged, and the tokens are the parse of it).
     if (tr.selection) {
-      return value.tokens === null ? compute(tr.state) : compute(tr.state, value.tokens);
+      if (value.tokens === null) return compute(tr.state);
+      if (sameReveal(tr.startState, tr.state, getLanguage(state.language), value.tokens)) return value;
+      return compute(tr.state, value.tokens);
     }
 
     return value;
