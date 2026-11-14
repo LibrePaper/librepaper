@@ -2560,6 +2560,8 @@
   "registry_render_quarto_preview_terms": "quarto default preview pdf html output",
   "registry_render_typst_pdf": "Typst command",
   "registry_render_typst_pdf_terms": "typst command pdf render this computer result file",
+  "registry_render_typst_html": "Typst HTML command",
+  "registry_render_typst_html_terms": "typst html command render this computer result file",
   "registry_render_typst_preview": "Typst default preview",
   "registry_render_typst_preview_terms": "typst default preview pdf html output",
   "registry_render_typst_where": "Typst renders in",
@@ -2581,6 +2583,7 @@
   "rename_invalid_chars": "This format does not allow that name",
   "rename_label": "Rename {name} to",
   "renderers_local_failed": "Rendering {format} on this computer failed.",
+  "renderers_calepin_outputs_hidden": "A code chunk has no output from the last run, so outputs are hidden. Press Run to bring them back.",
   "renderers_quarto_failed": "The Quarto preview could not be drawn.",
   "renderersettings_aria": "{name} renders in",
   "renderersettings_description": "{name} documents render in this browser, or on this computer while Run code is on.",
@@ -3023,6 +3026,7 @@
   "runbutton_running_in": "Running code in {name}…",
   "runbutton_running": "Running code…",
   "runstatus_running": "Running Quarto · {seconds} s",
+  "runstatus_running_calepin": "Running Calepin · {seconds} s",
   "runbutton_stale": [
     {
       "declarations": [
