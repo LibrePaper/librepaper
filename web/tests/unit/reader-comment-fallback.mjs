@@ -46,4 +46,16 @@ assert.equal(other.start, 5);
 anchored.length = 0;
 context.anchorComments([comment, other], { rendered: false });
 assert.equal(anchored.length, 0, "a settled comment costs no search");
+
+// A hand attachment whose source passage is not found on the page leaves the
+// comment unplaced; removing the attachment still brings its quotation back.
+context.sync.documentRangeFor = () => null;
+const unmatched = { attachment: { attached_by_hand: true }, start: null, end: null, sourceStart: 0, sourceEnd: 3, sourcePath: "a.tex" };
+context.anchorComments([unmatched], { rendered: false });
+assert.equal(unmatched.start, null, "the fallback found nothing");
+anchored.length = 0;
+unmatched.attachment = { attached_by_hand: false };
+context.anchorComments([unmatched], { rendered: false });
+assert.deepEqual(anchored[0], [unmatched], "the released comment is searched by its quotation");
+assert.equal(unmatched.start, 1);
 console.log("reader-comment-fallback: ok");
