@@ -4,6 +4,8 @@
 // holding the selection shows its source. The text stays the document; only
 // the drawing differs.
 //
+// A header that the renderer draws as a title block is drawn here, under its Preamble pill.
+//
 // Overlays (comments, tracked changes, authorship, lint underlines, remote
 // carets) cannot reach inside a widget, so overlays.js paints copies into the
 // rendered DOM.
@@ -14,7 +16,7 @@ import "../visual-markup/visual-markup.css";
 import { loadKatex } from "../katex.js";
 import { applyNumbering, displaySources, typeset, untypeset } from "../math.js";
 import { numberDisplays } from "../math-numbering.js";
-import { foldLayer, foldsOf, refreshFolds } from "../visual/folds.js";
+import { foldLayer, foldPill, mergeFolds, refreshFolds } from "../visual/folds.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
 import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
@@ -22,6 +24,9 @@ import HOUSE_CSS from "../house-css.js";
 import { paperOverlays } from "./overlays.js";
 
 const refreshPaper = StateEffect.define();
+
+// The taken ranges of a state that draws no block in place of a fold. Shared, so the fold layer's identity check sees no change.
+const NO_RANGES = [];
 
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".svg", ".pdf"];
 
@@ -65,22 +70,24 @@ function numberBlocks(htmls) {
 }
 
 class PaperWidget extends WidgetType {
-  constructor(html, from, path, imageUrl, math = null) {
+  // `others` is non-null only for a header's title block: the text its Preamble pill shows.
+  constructor(html, from, path, imageUrl, math = null, others = null) {
     super();
     this.html = html;
     this.from = from;
     this.path = path;
     this.imageUrl = imageUrl;
     this.math = math;
+    this.others = others;
     // Compared as text, so that a renumbering redraws the block.
     this.mathKey = math ? JSON.stringify([math.tex, math.keys, [...math.labels]]) : "";
   }
 
   eq(other) {
-    return other.html === this.html && other.mathKey === this.mathKey;
+    return other.html === this.html && other.mathKey === this.mathKey && other.others === this.others;
   }
 
-  toDOM() {
+  toDOM(view) {
     const div = document.createElement("div");
     div.className = "cm-lp-paper";
     div.innerHTML = this.html;
@@ -109,7 +116,12 @@ class PaperWidget extends WidgetType {
     div.addEventListener("click", (event) => {
       if (event.target instanceof Element && event.target.closest("a")) event.preventDefault();
     });
-    return div;
+    // A title block with other header lines comes under the Preamble pill that stands for them.
+    if (!this.others) return div;
+    const wrapper = document.createElement("div");
+    wrapper.className = "cm-lp-paper-header";
+    wrapper.append(foldPill(view, { kind: "preamble", detail: this.others }), div);
+    return wrapper;
   }
 
   ignoreEvent() {
@@ -125,9 +137,14 @@ function touches(ranges, block) {
   return ranges.some((range) => range.from <= block.to && range.to >= block.from);
 }
 
+// A header's HTML is a title block when the renderer draws the header as one.
+function isTitleBlock(html) {
+  return /^\s*<header class="title-block[" ]/.test(html);
+}
+
 function build(state, path, imageUrl, adapter, project) {
   const renderer = currentPaperRenderer(adapter.module);
-  if (!renderer) return { decorations: Decoration.none, rendered: [], gaps: new Set() };
+  if (!renderer) return { decorations: Decoration.none, rendered: [], gaps: new Set(), taken: NO_RANGES };
   // A renderer that compiles in the project (Typst) is told which one before it draws.
   if (project && renderer.setProject) renderer.setProject(project());
   const text = state.doc.toString();
@@ -141,7 +158,7 @@ function build(state, path, imageUrl, adapter, project) {
     }
   }
   const blocks = whole ?? adapter.splitBlocks(text);
-  if (!blocks) return { decorations: Decoration.none, rendered: [], gaps: new Set() };
+  if (!blocks) return { decorations: Decoration.none, rendered: [], gaps: new Set(), taken: NO_RANGES };
   // Every block the renderer draws, the selected ones too, so that numbers do not move when the caret enters an equation.
   const htmls = new Map();
   // The project's texts and the open path, read once: a Typst block counts what its included files number.
@@ -165,19 +182,35 @@ function build(state, path, imageUrl, adapter, project) {
   const numbering = adapter.module !== "typst" ? numberBlocks(htmls) : null;
   // A parked caret (the layer just turned on) reveals nothing, as in the LaTeX layer.
   const ranges = revealingSelection(state);
-  // A block that overlaps a fold stays source: the fold layer draws that line, or shows the source when revealed.
-  const folds = foldsOf(state);
+  // The folds are found from the text here, not read from the fold layer, because the fold layer reads this layer's taken ranges.
+  const folds = mergeFolds(text, adapter.folds(text));
+  const taken = [];
   const marks = [];
   const rendered = [];
   for (const block of blocks) {
     if (!htmls.has(block) || touches(ranges, block)) continue;
-    if (folds.some((fold) => block.from <= fold.to && block.to >= fold.from)) continue;
     const html = htmls.get(block);
     if (!html.trim()) continue;
+    // A block that overlaps a fold stays source, unless it is a header's title block: that one is drawn under its pill.
+    // The fold layer draws what this layer does not take.
+    const overlapping = folds.filter((fold) => block.from <= fold.to && block.to >= fold.from);
+    let others = null;
+    if (overlapping.length) {
+      const [fold] = overlapping;
+      const header =
+        overlapping.length === 1 &&
+        fold.kind === "preamble" &&
+        block.from <= fold.from &&
+        fold.to <= block.to &&
+        isTitleBlock(html);
+      if (!header) continue;
+      others = fold.others ?? "";
+      taken.push({ from: block.from, to: block.to });
+    }
     rendered.push(block);
     marks.push(
       Decoration.replace({
-        widget: new PaperWidget(html, block.from, path, imageUrl, numbering?.get(block) ?? null),
+        widget: new PaperWidget(html, block.from, path, imageUrl, numbering?.get(block) ?? null, others),
         block: true,
       }).range(block.from, block.to),
     );
@@ -197,7 +230,7 @@ function build(state, path, imageUrl, adapter, project) {
       }
     }
   }
-  return { decorations: Decoration.set(marks, true), rendered, gaps };
+  return { decorations: Decoration.set(marks, true), rendered, gaps, taken: taken.length ? taken : NO_RANGES };
 }
 
 function paperField(path, imageUrl, adapter, project) {
@@ -300,15 +333,15 @@ function stepInto(field, direction) {
 /// `assetUrl(path)` a fetchable URL for an asset or null.
 /// `dark` puts `lp-dark` on the editor, which the house stylesheet answers.
 /// `openInclude(name)` opens the file a fold's include names; without it the include fold has no button.
-/// The fold layer comes before the paper field, so the field sees the folds in force when it builds.
+/// The paper field finds the folds from the text and says which ones it draws (its taken ranges); the fold layer leaves those ranges alone.
 export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false, project = null, openInclude = null } = {}) {
   const adapter = paperFormat(format);
   if (!adapter) return [];
   const field = paperField(path, imageUrl, adapter, project);
   return [
     caretParked,
-    ...foldLayer(adapter.folds, { openInclude }),
     field,
+    ...foldLayer(adapter.folds, { openInclude, taken: (state) => state.field(field, false)?.taken ?? NO_RANGES }),
     // Vim's j and k bypass the keymap below; this puts the caret on the first line of a skipped block.
     // A line counts as unseen when it is a collapsed gap before or after the move, or when it was drawn as part of a block before the move.
     stepIntoBlocksPlugin({
