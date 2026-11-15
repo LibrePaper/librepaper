@@ -297,7 +297,7 @@ test("a remote caret in another text of the document resolves to a delete", () =
   assert.deepEqual(getCursorEffect(doc, main, "1", elsewhere).value, { type: "delete", peer: "1" });
 });
 
-test("a remote caret that arrives before its edit is resolved again when the edit lands", async () => {
+test("a remote caret that arrives before its edit is resolved again when the edit lands", async (t) => {
   const peer = new LoroDoc();
   peer.setPeerId(1);
   const peerText = peer.getMap("files").setContainer("main.md", new LoroText());
@@ -310,7 +310,12 @@ test("a remote caret that arrives before its edit is resolved again when the edi
   const ours = new EphemeralStore();
   const theirs = new EphemeralStore();
   const view = new View(EditorState.create({ doc: "hello", extensions: [ephemeralStateField] }));
-  view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
+  const plugin = view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
+  t.after(() => {
+    plugin.destroy();
+    ours.free();
+    theirs.free();
+  });
 
   // The peer's caret after "hello" arrives and resolves against our copy.
   theirs.set("1-cm-cursor", { anchor: peerText.getCursor(5).encode() });
@@ -332,7 +337,7 @@ test("a remote caret that arrives before its edit is resolved again when the edi
   assert.equal(view.state.field(ephemeralStateField).remoteCursors.get("1").anchor, 7);
 });
 
-test("a peer's first caret, attached to characters not yet imported, is stored once they land", async () => {
+test("a peer's first caret, attached to characters not yet imported, is stored once they land", async (t) => {
   const peer = new LoroDoc();
   peer.setPeerId(1);
   const peerText = peer.getMap("files").setContainer("main.md", new LoroText());
@@ -345,7 +350,12 @@ test("a peer's first caret, attached to characters not yet imported, is stored o
   const ours = new EphemeralStore();
   const theirs = new EphemeralStore();
   const view = new View(EditorState.create({ doc: "hello", extensions: [ephemeralStateField] }));
-  view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
+  const plugin = view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
+  t.after(() => {
+    plugin.destroy();
+    ours.free();
+    theirs.free();
+  });
 
   // The peer types "XY" after "hello" and its caret sits between X and Y.
   // The caret reaches us first: nothing in our copy resolves it, so nothing is stored.
