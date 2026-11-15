@@ -341,7 +341,17 @@ export async function splitResults(html, qmdSource, { path = "main.qmd", files =
     throw error;
   }
   const expected = expandedCells(qmdSource, { path, files });
-  if (!found.length || !expected.length) return { ok: false, reason: "no-cells" };
+  // A document with inline values and no code cells still has something to publish.
+  if (!expected.length) {
+    let inlines = null;
+    try {
+      inlines = await inlineEntries(content, qmdSource, { path, files });
+    } catch {
+      inlines = null;
+    }
+    return inlines ? { ok: true, record: { version: 1, path, cells: [], inlines } } : { ok: false, reason: "no-cells" };
+  }
+  if (!found.length) return { ok: false, reason: "no-cells" };
   const tags = found.map(cellTag);
   let htmlCells;
   if (tags.some((tag) => tag !== null)) {
