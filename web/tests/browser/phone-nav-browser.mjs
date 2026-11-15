@@ -533,6 +533,13 @@ try {
   await until('scroll put back', async () => (await firstLine()) === before, 5000);
   await wait(500);
   assert.equal(await docWrites(), baseline, 'putting the scroll back writes nothing to the document');
+  // Left on the document face, the editor is hidden and has nothing to
+  // measure; the place it last showed is the one kept and put back.
+  await toMode('document');
+  await b.navigate(url);
+  await until('phone document face after the reload', async () => (await has('.cm-editor')) && (await modeOf()) === 'mobile-document', 10000);
+  await toMode('source');
+  await until('scroll kept through the document face', async () => (await firstLine()) === before, 5000);
 
   // n. Opening another file and coming back keeps the scroll.
   await resize(1280, 900);

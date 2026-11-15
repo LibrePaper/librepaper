@@ -1216,7 +1216,19 @@
   // view, and how many pixels of that row lie above the view. A row and not
   // a line, because a wrapped line can be several screens tall and its start
   // would be a long way from where the reader was.
+  // A hidden editor (the phone showing the document) has no geometry to read,
+  // so it answers with the last place measured while it was on screen.
+  let lastSeen = null;
   function scrollPlace() {
+    if (!view.scrollDOM.getClientRects().length) {
+      return lastSeen?.file === showing ? { top: lastSeen.top, offset: lastSeen.offset } : { top: 0, offset: 0 };
+    }
+    return measuredPlace();
+  }
+  function noteSeen() {
+    if (view?.scrollDOM.getClientRects().length) lastSeen = { file: showing, ...measuredPlace() };
+  }
+  function measuredPlace() {
     const edge = view.scrollDOM.getBoundingClientRect().top;
     const left = view.contentDOM.getBoundingClientRect().left + 1;
     const top = view.posAtCoords({ x: left, y: edge + 1 }, false);
@@ -1231,6 +1243,7 @@
   // deferred, so a jump or a collaborator shown right after replaces it.
   function scrollBack(place) {
     const at = Math.min(Math.max(0, place.top || 0), view.state.doc.length);
+    lastSeen = { file: showing, top: at, offset: place.offset || 0 };
     let margin = 0;
     for (const source of view.state.facet(EditorView.scrollMargins)) margin = Math.max(margin, source(view)?.top ?? 0);
     view.dispatch({ effects: EditorView.scrollIntoView(at, { y: "start", yMargin: -((place.offset || 0) + margin) }) });
@@ -2184,6 +2197,12 @@
         parent: host,
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
+      // Keeps lastSeen current while the editor is on screen, once a frame at most.
+      let seenFrame = 0;
+      const onScroll = () => {
+        if (!seenFrame) seenFrame = requestAnimationFrame(() => { seenFrame = 0; noteSeen(); });
+      };
+      view.scrollDOM.addEventListener("scroll", onScroll, { passive: true });
       syncKeys(view);
       syncFeatures(view, initial.first);
       const unsubscribeMode = onMode(() => { syncTheme(view); syncVisual(view); });
@@ -2231,6 +2250,8 @@
         unsubscribeMode();
         unsubscribeFont();
         unsubscribeLineHeight();
+        view?.scrollDOM.removeEventListener("scroll", onScroll);
+        cancelAnimationFrame(seenFrame);
         if (view) viewCallbacks.delete(view);
         cancelAnimationFrame(formatFrame);
         formatFrame = 0;
@@ -2241,6 +2262,7 @@
         // the state bound to the view disagree after a lifecycle rebind.
         states = new WeakMap();
         tops = new WeakMap();
+        lastSeen = null;
         undoManager = null;
         undoManagerDoc = null;
         view = null;
