@@ -132,6 +132,21 @@ function tagOptions(pos, current, doc, partial) {
   return result(pos - partial.length, /^[A-Za-z0-9_/-]*$/, options);
 }
 
+/**
+ * Where the task source can answer: on a task's first line, a tag after "#",
+ * a field value after "key:", or a word that starts a field name.
+ * @param {string} before the line's text up to the cursor
+ */
+export function taskTrigger(before) {
+  const head = before.match(TASK_LINE);
+  if (!head) return false;
+  const rest = before.slice(head[0].length);
+  if (FIELD_VALUE.test(rest)) return true;
+  const word = rest.match(WORD)?.[1];
+  if (!word) return false;
+  return word.startsWith("#") || FIELDS.some((name) => name.startsWith(word.toLowerCase()));
+}
+
 /** Completion source for task fields and tags. Returns null outside Markdown and Quarto task items. */
 export function taskCompletion(project) {
   return (context) => {
