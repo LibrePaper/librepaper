@@ -122,13 +122,13 @@ assert.deepEqual(await splitResults("<main id=\"quarto-document-content\"><div c
   assert.notEqual(tagged.texts, tree.texts);
   assert.equal(tagged.main, "main.qmd");
   // Cells in document order: m1 is 0, a is 1, b (included by a) is 2, m2 is 3.
-  assert.equal(tagged.texts["main.qmd"], "```{r}\n#| classes: lp-cell-0\nm1\n```\n\n{{< include chap/a.qmd >}}\n\n```{r}\n#| classes: \"hidden extra lp-cell-3\"\n#| label: m2\nm2\n```\n");
+  assert.equal(tagged.texts["main.qmd"], "```{r}\n#| classes: lp-cell-0\nm1\n```\n\n{{< include chap/a.qmd >}}\n\n```{r}\n#| classes: \"hidden .extra .lp-cell-3\"\n#| label: m2\nm2\n```\n");
   assert.equal(tagged.texts["chap/a.qmd"], "```{r}\n#| classes: lp-cell-1\na\n```\n\n{{< include b.qmd >}}\n");
   assert.equal(tagged.texts["chap/b.qmd"], "```{r}\n#| classes: lp-cell-2\n#| label: b1\nb\n```\n");
 
-  // A bare classes value and a flow list take the tag without breaking YAML.
+  // A bare classes value takes the tag; a flow list is left alone.
   const forms = tagCells({ main: "x.qmd", texts: { "x.qmd": "```{r}\n#| classes:\n1\n```\n\n```{r}\n#| classes: [a, b]\n2\n```\n" } });
-  assert.equal(forms.texts["x.qmd"], "```{r}\n#| classes: lp-cell-0\n1\n```\n\n```{r}\n#| classes: [a, b, lp-cell-1]\n2\n```\n");
+  assert.equal(forms.texts["x.qmd"], "```{r}\n#| classes: lp-cell-0\n1\n```\n\n```{r}\n#| classes: [a, b]\n2\n```\n");
 
   // A CRLF file gets CRLF inserted lines.
   const crlf = tagCells({ main: "c.qmd", texts: { "c.qmd": "```{r}\r\n1\r\n```\r\n" } });

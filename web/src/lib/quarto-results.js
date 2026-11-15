@@ -208,18 +208,19 @@ export function tagCells(tree) {
   return { ...tree, texts };
 }
 
-// Appends a tag to an existing `classes:` value, keeping its quotes or flow
-// list intact. A second `classes:` key would be a duplicate YAML key.
+// Appends a tag to an existing `classes:` value. A second `classes:` key would
+// be a duplicate YAML key. Quarto writes the value as `{.cell .<value>}`, so
+// only the first class gets its dot: every later class is written with its
+// own, or the cell's div breaks into plain text. A flow list is left alone
+// and its cell goes untagged, which costs that cell its output only.
 function addClass(line, tag) {
   const [, head, space, value, tail] = /^(\s*#\|\s*classes\s*:)([ \t]*)(.*?)(\s*)$/.exec(line);
-  const quote = value[0];
-  let next;
-  if (value.length >= 2 && (quote === '"' || quote === "'") && value.endsWith(quote)) next = `${value.slice(0, -1)} ${tag}${quote}`;
-  else if (value.startsWith("[") && value.endsWith("]")) {
-    const inner = value.slice(1, -1).trim();
-    next = `[${inner ? `${inner}, ` : ""}${tag}]`;
-  } else next = value ? `${value} ${tag}` : tag;
-  return `${head}${space || " "}${next}${tail}`;
+  if (value.startsWith("[")) return line;
+  const quote = value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.endsWith(value[0]) ? value[0] : "";
+  const words = (quote ? value.slice(1, -1) : value).split(/\s+/).filter(Boolean);
+  words.push(tag);
+  const dotted = words.map((word, at) => (at === 0 || word.startsWith(".") ? word : `.${word}`)).join(" ");
+  return `${head}${space || " "}${quote}${dotted}${quote}${tail}`;
 }
 
 // The index a tagged cell's outer div carries, or null for an untagged cell.
@@ -231,15 +232,17 @@ function cellTag(tokens) {
   return null;
 }
 
-// The tokens of a tagged cell with its tag class taken off the outer div, so
-// the tag never reaches the stored record.
+// The tokens of a tagged cell with its tag class taken off every element:
+// Quarto repeats it on the inner div of a labelled figure or table. The tag
+// never reaches the stored record.
 function untagged(tokens) {
-  const [open, ...rest] = tokens;
-  const raw = open.raw.replace(CLASS_ATTR, (_all, lead, quote, quoted, bare) => {
-    const kept = (quoted ?? bare ?? "").split(/\s+/).filter((name) => name && !TAG.test(name)).join(" ");
-    return quote === undefined && quoted === undefined ? `${lead}${kept}` : `${lead}${quote}${kept}${quote}`;
-  });
-  return [{ ...open, raw }, ...rest];
+  return tokens.map((token) => (token.kind !== "open" ? token : {
+    ...token,
+    raw: token.raw.replace(CLASS_ATTR, (_all, lead, quote, quoted, bare) => {
+      const kept = (quoted ?? bare ?? "").split(/\s+/).filter((name) => name && !TAG.test(name)).join(" ");
+      return quote === undefined ? `${lead}"${kept}"` : `${lead}${quote}${kept}${quote}`;
+    }),
+  }));
 }
 
 // The output of a tagged cell. A cell Quarto wrote with nothing in it (silent
