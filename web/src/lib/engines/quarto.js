@@ -227,8 +227,23 @@ function inlineOccurrence(line, path, lineNumber, occurrence) {
 }
 
 /** @typedef {{id: string, path: string, label: string, language: string, info: string, options: Record<string, unknown>, code: string, rawCode: string, source: string, sourceStart: number, sourceEnd: number, startLine: number, endLine: number, codeStart: number, codeEnd: number, span: {start: number, end: number}, ambiguous?: boolean, source_sha256?: string, source_ambiguous?: boolean}} QuartoCell */
+// The last parse, kept for one call. The sidecar and the Reader's diagnostics
+// parse the same main text on every keystroke, so the second call gets the
+// first call's result. Callers must treat the result as read-only: every caller
+// that asks for the same text and path receives the same object.
+let lastParse = null;
+
 /** @param {string} source @param {{path?: string}} [options] */
 export function parseQuarto(source, { path = "main.qmd" } = {}) {
+  source = String(source ?? "");
+  if (lastParse && lastParse.path === path && lastParse.source === source) return lastParse.result;
+  const result = parseQuartoUncached(source, { path });
+  lastParse = { path, source, result };
+  return result;
+}
+
+/** @param {string} source @param {{path?: string}} [options] */
+function parseQuartoUncached(source, { path = "main.qmd" } = {}) {
   source = String(source ?? "");
   const lines = source.split("\n");
   const offsets = lineOffsets(source);

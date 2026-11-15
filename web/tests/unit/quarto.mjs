@@ -210,4 +210,20 @@ assert.deepEqual([mapped[1].line, mapped[1].generated], [0, true]);
   assert.equal("inlines" in plainSidecar, false);
 }
 
+// parseQuarto keeps its last call: the same text and path give the same object, anything else a fresh parse.
+{
+  const memoSource = "---\ntitle: Memo\n---\n\n```{r #one}\nplot(1)\n```\n";
+  const first = parseQuarto(memoSource, { path: "memo.qmd" });
+  assert.equal(parseQuarto(memoSource, { path: "memo.qmd" }), first);
+  const edited = parseQuarto(memoSource.replace("plot(1)", "plot(2)"), { path: "memo.qmd" });
+  assert.notEqual(edited, first);
+  assert.equal(edited.cells[0].code, "plot(2)");
+  assert.equal(edited.cells[0].id, "memo.qmd#one");
+  const moved = parseQuarto(memoSource, { path: "other.qmd" });
+  assert.notEqual(moved, first);
+  assert.equal(moved.path, "other.qmd");
+  assert.equal(moved.cells[0].id, "other.qmd#one");
+  assert.equal(moved.metadata.title, "Memo");
+}
+
 console.log("quarto: parser, sidecar, diagnostics and identity scenarios passed");
