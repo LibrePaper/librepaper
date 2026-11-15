@@ -436,9 +436,13 @@ export function foldingRanges(project, path) {
     .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 }
 
+/** Formats whose code writes figures the project does not hold. */
+const RUN_FORMATS = new Set(["quarto", "typst"]);
+
 /**
  * Unknown labels, citations, references and footnotes, duplicate labels,
- * missing files (includes, assets and file links), and notes nothing uses: a
+ * missing files (includes, assets and file links; not the assets of Quarto and
+ * Typst, whose figures can come from a run), and notes nothing uses: a
  * footnote with no reference, a figure, table, equation or listing nothing
  * refers to, and a bibliography in a project that cites nothing. Citation
  * checks are skipped while the bibliography is unknown; file checks while the
@@ -502,6 +506,9 @@ export function diagnostics(project, path) {
 
     if (item.kind === "include" || item.kind === "asset" || isFileLink(item)) {
       if (known === null || project.resolveFile(path, name, item.kind) !== null) continue;
+      // A Quarto or Typst figure may live in the author's Run directory. The
+      // preview knows what the last run held, so its warning replaces this one.
+      if (item.kind === "asset" && RUN_FORMATS.has(file.format)) continue;
       // LaTeX names read from the project root, so suggest them from there.
       const fromRoot = file.format === "latex";
       const candidates = known.map((knownPath) => {

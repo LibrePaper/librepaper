@@ -2186,21 +2186,6 @@
   ],
   "preview_notes_shown_inside": "{name} is shown inside {path}.",
   "preview_render_could_not_render": "could not render",
-  "preview_render_missing_figures": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "could not fetch figure: {names}",
-        "countPlural=*": "could not fetch figures: {names}"
-      }
-    }
-  ],
   "preview_render_no_output": "the compiler produced no preview and no log",
   "preview_rendering_label": "Rendering preview",
   "previewcontrols_find_count": "{current} of {total}",
@@ -3046,5 +3031,7 @@
   "preview_render_run_directory_not_linked": "{path} in your Run directory could not be made available to Quarto.",
   "preview_render_run_directory_missing_file": "Code looks for files in your Run directory: {path}.",
   "common_scripts_stay_local": "Scripts and data stay on your computer. Quarto runs them from your Run directory.",
-  "preview_render_run_directory_project_only": "{path} is in LibrePaper, but code reads files from your Run directory. Copy it there."
+  "preview_render_run_directory_project_only": "{path} is in LibrePaper, but code reads files from your Run directory. Copy it there.",
+  "preview_render_figure_in_run_directory": "{name} is in your Run directory. Run code to include it.",
+  "preview_render_figure_not_found": "{name} is not in the project or in the last run."
 }

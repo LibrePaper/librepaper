@@ -2186,21 +2186,6 @@
   ],
   "preview_notes_shown_inside": "{name} é exibido dentro de {path}.",
   "preview_render_could_not_render": "não foi possível renderizar",
-  "preview_render_missing_figures": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "não foi possível obter a figura: {names}",
-        "countPlural=*": "não foi possível obter as figuras: {names}"
-      }
-    }
-  ],
   "preview_render_no_output": "o compilador não produziu pré-visualização nem log",
   "preview_rendering_label": "Renderizando pré-visualização",
   "previewcontrols_find_count": "{current} de {total}",
@@ -3046,5 +3031,7 @@
   "preview_render_run_directory_not_linked": "Não foi possível disponibilizar {path}, da sua pasta de execução, ao Quarto.",
   "preview_render_run_directory_missing_file": "O código procura arquivos na sua pasta de execução: {path}.",
   "common_scripts_stay_local": "Os scripts e os dados ficam no seu computador. O Quarto os executa a partir da sua pasta de execução.",
-  "preview_render_run_directory_project_only": "{path} está no LibrePaper, mas o código lê os arquivos da sua pasta de execução. Copie-o para a sua pasta de execução."
+  "preview_render_run_directory_project_only": "{path} está no LibrePaper, mas o código lê os arquivos da sua pasta de execução. Copie-o para a sua pasta de execução.",
+  "preview_render_figure_in_run_directory": "{name} está na sua pasta de execução. Execute o código para incluí-lo.",
+  "preview_render_figure_not_found": "{name} não está no projeto nem na última execução."
 }

@@ -2186,21 +2186,6 @@
   ],
   "preview_notes_shown_inside": "{name} est affiché dans {path}.",
   "preview_render_could_not_render": "impossible de produire le rendu",
-  "preview_render_missing_figures": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "impossible de récupérer la figure : {names}",
-        "countPlural=*": "impossible de récupérer les figures : {names}"
-      }
-    }
-  ],
   "preview_render_no_output": "le compilateur n’a produit ni aperçu ni journal",
   "preview_rendering_label": "Compilation de l’aperçu",
   "previewcontrols_find_count": "{current} sur {total}",
@@ -3046,5 +3031,7 @@
   "preview_render_run_directory_not_linked": "{path} dans votre dossier d’exécution n’a pas pu être rendu accessible à Quarto.",
   "preview_render_run_directory_missing_file": "Le code cherche des fichiers dans votre dossier d’exécution : {path}.",
   "common_scripts_stay_local": "Vos scripts et données restent sur votre ordinateur. Quarto les exécute depuis votre dossier d’exécution.",
-  "preview_render_run_directory_project_only": "{path} se trouve dans LibrePaper, mais le code lit les fichiers de votre dossier d’exécution. Copiez-le dans votre dossier d’exécution."
+  "preview_render_run_directory_project_only": "{path} se trouve dans LibrePaper, mais le code lit les fichiers de votre dossier d’exécution. Copiez-le dans votre dossier d’exécution.",
+  "preview_render_figure_in_run_directory": "{name} se trouve dans votre dossier d’exécution. Exécutez le code pour l’inclure.",
+  "preview_render_figure_not_found": "{name} ne se trouve ni dans le projet ni dans la dernière exécution."
 }

@@ -23,6 +23,8 @@ import { compilerAvailable } from "../renderers.js";
 import { LOCAL_OUTPUTS } from "../desktop/client.js";
 import { parseQuarto } from "../engines/quarto.js";
 import { docxFile, inlineBlobUrls, inlineFigureReferences } from "./downloads.js";
+import { referencedFigures } from "../figure-references.js";
+import { fillFigures, placeholderUrl } from "../missing-figures.js";
 import { m } from "../paraglide/messages.js";
 
 export const EXPORT_TARGETS = ["pdf", "html", "docx"];
@@ -113,6 +115,27 @@ export function pandocMath(html) {
   );
 }
 
+/// The tree an export is built from: figures of the last run and placeholders
+/// filled in on a copy, so the export always proceeds. `missing` lists the
+/// references that are in neither the project nor the run, for one warning.
+/// `references` defaults to what the tree refers to; `resultsFiles` is the
+/// `files` of the last run's results, or null.
+export function figuresForExport(tree, { references = referencedFigures(tree), resultsFiles = null } = {}) {
+  const copy = { ...tree, assets: { ...tree.assets }, urls: { ...tree.urls } };
+  const { missing } = fillFigures(copy, { references, resultsFiles });
+  return { tree: copy, missing };
+}
+
+/// An authored HTML page is exported as written, so each src naming a missing
+/// figure is replaced by the placeholder picture.
+function placeholderSources(html, missing) {
+  let out = html;
+  for (const { name, path } of missing) {
+    for (const quote of ['"', "'"]) out = out.split(`src=${quote}${name}${quote}`).join(`src=${quote}${placeholderUrl(path)}${quote}`);
+  }
+  return out;
+}
+
 /// Produce the file to save, from what this tab holds and nothing else.
 ///
 /// - `tree`: the full render tree, assets and urls already gathered.
@@ -126,9 +149,20 @@ export function pandocMath(html) {
 /// - `local`: whether the desktop app builds the file with the command for
 ///   its format, false for the browser route.
 ///
-/// Resolves `{ blob, name }`; rejects with an Error whose message is a plain
-/// sentence.
-export async function exportFile({ target, format, tree, title, slug, project = "", preview, previewCurrent, render: renderIn, run, local = false, compiler = compilerAvailable }) {
+/// - `resultsFiles`: the `files` of the last run's results (null when none).
+///   Figures from them, and placeholders for any that are missing, are put in
+///   the tree first, so the export is never refused for a missing figure.
+///
+/// Resolves `{ blob, name, missing }`, `missing` being the figure references
+/// that are in neither the project nor the run; rejects with an Error whose
+/// message is a plain sentence.
+export async function exportFile({ tree: given, resultsFiles = null, ...options }) {
+  const { tree, missing } = figuresForExport(given, { resultsFiles });
+  const file = await exportFilled({ ...options, tree, missing });
+  return { ...file, missing };
+}
+
+async function exportFilled({ target, format, tree, missing = [], title, slug, project = "", preview, previewCurrent, render: renderIn, run, local = false, compiler = compilerAvailable }) {
   const reused = previewCurrent && preview?.kind === target ? preview : null;
   const render = (source, name, options) => renderIn(source, name, options);
 
@@ -182,7 +216,7 @@ export async function exportFile({ target, format, tree, title, slug, project = 
     if (format === "html") {
       const source = tree.texts?.[tree.main];
       if (typeof source !== "string") throw new Error(m.exports_html_unreadable());
-      return source;
+      return placeholderSources(source, missing);
     }
     // The live preview names its figures by reference, which the download
     // cannot use, so those become the data URLs the tree was gathered with.
