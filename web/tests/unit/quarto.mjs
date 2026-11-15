@@ -182,6 +182,25 @@ assert.deepEqual([mapped[1].line, mapped[1].generated], [0, true]);
   const twice = await quartoSidecar("`r a`\n\n`r a`\n", { path: "paper.qmd", strings, results: { inlines: [{ fingerprint: await sha256("r\nr a"), html: "x" }, { fingerprint: await sha256("r\nr a"), html: "y" }] } });
   assert.deepEqual(twice.inlines.map((entry) => [entry.line, entry.html]), [[1, "x"], [3, "y"]]);
 
+  // (a) An empty saved value still takes its slot: the first occurrence gets no entry, the second gets "42".
+  const silentFirst = await sha256("r\nr x");
+  const silent = await quartoSidecar("`r x`\n\n`r x`\n", { path: "paper.qmd", strings, results: { inlines: [{ fingerprint: silentFirst, html: "" }, { fingerprint: silentFirst, html: "42" }] } });
+  assert.deepEqual(silent.inlines.map((entry) => [entry.line, entry.html]), [[3, "42"]]);
+
+  // (b) The same expression in two included files pairs within each file, whatever the include order.
+  const repeatedFiles = { "a.qmd": "A `r n`\n", "b.qmd": "B `r n`\n" };
+  const repeatedFingerprint = await sha256("r\nr n");
+  const swapped = await quartoSidecar("{{< include b.qmd >}}\n\n{{< include a.qmd >}}\n", {
+    path: "paper.qmd",
+    strings,
+    files: repeatedFiles,
+    results: { inlines: [
+      { fingerprint: repeatedFingerprint, html: "1", path: "a.qmd" },
+      { fingerprint: repeatedFingerprint, html: "2", path: "b.qmd" },
+    ] },
+  });
+  assert.deepEqual(swapped.inlines.map((entry) => [entry.path, entry.line, entry.html]), [["b.qmd", 1, "2"], ["a.qmd", 1, "1"]]);
+
   // Without inline values there is no inlines key, saved or not.
   const plainSidecar = await quartoSidecar("Plain `not code`.\n", { path: "paper.qmd", strings, results: { inlines: [{ fingerprint: fa, html: "1" }] } });
   assert.equal("inlines" in plainSidecar, false);

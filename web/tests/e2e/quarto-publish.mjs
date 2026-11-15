@@ -8,8 +8,7 @@
 // skip line and exits 0.
 //
 // The draft half reads markdown.wasm from LIBREPAPER_MARKDOWN_WASM, or from
-// web/wasm/markdown.wasm. When the module predates inline values and the
-// variable is not set, only the inline-draw assertions are skipped.
+// web/wasm/markdown.wasm. The module must draw inline values (v0.5.0 or later).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -225,15 +224,10 @@ async function main() {
   assert.match(text, /\[1\]\s*3\b/, "the included chunk's output is drawn");
   assert.match(text, /The total is/, "the included prose is drawn");
 
-  const inlineDrawn = text.includes("quarto-inline-value");
-  if (!inlineDrawn && !process.env.LIBREPAPER_MARKDOWN_WASM) {
-    console.log(`note: ${modulePath} draws no inline values (an older build); skipping the inline-draw assertions`);
-  } else {
-    assert.ok(text.includes('<span class="quarto-inline-value">4</span>'), "the mean is drawn in its prose");
-    assert.ok(text.includes('<span class="quarto-inline-value">6</span>'), "the max is drawn in its prose");
-    assert.ok(text.includes('<span class="quarto-inline-value">12</span>'), "the included sum is drawn in its prose");
-    assert.ok(!text.includes("r mean(x)"), "the inline code text is replaced, not shown");
-  }
+  assert.ok(text.includes('<span class="quarto-inline-value">4</span>'), "the mean is drawn in its prose");
+  assert.ok(text.includes('<span class="quarto-inline-value">6</span>'), "the max is drawn in its prose");
+  assert.ok(text.includes('<span class="quarto-inline-value">12</span>'), "the included sum is drawn in its prose");
+  assert.ok(!text.includes("r mean(x)"), "the inline code text is replaced, not shown");
   console.log("quarto publish e2e: desktop split, stored record, read-link fetch and draft render passed");
 }
 

@@ -439,22 +439,26 @@ export function matchResults(results, cells) {
 /// stays here, in the browser; the module only places what it is given.
 export const QUARTO_SIDECAR = ".librepaper/quarto.json";
 
-// Pair saved inline values with the document's inline values, in order: the
-// first unused saved entry with the same fingerprint. A saved entry with no
-// html (its tag was missing) is never paired, so its place draws as today.
+// Pair saved inline values with the document's inline values, in order, within
+// each file: the Nth current occurrence of a fingerprint in a file takes the Nth
+// saved entry for that file and fingerprint. Every saved entry takes a slot,
+// even an empty one, so a silent occurrence keeps its place; only the emitted
+// entry is skipped when the consumed html is empty. The main file's key is "".
 async function matchInlines(records, saved) {
+  const keyOf = (file, fingerprint) => JSON.stringify([file, fingerprint]);
   const queues = new Map();
   for (const entry of Array.isArray(saved) ? saved : []) {
-    const html = String(entry?.html ?? "");
-    if (!html || typeof entry.fingerprint !== "string") continue;
-    if (!queues.has(entry.fingerprint)) queues.set(entry.fingerprint, []);
-    queues.get(entry.fingerprint).push(html);
+    if (typeof entry?.fingerprint !== "string") continue;
+    const key = keyOf(entry.path ? String(entry.path) : "", entry.fingerprint);
+    if (!queues.has(key)) queues.set(key, []);
+    queues.get(key).push(String(entry.html ?? ""));
   }
   const out = [];
   for (const record of records) {
-    const queue = queues.get(await inlineFingerprint(record));
+    const queue = queues.get(keyOf(record.main ? "" : record.file, await inlineFingerprint(record)));
     if (!queue?.length) continue;
     const html = queue.shift();
+    if (!html) continue;
     const entry = { line: record.line, column: record.column, html: html.replace(/\r?\n/g, " "), stale: false };
     if (!record.main) entry.path = record.file;
     out.push(entry);
