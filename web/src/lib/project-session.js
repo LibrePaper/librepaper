@@ -1182,14 +1182,13 @@ export function createProjectSession({
         }
         const text = file ? files.get(file) : null;
         if (!(text instanceof LoroText)) return null;
-        const toUtf16 = (cursor) => {
-          const at = doc.getCursorPos(cursor);
-          if (!at) return null;
-          return text.convertPos(at.offset, "unicode", "utf16") ?? at.offset;
-        };
-        const from = toUtf16(anchor);
+        // getCursorPos already answers in UTF-16 code units, the offsets the
+        // editor uses, so no conversion is needed (a convertPos here would be
+        // wrong after any astral character such as an emoji).
+        const offsetOf = (cursor) => doc.getCursorPos(cursor)?.offset ?? null;
+        const from = offsetOf(anchor);
         if (from == null) return null;
-        const head = published.head ? toUtf16(Cursor.decode(published.head)) : from;
+        const head = published.head ? offsetOf(Cursor.decode(published.head)) : from;
         return { file, anchor: from, head: head ?? from };
       } catch {
         return null;

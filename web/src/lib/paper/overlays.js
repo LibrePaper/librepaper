@@ -80,7 +80,9 @@ function itemsIn(view, sets, remote, from, to) {
           });
         }
       }
-      if (anchor >= from && anchor <= to) items.push({ kind: "caret", at: anchor - from, name: user?.name || "unknown", colour });
+      // The caret is at the head; the anchor is the far end of a selection.
+      const caret = head ?? anchor;
+      if (caret >= from && caret <= to) items.push({ kind: "caret", at: caret - from, name: user?.name || "unknown", colour });
     }
   }
   return items.slice(0, MAX_ITEMS);

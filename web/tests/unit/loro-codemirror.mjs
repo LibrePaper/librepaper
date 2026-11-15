@@ -15,9 +15,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ChangeSet, EditorState, Transaction } from "@codemirror/state";
-import { LoroDoc, LoroText, UndoManager } from "loro-crdt";
+import { EphemeralStore, LoroDoc, LoroText, UndoManager } from "loro-crdt";
 import { LoroSyncPluginValue, loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
 import { UndoPluginValue } from "../../vendor/loro-codemirror/undo.ts";
+import {
+  EphemeralPlugin,
+  ephemeralEffect,
+  ephemeralStateField,
+  getCursorEffect,
+} from "../../vendor/loro-codemirror/ephemeral.ts";
 // `undo` and `redo` are ours, not the binding's -- see lib/loro-undo.js.
 import { redo, undo, undoManagerField } from "../../src/lib/loro-undo.js";
 
@@ -246,4 +252,148 @@ test("the initial check: a plugin destroyed before it runs writes nothing", asyn
   assert.equal(view.text, "notes text");
   assert.equal(textOf("notes.md")(doc).toString(), "notes text");
   assert.equal(batches.filter((batch) => batch.by === "local").length, 0);
+});
+
+// Remote carets. The plugin's ephemeral handling is what the fork fixes, so
+// these drive `EphemeralPlugin` on the same fake View as above, with a second
+// `EphemeralStore` standing in for the peer's.
+const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+const mainText = (doc) => doc.getMap("files").get("main.md");
+
+test("a remote caret stays on its characters when text before it is edited", () => {
+  const state = EditorState.create({ doc: "hello", extensions: [ephemeralStateField] });
+  const withCaret = state.update({
+    effects: ephemeralEffect.of({ type: "cursor", peer: "1", cursor: { anchor: 5, head: 2 } }),
+  }).state;
+  const edited = withCaret.update({ changes: { from: 0, insert: "XY" } }).state;
+  assert.deepEqual(edited.field(ephemeralStateField).remoteCursors.get("1"), { anchor: 7, head: 4 });
+});
+
+test("a remote caret sent with an edit takes its own offsets, not the mapped ones", () => {
+  const state = EditorState.create({ doc: "hello", extensions: [ephemeralStateField] });
+  const next = state.update({
+    changes: { from: 0, insert: "XY" },
+    effects: ephemeralEffect.of({ type: "cursor", peer: "1", cursor: { anchor: 6, head: 6 } }),
+  }).state;
+  assert.deepEqual(next.field(ephemeralStateField).remoteCursors.get("1"), { anchor: 6, head: 6 });
+});
+
+test("a remote caret in another text of the document resolves to a delete", () => {
+  const doc = new LoroDoc();
+  const files = doc.getMap("files");
+  const main = files.setContainer("main.md", new LoroText());
+  const notes = files.setContainer("notes.md", new LoroText());
+  main.insert(0, "hello");
+  notes.insert(0, "other text");
+  doc.commit();
+
+  const here = { anchor: main.getCursor(3).encode() };
+  const elsewhere = { anchor: notes.getCursor(3).encode() };
+  assert.deepEqual(getCursorEffect(doc, main, "1", here).value, {
+    type: "cursor",
+    peer: "1",
+    cursor: { anchor: 3, head: 3 },
+  });
+  assert.deepEqual(getCursorEffect(doc, main, "1", elsewhere).value, { type: "delete", peer: "1" });
+});
+
+test("a remote caret that arrives before its edit is resolved again when the edit lands", async (t) => {
+  const peer = new LoroDoc();
+  peer.setPeerId(1);
+  const peerText = peer.getMap("files").setContainer("main.md", new LoroText());
+  peerText.insert(0, "hello");
+  peer.commit();
+  const doc = new LoroDoc();
+  doc.setPeerId(2);
+  doc.import(peer.export({ mode: "snapshot" }));
+
+  const ours = new EphemeralStore();
+  const theirs = new EphemeralStore();
+  const view = new View(EditorState.create({ doc: "hello", extensions: [ephemeralStateField] }));
+  // The sync plugin first, as in the editor, so imported edits reach the view.
+  const sync = view.attach(new LoroSyncPluginValue(view, doc, mainText));
+  const plugin = view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
+  t.after(() => {
+    plugin.destroy();
+    sync.destroy();
+    ours.destroy();
+    theirs.destroy();
+  });
+
+  // The peer's caret after "hello" arrives and resolves against our copy.
+  theirs.set("1-cm-cursor", { anchor: peerText.getCursor(5).encode() });
+  ours.apply(theirs.encodeAll());
+  await tick();
+  assert.equal(view.state.field(ephemeralStateField).remoteCursors.get("1").anchor, 5);
+
+  // The peer types "XY" and moves its caret after it. The caret reaches us
+  // before the edit does, so it cannot resolve past "hello" yet.
+  peerText.insert(5, "XY");
+  peer.commit();
+  theirs.set("1-cm-cursor", { anchor: peerText.getCursor(7).encode() });
+  ours.apply(theirs.encodeAll());
+  await tick();
+
+  // The edit lands: the caret is resolved again, after "XY".
+  doc.import(peer.export({ mode: "update", from: doc.oplogVersion() }));
+  await tick();
+  assert.equal(view.state.field(ephemeralStateField).remoteCursors.get("1").anchor, 7);
+});
+
+test("a peer's first caret, attached to characters not yet imported, is stored once they land", async (t) => {
+  const peer = new LoroDoc();
+  peer.setPeerId(1);
+  const peerText = peer.getMap("files").setContainer("main.md", new LoroText());
+  peerText.insert(0, "hello");
+  peer.commit();
+  const doc = new LoroDoc();
+  doc.setPeerId(2);
+  doc.import(peer.export({ mode: "snapshot" }));
+
+  const ours = new EphemeralStore();
+  const theirs = new EphemeralStore();
+  const view = new View(EditorState.create({ doc: "hello", extensions: [ephemeralStateField] }));
+  // The sync plugin first, as in the editor, so imported edits reach the view.
+  const sync = view.attach(new LoroSyncPluginValue(view, doc, mainText));
+  const plugin = view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
+  t.after(() => {
+    plugin.destroy();
+    sync.destroy();
+    ours.destroy();
+    theirs.destroy();
+  });
+
+  // The peer types "XY" after "hello" and its caret sits between X and Y.
+  // The caret reaches us first: nothing in our copy resolves it, so nothing is stored.
+  peerText.insert(5, "XY");
+  peer.commit();
+  theirs.set("1-cm-cursor", { anchor: peerText.getCursor(6).encode() });
+  ours.apply(theirs.encodeAll());
+  await tick();
+  assert.equal(view.state.field(ephemeralStateField).remoteCursors.has("1"), false);
+
+  // The edit lands: the caret is stored at 6, between X and Y.
+  doc.import(peer.export({ mode: "update", from: doc.oplogVersion() }));
+  await tick();
+  assert.equal(view.state.field(ephemeralStateField).remoteCursors.get("1").anchor, 6);
+});
+
+test("creating a doc-changing transaction does not move the carets of its start state", () => {
+  const s1 = EditorState.create({ doc: "hello world", extensions: [ephemeralStateField] }).update({
+    effects: ephemeralEffect.of({ type: "cursor", peer: "7", cursor: { anchor: 6 } }),
+  }).state;
+  const next = s1.update({ changes: { from: 0, insert: "XX" } }).state;
+  assert.equal(s1.field(ephemeralStateField).remoteCursors.get("7").anchor, 6);
+  assert.equal(next.field(ephemeralStateField).remoteCursors.get("7").anchor, 8);
+});
+
+// A caret resolved before a checkout shortened the text arrives past its end.
+// It is clamped, and the next edit maps it instead of throwing.
+test("a caret past the end of a shorter text is clamped and maps without throwing", () => {
+  const short = EditorState.create({ doc: "short", extensions: [ephemeralStateField] }).update({
+    effects: ephemeralEffect.of({ type: "cursor", peer: "7", cursor: { anchor: 90, head: 95 } }),
+  }).state;
+  assert.deepEqual(short.field(ephemeralStateField).remoteCursors.get("7"), { anchor: 5, head: 5 });
+  const next = short.update({ changes: { from: 0, insert: "a much longer text " } }).state;
+  assert.equal(next.field(ephemeralStateField).remoteCursors.get("7").anchor, 24);
 });
