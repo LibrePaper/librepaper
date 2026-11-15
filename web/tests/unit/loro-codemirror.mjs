@@ -371,3 +371,12 @@ test("a peer's first caret, attached to characters not yet imported, is stored o
   await tick();
   assert.equal(view.state.field(ephemeralStateField).remoteCursors.get("1").anchor, 6);
 });
+
+test("creating a doc-changing transaction does not move the carets of its start state", () => {
+  const s1 = EditorState.create({ doc: "hello world", extensions: [ephemeralStateField] }).update({
+    effects: ephemeralEffect.of({ type: "cursor", peer: "7", cursor: { anchor: 6 } }),
+  }).state;
+  const next = s1.update({ changes: { from: 0, insert: "XX" } }).state;
+  assert.equal(s1.field(ephemeralStateField).remoteCursors.get("7").anchor, 6);
+  assert.equal(next.field(ephemeralStateField).remoteCursors.get("7").anchor, 8);
+});
