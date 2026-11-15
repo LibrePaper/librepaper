@@ -6,9 +6,23 @@
 //   LIBREPAPER_TEST_POSTGRES_URL=... LIBREPAPER_TEST_BINARY=dist/librepaper \
 //     node web/tools/typing-bench.mjs
 //
-// FORMAT=latex|typst|markdown (latex), LINES=1500, CHARS=150, GAP=100 (ms
+// FORMAT=latex|typst|markdown|quarto (latex), LINES=1500, CHARS=150, GAP=100 (ms
 // between keystrokes), CPU=4 (Chromium CPU throttling, a stand-in for a
 // slower engine), PROFILE=path to write the raw .cpuprofile, TOP=30.
+//
+// FORMAT=quarto generates its source here (no docs/examples): sections of
+// paragraphs with inline math, numbered display equations with @eq references,
+// a captioned pipe table, callouts, a theorem, footnotes and figure references,
+// scaled to LINES. The typing target is an ordinary paragraph in the middle.
+//
+// COMMENTS=N (0) posts N comments through the deployment's HTTP API after
+// publishing, anchored to distinct words spread through a FORMAT=quarto
+// document, so the reader carries a heavy comment layer while typing.
+//
+// MARKS=1 turns on the app's opt-in timing marks (globalThis.__LP_PERF__) in
+// the app page and in the cross-origin preview iframe just before typing, then
+// prints a table of every lp:* performance.measure (count, p50, p95, max,
+// total ms). Chromium only.
 //
 // BROWSER=webkit measures in WebKitGTK instead, the desktop app's engine,
 // through WEBKIT_WEBDRIVER (its WebKitWebDriver) and the MiniBrowser beside
@@ -29,6 +43,9 @@ const GAP = Number(process.env.GAP || 100);
 const CPU = Number(process.env.CPU || 1);
 const TOP = Number(process.env.TOP || 30);
 const WEBKIT = process.env.BROWSER === "webkit";
+const COMMENTS = Number(process.env.COMMENTS || 0);
+const MARKS = process.env.MARKS === "1";
+const TARGET = "typing target paragraph";
 
 /// The subset of the CDP tab this script uses, over WebDriver to WebKitGTK.
 async function webkitTab() {
@@ -81,11 +98,54 @@ async function webkitTab() {
 }
 
 const example = { latex: ["tutorial-latex", "tex"], typst: ["tutorial-typst", "typ"], markdown: ["tutorial-markdown", "md"] }[FORMAT];
-if (!example) throw new Error(`unknown FORMAT ${FORMAT}`);
+if (!example && FORMAT !== "quarto") throw new Error(`unknown FORMAT ${FORMAT}`);
+if (COMMENTS && FORMAT !== "quarto") throw new Error("COMMENTS needs FORMAT=quarto, whose source has words to anchor to");
+
+/// Words the generated Quarto document makes unique, one per anchorable
+/// passage, in document order; comments anchor to these.
+const anchors = [];
+
+/// A Quarto document of LINES lines: a mix of the things a real paper has,
+/// repeated per section, with one plain paragraph to type into at the middle.
+function quartoDocument() {
+  const out = ["---", "title: Typing bench", "author: Bench Author", "---", ""];
+  const perSection = 40;
+  const count = Math.max(2, Math.ceil(LINES / perSection));
+  for (let n = 1; n <= count; n++) {
+    const a = `zq${n}a`, b = `zq${n}b`, c = `zq${n}c`;
+    anchors.push(a, b, c);
+    out.push(
+      `## Section ${n} {#sec-${n}}`, "",
+      `The estimator for unit $i$ in section ${n} is $\\hat{\\beta}_{${n}} = (X^\\top X)^{-1} X^\\top y$, and ${a} marks where the argument starts. See @eq-${n} and @tbl-${n} for the details, and @fig-${n} for the picture.[^${n}]`, "",
+      `$$ \\hat{\\beta}_{${n}} = \\sum_{i=1}^{n} w_i x_i + \\frac{\\sigma^2}{n} $$ {#eq-${n}}`, "",
+      `Plain prose follows with no formulas at all, so that the document has some quiet stretches. ${b} sits here, in the middle of a sentence that wraps across the editor's width a couple of times when the window is wide enough.`, "",
+      `| Group | Mean | SD |`, `|-------|-----:|---:|`, `| A${n} | ${n}.1 | 0.2 |`, `| B${n} | ${n}.7 | 0.4 |`, "",
+      `: Summary statistics for section ${n} {#tbl-${n}}`, "",
+      `::: {.callout-note}`, `## Note ${n}`, `Remember that $p < 0.05$ is not the same as an effect that matters. ${c} is the third anchor.`, `:::`, "",
+      `::: {#thm-${n} .theorem}`, `**Theorem ${n}.** For every $\\epsilon > 0$ there is an $N$ such that $|\\hat{\\beta}_{${n}} - \\beta| < \\epsilon$ for all $n > N$.`, `:::`, "",
+      `![Caption for figure ${n}](fig${n}.png){#fig-${n}}`, "",
+      `More ordinary text, with a link to [the docs](https://example.org/${n}) and some *emphasis* and **strong** words, to finish section ${n}.`, "",
+    );
+    if (n === Math.ceil(count / 2)) out.push(`This is the ${TARGET}, plain text with no markup, in the middle of the document.`, "");
+    out.push(`[^${n}]: Footnote ${n} explains a small point.`, "");
+  }
+  return out.join("\n");
+}
+
+/// POSTs one comment, as the reader does over its socket, through the REST route.
+async function postComment(slug, body, exact) {
+  const response = await fetch(`${deployment.base}/api/documents/${slug}/comments`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-librepaper-client": "1", cookie: deployment.cookie },
+    body: JSON.stringify({ type: "comment", body, exact, prefix: "", suffix: "", document: false, temp_id: `t-${exact}`, request_id: `r-${exact}` }),
+  });
+  if (!response.ok) throw new Error(`comment failed: ${response.status} ${await response.text()}`);
+}
 
 /// The tutorial's main file with its sections' bodies repeated until the
 /// document is LINES long, so the editor holds a paper-sized file.
 function longDocument() {
+  if (FORMAT === "quarto") return quartoDocument();
   const [dir, ext] = example;
   const main = readFileSync(join(root, "docs/examples", dir, `librepaper.${ext}`), "utf8");
   const sections = readdirSync(join(root, "docs/examples", dir, "sections"))
@@ -149,6 +209,11 @@ let tab;
 try {
   const source = longDocument();
   const doc = await deployment.publish({ title: "Typing bench", source_format: FORMAT, source });
+  if (COMMENTS > anchors.length) throw new Error(`COMMENTS=${COMMENTS} but the document has only ${anchors.length} anchor words; raise LINES`);
+  for (let i = 0; i < COMMENTS; i++) {
+    await postComment(doc.slug, `Bench comment ${i + 1}: please check this passage.`, anchors[Math.floor((i * anchors.length) / COMMENTS)]);
+  }
+  if (COMMENTS) console.log(`posted ${COMMENTS} comments`);
   tab = WEBKIT ? await webkitTab() : await browser("chromium", join(scratch, "profile"), 19000 + Math.floor(Math.random() * 1000));
   if (!WEBKIT) await tab.resize(1600, 1000);
   const [name, value] = deployment.cookie.split(/=(.*)/s);
@@ -177,7 +242,8 @@ try {
   await pause(6000);
   const lines = await tab.evaluate(`(() => {
     const view = document.querySelector(".cm-content").cmTile.view;
-    const line = view.state.doc.line(Math.floor(view.state.doc.lines / 2));
+    let line = view.state.doc.line(Math.floor(view.state.doc.lines / 2));
+    for (let i = 1; i <= view.state.doc.lines; i++) if (view.state.doc.line(i).text.includes(${JSON.stringify(TARGET)})) { line = view.state.doc.line(i); break; }
     view.focus();
     view.dispatch({ selection: { anchor: line.to }, scrollIntoView: true });
     return view.state.doc.lines;
@@ -203,6 +269,19 @@ try {
     } catch {}
   })()`);
   await pause(500);
+  const marksOn = MARKS && !WEBKIT;
+  if (MARKS && WEBKIT) console.log("MARKS=1 skipped: WebKit has no frame access here");
+  if (marksOn) {
+    // The preview iframe is another origin and, with site isolation, another
+    // process: frameEvaluate attaches to its target and evaluates in its main
+    // world. Set the flag late, so a recreated iframe is already the final one.
+    const arm = "globalThis.__LP_PERF__ = true; performance.clearMeasures(); true";
+    await tab.evaluate(arm);
+    await until("the preview frame to take the flag", async () => (await tab.frameEvaluate(arm)) === true, 20000);
+    await pause(300);
+    await tab.evaluate("performance.clearMeasures()");
+    await tab.frameEvaluate("performance.clearMeasures(); true");
+  }
   const text = "the quick brown fox jumps over the lazy dog ";
   const keys = Array.from({ length: CHARS }, (_, i) => text[i % text.length]);
   let profile = null;
@@ -235,6 +314,22 @@ try {
     ({ profile } = await tab.command("Profiler.stop"));
     if (CPU > 1) await tab.command("Emulation.setCPUThrottlingRate", { rate: 1 });
     if (process.env.PROFILE) writeFileSync(process.env.PROFILE, JSON.stringify(profile));
+  }
+  if (marksOn) {
+    const read = "JSON.stringify(performance.getEntriesByType('measure').map((e) => [e.name, e.duration]))";
+    const app = JSON.parse(await tab.evaluate(read));
+    const frame = JSON.parse((await tab.frameEvaluate(read)) || "[]");
+    const by = new Map();
+    for (const [name, duration] of [...app, ...frame]) if (name.startsWith("lp:")) (by.get(name) || by.set(name, []).get(name)).push(duration);
+    console.log(`\nlp:* marks (app ${app.length} entries, preview frame ${frame.length}):`);
+    console.log("name".padEnd(34), "count".padStart(6), "p50".padStart(8), "p95".padStart(8), "max".padStart(8), "total".padStart(9));
+    const q = (v, f) => v[Math.min(v.length - 1, Math.floor(f * v.length))];
+    for (const [name, values] of [...by].sort((x, y) => y[1].reduce((a, b) => a + b, 0) - x[1].reduce((a, b) => a + b, 0))) {
+      const sorted = [...values].sort((x, y) => x - y);
+      console.log(name.padEnd(34), String(sorted.length).padStart(6), q(sorted, 0.5).toFixed(1).padStart(8), q(sorted, 0.95).toFixed(1).padStart(8), sorted.at(-1).toFixed(1).padStart(8), sorted.reduce((a, b) => a + b, 0).toFixed(0).padStart(9));
+    }
+    if (!by.size) console.log("(no lp:* measures recorded; the marks may not be in this build)");
+    console.log("");
   }
   const latency = await tab.evaluate("window.__latency");
   const events = await tab.evaluate("window.__events");
