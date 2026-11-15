@@ -1946,6 +1946,7 @@
   "mergeeditor_sides": " · 左が{baseline}、右が{target}",
   "mergeeditor_source_only": " · {baseline}のソース",
   "mergeeditor_target_default": "ライブドキュメント",
+  "menus_quarto_pdf_desktop": "QuartoのPDFにはデスクトップアプリが必要です。",
   "menus_report_problem": "問題を報告…",
   "mobilenav_navigation": "ドキュメントのナビゲーション",
   "mobilenav_collaborators": "共同編集者",

@@ -70,7 +70,7 @@ export function viewCommands(c) {
   // The formats are named as the desktop menu names them. They are not translated.
   const format = [
     { id: "format-html", label: "HTML", checked: c.selectedFormat === "html", disabled: !c.selectableFormat },
-    { id: "format-pdf", label: "PDF", checked: c.selectedFormat === "pdf", disabled: !c.selectableFormat },
+    { id: "format-pdf", label: "PDF", checked: c.selectedFormat === "pdf", disabled: !c.selectableFormat || c.pdfOffered === false },
   ];
 
   /** @type {{ id: string, label: string, checked?: boolean }[]} */

@@ -1961,6 +1961,7 @@
   "mergeeditor_sides": " · {baseline} on the left, {target} on the right",
   "mergeeditor_source_only": " · {baseline} source",
   "mergeeditor_target_default": "Live document",
+  "menus_quarto_pdf_desktop": "Quarto's PDF needs the desktop app.",
   "menus_report_problem": "Report a problem…",
   "mobilenav_navigation": "Document navigation",
   "mobilenav_collaborators": "Collaborators",

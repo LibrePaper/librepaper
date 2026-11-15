@@ -136,7 +136,9 @@
   <Menu.Item value="format-html" class="menuitem" disabled={!selectableFormat}>
     <span class="menuitem-check">{selectedFormat === "html" ? "✓" : ""}</span>HTML
   </Menu.Item>
-  <Menu.Item value="format-pdf" class="menuitem" disabled={!selectableFormat}>
+  {@const pdfBlocked = outputs.pdfOffered === false}
+  <Menu.Item value="format-pdf" class="menuitem" disabled={!selectableFormat || pdfBlocked}
+    data-tip-place={pdfBlocked ? "right" : undefined} data-tip={pdfBlocked ? m.menus_quarto_pdf_desktop() : undefined}>
     <span class="menuitem-check">{selectedFormat === "pdf" ? "✓" : ""}</span>PDF
   </Menu.Item>
 {/snippet}

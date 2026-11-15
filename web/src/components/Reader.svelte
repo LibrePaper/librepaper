@@ -534,6 +534,7 @@
   // others. Pages are made in this browser, through Pandoc and Typst.
   async function setMarkdownOutput(format) {
     const next = format === "html" ? "html" : "pdf";
+    if (next === "pdf" && !quartoPdfOffered) return;
     if (markdownOutput === next) return;
     setBuildPreferences(updateBuildPreferences(buildScope(), sourceFormat, { output: next }));
     target.bump();
@@ -2178,6 +2179,11 @@
   const displayedFormat = $derived(
     sourceFormat,
   );
+  // The browser's PDF for Quarto is Pandoc and Typst, not Quarto, so it ignores
+  // the document's `format: pdf` options and shows no code output. Only the
+  // desktop app, which can run Quarto itself, offers it for Quarto. Plain
+  // Markdown keeps PDF everywhere. The stored preference is left alone.
+  const quartoPdfOffered = $derived(hasDesktop || displayedFormat !== "quarto");
   // This browser-only choice affects the pane and is never published. It is
   // not conditioned on the source pane being open: the output starts on the
   // person's default preview for this format (HTML unless they chose PDF in
@@ -2188,7 +2194,7 @@
       (displayedFormat === "latex" && latexOutput === "html")) ? "html" : displayedFormat,
   );
   const previewOutputKind = $derived.by(() =>
-    ["markdown", "quarto"].includes(displayedFormat) && buildPreferences.output === "pdf"
+    ["markdown", "quarto"].includes(displayedFormat) && markdownOutput === "pdf"
       ? "pdf"
       : renderers.outputKind(previewFormat),
   );
@@ -2300,7 +2306,7 @@
     return !readerDisposed && Boolean(session) && sourceFormat === "latex" && latexOutput === "html"
       && readLiveCompile(buildScope(), "latex") && (renderers.latexHtmlLastSeconds() ?? 0) <= 3;
   }
-  const markdownOutput = $derived(buildPreferences.output === "pdf" ? "pdf" : "html");
+  const markdownOutput = $derived(quartoPdfOffered && buildPreferences.output === "pdf" ? "pdf" : "html");
   const buildScope = () => buildSettings.scopeFor(buildUserId);
   $effect(() => {
     const format = sourceFormat;
@@ -3251,7 +3257,7 @@
     canExportComments: () => canExportComments,
     can: () => can,
     editGroups: () => editGroups,
-    outputs: () => ({ displayedFormat, latexOutput, typstOutput, markdownOutput }),
+    outputs: () => ({ displayedFormat, latexOutput, typstOutput, markdownOutput, pdfOffered: quartoPdfOffered }),
     view: () => ({ linked, visual, runCodeOffered, localExecution, explicitRun: runsExplicitly, running: runPhase === "running" }),
     insertMenu: () => insertMenu,
     refreshEditAvailability: () => refreshEditAvailability(),
@@ -3411,7 +3417,7 @@
     if (value === "format-pdf") {
       if (displayedFormat === "latex") return void setLatexOutput("pdf");
       if (displayedFormat === "typst") return void setTypstOutput("pdf");
-      if (["markdown", "quarto"].includes(displayedFormat)) return void setMarkdownOutput("pdf");
+      if (["markdown", "quarto"].includes(displayedFormat)) return quartoPdfOffered ? void setMarkdownOutput("pdf") : undefined;
     }
     if (value === "format-html") {
       if (displayedFormat === "latex") return void setLatexOutput("html");
@@ -4475,7 +4481,7 @@
       source={{ format: sourceFormat, compilesHere, toolbarPath, editing, editorReady: Boolean(editor), figureShown: Boolean(shownFigure) }}
       {exportable}
       view={{ compact, activeMobileView, layout, sourceSide, editorShare: sizes[PANES.editor.key], linked, visual }}
-      outputs={{ displayedFormat, latexOutput, typstOutput, markdownOutput }}
+      outputs={{ displayedFormat, latexOutput, typstOutput, markdownOutput, pdfOffered: quartoPdfOffered }}
       {can} keys={MENU_KEYS} {editGroups} bind:downloadOpen
       onfile={(command) => void chooseFileCommand(command)}
       onedit={chooseEditCommand}

@@ -1961,6 +1961,7 @@
   "mergeeditor_sides": " · {baseline} a la izquierda, {target} a la derecha",
   "mergeeditor_source_only": " · código fuente de {baseline}",
   "mergeeditor_target_default": "Documento actual",
+  "menus_quarto_pdf_desktop": "El PDF de Quarto requiere la aplicación de escritorio.",
   "menus_report_problem": "Informar de un problema…",
   "mobilenav_navigation": "Navegación del documento",
   "mobilenav_collaborators": "Colaboradores",

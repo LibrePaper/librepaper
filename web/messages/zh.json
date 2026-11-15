@@ -1946,6 +1946,7 @@
   "mergeeditor_sides": " · 左侧为 {baseline}，右侧为 {target}",
   "mergeeditor_source_only": " · {baseline} 源码",
   "mergeeditor_target_default": "实时文档",
+  "menus_quarto_pdf_desktop": "Quarto 的 PDF 需要桌面应用。",
   "menus_report_problem": "报告问题…",
   "mobilenav_navigation": "文档导航",
   "mobilenav_collaborators": "协作者",
