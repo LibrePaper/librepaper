@@ -3601,13 +3601,12 @@
       const format = displayedFormat;
       const preview = framePreview.preview();
       const local = exportsLocally;
+      // A figure that could not be fetched, or that is in neither the project
+      // nor the last run, becomes a placeholder: the export is never refused.
+      let unfetched = 0;
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
-        // A figure that is not here becomes a placeholder in the export; the
-        // export is never refused for it.
-        if (target !== "html" && missing.length) {
-          say(m.readerc_figures_placeholder({ count: missing.length }), { kind: "problem", id: "reader:export-figures" });
-        }
+        unfetched = missing.length;
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
       }
@@ -3626,6 +3625,8 @@
         local,
       });
       saveBlob(file.blob, file.name);
+      const placeholders = unfetched + (file.missing?.length ?? 0);
+      if (placeholders > 0) say(m.readerc_figures_placeholder({ count: placeholders }), { kind: "problem", id: "reader:export-figures" });
       if (!local && unrunCells(format, tree) > 0) {
         say(m.readerc_cells_not_run(), { id });
       } else {
@@ -4823,7 +4824,7 @@
           <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
                          onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} />
         {/if}
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
+        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => runResults?.files ?? null} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
