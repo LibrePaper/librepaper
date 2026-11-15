@@ -11,6 +11,9 @@ import { quartoCompletion, quartoTrigger } from "./quarto.js";
 import { taskCompletion, taskTrigger } from "./tasks.js";
 import { typstCompletion, typstTrigger } from "./typst.js";
 import { bibliographyTrigger } from "../bibliography.js";
+import { clearWokenByTyping, markWokenByTyping } from "./asked.js";
+
+export { explicitlyAsked } from "./asked.js";
 import { sourceFormatOf } from "../formats.js";
 
 /**
@@ -75,20 +78,24 @@ export function completionWakes(format, state, pos) {
  * second editor update for the (usually empty) answer. While a list is open,
  * typing still filters it, as that does not depend on activateOnTyping. The
  * start runs in a microtask because it dispatches, which an update listener may
- * not do. It is an explicit start: CodeMirror queries after 50 ms, not the
- * typing delay.
+ * not do. CodeMirror queries after 50 ms, not the typing
+ * delay, and the query is kept implicit (see asked.js).
  * @param {() => { format: string }} project
  */
 export function completionWake(project) {
   return EditorView.updateListener.of((update) => {
-    if (!update.docChanged || !update.transactions.some((tr) => tr.isUserEvent("input.type"))) return;
     const { state, view } = update;
-    if (completionStatus(state) !== null) return;
+    // A closed completion is no longer a typing wake; the next explicit start is the person's.
+    if (completionStatus(state) === null) clearWokenByTyping(view);
+    else return;
+    if (!update.docChanged || !update.transactions.some((tr) => tr.isUserEvent("input.type"))) return;
     const range = state.selection.main;
     if (!range.empty || !completionWakes(project().format, state, range.head)) return;
     queueMicrotask(() => {
       // Anything dispatched in between moves the cursor or the text; the next keystroke asks again.
-      if (view.state === state) startCompletion(view);
+      if (view.state !== state) return;
+      markWokenByTyping(view);
+      startCompletion(view);
     });
   });
 }

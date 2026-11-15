@@ -6,6 +6,7 @@
 // after the trigger matches, so a keystroke elsewhere costs nothing.
 import schema from "./quarto-schema.json" with { type: "json" };
 import { indexTexts, labelList } from "../document-index/labels.js";
+import { explicitlyAsked } from "./asked.js";
 import { KINDS, LABEL_PARTIAL, fenceStates } from "../quarto-labels.js";
 
 /** @typedef {{ path: string, texts: Record<string, string>, labels?: (options: { first?: string, formats?: Set<string> }) => Array<{ id: string, path: string, line: number, title?: string }> }} ReferenceProject */
@@ -135,7 +136,7 @@ export function quartoCompletion(project) {
     if (!reference) return null;
     const partial = reference[1];
     const typed = LABEL_PARTIAL.test(partial) || (partial && !partial.includes("-") && KINDS.some((kind) => kind.startsWith(partial)));
-    if (!typed && !(partial === "" && context.explicit)) return null;
+    if (!typed && !(partial === "" && explicitlyAsked(context))) return null;
 
     const options = referenceOptions(current, text, current.path);
     if (!options.length) return null;

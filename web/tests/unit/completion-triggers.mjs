@@ -5,9 +5,14 @@
 // is extended to answer somewhere new and its predicate is not, this file fails.
 // The negative cases are prose, where the gate must stay shut.
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext } from "@codemirror/autocomplete";
 import { completionWakes } from "../../src/lib/completion/index.js";
+import { clearWokenByTyping, explicitlyAsked, markWokenByTyping } from "../../src/lib/completion/asked.js";
+import { loadTypstSyntax } from "../../src/lib/typst-language/module.js";
+import { typstSupport } from "../../src/lib/typst-language/index.js";
 import { latexCompletion, latexTrigger } from "../../src/lib/completion/latex.js";
 import { markdownTrigger } from "../../src/lib/completion/markdown.js";
 import { orgTrigger } from "../../src/lib/completion/org.js";
@@ -40,6 +45,11 @@ const positives = {
     "\\usepackage[utf8]{|",
     "\\section{x} 100\\% \\input{|",
     "\\cite{smi|",
+    "\\cite{ke|",
+    "\\ref{fig:|",
+    "\\beg|",
+    "\\usepackage{ams|",
+    "\\emph{word} and \\ref{fig:|",
     // A \cite argument wrapped onto a line with no backslash of its own.
     "\\cite{a,\n  smi|",
     "\\parencite[p. 3]{a,\n  b|",
@@ -110,11 +120,11 @@ for (const [format, docs] of Object.entries(positives)) {
 
 // Plain prose wakes nothing.
 const negatives = {
-  latex: ["Plain prose words|", "A sentence with 100% prose|", "Hello wor|", "\\cite{a}\nplain wo|", "x\n\nprose|"],
+  latex: ["Plain prose words|", "A sentence with 100% prose|", "Hello wor|", "\\cite{a}\nplain wo|", "x\n\nprose|", "\\emph{word} and some pro|", "See \\cite{a} for mo|", "\\textbf{bold} text|"],
   markdown: ["Hello world|", "# Heading words|", "- plain list item|", "- [ ] zz|", "A [link] and text|", "Some text #wr|"],
   quarto: ["Hello world|", "text\n---\nti|\n---\n", "---\ntitle: x\n---\nBody|", "---\ntitle: x\n---\nBody words here|", "```{r}\nx <- 1|\n```\n"],
   org: ["Plain org prose|", "* Heading words|", "A bracket [one] and more|", "- list item|"],
-  typst: ["Plain prose words|", "= A heading|", "- list item here|", "Hello, world|", "Hello,|", "Note:|", "#let |", "!|"],
+  typst: ["#let |", "!|"],
   html: ["<p>word|", "\\ref{|", "See @fi|"],
   "": ["word|"],
 };
@@ -131,6 +141,8 @@ for (const [format, docs] of Object.entries(negatives)) {
   };
   check(latexTrigger, "\\ref{|", true);
   check(latexTrigger, "prose|", false);
+  check(latexTrigger, "\\emph{word} prose|", false);
+  check(latexTrigger, "\\begin{ite|", true);
   check(markdownTrigger, "[a](|", true);
   check(markdownTrigger, "[a][|", true);
   check(markdownTrigger, "[^|", true);
@@ -148,7 +160,6 @@ for (const [format, docs] of Object.entries(negatives)) {
   check(quartoTrigger, "---\nti|\n---", true);
   check(quartoTrigger, "ti|", false);
   check(typstTrigger, "#|", true);
-  check(typstTrigger, "word|", false);
   check(typstTrigger, "#let |", false);
   check(bibliographyTrigger("markdown"), "See @sm|", true);
   check(bibliographyTrigger("markdown"), "See sm|", false);
@@ -177,4 +188,47 @@ for (const [format, docs] of Object.entries(negatives)) {
     ["quarto", "```{r}\n#| ec|\n```\n"],
     ["markdown", "- [ ] pri|"],
   ]) assert.equal(wakes(format, doc), true, `${format} ${JSON.stringify(doc)}`);
+}
+
+// With the real Typst parse, prose is told from code and math by the syntax tree.
+// The cases above ran without a parse, where every trigger character wakes.
+const wasm = process.env.LIBREPAPER_TYPST_SYNTAX_WASM || fileURLToPath(new URL("../../wasm/typst-syntax.wasm", import.meta.url));
+if (existsSync(wasm)) {
+  const api = await loadTypstSyntax(new Uint8Array(readFileSync(wasm)));
+  const parsed = (doc) => {
+    const pos = doc.lastIndexOf("|");
+    const state = EditorState.create({ doc: doc.slice(0, pos) + doc.slice(pos + 1), extensions: typstSupport(api) });
+    return completionWakes("typst", state, pos);
+  };
+  for (const doc of ["Plain prose words|", "= A heading|", "- list item here|", "Hello, world|", "Hello,|", "Note:|", "Some *bold wo|* text", "A sentence. Then more|"]) {
+    assert.equal(parsed(doc), false, `typst prose should not wake at ${JSON.stringify(doc)}`);
+  }
+  for (const doc of [
+    "#let f(x) = {\nfo|\n}",
+    "#let f(x) = {\n  x.fo|\n}",
+    "A formula $x + y|$",
+    "#set text(|",
+    "#set text(fo|",
+    "#image(\"fig/|",
+    "#|",
+    "Cited by @sm|",
+    "See <sec|",
+  ]) assert.equal(parsed(doc), true, `typst should wake at ${JSON.stringify(doc)}`);
+}
+
+// A query CodeMirror starts for a typing wake is implicit; an explicit one stays explicit.
+{
+  const view = {};
+  const other = {};
+  const state = EditorState.create({ doc: "" });
+  const context = (explicit, v) => new CompletionContext(state, 0, explicit, v);
+  assert.equal(explicitlyAsked(context(false, view)), false);
+  assert.equal(explicitlyAsked(context(true, view)), true);
+  assert.equal(explicitlyAsked(context(true, undefined)), true);
+  markWokenByTyping(view);
+  assert.equal(explicitlyAsked(context(true, view)), false);
+  assert.equal(explicitlyAsked(context(true, other)), true);
+  assert.equal(explicitlyAsked(context(true, undefined)), true);
+  clearWokenByTyping(view);
+  assert.equal(explicitlyAsked(context(true, view)), true);
 }
