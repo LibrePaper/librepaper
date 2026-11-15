@@ -2,7 +2,8 @@
   // The Run control for a Quarto document: one split button. The main half
   // runs the document, or stops a run that is going. The chevron opens the
   // rarer actions (Stop, Share results, the Run directory) and the state of
-  // the last run, so the top bar keeps a single control whatever happened. The
+  // the last run, so the top bar keeps a single control whatever happened. Once
+  // a run has made its own page, the chevron also offers to view that page. The
   // two halves share one border, with a divider between them, so they read as
   // one button.
   import { Menu } from "@skeletonlabs/skeleton-svelte";
@@ -14,6 +15,7 @@
   let {
     phase = "idle", stale = 0, lastRunAt = "", onrun = () => {}, onstop = () => {}, ondirectory = () => {},
     share = true, onshare = () => {}, directoryName = "", directoryPath = "", directoryMissing = false,
+    canViewLast = false, onviewlast = () => {},
   } = $props();
 
   const running = $derived(phase === "running");
@@ -27,6 +29,7 @@
   function choose(item) {
     if (item.value === "stop") onstop();
     else if (item.value === "directory") ondirectory();
+    else if (item.value === "view-last") onviewlast();
   }
 </script>
 
@@ -58,6 +61,13 @@
         </Menu.Item>
       {/if}
       {#if running}<Menu.Separator class="hr my-1" />{/if}
+      {#if canViewLast}
+        <Menu.Item value="view-last" class="menuitem">
+          <span class="menuitem-check" aria-hidden="true"><Icon name="file-text" size="0.875rem" /></span>
+          <span class="menuitem-label">{m.runbutton_view_last_run()}</span>
+        </Menu.Item>
+        <Menu.Separator class="hr my-1" />
+      {/if}
       <Menu.OptionItem type="checkbox" value="share" checked={share} onCheckedChange={(on) => onshare(on)} class="menuitem">
         <span class="menuitem-check" aria-hidden="true">
           <input type="checkbox" checked={share} tabindex="-1" aria-hidden="true" class="run-tick" />

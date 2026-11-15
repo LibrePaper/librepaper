@@ -444,6 +444,9 @@
   // runs the preview is the browser's draft with the last run's output under
   // each cell (or, for Typst, the files Calepin stored).
   let runPhase = $state("idle");
+  // The page the last successful run made, kept so "View last run's output"
+  // can show it on demand. `path` is the run's main file.
+  let lastRunPage = $state.raw(null);
   // When the running Run began, for the preview corner's elapsed time.
   let runStartedAt = $state(0);
   let ownResults = $state.raw(null);
@@ -2427,6 +2430,9 @@
         }
         const record = calepinRecordOf(rendered.results, tree.main);
         if (record) {
+          // The run's own page is kept whether or not the draft shows it.
+          const recordDigest = toPdf ? await renderers.snapshotDigest(tree) : "";
+          lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: recordDigest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
           // The files Calepin stored go into the browser's own draft, PDF or
           // HTML, so the preview stays the draft between runs.
           ownResults = { engine: "calepin", files: record.files, path: tree.main, updatedAt: new Date().toISOString() };
@@ -2444,6 +2450,7 @@
         sharedResults.skip("none");
         const digest = toPdf ? await renderers.snapshotDigest(tree) : "";
         if (gone()) return;
+        lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
         runPhase = "idle";
         lastPdfRunAt = new Date().toISOString();
         showRunPage(tree, toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html });
@@ -2459,6 +2466,7 @@
         // draft as usual, which is intended: the draft cannot show outputs.
         const digest = await renderers.snapshotDigest(tree);
         if (gone()) return;
+        lastRunPage = { path: tree.main, page: { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } };
         runPhase = "idle";
         lastPdfRunAt = new Date().toISOString();
         showRunPage(tree, { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() });
@@ -2476,6 +2484,7 @@
       // caption labels, which the draft would then add a second time.
       const split = await splitResults(rendered.exportHtml ?? rendered.html, tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts });
       if (gone()) return;
+      lastRunPage = { path: tree.main, page: { kind: "html", html: rendered.html } };
       if (split.ok) {
         const held = split.record.inlines ?? [];
         const inlinesHeld = held.length === inlineCount && held.every((entry) => entry.html);
@@ -2520,6 +2529,18 @@
     } finally {
       if (runAbort === controller) runAbort = null;
     }
+  }
+  // Shows the page the last run made, on demand. The next edit repaints the
+  // draft as after any run. The published copy of the bytes is its own, since
+  // publishing may transfer the buffer.
+  function showLastRun() {
+    const last = lastRunPage;
+    if (!last || last.path !== previewPath) return;
+    const page = last.page.kind === "pdf" ? { ...last.page, bytes: last.page.bytes.slice() } : last.page;
+    schedule.cancel();
+    renderCoordinator.claim();
+    target.bump();
+    framePreview?.publish(page);
   }
   function stopRun() {
     runGeneration++;
@@ -4412,7 +4433,9 @@
       directoryName={runDir.status?.path ? leaf(runDir.status.path) : ""}
       directoryPath={runDir.status?.path ? runDir.shorten(runDir.status.path) : ""}
       directoryMissing={Boolean(runDir.status?.path) && !runDir.usable}
-      ondirectory={chooseRunDirectory} />
+      ondirectory={chooseRunDirectory}
+      canViewLast={Boolean(lastRunPage && lastRunPage.path === previewPath) && runPhase !== "running"}
+      onviewlast={showLastRun} />
   {:else if runCodeOffered}
     <label class="bar-toggle" data-tip={m.readerd_run_code_hint()}>
       <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label={m.readerd_run_code()} data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>

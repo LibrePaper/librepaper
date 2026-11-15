@@ -3017,6 +3017,7 @@
   "runbutton_options": "Ausführungsoptionen",
   "runbutton_directory_named": "Ausführungsordner: {name}",
   "runbutton_choose_directory": "Ausführungsordner wählen…",
+  "runbutton_view_last_run": "Ausgabe des letzten Laufs anzeigen",
   "runbutton_last_run": "Letzter Lauf: {time}",
   "runbutton_failed": "Der letzte Lauf ist fehlgeschlagen",
   "runbutton_running_in": "Code wird in {name} ausgeführt…",

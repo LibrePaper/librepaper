@@ -3017,6 +3017,7 @@
   "runbutton_options": "Run options",
   "runbutton_directory_named": "Run directory: {name}",
   "runbutton_choose_directory": "Choose a Run directory…",
+  "runbutton_view_last_run": "View last run's output",
   "runbutton_last_run": "Last run {time}",
   "runbutton_failed": "The last run failed",
   "runbutton_running_in": "Running code in {name}…",

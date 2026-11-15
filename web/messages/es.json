@@ -3017,6 +3017,7 @@
   "runbutton_options": "Opciones de ejecución",
   "runbutton_directory_named": "Carpeta de ejecución: {name}",
   "runbutton_choose_directory": "Elegir una carpeta de ejecución…",
+  "runbutton_view_last_run": "Ver la salida de la última ejecución",
   "runbutton_last_run": "Última ejecución : {time}",
   "runbutton_failed": "La última ejecución falló",
   "runbutton_running_in": "Ejecutando el código en {name}…",
