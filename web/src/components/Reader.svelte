@@ -444,6 +444,9 @@
   // runs the preview is the browser's draft with the last run's output under
   // each cell (or, for Typst, the files Calepin stored).
   let runPhase = $state("idle");
+  // The page the last successful run made, kept so "View last run's output"
+  // can show it on demand. `path` is the run's main file.
+  let lastRunPage = $state.raw(null);
   // When the running Run began, for the preview corner's elapsed time.
   let runStartedAt = $state(0);
   let ownResults = $state.raw(null);
@@ -534,6 +537,7 @@
   // others. Pages are made in this browser, through Pandoc and Typst.
   async function setMarkdownOutput(format) {
     const next = format === "html" ? "html" : "pdf";
+    if (next === "pdf" && !quartoPdfOffered) return;
     if (markdownOutput === next) return;
     setBuildPreferences(updateBuildPreferences(buildScope(), sourceFormat, { output: next }));
     target.bump();
@@ -2178,6 +2182,11 @@
   const displayedFormat = $derived(
     sourceFormat,
   );
+  // The browser's PDF for Quarto is Pandoc and Typst, not Quarto, so it ignores
+  // the document's `format: pdf` options and shows no code output. Only the
+  // desktop app, which can run Quarto itself, offers it for Quarto. Plain
+  // Markdown keeps PDF everywhere. The stored preference is left alone.
+  const quartoPdfOffered = $derived(hasDesktop || displayedFormat !== "quarto");
   // This browser-only choice affects the pane and is never published. It is
   // not conditioned on the source pane being open: the output starts on the
   // person's default preview for this format (HTML unless they chose PDF in
@@ -2188,7 +2197,7 @@
       (displayedFormat === "latex" && latexOutput === "html")) ? "html" : displayedFormat,
   );
   const previewOutputKind = $derived.by(() =>
-    ["markdown", "quarto"].includes(displayedFormat) && buildPreferences.output === "pdf"
+    ["markdown", "quarto"].includes(displayedFormat) && markdownOutput === "pdf"
       ? "pdf"
       : renderers.outputKind(previewFormat),
   );
@@ -2300,7 +2309,7 @@
     return !readerDisposed && Boolean(session) && sourceFormat === "latex" && latexOutput === "html"
       && readLiveCompile(buildScope(), "latex") && (renderers.latexHtmlLastSeconds() ?? 0) <= 3;
   }
-  const markdownOutput = $derived(buildPreferences.output === "pdf" ? "pdf" : "html");
+  const markdownOutput = $derived(quartoPdfOffered && buildPreferences.output === "pdf" ? "pdf" : "html");
   const buildScope = () => buildSettings.scopeFor(buildUserId);
   $effect(() => {
     const format = sourceFormat;
@@ -2427,6 +2436,9 @@
         }
         const record = calepinRecordOf(rendered.results, tree.main);
         if (record) {
+          // The run's own page is kept whether or not the draft shows it.
+          const recordDigest = toPdf ? await renderers.snapshotDigest(tree) : "";
+          lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: recordDigest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
           // The files Calepin stored go into the browser's own draft, PDF or
           // HTML, so the preview stays the draft between runs.
           ownResults = { engine: "calepin", files: record.files, path: tree.main, updatedAt: new Date().toISOString() };
@@ -2444,6 +2456,7 @@
         sharedResults.skip("none");
         const digest = toPdf ? await renderers.snapshotDigest(tree) : "";
         if (gone()) return;
+        lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
         runPhase = "idle";
         lastPdfRunAt = new Date().toISOString();
         showRunPage(tree, toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html });
@@ -2459,6 +2472,7 @@
         // draft as usual, which is intended: the draft cannot show outputs.
         const digest = await renderers.snapshotDigest(tree);
         if (gone()) return;
+        lastRunPage = { path: tree.main, page: { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } };
         runPhase = "idle";
         lastPdfRunAt = new Date().toISOString();
         showRunPage(tree, { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() });
@@ -2476,6 +2490,7 @@
       // caption labels, which the draft would then add a second time.
       const split = await splitResults(rendered.exportHtml ?? rendered.html, tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts });
       if (gone()) return;
+      lastRunPage = { path: tree.main, page: { kind: "html", html: rendered.html } };
       if (split.ok) {
         const held = split.record.inlines ?? [];
         const inlinesHeld = held.length === inlineCount && held.every((entry) => entry.html);
@@ -2520,6 +2535,18 @@
     } finally {
       if (runAbort === controller) runAbort = null;
     }
+  }
+  // Shows the page the last run made, on demand. The next edit repaints the
+  // draft as after any run. The published copy of the bytes is its own, since
+  // publishing may transfer the buffer.
+  function showLastRun() {
+    const last = lastRunPage;
+    if (!last || last.path !== previewPath) return;
+    const page = last.page.kind === "pdf" ? { ...last.page, bytes: last.page.bytes.slice() } : last.page;
+    schedule.cancel();
+    renderCoordinator.claim();
+    target.bump();
+    framePreview?.publish(page);
   }
   function stopRun() {
     runGeneration++;
@@ -3251,7 +3278,7 @@
     canExportComments: () => canExportComments,
     can: () => can,
     editGroups: () => editGroups,
-    outputs: () => ({ displayedFormat, latexOutput, typstOutput, markdownOutput }),
+    outputs: () => ({ displayedFormat, latexOutput, typstOutput, markdownOutput, pdfOffered: quartoPdfOffered }),
     view: () => ({ linked, visual, runCodeOffered, localExecution, explicitRun: runsExplicitly, running: runPhase === "running" }),
     insertMenu: () => insertMenu,
     refreshEditAvailability: () => refreshEditAvailability(),
@@ -3411,7 +3438,7 @@
     if (value === "format-pdf") {
       if (displayedFormat === "latex") return void setLatexOutput("pdf");
       if (displayedFormat === "typst") return void setTypstOutput("pdf");
-      if (["markdown", "quarto"].includes(displayedFormat)) return void setMarkdownOutput("pdf");
+      if (["markdown", "quarto"].includes(displayedFormat)) return quartoPdfOffered ? void setMarkdownOutput("pdf") : undefined;
     }
     if (value === "format-html") {
       if (displayedFormat === "latex") return void setLatexOutput("html");
@@ -4412,7 +4439,9 @@
       directoryName={runDir.status?.path ? leaf(runDir.status.path) : ""}
       directoryPath={runDir.status?.path ? runDir.shorten(runDir.status.path) : ""}
       directoryMissing={Boolean(runDir.status?.path) && !runDir.usable}
-      ondirectory={chooseRunDirectory} />
+      ondirectory={chooseRunDirectory}
+      canViewLast={Boolean(lastRunPage && lastRunPage.path === previewPath) && runPhase !== "running"}
+      onviewlast={showLastRun} />
   {:else if runCodeOffered}
     <label class="bar-toggle" data-tip={m.readerd_run_code_hint()}>
       <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label={m.readerd_run_code()} data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>
@@ -4475,7 +4504,7 @@
       source={{ format: sourceFormat, compilesHere, toolbarPath, editing, editorReady: Boolean(editor), figureShown: Boolean(shownFigure) }}
       {exportable}
       view={{ compact, activeMobileView, layout, sourceSide, editorShare: sizes[PANES.editor.key], linked, visual }}
-      outputs={{ displayedFormat, latexOutput, typstOutput, markdownOutput }}
+      outputs={{ displayedFormat, latexOutput, typstOutput, markdownOutput, pdfOffered: quartoPdfOffered }}
       {can} keys={MENU_KEYS} {editGroups} bind:downloadOpen
       onfile={(command) => void chooseFileCommand(command)}
       onedit={chooseEditCommand}

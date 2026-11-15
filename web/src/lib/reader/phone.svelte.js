@@ -210,7 +210,7 @@ export function createPhone({
     })
     : arrangement.state.mobileCommand === "edit" ? editCommands(editGroups(), can())
     : arrangement.state.mobileCommand === "view" ? viewCommands({
-      can: can(), selectedFormat: outputFormat, selectableFormat: outputSelectable, linked: view().linked, visual: view().visual,
+      can: can(), selectedFormat: outputFormat, selectableFormat: outputSelectable, pdfOffered: outputs().pdfOffered, linked: view().linked, visual: view().visual,
       runCodeOffered: view().runCodeOffered, localExecution: view().localExecution,
       explicitRun: view().explicitRun, running: view().running,
     })
