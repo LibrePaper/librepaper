@@ -41,7 +41,6 @@
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
-  import { shareIntroKind } from "../lib/reader/share-intro.js";
   import { forgetProject, markShellReady, rememberProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
@@ -58,10 +57,8 @@
     LINKED,
     PDF_INVERT,
     linkFor,
-    markShareIntroSeen,
     markViewed,
     read,
-    shareIntroSeen,
     takeLinkKey,
     write,
   } from "../lib/storage.js";
@@ -3176,22 +3173,6 @@
   );
   // The height of the demo banner, taken off the workspace so the page does not scroll.
   let demoBannerHeight = $state(0);
-  // The first time a project is opened by someone it was shared with, one line
-  // says what the link allows. Shown once per project in this browser, and
-  // until dismissed; an owner, or a role not yet known, is shown nothing.
-  const shareIntroWasSeen = DEMO || shareIntroSeen(SLUG);
-  let shareIntroDismissed = $state(false);
-  let shareIntroHeight = $state(0);
-  const shareIntro = $derived(shareIntroWasSeen || shareIntroDismissed ? null : shareIntroKind(doc.role));
-  // Taken off the workspace only while the line is shown, as the height is
-  // not reset when the banner is removed.
-  // clientHeight is a whole number, rounded down from the banner's true height;
-  // one more pixel keeps the workspace from ending a fraction too tall, which
-  // would let the page scroll.
-  const shareIntroOffset = $derived(shareIntro ? shareIntroHeight + 1 : 0);
-  $effect(() => {
-    if (shareIntro) markShareIntroSeen(SLUG);
-  });
   // Kept current for the background work that consults it.
   $effect(() => {
     const track = () => {
@@ -4520,18 +4501,11 @@
   <ModeSwitch mode={shown.source ? "source" : "document"} collapsed={barHidden} onchange={(view) => arrangement.showMobileView(view)} />
 {/if}
 
-{#if shareIntro}
-  <div class="share-intro" role="status" bind:clientHeight={shareIntroHeight}>
-    <span class="share-intro-text">{shareIntro === "edit" ? m.readerd_share_intro_edit() : shareIntro === "suggest" ? m.readerd_share_intro_suggest() : shareIntro === "comment" ? m.readerd_share_intro_comment() : m.readerd_share_intro_view_ask()}</span>
-    <button type="button" class="btn btn-sm lp-control-neutral" onclick={() => (shareIntroDismissed = true)}>{m.toasts_dismiss()}</button>
-  </div>
-{/if}
-
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:phone-tabs={tabsShown} class:bar-hidden={barHidden && !compact}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - {demoBannerHeight + shareIntroOffset}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - {demoBannerHeight}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
@@ -5103,7 +5077,7 @@
 <Toasts />
 
 <style>
-  .demo-banner, .share-intro { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-border-strong); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
+  .demo-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-border-strong); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
   .demo-banner-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 2); }
   .editorpane.comparing, .editorpane.with-format-bar { grid-template-rows: auto minmax(0, 1fr); }
   .bar-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
