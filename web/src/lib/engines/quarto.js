@@ -152,17 +152,29 @@ function headingOf(line) {
   return match ? { text: match[1], id: match[2] } : null;
 }
 
+// The engine of an inline span: `r` for `r x`, the braced name for `{python} x`.
+function inlineLanguage(segment) {
+  const braced = /^\{([A-Za-z][\w-]*)\}/.exec(segment);
+  if (braced) return braced[1];
+  return /^([A-Za-z][\w-]*)/.exec(segment)?.[1] ?? "";
+}
+
 function inlineOccurrence(line, path, lineNumber, occurrence) {
   const matches = [];
   const pattern = /`([^`\n]+)`/g;
   for (const match of line.matchAll(pattern)) {
     if (!executableInline(match[0])) continue;
+    const expression = match[1].trim();
     matches.push({
       id: `${path}#inline-${lineNumber}-${occurrence + matches.length}`,
-      expression: match[1].trim(),
+      expression,
+      language: inlineLanguage(expression),
       line: lineNumber,
       // Rust records the byte column immediately after the opening tick.
       column: new TextEncoder().encode(line.slice(0, match.index + 1)).length + 1,
+      // UTF-16 offsets of the whole span, backticks included, within its line.
+      start: match.index,
+      end: match.index + match[0].length,
       source: line,
     });
   }
@@ -324,11 +336,12 @@ function resolveInclude(name, from, lookup) {
   return typeof text === "string" ? { path: requested, text } : null;
 }
 
-// The executed cells of the whole document in document order: the main file's
-// and those of its block-level `{{< include >}}` files, expanded like the
-// renderer does. `files` is a function, a Map or an object from project path
-// to text. Each cell carries `file` (its normalized path) and `main`.
-export function expandedCells(source, { path = "main.qmd", files = null } = {}) {
+// One pass over the document in document order: the main file and its
+// block-level `{{< include >}}` files, expanded like the renderer does. Yields
+// the executed cells and the inline values of the prose (front matter and
+// fenced code left out). `files` is a function, a Map or an object from
+// project path to text. Each record carries `file` and `main`.
+function walkDocument(source, { path = "main.qmd", files = null } = {}) {
   const lookup = typeof files === "function" ? files
     : files instanceof Map ? (name) => files.get(name)
     : files && typeof files === "object" ? (name) => (Object.hasOwn(files, name) ? files[name] : undefined)
@@ -336,7 +349,8 @@ export function expandedCells(source, { path = "main.qmd", files = null } = {}) 
   const mainParsed = parseQuarto(source, { path });
   const meta = mainParsed.metadata?.execute;
   const defaults = meta && typeof meta === "object" ? meta : {};
-  const out = [];
+  const cells = [];
+  const inlines = [];
   const walk = (text, file, chain, isMain) => {
     text = String(text ?? "");
     const parsed = isMain ? mainParsed : parseQuarto(text, { path: file });
@@ -353,10 +367,11 @@ export function expandedCells(source, { path = "main.qmd", files = null } = {}) 
       const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
       if (open) {
         const cell = cellAt.get(i);
-        if (cell && ({ ...defaults, ...cell.options }).include !== false) out.push({ ...cell, file, main: isMain });
+        if (cell && ({ ...defaults, ...cell.options }).include !== false) cells.push({ ...cell, file, main: isMain });
         fence = { char: open[1][0], length: open[1].length };
         continue;
       }
+      for (const record of inlineOccurrence(line, file, i + 1, 0)) inlines.push({ ...record, file, main: isMain });
       const include = /^\s*\{\{<\s*include\s+([^\s>]+)\s*>\}\}\s*$/.exec(line);
       if (!include) continue;
       const found = resolveInclude(include[1], file, lookup);
@@ -365,7 +380,25 @@ export function expandedCells(source, { path = "main.qmd", files = null } = {}) 
     }
   };
   walk(source, path, [], true);
-  return out;
+  return { cells, inlines };
+}
+
+// The executed cells of the whole document in document order. Each cell
+// carries `file` (its normalized path) and `main`.
+export function expandedCells(source, options = {}) {
+  return walkDocument(source, options).cells;
+}
+
+// The inline values of the whole document in document order, in the same walk
+// as expandedCells. Each record carries `file`, `main`, `language`, `line`,
+// `column`, `expression`, and `start`/`end` (UTF-16 offsets of the span in its line).
+export function expandedInlines(source, options = {}) {
+  return walkDocument(source, options).inlines;
+}
+
+// Identity of an inline value: its engine and expression as the record holds them.
+export async function inlineFingerprint(record) {
+  return sha256(`${record.language}\n${record.expression}`);
 }
 
 // Pair saved outputs with the cells of the document. A result whose
@@ -406,6 +439,29 @@ export function matchResults(results, cells) {
 /// stays here, in the browser; the module only places what it is given.
 export const QUARTO_SIDECAR = ".librepaper/quarto.json";
 
+// Pair saved inline values with the document's inline values, in order: the
+// first unused saved entry with the same fingerprint. A saved entry with no
+// html (its tag was missing) is never paired, so its place draws as today.
+async function matchInlines(records, saved) {
+  const queues = new Map();
+  for (const entry of Array.isArray(saved) ? saved : []) {
+    const html = String(entry?.html ?? "");
+    if (!html || typeof entry.fingerprint !== "string") continue;
+    if (!queues.has(entry.fingerprint)) queues.set(entry.fingerprint, []);
+    queues.get(entry.fingerprint).push(html);
+  }
+  const out = [];
+  for (const record of records) {
+    const queue = queues.get(await inlineFingerprint(record));
+    if (!queue?.length) continue;
+    const html = queue.shift();
+    const entry = { line: record.line, column: record.column, html: html.replace(/\r?\n/g, " "), stale: false };
+    if (!record.main) entry.path = record.file;
+    out.push(entry);
+  }
+  return out;
+}
+
 /** @param {string} source @param {{path?: string, results?: any, strings?: Record<string, string>, files?: any}} [options] */
 export async function quartoSidecar(source, { path = "main.qmd", results = null, strings, files = null } = {}) {
   const cells = expandedCells(source, { path, files });
@@ -421,8 +477,10 @@ export async function quartoSidecar(source, { path = "main.qmd", results = null,
     ordered.push({ entry, order: cells.indexOf(cell) });
   }
   const outputs = ordered.sort((a, b) => a.order - b.order).map((item) => item.entry);
+  const inlines = await matchInlines(expandedInlines(source, { path, files }), results?.inlines);
   return {
     outputs,
+    ...(inlines.length ? { inlines } : {}),
     note: typeof results?.note === "string" ? results.note.trim() : "",
     strings: strings ?? {
       output_stale: m.quarto_output_stale(),

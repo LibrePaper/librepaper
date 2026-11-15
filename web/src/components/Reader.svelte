@@ -2352,6 +2352,7 @@
     const date = Number.isNaN(when.getTime()) ? "" : new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" }).format(when);
     return {
       cells: files ? null : record.cells,
+      inlines: files ? null : record.inlines ?? null,
       files: files ? record.files : null,
       path: String(record.path || ""),
       updatedAt: String(record.updatedAt || ""),
@@ -2467,17 +2468,20 @@
         runPhase = "failed";
         return;
       }
-      // Inline expressions have no cell to be spliced under, so a document
-      // with any shows the run's own page until the next edit.
-      const hasInline = quarto.parseQuarto(tree.texts[tree.main] ?? "", { path: tree.main }).inlineRecords.length > 0;
+      // Inline values sit in the prose, which the draft can only show when
+      // every one of them came back from the run. Otherwise the run's own page
+      // is shown until the next edit.
+      const inlineCount = quarto.expandedInlines(tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts }).length;
       const split = await splitResults(rendered.html, tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts });
       if (gone()) return;
       if (split.ok) {
-        ownResults = { cells: split.record.cells, path: tree.main, updatedAt: new Date().toISOString() };
+        const held = split.record.inlines ?? [];
+        const inlinesHeld = held.length === inlineCount && held.every((entry) => entry.html);
+        ownResults = { cells: split.record.cells, inlines: split.record.inlines, path: tree.main, updatedAt: new Date().toISOString() };
         runPhase = "idle";
         // The next edit's draft carries the outputs either way (ownResults);
         // a repaint now would replace the page that shows the inline results.
-        if (hasInline) showRunPage(tree, { kind: "html", html: rendered.html });
+        if (inlineCount > 0 && !inlinesHeld) showRunPage(tree, { kind: "html", html: rendered.html });
         else {
           stopRendering();
           void paintPreview();
