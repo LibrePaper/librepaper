@@ -331,3 +331,33 @@ test("a remote caret that arrives before its edit is resolved again when the edi
   await tick();
   assert.equal(view.state.field(ephemeralStateField).remoteCursors.get("1").anchor, 7);
 });
+
+test("a peer's first caret, attached to characters not yet imported, is stored once they land", async () => {
+  const peer = new LoroDoc();
+  peer.setPeerId(1);
+  const peerText = peer.getMap("files").setContainer("main.md", new LoroText());
+  peerText.insert(0, "hello");
+  peer.commit();
+  const doc = new LoroDoc();
+  doc.setPeerId(2);
+  doc.import(peer.export({ mode: "snapshot" }));
+
+  const ours = new EphemeralStore();
+  const theirs = new EphemeralStore();
+  const view = new View(EditorState.create({ doc: "hello", extensions: [ephemeralStateField] }));
+  view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
+
+  // The peer types "XY" after "hello" and its caret sits between X and Y.
+  // The caret reaches us first: nothing in our copy resolves it, so nothing is stored.
+  peerText.insert(5, "XY");
+  peer.commit();
+  theirs.set("1-cm-cursor", { anchor: peerText.getCursor(6).encode() });
+  ours.apply(theirs.encodeAll());
+  await tick();
+  assert.equal(view.state.field(ephemeralStateField).remoteCursors.has("1"), false);
+
+  // The edit lands: the caret is stored at 6, between X and Y.
+  doc.import(peer.export({ mode: "update", from: doc.oplogVersion() }));
+  await tick();
+  assert.equal(view.state.field(ephemeralStateField).remoteCursors.get("1").anchor, 6);
+});
