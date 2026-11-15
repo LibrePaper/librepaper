@@ -7,6 +7,7 @@
 // frames each block and draw a document header from what that source writes.
 
 import { blockSource, splitBlocks } from "./blocks.js";
+import { withCodeCells } from "./code-cells.js";
 import { orgBlockSource, splitOrgBlocks } from "./org-blocks.js";
 import { splitTypstBlocks, typstBlockSource, typstFramePrefix, typstPreamble } from "./typst-blocks.js";
 import { loadOrgSyntax } from "../org-language/module.js";
@@ -75,7 +76,7 @@ const formats = {
     module: "markdown",
     splitBlocks,
     blockSource,
-    renderedBlocks: renderedBlocksOf,
+    renderedBlocks: (text, renderer, path) => withCodeCells(text, renderedBlocksOf(text, renderer, path), renderer, path),
     ready: () => Promise.resolve(),
     folds: markdownFolds,
   },
@@ -84,7 +85,7 @@ const formats = {
     // No fallback: a Quarto file is drawn whole by the module or not at all.
     splitBlocks: () => null,
     blockSource: () => "",
-    renderedBlocks: renderedBlocksOf,
+    renderedBlocks: (text, renderer, path) => withCodeCells(text, renderedBlocksOf(text, renderer, path), renderer, path),
     ready: () => Promise.resolve(),
     folds: markdownFolds,
   },

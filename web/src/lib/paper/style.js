@@ -73,6 +73,28 @@ export function paperStylesheet(pageCss) {
     // widgets' own margins give the gap the preview has.
     ".cm-editor.cm-lp-paper-editor .cm-line.cm-lp-paper-gap { height: 0; padding: 0; font-size: 0; line-height: 0; overflow: hidden; }",
   ].join("\n");
+  // A code card's caption bar sits on its code (the house's file-name bar). A card whose code is not in the
+  // document is dashed, so it reads as not part of the document while staying readable. These rules sit
+  // outside the @scope and win over the page's on specificity (two classes against one).
+  const cellStyle = `.cm-lp-paper .lp-paper-cell-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6em;
+  padding-bottom: 0.35rem;
+}
+.cm-lp-paper .lp-paper-cell-lang { font-family: var(--lp-mono); font-size: 0.75rem; }
+.cm-lp-paper .lp-paper-cell-label { font-family: var(--lp-sans); }
+.cm-lp-paper .lp-paper-cell-note {
+  margin-left: auto;
+  font-family: var(--lp-sans);
+  font-size: 0.72rem;
+  color: var(--lp-muted);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.cm-lp-paper .lp-paper-cell-quiet,
+.cm-lp-paper .lp-paper-cell-quiet + pre { border-style: dashed; }
+`;
   // The overrides sit inside the same @scope, after the page rules: a scoped
   // rule beats an unscoped one of equal specificity, so outside it they lose.
   // The rest puts back what the page leaves to the browser's defaults and the
@@ -107,5 +129,6 @@ a { text-decoration: underline; }
 pre { white-space: pre; }
 }`,
     sourceType,
+    cellStyle,
   ].join("\n");
 }
