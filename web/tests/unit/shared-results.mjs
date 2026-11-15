@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { loadRunes } from "../helpers/runes.mjs";
+import { m } from "../../src/lib/paraglide/messages.js";
 
-const { fetchResults, putResults, createSharedResults } = await loadRunes(new URL("../../src/lib/reader/shared-results.svelte.js", import.meta.url));
+const { fetchResults, putResults, createSharedResults, publishProblem } = await loadRunes(new URL("../../src/lib/reader/shared-results.svelte.js", import.meta.url));
+
+test("publishProblem names a failed upload by its reason and is silent otherwise", () => {
+  assert.equal(publishProblem({ kind: "failed", reason: "storage" }), m.rundirectorycontrol_not_shared_full());
+  assert.equal(publishProblem({ kind: "failed", reason: "unmatched" }), m.rundirectorycontrol_not_shared_unmatched());
+  assert.equal(publishProblem({ kind: "failed", reason: "network" }), m.rundirectorycontrol_not_shared_failed());
+  assert.equal(publishProblem({ kind: "failed" }), m.rundirectorycontrol_not_shared_failed());
+  for (const status of [{ kind: "idle" }, { kind: "shared", bytes: 1 }, { kind: "skipped", reason: "none" }, undefined, null]) {
+    assert.equal(publishProblem(status), null);
+  }
+});
 
 const record = { version: 1, path: "main.qmd", cells: [{ fingerprint: "a".repeat(64), label: null, html: "<p>1</p>" }] };
 
