@@ -12,7 +12,6 @@
 
 import { createKatexCache, createKatexLoader, createMathTypesetter, typesetDetached } from "../lib/math.js";
 import { perfEnd, perfStart } from "../lib/perf-marks.js";
-import { imageSize } from "./image-size.js";
 import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
 import { watchPinch } from "../lib/pinch.js";
 import { morphChildren } from "./morph.js";
@@ -665,8 +664,6 @@ import { morphChildren } from "./morph.js";
   // blob URL before the page is parsed, so the bytes cross the channel once
   // rather than inside every keystroke's HTML.
   const frameFigures = new Map();
-  // Each figure's natural size, read from its bytes, by digest.
-  const frameFigureSizes = new Map();
   // The types a figure may be given. The reader sends the type it worked out
   // from the file name, and this end does not trust it: an SVG or HTML blob
   // would run as this origin. figures.js has the other copy of this list.
@@ -679,8 +676,6 @@ import { morphChildren } from "./morph.js";
       if (frameFigures.has(item.sha)) continue;
       const type = FRAME_FIGURE_TYPES.has(item.type) ? item.type : "application/octet-stream";
       frameFigures.set(item.sha, URL.createObjectURL(new Blob([item.bytes], { type })));
-      const natural = imageSize(item.bytes);
-      if (natural) frameFigureSizes.set(item.sha, natural);
     }
   }
   function withFigureUrls(html) {
@@ -690,21 +685,14 @@ import { morphChildren } from "./morph.js";
     });
   }
 
-  // Give each figure in a parsed page its decoding hint and, when the page
-  // sets no size of its own, its natural size, so the browser knows the aspect
-  // ratio before the bytes decode. Done on the parsed page, so every
-  // keystroke yields identical attributes and the morph sees no change.
-  const FIGURE_SOURCE = /#librepaper-asset=([0-9A-Za-z%]+)$/;
-  function sizeFigures(root) {
+  // Give each figure in a parsed page a decoding hint, so decoding happens off
+  // the main thread. Done on the parsed page, so every keystroke yields
+  // identical attributes and the morph sees no change.
+  const FIGURE_SOURCE = /#librepaper-asset=[0-9A-Za-z%]+$/;
+  function hintFigures(root) {
     for (const img of root.querySelectorAll("img")) {
-      const match = FIGURE_SOURCE.exec(img.getAttribute("src") || "");
-      if (!match) continue;
+      if (!FIGURE_SOURCE.test(img.getAttribute("src") || "")) continue;
       if (!img.hasAttribute("decoding")) img.setAttribute("decoding", "async");
-      const natural = frameFigureSizes.get(match[1]);
-      if (!natural || img.hasAttribute("width") || img.hasAttribute("height")) continue;
-      if (img.style.width || img.style.height) continue;
-      img.setAttribute("width", String(natural.width));
-      img.setAttribute("height", String(natural.height));
     }
   }
 
@@ -758,7 +746,7 @@ import { morphChildren } from "./morph.js";
       // it is the same template on every keystroke, so it is replaced only
       // when it actually differs.
       adoptStyles(parsed, message.presentation);
-      sizeFigures(parsed.body);
+      hintFigures(parsed.body);
       document.documentElement.classList.add("lp-live-preview");
       // Every format is morphed in place, so unchanged paragraphs, images and
       // equations are never recreated. Math is typeset on the parsed page
@@ -766,6 +754,10 @@ import { morphChildren } from "./morph.js";
       // formula keeps its nodes. Marks go first: they split text nodes, and
       // the morph compares the page with the unmarked source.
       const katexReady = !!window.katex;
+      // The one case that replaces rather than morphs: math waiting for a
+      // KaTeX that is not loaded yet. A page without math morphs always.
+      const awaitingKatex = !katexReady
+        && !!parsed.body.querySelector("span[data-math-style], span.math:not([data-math-style])");
       if (katexReady) {
         const typesetStart = perfStart();
         typesetDetached(window.katex, parsed.body, parsed, katexCache);
@@ -774,13 +766,13 @@ import { morphChildren } from "./morph.js";
       quietly(() => {
         const swapStart = perfStart();
         removeMarks();
-        if (katexReady) {
-          morphChildren(document.body, parsed.body);
-        } else {
-          // KaTeX is not here yet (the first document with math, or none): the
-          // parsed nodes move in as they are, without a second parse, and
-          // typesetMath below starts the load. Later keystrokes morph.
+        if (awaitingKatex) {
+          // The first document with math: the parsed nodes move in as they
+          // are, without a second parse, and typesetMath below starts the
+          // load. Later keystrokes morph.
           document.body.replaceChildren(...document.adoptNode(parsed.body).childNodes);
+        } else {
+          morphChildren(document.body, parsed.body);
         }
         perfEnd("lp:preview:swap", swapStart);
         // In the same breath when KaTeX is already here, so the text published
