@@ -2385,7 +2385,7 @@
   "readerc_download_no_files": "Este proyecto no tiene archivos que descargar.",
   "readerc_download_project_failed": "No se pudo descargar el proyecto.",
   "readerc_export_failed": "No se pudo generar el {target}.",
-  "readerc_figures_missing": [
+  "readerc_figures_placeholder": [
     {
       "declarations": [
         "input count",
@@ -2395,8 +2395,8 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "No se pudo obtener la figura: {missing}.",
-        "countPlural=*": "No se pudieron obtener las figuras: {missing}."
+        "countPlural=one": "Falta {count} figura; se usó un marcador de posición.",
+        "countPlural=*": "Faltan {count} figuras; se usaron marcadores de posición."
       }
     }
   ],
@@ -3009,10 +3009,25 @@
   "rundirectorycontrol_share_results": "Publicar resultados",
   "rundirectorycontrol_share_hint": "Los colaboradores ven el resultado de tu última ejecución, incluso sin tus datos.",
   "rundirectorycontrol_shared": "Resultados publicados · {size}",
+  "rundirectorycontrol_shared_figures": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Resultados publicados · {size} · {count} figura de tu carpeta de ejecución",
+        "countPlural=*": "Resultados publicados · {size} · {count} figuras de tu carpeta de ejecución"
+      }
+    }
+  ],
   "rundirectorycontrol_not_shared_full": "Resultados no publicados: tu almacenamiento está lleno.",
+  "rundirectorycontrol_not_shared_deployment": "Resultados no publicados: este servidor está lleno.",
   "rundirectorycontrol_not_shared_unmatched": "Resultados no publicados: no se pudo asociar la salida con las celdas de código.",
   "rundirectorycontrol_not_shared_failed": "Resultados no publicados: falló la subida.",
-  "rundirectorycontrol_html_only": "Los resultados se publican solo desde la salida HTML.",
   "runbutton_stop": "Detener",
   "runbutton_run_hint": "Ejecutar el código de este documento en este equipo",
   "runbutton_options": "Opciones de ejecución",

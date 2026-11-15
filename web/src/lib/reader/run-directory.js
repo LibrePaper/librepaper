@@ -107,11 +107,14 @@ export function belongsInRunDirectory(path) {
 
 /** The line under Share results: what happened to the last shared run, or ""
  * when there is nothing to say.
- * @param {{ share?: boolean, pdfOutput?: boolean, shareStatus?: { kind?: string, bytes?: number, reason?: string } }} [input]
+ * @param {{ share?: boolean, shareStatus?: { kind?: string, bytes?: number, figures?: number, reason?: string } }} [input]
  * @returns {string} */
-export function shareLineOf({ share = true, pdfOutput = false, shareStatus = { kind: "idle" } } = {}) {
+export function shareLineOf({ share = true, shareStatus = { kind: "idle" } } = {}) {
   if (!share) return "";
-  if (pdfOutput) return m.rundirectorycontrol_html_only();
-  if (shareStatus.kind === "shared") return m.rundirectorycontrol_shared({ size: storageBytes(shareStatus.bytes ?? 0) });
+  if (shareStatus.kind === "shared") {
+    const size = storageBytes(shareStatus.bytes ?? 0);
+    const count = shareStatus.figures ?? 0;
+    return count > 0 ? m.rundirectorycontrol_shared_figures({ size, count }) : m.rundirectorycontrol_shared({ size });
+  }
   return publishProblem(shareStatus) ?? "";
 }

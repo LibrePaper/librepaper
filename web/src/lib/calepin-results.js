@@ -55,15 +55,28 @@ export function isCalepinRecord(record) {
   return Boolean(record) && typeof record === "object" && record.engine === "calepin" && Array.isArray(record.files);
 }
 
-// A file entry is safe to keep when it sits under `.calepin/` with plain
-// segments and carries its content as exactly one of text or base64.
+// A relative path of plain segments: no backslash, no NUL, no empty, "." or ".." segment.
+function plainPath(path) {
+  if (typeof path !== "string" || path === "") return false;
+  if (path.includes("\\") || path.includes("\0")) return false;
+  return !path.split("/").some((segment) => segment === "" || segment === "." || segment === "..");
+}
+
+/** Whether `path` names a figure the Run directory supplied: a plain relative
+ * path outside `.calepin/` and `.librepaper/`. */
+export function isRunFigurePath(path) {
+  return plainPath(path) && !path.startsWith(".calepin/") && !path.startsWith(".librepaper/");
+}
+
+// A file entry is safe to keep when it has a plain path and either sits under
+// `.calepin/` with exactly one of text or base64, or is a run figure (outside
+// `.calepin/` and `.librepaper/`) carrying base64.
 function wellFormed(entry) {
   if (!entry || typeof entry !== "object") return false;
   const { path, text, base64 } = entry;
-  if (typeof path !== "string" || !path.startsWith(".calepin/")) return false;
-  if (path.includes("\\") || path.includes("\0")) return false;
-  if (path.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) return false;
-  return (typeof text === "string") !== (typeof base64 === "string");
+  if (!plainPath(path)) return false;
+  if (path.startsWith(".calepin/")) return (typeof text === "string") !== (typeof base64 === "string");
+  return isRunFigurePath(path) && typeof base64 === "string" && typeof text !== "string";
 }
 
 // The record for a run, from the JSON bytes the desktop app returned.
@@ -86,7 +99,9 @@ export function recordOf(bytes, path) {
   const { files } = parsed;
   if (!Array.isArray(files) || files.length === 0) return null;
   if (!files.every(wellFormed)) return null;
-  if (!files.some((file) => file.path.endsWith("/results.json"))) return null;
+  // A document with no chunks has no results.json; its record is then only
+  // the figures the run took from the Run directory.
+  if (!files.some((file) => file.path.endsWith("/results.json") || isRunFigurePath(file.path))) return null;
 
   // Keep only the known fields, so a stray property in the bytes never
   // reaches the page's record.

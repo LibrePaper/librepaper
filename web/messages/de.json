@@ -2385,7 +2385,7 @@
   "readerc_download_no_files": "Dieses Projekt enthält keine Dateien zum Herunterladen.",
   "readerc_download_project_failed": "Das Projekt konnte nicht heruntergeladen werden.",
   "readerc_export_failed": "{target} konnte nicht erstellt werden.",
-  "readerc_figures_missing": [
+  "readerc_figures_placeholder": [
     {
       "declarations": [
         "input count",
@@ -2395,8 +2395,8 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "Abbildung konnte nicht abgerufen werden: {missing}.",
-        "countPlural=*": "Abbildungen konnten nicht abgerufen werden: {missing}."
+        "countPlural=one": "{count} Abbildung fehlt; ein Platzhalter wurde verwendet.",
+        "countPlural=*": "{count} Abbildungen fehlen; Platzhalter wurden verwendet."
       }
     }
   ],
@@ -3009,10 +3009,25 @@
   "rundirectorycontrol_share_results": "Ergebnisse veröffentlichen",
   "rundirectorycontrol_share_hint": "Mitarbeitende sehen die Ausgabe Ihres letzten Laufs, auch ohne Ihre Daten.",
   "rundirectorycontrol_shared": "Ergebnisse veröffentlicht · {size}",
+  "rundirectorycontrol_shared_figures": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Ergebnisse veröffentlicht · {size} · {count} Abbildung aus Ihrem Ausführungsordner",
+        "countPlural=*": "Ergebnisse veröffentlicht · {size} · {count} Abbildungen aus Ihrem Ausführungsordner"
+      }
+    }
+  ],
   "rundirectorycontrol_not_shared_full": "Ergebnisse nicht veröffentlicht: Ihr Speicher ist voll.",
+  "rundirectorycontrol_not_shared_deployment": "Ergebnisse nicht veröffentlicht: Dieser Server ist voll.",
   "rundirectorycontrol_not_shared_unmatched": "Ergebnisse nicht veröffentlicht: Die Ausgabe konnte den Code-Zellen nicht zugeordnet werden.",
   "rundirectorycontrol_not_shared_failed": "Ergebnisse nicht veröffentlicht: Das Hochladen ist fehlgeschlagen.",
-  "rundirectorycontrol_html_only": "Ergebnisse werden nur aus der HTML-Ausgabe veröffentlicht.",
   "runbutton_stop": "Stoppen",
   "runbutton_run_hint": "Den Code dieses Dokuments auf diesem Computer ausführen",
   "runbutton_options": "Ausführungsoptionen",

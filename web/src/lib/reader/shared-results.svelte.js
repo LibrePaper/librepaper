@@ -1,6 +1,7 @@
 import { authHeaders } from "../api.js";
 import { m } from "../paraglide/messages.js";
 import { sha256 } from "../results-hash.js";
+import { runFigureCount } from "../run-figures.js";
 
 /**
  * The line that says a run's results could not be published, or null when
@@ -12,6 +13,7 @@ import { sha256 } from "../results-hash.js";
 export function publishProblem(status) {
   if (status?.kind !== "failed") return null;
   if (status.reason === "storage") return m.rundirectorycontrol_not_shared_full();
+  if (status.reason === "deployment") return m.rundirectorycontrol_not_shared_deployment();
   if (status.reason === "unmatched") return m.rundirectorycontrol_not_shared_unmatched();
   return m.rundirectorycontrol_not_shared_failed();
 }
@@ -44,13 +46,13 @@ export async function fetchResults(slug, headers = authHeaders("")) {
  * @param {string} slug
  * @param {unknown} record
  * @param {Record<string, string>} [headers]
- * @returns {Promise<{ok: true, bytes: number, updatedAt: string} | {ok: false, status: number, error: string}>}
+ * @returns {Promise<{ok: true, bytes: number, updatedAt: string} | {ok: false, status: number, error: string, reason?: string}>}
  */
 export async function putResults(slug, record, headers = authHeaders("", "application/json")) {
   try {
     const response = await fetch(endpoint(slug), { method: "PUT", headers, body: JSON.stringify(record) });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) return { ok: false, status: response.status, error: String(body.error || response.status) };
+    if (!response.ok) return { ok: false, status: response.status, error: String(body.error || response.status), ...(typeof body.reason === "string" ? { reason: body.reason } : {}) };
     return { ok: true, bytes: Number(body.bytes) || 0, updatedAt: String(body.updatedAt || "") };
   } catch (error) {
     return { ok: false, status: 0, error: String(error?.message || error) };
@@ -106,9 +108,10 @@ export function createSharedResults(slug, headers = () => authHeaders("")) {
       if (result.ok) {
         uploadedHash = hash;
         uploadedAt = result.updatedAt;
-        state.status = { kind: "shared", bytes: result.bytes };
+        state.status = { kind: "shared", bytes: result.bytes, figures: runFigureCount(/** @type {any} */ (record)?.files) };
       } else {
-        state.status = { kind: "failed", reason: "status" in result && result.status === 413 ? "storage" : "network" };
+        const full = "status" in result && result.status === 413;
+        state.status = { kind: "failed", reason: full ? (result.reason === "deployment" ? "deployment" : "storage") : "network" };
       }
     } catch {
       state.status = { kind: "failed", reason: "network" };

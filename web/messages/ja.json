@@ -2370,7 +2370,7 @@
   "readerc_download_no_files": "このプロジェクトにはダウンロードできるファイルがありません。",
   "readerc_download_project_failed": "プロジェクトをダウンロードできませんでした。",
   "readerc_export_failed": "{target}を作成できませんでした。",
-  "readerc_figures_missing": [
+  "readerc_figures_placeholder": [
     {
       "declarations": [
         "input count",
@@ -2380,8 +2380,8 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "図を取得できませんでした：{missing}。",
-        "countPlural=*": "図を取得できませんでした：{missing}。"
+        "countPlural=one": "図 {count} 点が見つかりません。プレースホルダーを使用しました。",
+        "countPlural=*": "図 {count} 点が見つかりません。プレースホルダーを使用しました。"
       }
     }
   ],
@@ -2994,10 +2994,25 @@
   "rundirectorycontrol_share_results": "結果を公開",
   "rundirectorycontrol_share_hint": "共同編集者は、データがなくても最後の実行結果を確認できます。",
   "rundirectorycontrol_shared": "結果を公開済み · {size}",
+  "rundirectorycontrol_shared_figures": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "結果を公開済み · {size} · 実行フォルダーの図 {count} 点",
+        "countPlural=*": "結果を公開済み · {size} · 実行フォルダーの図 {count} 点"
+      }
+    }
+  ],
   "rundirectorycontrol_not_shared_full": "結果は公開されていません: ストレージがいっぱいです。",
+  "rundirectorycontrol_not_shared_deployment": "結果は公開されていません: このサーバーはいっぱいです。",
   "rundirectorycontrol_not_shared_unmatched": "結果は公開されていません: 出力をコードセルに対応付けられませんでした。",
   "rundirectorycontrol_not_shared_failed": "結果は公開されていません: アップロードに失敗しました。",
-  "rundirectorycontrol_html_only": "結果は HTML 出力からのみ公開されます。",
   "runbutton_stop": "停止",
   "runbutton_run_hint": "このドキュメントのコードをこのコンピューターで実行",
   "runbutton_options": "実行オプション",
