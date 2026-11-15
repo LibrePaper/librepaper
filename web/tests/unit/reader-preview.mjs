@@ -70,7 +70,9 @@ assert.match(viteSource, /let watchingBuild = false;[\s\S]*?configResolved\(conf
 assert.match(offlineSource, /request\.onblocked = \(\) => \{[\s\S]*?blocked = true;[\s\S]*?reject\(/);
 assert.match(persistenceSource, /pendingFlush\.catch\(\(\) => \{\}\)\.finally/);
 assert.match(editorSource, /states = new WeakMap\(\);\s*undoManager = null;\s*undoManagerDoc = null/);
-assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && buildPreferences\.output === "pdf"[\s\S]*?\? "pdf"/);
+assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && markdownOutput === "pdf"[\s\S]*?\? "pdf"/);
+assert.match(readerSource, /const quartoPdfOffered = \$derived\(hasDesktop \|\| displayedFormat !== "quarto"\)/);
+assert.match(readerSource, /const markdownOutput = \$derived\(quartoPdfOffered && buildPreferences\.output === "pdf"/);
 assert.match(readerSource, /const frameLoaded = \(\) => \{[\s\S]*?framePreview\.markReady\(\)[\s\S]*?replayPreview\(\)/);
 assert.match(readerSource, /<Preview[\s\S]*?onload=\{frameLoaded\}/);
 assert.doesNotMatch(readerSource, /toastDone\("(?:Quarto |Calepin )?Preview ready"/);
