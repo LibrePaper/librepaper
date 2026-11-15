@@ -957,18 +957,27 @@
   let view = null;
   // One editor state per file, made the first time that file is opened and
   // kept afterwards. Switching files swaps the state rather than rebuilding
-  // it, so a visit to another chapter costs nothing and leaves the undo
-  // history and the scroll position where they were -- which is the whole
+  // it, so a visit to another chapter costs nothing and keeps the undo
+  // history and the selection where they were -- which is the whole
   // difference between a directory of files and one text somebody keeps
   // scrolling through.
   // A CodeMirror state owns a Loro binding and undo field. File ids are only
   // unique inside a document, and a session swap brings a new document, so
   // cache states under their owning LoroDoc as well as the file id.
+  // The scroll position is not part of an EditorState, so setState drops it.
+  // It is kept in its own small cache, `tops`, as a document offset (the start
+  // of the first line on screen), and put back after each swap.
   let states = new WeakMap();
+  let tops = new WeakMap();
   let activeDocument = null;
   const stateMap = (document_) => {
     let map = states.get(document_);
     if (!map) { map = new Map(); states.set(document_, map); }
+    return map;
+  };
+  const topMap = (document_) => {
+    let map = tops.get(document_);
+    if (!map) { map = new Map(); tops.set(document_, map); }
     return map;
   };
   // Which file the view is currently showing, so a swap can put the state it
@@ -1200,6 +1209,30 @@
   export function revealCaret() {
     if (!view || !view.hasFocus) return;
     view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "nearest", yMargin: 24 }) });
+  }
+
+  // The caret and the offset of the first line showing at the top of the
+  // scroller, for the reader to keep while the page is hidden.
+  export function place() {
+    if (!view) return null;
+    return {
+      caret: view.state.selection.main.head,
+      top: view.lineBlockAtHeight(view.scrollDOM.scrollTop).from,
+    };
+  }
+
+  // Puts back a place kept by place(), in the file already shown. It does not
+  // focus the editor: focusing a field on a phone raises the keyboard, and the
+  // person has not asked to type.
+  export function restorePlace(id, { caret = 0, top = 0 } = {}) {
+    if (!view || !id) return;
+    show(id, { focus: false });
+    const end = view.state.doc.length;
+    const clamp = (at) => Math.min(Math.max(0, at), end);
+    view.dispatch({
+      selection: { anchor: clamp(caret) },
+      effects: EditorView.scrollIntoView(clamp(top), { y: "start" }),
+    });
   }
 
   // Applies a formatting tool from lib/visual-markup/formatting.js to the open
@@ -2053,7 +2086,10 @@
 
   function show(id, { focus = true } = {}) {
     if (!view || !id || id === showing) return;
-    if (showing && activeDocument) stateMap(activeDocument).set(showing, view.state);
+    if (showing && activeDocument) {
+      stateMap(activeDocument).set(showing, view.state);
+      topMap(activeDocument).set(showing, view.lineBlockAtHeight(view.scrollDOM.scrollTop).from);
+    }
     const document_ = session.doc;
     const documentStates = stateMap(document_);
     if (!documentStates.has(id)) documentStates.set(id, stateFor(id));
@@ -2090,6 +2126,13 @@
     // shows is for the file now on screen.
     drawAuthorship();
     if (focus) view.focus();
+    // Put the scroll back where the file was left, last, after everything
+    // above has reconfigured the view. A caller that jumps somewhere (goToIn,
+    // openAt) calls goTo after show and scrolls again, so that jump wins.
+    const saved = topMap(document_).get(id);
+    if (saved !== undefined) {
+      view.dispatch({ effects: EditorView.scrollIntoView(Math.min(saved, view.state.doc.length), { y: "start" }) });
+    }
   }
 
   /// The file the view is showing, which the reader asks when it has a
@@ -2179,6 +2222,7 @@
         // retaining one while clearing the other makes menu availability and
         // the state bound to the view disagree after a lifecycle rebind.
         states = new WeakMap();
+        tops = new WeakMap();
         undoManager = null;
         undoManagerDoc = null;
         view = null;
