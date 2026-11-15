@@ -253,9 +253,17 @@ export async function referenceFigures(source) {
   if (!added || !urls) return [];
   /** @type {Map<string, { sha: string, type: string, bytes: Uint8Array }>} */
   const references = new Map();
+  // An alias key has a URL but no bytes of its own: it shares the URL, and so
+  // the bytes, of the path it stands for.
+  /** @type {Map<string, Uint8Array>} */
+  const bytesOf = new Map();
+  for (const [key, url] of added.urls) {
+    const bytes = added.assets.get(key);
+    if (bytes) bytesOf.set(url, bytes);
+  }
   for (const [key, url] of [...added.urls]) {
     const type = typeOf(key);
-    const bytes = added.assets.get(key);
+    const bytes = bytesOf.get(url);
     if (!bytes || urls[key] !== url || !url.startsWith("data:") || url.startsWith("data:image/svg") || !referencedType(type)) continue;
     const sha = await sha256Hex(bytes);
     references.set(sha, { sha, type, bytes });
