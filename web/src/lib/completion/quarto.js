@@ -36,6 +36,33 @@ function inFrontMatter(lines, index) {
   return false;
 }
 
+/** True when line `number` (1-based) of the document sits between the leading `---` lines. */
+function inFrontMatterAt(doc, number) {
+  if (number === 1 || !/^---\s*$/.test(doc.line(1).text)) return false;
+  for (let i = 2; i <= doc.lines; i++) {
+    if (/^(?:---|\.\.\.)\s*$/.test(doc.line(i).text)) return number < i;
+  }
+  return false;
+}
+
+// What the front matter source reads before the cursor: a key being typed, or a value after "key:".
+const FRONT_KEY = /^[A-Za-z0-9_-]*$/;
+const FRONT_VALUE = /^[A-Za-z][\w-]*:[ \t]+\S*$/;
+
+/**
+ * Where the Quarto source can answer: a cross-reference after "@", a code cell
+ * option line ("#| "), or a front matter key or value. The front matter is
+ * looked up only when the line could be one.
+ * @param {string} before the line's text up to the cursor
+ * @param {import("@codemirror/state").EditorState} state
+ * @param {number} pos
+ */
+export function quartoTrigger(before, state, pos) {
+  if (before.includes("@") || before.startsWith("#| ")) return true;
+  if (!FRONT_KEY.test(before) && !FRONT_VALUE.test(before)) return false;
+  return inFrontMatterAt(state.doc, state.doc.lineAt(pos).number);
+}
+
 /**
  * Cross-reference options: the edited document first, then other files, one per id.
  * @param {ReferenceProject} project

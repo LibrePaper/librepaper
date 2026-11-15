@@ -45,7 +45,8 @@
   // The bracket keymap goes with auto-closing brackets. Its Backspace deletes an
   // empty pair even without closeBrackets, so leaving it in the main keymap
   // would leave the switch half off.
-  const completionOn = (on) => (on ? autocompletion({ activateOnTyping: true }) : []);
+  // Typing wakes completion only where a source can answer (see completionWake), so prose costs no query.
+  const completionOn = (on) => (on ? [autocompletion({ activateOnTyping: false }), completionWake(completionProject)] : []);
   // The LaTeX \end insertion and environment indentation, for LaTeX files only.
   const latexAssistOn = (on, isLatex) => (isLatex ? latexAssistExtensions(on) : []);
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
@@ -240,7 +241,7 @@
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
-  import { completionExtension, formatOfPath } from "../lib/completion/index.js";
+  import { completionExtension, completionWake, formatOfPath } from "../lib/completion/index.js";
   import { createLiveIndex } from "../lib/document-index/live.js";
   import { labelList } from "../lib/document-index/labels.js";
   import { indexEditing, indexDiagnostics, indexChanged } from "../lib/document-index-extensions/index.js";

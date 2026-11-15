@@ -13,6 +13,26 @@ import { rendererRequest } from "../renderer-client.js";
 // explicit request: markup and code sigils, a path or a label.
 const TRIGGER = /[#.\w@<"/(,:]/;
 
+// The sigils that open code or a string in markup. A word typed with none of
+// them on its line, in a line that is not indented, is prose, which the engine
+// has nothing to say about.
+const CODE_SIGIL = /[#@<"({$]/;
+
+/**
+ * Where the Typst source can ask the engine. It reads the character before the
+ * cursor as the source does; for a letter, which also begins every prose word,
+ * the line must also look like code (a sigil, an indent, or a "name.member").
+ * Code that continues on an unindented line without a sigil is not woken
+ * until a sigil or a "." appears.
+ * @param {string} before the line's text up to the cursor
+ */
+export function typstTrigger(before) {
+  const last = before.slice(-1);
+  if (!last || /\s/.test(last) || !TRIGGER.test(last)) return false;
+  if ("#@<\"".includes(last)) return true;
+  return CODE_SIGIL.test(before) || /^\s/.test(before) || /\w\.\w*$/.test(before);
+}
+
 // The engine's kind to CodeMirror's completion type.
 const TYPES = {
   func: "function",

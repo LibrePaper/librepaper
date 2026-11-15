@@ -223,6 +223,14 @@ function referenceResult(context, p, inner) {
 }
 
 /**
+ * Where the LaTeX source can answer: every branch below needs a backslash
+ * before the cursor on the same line (a wrapped \cite argument is the
+ * bibliography source's, see bibliographyTrigger).
+ * @param {string} before the line's text up to the cursor
+ */
+export const latexTrigger = (before) => before.includes("\\");
+
+/**
  * Completion source for LaTeX. Returns null for any other format.
  * @param {() => { path: string, format: string, texts: Record<string, string>, files: string[] }} project
  */

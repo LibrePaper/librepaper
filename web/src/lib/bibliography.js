@@ -181,6 +181,25 @@ export function bibliographyCompletion({ entries, format }) {
       options: ranked.map((entry) => ({ label: entry.key, displayLabel: entryLabel(entry), detail: entryDetail(entry), info: entryLabel(entry), type: "reference" })) };
   };
 }
+// A \cite argument that opened on an earlier line and has not been closed.
+const OPEN_CITE = /\\[A-Za-z]*cite[A-Za-z]*\s*(?:\[[^\]]*\]\s*)*\{[^}]*$/;
+/**
+ * Where bibliographyCompletion can answer, for a format: after an "@" on the
+ * line, or in LaTeX after a backslash or inside a \cite argument that wraps
+ * from an earlier line (the source reads back at most 20 lines).
+ * @param {string} format
+ * @returns {(before: string, state: import("@codemirror/state").EditorState, pos: number) => boolean}
+ */
+export function bibliographyTrigger(format) {
+  return (before, state, pos) => {
+    if (before.includes("@")) return true;
+    if (format !== "latex" && format !== "tex") return false;
+    if (before.includes("\\")) return true;
+    const { doc } = state;
+    const from = doc.line(Math.max(1, doc.lineAt(pos).number - 20)).from;
+    return OPEN_CITE.test(doc.sliceString(from, pos));
+  };
+}
 export function selectedBibliographyFiles(source, format) {
   const names = [];
   if (format === "markdown" || format === "quarto") {

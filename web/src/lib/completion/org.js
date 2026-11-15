@@ -78,6 +78,15 @@ export function orgLabels(texts = {}, first = "") {
   return labels;
 }
 
+// Every Org branch below, including citations, starts from one of these.
+const ORG_OPENER = /\[\[|#\+|@/;
+
+/**
+ * Where the Org source can answer: a link, a keyword line or a citation.
+ * @param {string} before the line's text up to the cursor
+ */
+export const orgTrigger = (before) => ORG_OPENER.test(before);
+
 /** Completion source for Org. Returns null outside Org files. */
 export function orgCompletion(project) {
   return (context) => {
@@ -86,7 +95,7 @@ export function orgCompletion(project) {
     const { doc } = context.state;
     const line = doc.lineAt(context.pos);
     const rawBefore = line.text.slice(0, context.pos - line.from);
-    if (!/\[\[|#\+|@/.test(rawBefore)) return null;
+    if (!orgTrigger(rawBefore)) return null;
 
     // Citation keys: the bibliography source, when the project supplies entries.
     const cited = bibliographyCompletion({ entries: () => current.entries, format: "org" })(context);
