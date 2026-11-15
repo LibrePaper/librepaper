@@ -39,8 +39,10 @@ const PALETTE = /^src\/styles\/palettes\/[a-z]+\.css$/;
 // class names are the renderers' vocabulary (wasm-helpers docs/classes.md).
 // Calepin's bundled runtime is Typst code a notebook is compiled with, so its
 // colours are the document's, drawn in the preview.
+// A missing figure's placeholder is a picture inside the document, drawn in
+// the documents frame and in exports, where no theme token reaches it.
 const DOCUMENT_CSS = "src/styles/document.css";
-const OUTSIDE = [/^src\/lib\/calepin-runtime\.js$/, /^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/, /^src\/lib\/text-page\.js$/, /^src\/styles\/document\.css$/];
+const OUTSIDE = [/^src\/lib\/calepin-runtime\.js$/, /^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/, /^src\/lib\/text-page\.js$/, /^src\/styles\/document\.css$/, /^src\/lib\/missing-figures\.js$/];
 
 function files(dir) {
   return readdirSync(dir).flatMap((name) => {
