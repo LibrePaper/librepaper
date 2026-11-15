@@ -15,12 +15,15 @@ import { anchorOne } from "./anchor.js";
 // Markup, as far as this is concerned: characters that are syntax in markdown
 // or typst and never part of a word. Replaced by spaces rather than removed,
 // so an offset into the flattened copy is still an offset into the original.
-//
-// The quotes, dashes and ellipsis are on the list too, because the renderers
-// set them as typography: `'` and `"` become curly quotes, `--` and `---`
-// become dashes, `...` becomes an ellipsis. Both sides blank them, so "don't"
-// and "don’t", "--" and "–", "..." and "…" all flatten to the same words.
-const MARKUP = /[#*_`~=$@<>[\]()|\\{}'".\-‘’‚‛“”„‟′″–—―…«»‹›]/g;
+const MARKUP = /[#*_`~=$@<>[\]()|\\{}]/g;
+
+// Typography: the quotes, dashes and ellipsis the renderers set in place of
+// the plain characters. `'` and `"` become curly quotes, `--` and `---` become
+// dashes, `...` becomes an ellipsis. Caret matching blanks them on both sides,
+// so "don't" and "don’t", "--" and "–", "..." and "…" all flatten to the same
+// words. Comment ranges do not blank them: a comment may be on punctuation, and
+// its highlight must keep the selection's own ends.
+const TYPOGRAPHY = /['".\-‘’‚‛“”„‟′″–—―…«»‹›]/g;
 
 // The markup of an HTML source is not a character but a tag, and its entities
 // are words spelled sideways. Both are blanked rather than removed, and an
@@ -67,12 +70,13 @@ const ENOUGH = 16;
 // flattened copy the offset it came from. Without that map a match found here
 // is a position in a text nobody has, and the caret lands somewhere else
 // entirely.
-function flattenWith(text, format) {
-  const blanked = (
+function flattenWith(text, format, typography) {
+  const marked = (
     format === "html"
       ? text.replace(TAG, (tag) => " ".repeat(tag.length)).replace(ENTITY, decodeInPlace)
       : text
   ).replace(MARKUP, " ");
+  const blanked = typography ? marked.replace(TYPOGRAPHY, " ") : marked;
   const out = [];
   const from = [];
   let wasSpace = false;
@@ -102,23 +106,25 @@ function flattenWith(text, format) {
   return { text: out.join(""), from };
 }
 
-// The two haystacks -- a source and the document rendered from it -- are asked
-// for again on every keystroke and every click, and each is flattened whole.
-// Two slots is exactly enough to keep both, and the windows a phrase is taken
-// from go straight to `flattenWith` so they cannot evict either.
+// The haystacks -- a source and the document rendered from it -- are asked for
+// again on every keystroke and every click, and each is flattened whole. Three
+// slots cover what a page asks for: the rendered and the source text for caret
+// matching (both with typography), and the rendered text for comment ranges
+// (without). The windows a phrase is taken from go straight to `flattenWith`
+// so they cannot evict any of them.
 const memo = [];
-function flattened(text, format) {
-  const known = memo.find((entry) => entry.text === text && entry.format === format);
+function flattened(text, format, typography) {
+  const known = memo.find((entry) => entry.text === text && entry.format === format && entry.typography === typography);
   if (known) return known.result;
-  const result = flattenWith(text, format);
-  memo.unshift({ text, format, result });
-  memo.length = Math.min(memo.length, 2);
+  const result = flattenWith(text, format, typography);
+  memo.unshift({ text, format, typography, result });
+  memo.length = Math.min(memo.length, 3);
   return result;
 }
 
 // A window of the text, flattened for matching only: small, different every
-// time, and therefore never put in the memo the two haystacks live in.
-const flatten = (text, format) => flattenWith(text, format).text;
+// time, and therefore never put in the memo the haystacks live in.
+const flatten = (text, format, typography) => flattenWith(text, format, typography).text;
 
 // phrase takes the words at `at`, reading forwards -- what was clicked on is
 // what follows the click, not what precedes it. Near the end of a paragraph
@@ -148,7 +154,7 @@ function phrase(text, at, withinLine, format) {
     while (start < end && !/\s/.test(text[start])) start++;
   }
 
-  let taken = flatten(text.slice(start, end), format).trim();
+  let taken = flatten(text.slice(start, end), format, true).trim();
   if (taken.length >= ENOUGH) return taken;
 
   // Not enough ahead, so look behind: the end of a paragraph is still a place.
@@ -157,7 +163,7 @@ function phrase(text, at, withinLine, format) {
     const line = text.lastIndexOf("\n", Math.max(0, at - 1));
     if (line !== -1) back = Math.max(back, line + 1);
   }
-  taken = flatten(text.slice(back, end), format).trim();
+  taken = flatten(text.slice(back, end), format, true).trim();
   return taken.length >= ENOUGH ? taken : "";
 }
 
@@ -231,7 +237,7 @@ export function documentPlaceFor(source, caret, rendered, format) {
   // A match is a place in the flattened copy, and what the frame wants is a
   // place in the text it published, so it is mapped back through the copy's
   // own record of where each character came from.
-  const { text: haystack, from } = flattened(rendered);
+  const { text: haystack, from } = flattened(rendered, undefined, true);
   for (const at of nearby(source, caret)) {
     const wanted = phrase(source, at, true, format);
     if (!wanted) continue;
@@ -252,13 +258,13 @@ export function documentPlaceFor(source, caret, rendered, format) {
 // a guess here would put the mark on the wrong sentence.
 export function documentRangeFor(source, start, end, rendered, format) {
   if (!Number.isInteger(start) || !Number.isInteger(end) || end <= start) return null;
-  const { text: haystack, from } = flattened(rendered);
-  const needle = flatten(source.slice(start, end), format).trim();
+  const { text: haystack, from } = flattened(rendered, undefined, false);
+  const needle = flatten(source.slice(start, end), format, false).trim();
   if (!needle) return null;
   // The context is kept up to the words it sits beside, where the match
   // scores; only its outer edge is trimmed.
-  const prefix = flatten(source.slice(Math.max(0, start - WINDOW), start), format).trimStart();
-  const suffix = flatten(source.slice(end, end + WINDOW), format).trimEnd();
+  const prefix = flatten(source.slice(Math.max(0, start - WINDOW), start), format, false).trimStart();
+  const suffix = flatten(source.slice(end, end + WINDOW), format, false).trimEnd();
   const found = anchorOne(haystack, { exact: needle, prefix, suffix, position: null, requireUnique: true });
   if (!found) return null;
   return { start: from[found.start], end: from[found.end - 1] + 1 };
@@ -269,7 +275,7 @@ export function documentRangeFor(source, start, end, rendered, format) {
 // speak of -- it is one long run -- so what is tried instead is a little
 // further along it each time, which lands past whatever could not be matched.
 export function sourcePlaceFor(rendered, at, source, format, { exact = false } = {}) {
-  const { text: haystack, from } = flattened(source, format);
+  const { text: haystack, from } = flattened(source, format, true);
   // `exact` asks only the first question -- are these very words in this
   // text -- and skips the widening search around it. It exists because the
   // widening is what makes a search across several files meaningless: every

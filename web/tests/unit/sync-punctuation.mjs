@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { documentPlaceFor, sourcePlaceFor } from "../../src/lib/sync.js";
+import { documentPlaceFor, documentRangeFor, sourcePlaceFor } from "../../src/lib/sync.js";
 
 // The renderers set quotes, dashes and ellipses as typography, so the source
 // and the document spell the same words differently. Both sides blank them, so
@@ -39,4 +39,14 @@ import { documentPlaceFor, sourcePlaceFor } from "../../src/lib/sync.js";
     assert.notEqual(result, null, `caret ${caret}`);
     assert.ok(result.at < secondAt, `caret ${caret} landed at ${result.at}, in the second paragraph`);
   }
+}
+
+// A comment on punctuation keeps the selection's own ends. Comment ranges do
+// not blank typography, so the "..." is a place, and "stop." keeps its period.
+{
+  assert.deepEqual(documentRangeFor("Wait...", 4, 7, "Wait...", "markdown"), { start: 4, end: 7 });
+  assert.deepEqual(
+    documentRangeFor("He said: stop. Then left.", 9, 14, "He said: stop. Then left.", "markdown"),
+    { start: 9, end: 14 },
+  );
 }
