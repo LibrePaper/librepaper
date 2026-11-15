@@ -46,7 +46,7 @@
   // empty pair even without closeBrackets, so leaving it in the main keymap
   // would leave the switch half off.
   // Typing wakes completion only where a source can answer (see completionWake), so prose costs no query.
-  const completionOn = (on) => (on ? [autocompletion({ activateOnTyping: false }), completionWake(completionProject)] : []);
+  const completionOn = (on, project) => (on ? [autocompletion({ activateOnTyping: false }), completionWake(project)] : []);
   // The LaTeX \end insertion and environment indentation, for LaTeX files only.
   const latexAssistOn = (on, isLatex) => (isLatex ? latexAssistExtensions(on) : []);
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
@@ -1632,7 +1632,7 @@
         highlightSelectionMatches(),
         sourceHighlighting,
         sourceLanguage(path, format),
-        completionCompartment.of(completionOn(untrack(() => completion))),
+        completionCompartment.of(completionOn(untrack(() => completion), completionProject)),
         completionExtension({
           project: completionProject,
           sources: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(session.doc, showing)) })],
@@ -1821,7 +1821,7 @@
     if (!target) return;
     target.dispatch({
       effects: [
-        completionCompartment.reconfigure(completionOn(untrack(() => completion))),
+        completionCompartment.reconfigure(completionOn(untrack(() => completion), completionProject)),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
         latexAssistCompartment.reconfigure(latexAssistOn(untrack(() => latexAssist), sourceFormat(pathOfDoc(session.doc, id), format) === "latex")),
         spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => target.state.doc.toString())),
