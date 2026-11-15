@@ -3,7 +3,9 @@
 - Origin: MIT-licensed [upstream](https://github.com/loro-dev/loro-codemirror),
   consumed through [our fork](https://github.com/vincentarelbundock/loro-codemirror).
 - Fork fixes: multi-container sync/undo, mixed transaction ordering, presence
-  refresh, unresolved cursors, and initialization dropping the first edit.
+  refresh, unresolved cursors, initialization dropping the first edit, and
+  remote carets (re-resolved on import, mapped through edits, limited to the
+  text on screen, drawn at the head).
 - Local undo/redo commands live in [`loro-undo.js`](../../web/src/lib/loro-undo.js).
 
 The fork source is not committed here. [`web/loro-codemirror.lock`](../../web/loro-codemirror.lock)
