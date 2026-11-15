@@ -221,6 +221,7 @@
     lintGutter,
     lintKeymap,
     setDiagnostics as setLintDiagnostics,
+    forEachDiagnostic,
     openLintPanel,
   } from "@codemirror/lint";
   import { LoroExtensions } from "../../vendor/loro-codemirror/index.ts";
@@ -648,7 +649,11 @@
     }));
   }
 
-  let parsedBibliography = $state(null);
+  // Raw, because the result is replaced and never changed in place. As deep
+  // state, the assignment would store a proxy of it, which is never `===` to
+  // the cached result, so the cache-hit check in refreshBibliography would
+  // always fail.
+  let parsedBibliography = $state.raw(null);
   const insertTargets = new Map();
   // One undo manager for the document the editor is bound to, shared by every
   // file's state. A session swap brings a new document and so a new manager.
@@ -985,6 +990,20 @@
     return textIdForPath(doc, diagnostic.file);
   }
 
+  /// Whether the view's lint state already holds exactly these diagnostics.
+  /// The state maps what it holds through every edit, so this compares against
+  /// what is on screen now, whatever happened since the last call: typing, a
+  /// file switch, or a reconfigure that emptied it.
+  function lintHolds(state, list) {
+    let index = 0;
+    let same = true;
+    forEachDiagnostic(state, (diagnostic, from, to) => {
+      const item = list[index++];
+      if (!item || item.from !== from || item.to !== to || item.severity !== diagnostic.severity || item.message !== diagnostic.message) same = false;
+    });
+    return same && index === list.length;
+  }
+
   /// Paints what a compile had to say: an underline on the span it names, a
   /// mark in the gutter of that line, and the message and hints on hover.
   /// Called with an empty list to clear, which a successful render does.
@@ -1000,11 +1019,18 @@
       const at = doc.line(Math.min(Math.max(line, 1), doc.lines));
       return Math.min(at.from + Math.max(column - 1, 0), at.to);
     };
+    // A compile has many diagnostics but few files, and resolving a file walks
+    // the whole project, so each file is resolved once per call.
+    const idOfFile = new Map();
+    const fileIdOf = (diagnostic) => {
+      if (!idOfFile.has(diagnostic.file)) idOfFile.set(diagnostic.file, fileOf(diagnostic));
+      return idOfFile.get(diagnostic.file);
+    };
     shown = all
       // Only this file's. An underline drawn at line 40 of the chapter on
       // screen, for an error at line 40 of a different chapter, would be a
       // confident lie.
-      .filter((diagnostic) => fileOf(diagnostic) === showing)
+      .filter((diagnostic) => fileIdOf(diagnostic) === showing)
       .filter((diagnostic) => diagnostic.severity !== "info")
       .filter((diagnostic) => diagnostic.line > 0 && diagnostic.line <= doc.lines)
       .map((diagnostic) => {
@@ -1022,8 +1048,11 @@
       })
       .sort((a, b) => a.from - b.from);
     // With the check off nothing is drawn in the source, and the reader's list
-    // of messages is unchanged.
-    view.dispatch(setLintDiagnostics(view.state, untrack(() => check) ? shown : []));
+    // of messages is unchanged. A live preview compiles on every keystroke and
+    // mostly says the same again, so a list the view already shows is not sent:
+    // rebuilding the lint state redraws the gutter.
+    const drawn = untrack(() => check) ? shown : [];
+    if (!lintHolds(view.state, drawn)) view.dispatch(setLintDiagnostics(view.state, drawn));
     // The gutter marks are the only sign of a compile's result, and a screen
     // reader gets none of them, so the counts are spoken when they change.
     const errors = shown.filter((diagnostic) => diagnostic.severity === "error").length;

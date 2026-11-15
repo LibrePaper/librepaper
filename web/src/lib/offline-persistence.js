@@ -10,6 +10,11 @@ import { openOfflineDatabase, requestResult, STATES, transactionDone, UPDATES } 
 // Large deltas are capped by bytes instead.
 const COMPACT_AFTER_UPDATES = 256;
 const COMPACT_AFTER_BYTES = 4 * 1024 * 1024;
+// The offline copy is written after a short pause rather than on every
+// keystroke, so typing does not export the document and open an IndexedDB
+// transaction each time. At most this much typing can be missing from the
+// offline copy if the tab dies; the server has it anyway.
+const WRITE_DELAY = 250;
 
 export function durableProjectPersistence(identity, indexedDB_ = globalThis.indexedDB, legacyIdentity = null) {
   const key = projectIdentityKey(identity);
@@ -27,6 +32,10 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       // so a steady-state write never has to read them back.
       let pendingBytes = 0;
       let compactScheduled = false;
+      // Set by close() so the final write can run after `closed` is true,
+      // including the re-runs that writes and compaction chain onto themselves.
+      let finishing = false;
+      let writeTimer = null;
       let pendingFlush = Promise.resolve();
       let unsubscribe;
       let hydrating = true;
@@ -40,7 +49,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       }
 
       async function putState() {
-        if (closed || writing || !dirty) return pendingFlush;
+        if ((closed && !finishing) || writing || !dirty) return pendingFlush;
         dirty = false;
         writing = true;
         events.writing(1);
@@ -157,10 +166,11 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             }
           } catch (error) {
             events.failed(error);
-          } finally {
-            writing = false;
-            if (dirty && !closed) void putState();
           }
+          writing = false;
+          // Chained through the returned promise, not `void` in a finally, so
+          // close() waits for a change that arrived during compaction too.
+          if (dirty) return putState();
         })();
         pendingFlush.catch(() => {});
       }
@@ -173,6 +183,17 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       function changed() {
         if (closed || hydrating) return;
         dirty = true;
+        if (writeTimer === null) {
+          writeTimer = setTimeout(() => { writeTimer = null; void putState(); }, WRITE_DELAY);
+        }
+      }
+
+      // Browsers can discard a hidden tab without running timers, so a pending
+      // write starts as the page hides instead of waiting for the pause.
+      function pageHidden() {
+        if (!dirty) return;
+        clearTimeout(writeTimer);
+        writeTimer = null;
         void putState();
       }
 
@@ -217,6 +238,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             unsubscribe = undefined;
             return;
           }
+          if (typeof globalThis.addEventListener === "function") globalThis.addEventListener("pagehide", pageHidden);
           events.hydrated();
         } catch (error) {
           hydrating = false;
@@ -229,10 +251,13 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         hydration,
         async flush() {
           await hydration;
+          // An explicit flush writes now, so the pending pause is not needed.
+          clearTimeout(writeTimer);
+          writeTimer = null;
           const current = doc.oplogVersion().encode();
           if (!stored || !persistedVector || current.byteLength !== persistedVector.byteLength
               || current.some((byte, index) => byte !== persistedVector[index])) dirty = true;
-          if (dirty) await putState();
+          if (dirty && !closed) await putState();
           await pendingFlush;
         },
         // There is no `confirm(coverage)` any more, and there is no stored
@@ -245,8 +270,15 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         // here is the whole document, and reconnecting exports whatever the
         // server's vector says it is missing.
         close() {
+          // The final write has to start before `closed` stops new writes, and
+          // it must not be skipped while the hydration is still running.
+          finishing = true;
+          clearTimeout(writeTimer);
+          writeTimer = null;
+          if (dirty && !hydrating) void putState();
           closed = true;
           unsubscribe?.();
+          if (typeof globalThis.removeEventListener === "function") globalThis.removeEventListener("pagehide", pageHidden);
           void pendingFlush.catch(() => {}).finally(() => database?.close());
         },
       };

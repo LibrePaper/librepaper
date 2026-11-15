@@ -63,10 +63,20 @@
     observer.observe(measure);
     return () => observer.disconnect();
   });
-  // An item added, removed or relabelled changes the copy's size, which the
-  // observer sees; this covers one that changes without changing size.
+  // A re-measure is queued only when something the band draws or fits by has
+  // changed. The caller hands a new `items` array on every caret move, so the
+  // effect reads a string key instead: a derived string compares by value, and
+  // the effect re-runs only when the key does. An item's width is seen by the
+  // observer on the hidden copy, so the key only has to cover what changes
+  // without changing size: the id and group (dividers and order), the label
+  // (whether the item can move at all, and its menu text), and pinned, pressed
+  // and disabled (what the item is drawn as). The label and pinned flags also
+  // decide `isPinned`, which the fit depends on.
+  const itemsKey = $derived(
+    items.map((it) => [it.id, it.group, it.label, it.pinned, it.pressed, it.disabled].join("\u001f")).join("\n"),
+  );
   $effect(() => {
-    items.map((it) => it.id);
+    void itemsKey;
     queueMicrotask(measureItems);
   });
 

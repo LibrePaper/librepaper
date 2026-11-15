@@ -26,9 +26,13 @@ interface VisualState {
 export const setVisualState = StateEffect.define<Partial<VisualState>>();
 export const refreshVisual = StateEffect.define<null>();
 
-// Rebuilding on every keystroke re-parses the whole document. Waiting for a
-// pause in typing costs one rebuild per pause instead of one per key.
-const REBUILD_DELAY = 100;
+// Rebuilding the decorations re-parses the whole document, about 18 ms in
+// Chrome and several times that in the desktop app's WebKit. The rebuild waits
+// for a pause in typing (400 ms), not for the gap between two keys: a shorter
+// wait rebuilds after nearly every key and the parse delays the next one. Until
+// then the decorations already in place are mapped through each edit, so the
+// text being typed is the only part that can look out of date.
+const REBUILD_DELAY = 400;
 
 interface VisualDecorations {
   decorations: DecorationSet;
