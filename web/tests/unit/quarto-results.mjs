@@ -249,3 +249,9 @@ assert.deepEqual(await splitResults("<main id=\"quarto-document-content\"><div c
   const literal = "Shown as `` `r x` `` here.\n";
   assert.equal(tagCells({ main: "main.qmd", texts: { "main.qmd": literal } }).texts["main.qmd"], literal);
 }
+
+// A value inside math stays untagged: span syntax would reach the formula.
+{
+  const tagged = tagCells({ main: "m.qmd", texts: { "m.qmd": "So $p = `r 0.1`$ and `r 2`, also $$q = `r 3`$$ and `$` then `r 4`.\n" } });
+  assert.equal(tagged.texts["m.qmd"], "So $p = `r 0.1`$ and [`r 2`]{.lp-inline-1}, also $$q = `r 3`$$ and `$` then [`r 4`]{.lp-inline-3}.\n");
+}

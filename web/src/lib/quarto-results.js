@@ -180,6 +180,30 @@ const CLASS_ATTR = /(\sclass\s*=\s*)(?:(["'])([^"']*)\2|([^\s>]+))/i;
 const OPTION_LINE = /^\s*#\|\s*[^:]+?\s*:/;
 const CLASSES_LINE = /^\s*#\|\s*classes\s*:/;
 
+// Whether offset `at` of a line sits inside inline math (`$...$` or `$$...$$` on
+// that line): an odd number of unescaped dollar runs before it. Code spans are
+// skipped, so a `$` in code does not count.
+function insideMath(line, at) {
+  let open = false;
+  for (let i = 0; i < at; i += 1) {
+    const char = line[i];
+    if (char === "\\") { i += 1; continue; }
+    if (char === "`") {
+      let run = i;
+      while (line[run] === "`") run += 1;
+      const close = line.indexOf(line.slice(i, run), run);
+      if (close >= 0 && close < at) { i = close + (run - i) - 1; continue; }
+      i = run - 1;
+      continue;
+    }
+    if (char === "$") {
+      while (line[i + 1] === "$") i += 1;
+      open = !open;
+    }
+  }
+  return open;
+}
+
 // The tagged copy of each executed cell's source: a `#| classes: lp-cell-N`
 // line after its opening fence, N being the cell's index in expandedCells.
 // The tree passed in is left as it was.
@@ -211,6 +235,8 @@ export function tagCells(tree) {
       .sort((a, b) => a.line - b.line || b.start - a.start);
     for (const { index, line, start, end } of ordered) {
       const text = lines[line - 1];
+      // Span syntax inside a formula would reach the formula: a value in math is left untagged.
+      if (insideMath(text, start)) continue;
       lines[line - 1] = `${text.slice(0, start)}[${text.slice(start, end)}]{.lp-inline-${index}}${text.slice(end)}`;
     }
     texts[file] = lines.join("\n");
