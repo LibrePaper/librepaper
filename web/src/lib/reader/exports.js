@@ -23,7 +23,7 @@ import { compilerAvailable } from "../renderers.js";
 import { LOCAL_OUTPUTS } from "../desktop/client.js";
 import { parseQuarto } from "../engines/quarto.js";
 import { docxFile, inlineBlobUrls, inlineFigureReferences } from "./downloads.js";
-import { referencedFigures } from "../figure-references.js";
+import { figureSyntaxReady, referencedFigures } from "../figure-references.js";
 import { fillFigures, placeholderUrl } from "../missing-figures.js";
 import { m } from "../paraglide/messages.js";
 
@@ -157,6 +157,7 @@ function placeholderSources(html, missing) {
 /// that are in neither the project nor the run; rejects with an Error whose
 /// message is a plain sentence.
 export async function exportFile({ tree: given, resultsFiles = null, ...options }) {
+  await figureSyntaxReady(given);
   const { tree, missing } = figuresForExport(given, { resultsFiles });
   const file = await exportFilled({ ...options, tree, missing });
   return { ...file, missing };

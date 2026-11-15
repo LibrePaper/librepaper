@@ -1,5 +1,5 @@
 import { m } from "../paraglide/messages.js";
-import { referencedFigures } from "../figure-references.js";
+import { figureSyntaxReady, referencedFigures } from "../figure-references.js";
 import { fillFigures, referenceFigures } from "../missing-figures.js";
 
 // One render of the document, from the source in this tab.
@@ -284,6 +284,8 @@ export function createPreviewRenderer({
       }
       // Every figure the document names resolves to something: a project
       // file, a figure of the last run, or a placeholder. Never a hole.
+      await figureSyntaxReady(source);
+      if (coordinator.superseded(guard)) return;
       const { missing: missingFigures } = fillFigures(source, {
         references: referencedFigures(source),
         resultsFiles: saved?.files ?? null,

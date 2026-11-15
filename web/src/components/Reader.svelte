@@ -101,7 +101,7 @@
   import { createSharedResults, publishProblem } from "../lib/reader/shared-results.svelte.js";
   import { splitResults, staleCells, tagCells } from "../lib/quarto-results.js";
   import { isCalepinRecord, recordOf as calepinRecordOf, staleChunks, usesCalepin } from "../lib/calepin-results.js";
-  import { referencedFigures } from "../lib/figure-references.js";
+  import { figureSyntaxReady, referencedFigures } from "../lib/figure-references.js";
   import { resultsFigureUrl } from "../lib/missing-figures.js";
   import { pdfRunRecord, runFiguresOf, wantedPaths, withRunFigures } from "../lib/run-figures.js";
   import RunButton from "./reader/RunButton.svelte";
@@ -2396,6 +2396,8 @@
     let cancelled = false;
     const timer = setTimeout(async () => {
       const tree = untrack(() => treeNow());
+      await figureSyntaxReady(tree);
+      if (cancelled) return;
       const missing = wantedPaths(referencedFigures(tree), tree);
       const key = JSON.stringify([runDirectory, lastRunAt, missing]);
       if (key === hasAsked) return;
@@ -2481,6 +2483,7 @@
       const runTree = sourceFormat === "quarto" && !toPdf ? tagCells(tree) : tree;
       // Figures the document shows that are not project files: the app reads
       // them from the Run directory after the run.
+      await figureSyntaxReady(tree);
       const wanted = wantedPaths(referencedFigures(tree), tree);
       const rendered = await renderers.render(runTree, heading, {
         buildPreferences: { ...buildPreferences, backend: "local", output: toPdf ? "pdf" : "html" },

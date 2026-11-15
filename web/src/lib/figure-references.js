@@ -16,6 +16,8 @@ import { dirname, normalizePath, resolvePath } from "./completion/paths.js";
 import { indexFile } from "./document-index/adapters/index.js";
 import { createProjectIndex } from "./document-index/project.js";
 import { sourceFormatOf } from "./formats.js";
+import { loadOrgSyntax } from "./org-language/module.js";
+import { loadTypstSyntax } from "./typst-language/module.js";
 
 /** @typedef {{ path: string, name: string, file: string, line: number }} FigureReference */
 
@@ -33,6 +35,21 @@ export function figurePath({ format, file, main, name, resolveFile }) {
   if (format === "latex") return resolveFile?.(file, name, "asset") ?? normalizePath(name);
   if (name.startsWith("/")) return normalizePath(name);
   return resolvePath(dirname(format === "typst" ? file : main), name) || null;
+}
+
+/**
+ * Loads the parsers the Typst and Org adapters read figures with, when the
+ * project has such files. Until they load those adapters list nothing, and a
+ * preview or a run can come before the editor has opened a file of that kind.
+ * A parser that cannot load leaves the references empty, as before.
+ * @param {{ texts?: Record<string, string> }} tree
+ */
+export async function figureSyntaxReady(tree) {
+  const names = Object.keys(tree?.texts ?? {});
+  await Promise.all([
+    names.some((name) => /\.typ$/i.test(name)) ? loadTypstSyntax() : null,
+    names.some((name) => /\.org$/i.test(name)) ? loadOrgSyntax() : null,
+  ]);
 }
 
 /** @param {string} text @returns {number[]} offsets at which each line starts */
