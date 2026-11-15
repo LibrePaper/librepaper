@@ -30,6 +30,7 @@ librepaper.org, your files and the backups are hosted in Canada by OVHcloud. Con
 
 - **Accounts** keep the sign-in provider and account ID, a handle, a display name, an email address, and when the account was created and last used. From GitHub, the address is your primary verified one. Other people never see it, and it is used only to contact you about your account.
 - **Documents** keep the title, format, owner, dates, every file and the edit history.
+- **Shared results** keep the output of the last run that an editor published with **Publish results**: the HTML of each Quarto code cell, or the files of a Calepin `.calepin/` folder (Calepin also runs Typst code). There is one record per project, and it keeps the uploader's name. Your scripts and data in the Run directory are not sent.
 - **Comments, highlights and replies** keep their author and the passage they refer to.
 - **Project chat** keeps each message with its text, the author's name and the time it was sent.
 - **Sharing** records who each document is shared with. A share link is stored as a hash and as an encrypted copy that lets the owner copy it again.
@@ -52,6 +53,8 @@ librepaper.org keeps no access log and no IP addresses in its database. The serv
 
 Your handle is your GitHub login or your Google email. Other people see your display name, not your handle, and administrators can see both. If GitHub or Google gives no name, your display name is your handle, without the part after the `@`. While you have a document open, other people viewing it see that you are there and where your cursor is.
 
+Published results are visible to anyone who can read the document.
+
 Edit and suggest links always require sign-in. Read and comment links require it too, unless the owner chose "Anyone with the link" for that link and the host allows it. Someone who is not signed in can never edit or suggest. Project chat is visible to people with a comment or edit link, and to the owner. Read links never show it.
 
 Administrators are able to read every account and document. They open a document only to act on an abuse report or a suspected breach of the [terms of service](terms.html), to meet a legal obligation, to fix a fault, or when its owner asks for help.
@@ -66,6 +69,7 @@ Administrators are able to read every account and document. They open a document
 - **Writing assistant:** An assistant you start runs on your computer through the desktop app. Its access covers one document and expires after five minutes. The browser renews it while the page is open. The AI service behind the assistant sees what the assistant reads.
 - **Local backups:** The desktop app downloads your projects, including those shared with you, and writes ZIP files to a folder you choose. The desktop app shows the folder's path in its backup settings. The path is not sent to librepaper.org. The ZIP files stay on your computer when you turn backups off or delete a project. See [local backups](backups.html).
 - **Moderation review:** When a document is reported, or the operator suspects that it breaks the [terms of service](terms.html), the operator may send its files to a third party for a first assessment. That third party is a moderation or copyright specialist, or the provider of a large language model. It sees the document, and it handles it under its own terms. The operator sends files to a third party for this assessment only.
+- **Git hosts:** When you connect a project to a Git repository, your computer sends the project's files to that repository's host, such as GitHub, and reads its changes, under the host's terms. The desktop app asks before a project may reach a given remote. LibrePaper never receives your Git sign-in, which stays with Git on your computer. See [Git](git.html).
 - **Email:** A message you send to admin@librepaper.org is ordinary email. It is kept in the administrator's mailbox, not on librepaper.org, for as long as the administrator needs it. There is no fixed period.
 - **Embedded resources:** A document can load images, fonts, scripts or data from other websites. Those sites see your IP address, your browser and when you opened the document, so an author can learn who read it. Authors can avoid this with PDFs or `embed-resources: true` in Quarto.
 
@@ -90,7 +94,8 @@ The browser also keeps data of its own on your device.
 - **Deleted projects** stay in the trash for seven days. Then the project is purged with its files, comments, replies, chat, history and share links. Emptying the trash purges it at once.
 - **Edit history and named versions** stay as long as the document exists. An owner can trim history, which permanently removes older history and named versions. When the owner trims, it also removes project chat. An editor's trim leaves chat. See [storage and history](./architecture/document.html#storage-and-history).
 - **Project chat** stays until the owner clears it, the owner trims the project's history, or the owner deletes the project. Chat counts toward the owner's storage. Clearing chat deletes it at once.
-- **Share links** expire after seven days unless the owner picks a longer time or no expiry. The record of an expired or revoked link is removed when the project is purged.
+- **Published results** stay until someone deletes them in the storage settings, or the project is purged. Each new publish replaces the record.
+- **Share links** expire after seven days unless the owner picks another time. The record of an expired or revoked link is removed when the project is purged.
 - **Agent tokens** stop working when they expire or are revoked. Their records, expired and revoked ones included, are removed when the project is purged.
 - **Moderation records** have no automatic expiry. They stay after the account or project they concern is gone, so that a block stays in force and the reason for an action can be shown later. A banned handle stays listed until the ban is lifted or becomes an account block.
 - **Copyright notices:** records that identify an account named in a copyright notice are kept for six months, or one year when the Copyright Act requires it. The account is kept blocked, not erased, for that time. See the [terms of service](terms.html#moderation).
@@ -109,7 +114,7 @@ Choose **Settings > Account > Erase this account** and confirm with your handle.
 
 1. The account's sessions end, and the account cannot be restored. You cannot undo this from the browser.
 2. Owned documents are marked for deletion and purged after seven days.
-3. Comments, replies, labels and chat messages on other people's documents stay, shown as "Deleted user".
+3. Comments, replies, labels, chat messages and published results on other people's documents stay, shown as "Deleted user".
 4. The account record is deleted once its documents are purged.
 
 librepaper.org also erases an account that has not signed in for 365 days, in the same four steps. Blocked accounts are left out. Signing in again after an erasure has finished creates a new account with only the starter project.
