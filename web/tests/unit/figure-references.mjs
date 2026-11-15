@@ -70,3 +70,27 @@ test("Typst follows local imports but not package imports", () => {
   };
   assert.deepEqual(paths(tree), ["lib/m.png"]);
 });
+
+test("a repeated call on the same tree gives equal results, in a fresh array", () => {
+  const tree = { main: "cache-same.md", texts: { "cache-same.md": "![a](a.png)\n" } };
+  const first = referencedFigures(tree);
+  const second = referencedFigures(tree);
+  assert.deepEqual(second, first);
+  assert.notEqual(second, first);
+});
+
+test("changing the main text is reflected on the next call", () => {
+  const texts = { "cache-main.md": "![a](a.png)\n" };
+  assert.deepEqual(paths({ main: "cache-main.md", texts }), ["a.png"]);
+  texts["cache-main.md"] = "![a](a.png)\n![b](b.png)\n";
+  assert.deepEqual(paths({ main: "cache-main.md", texts }), ["a.png", "b.png"]);
+  texts["cache-main.md"] = "![b](b.png)\n";
+  assert.deepEqual(paths({ main: "cache-main.md", texts }), ["b.png"]);
+});
+
+test("an included file whose text changes is re-indexed", () => {
+  const texts = { "cache-doc.qmd": "{{< include cache-part.qmd >}}\n", "cache-part.qmd": "![x](x.png)\n" };
+  assert.deepEqual(paths({ main: "cache-doc.qmd", texts }), ["x.png"]);
+  texts["cache-part.qmd"] = "![y](y.png)\n![z](z.png)\n";
+  assert.deepEqual(paths({ main: "cache-doc.qmd", texts }), ["y.png", "z.png"]);
+});
