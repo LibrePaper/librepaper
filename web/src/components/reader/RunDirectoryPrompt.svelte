@@ -8,7 +8,7 @@
   // on this computer has no usable folder. It reads and acts through the same
   // state as that button. The dialog supplies the heading, Escape and focus.
   // The share section shows only when `onshare` is given.
-  let { directory: rd, title = "", onclose = () => {}, share = true, onshare = undefined, shareStatus = { kind: "idle" }, pdfOutput = false } = $props();
+  let { directory: rd, title = "", onclose = () => {}, share = true, onshare = undefined, shareStatus = { kind: "idle" } } = $props();
 
   const status = $derived(rd.status);
   const busy = $derived(rd.busy);
@@ -21,7 +21,7 @@
   const caption = $derived(variant === "current" ? m.rundirectorycontrol_current_caption() : m.rundirectorycontrol_suggested_caption());
 
   // Shared results: the line under the checkbox, if there is anything to say.
-  const shareLine = $derived(shareLineOf({ share, pdfOutput, shareStatus }));
+  const shareLine = $derived(shareLineOf({ share, shareStatus }));
 
   async function use() {
     if (variant === "current") return onclose();

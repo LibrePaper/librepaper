@@ -66,8 +66,21 @@ test("recordOf rejects paths outside .calepin/ and other unsafe paths", () => {
   const withResults = (extra) => JSON.stringify({ version: 1, files: [{ path: RESULTS, text: "{}" }, extra] });
   assert.equal(recordOf(withResults({ path: "../x", text: "a" }), "paper.typ"), null);
   assert.equal(recordOf(withResults({ path: "main.typ", text: "a" }), "paper.typ"), null);
+  assert.equal(recordOf(withResults({ path: "/abs.png", base64: "AAAA" }), "paper.typ"), null);
+  assert.equal(recordOf(withResults({ path: "../x.png", base64: "AAAA" }), "paper.typ"), null);
+  assert.equal(recordOf(withResults({ path: ".librepaper/x.png", base64: "AAAA" }), "paper.typ"), null);
+  assert.equal(recordOf(withResults({ path: "fig//x.png", base64: "AAAA" }), "paper.typ"), null);
   assert.equal(recordOf(withResults({ path: ".calepin/a\\b", text: "a" }), "paper.typ"), null);
   assert.equal(recordOf(withResults({ path: ".calepin/a/./b", text: "a" }), "paper.typ"), null);
+});
+
+test("recordOf keeps run figures outside .calepin/ when they are base64", () => {
+  const body = JSON.stringify({ version: 1, files: [{ path: RESULTS, text: "{}" }, { path: "fig/plot.png", base64: "AAAA" }, { path: "extra", base64: "AAAA", note: 1 }] });
+  assert.deepEqual(recordOf(body, "paper.typ").files, [
+    { path: RESULTS, text: "{}" },
+    { path: "fig/plot.png", base64: "AAAA" },
+    { path: "extra", base64: "AAAA" },
+  ]);
 });
 
 test("recordOf requires exactly one of text and base64 per entry", () => {
@@ -80,6 +93,16 @@ test("recordOf requires exactly one of text and base64 per entry", () => {
 test("recordOf requires a results.json entry", () => {
   const body = JSON.stringify({ version: 1, files: [{ path: ".calepin/paper/fig.png", base64: "AAAA" }] });
   assert.equal(recordOf(body, "paper.typ"), null);
+});
+
+test("recordOf accepts a record of run figures alone, and staleChunks tolerates it", () => {
+  const body = JSON.stringify({ version: 1, files: [{ path: "fig/plot.png", base64: "AAAA" }] });
+  const record = recordOf(body, "paper.typ");
+  assert.deepEqual(record.files, [{ path: "fig/plot.png", base64: "AAAA" }]);
+  assert.equal(isCalepinRecord(record), true);
+  assert.equal(staleChunks(record.files, "= Hi\n", { path: "paper.typ" }), 0);
+  const placed = overlay({ texts: {}, assets: {} }, record.files);
+  assert.deepEqual([...placed.assets["fig/plot.png"]], [0, 0, 0]);
 });
 
 test("overlay places text and base64 entries and keeps the originals", () => {

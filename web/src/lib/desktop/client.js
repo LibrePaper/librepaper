@@ -534,6 +534,9 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
     options: {
       deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
     },
+    // Figures the document references that are not project files: the app
+    // reads them from the Run directory after the run.
+    ...(Array.isArray(job.wanted) && job.wanted.length ? { wanted: job.wanted.map(String) } : {}),
   };
   const scope = `local ${format}`;
   onProgress?.({ done: 0, total: 1, scope });
@@ -575,6 +578,15 @@ async function runDirectoryCall(method, path, project) {
 
 /** Where this project's code runs on this computer. @param {string} project */
 export const runDirectory = (project) => runDirectoryCall("GET", "run-directory", project);
+
+/** Which of `paths` the project's Run directory holds as usable figures; no
+ * bytes come back. @param {string} project @param {string[]} paths
+ * @returns {Promise<string[]>} */
+export async function runDirectoryHas(project, paths) {
+  const response = await send("POST", "run-directory/has", { jsonBody: { project: String(project || ""), paths: paths.map(String) }, since: RUN_DIRECTORY_SINCE });
+  const body = await response.json();
+  return Array.isArray(body?.present) ? body.present.filter((path) => typeof path === "string") : [];
+}
 
 /** Ask the desktop app to open its native folder chooser. @param {string} project */
 export const chooseRunDirectory = (project) => runDirectoryCall("POST", "run-directory/choose", project);

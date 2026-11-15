@@ -2370,7 +2370,7 @@
   "readerc_download_no_files": "此项目没有可下载的文件。",
   "readerc_download_project_failed": "无法下载该项目。",
   "readerc_export_failed": "无法生成 {target}。",
-  "readerc_figures_missing": [
+  "readerc_figures_placeholder": [
     {
       "declarations": [
         "input count",
@@ -2380,8 +2380,8 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "无法获取图片：{missing}。",
-        "countPlural=*": "无法获取图片：{missing}。"
+        "countPlural=one": "缺少 {count} 张图；已使用占位图。",
+        "countPlural=*": "缺少 {count} 张图；已使用占位图。"
       }
     }
   ],
@@ -2994,10 +2994,25 @@
   "rundirectorycontrol_share_results": "发布结果",
   "rundirectorycontrol_share_hint": "协作者即使没有您的数据，也能看到您上次运行的输出。",
   "rundirectorycontrol_shared": "结果已发布 · {size}",
+  "rundirectorycontrol_shared_figures": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "结果已发布 · {size} · 来自运行文件夹的 {count} 张图",
+        "countPlural=*": "结果已发布 · {size} · 来自运行文件夹的 {count} 张图"
+      }
+    }
+  ],
   "rundirectorycontrol_not_shared_full": "结果未发布：您的存储空间已满。",
+  "rundirectorycontrol_not_shared_deployment": "结果未发布：此服务器已满。",
   "rundirectorycontrol_not_shared_unmatched": "结果未发布：无法将输出与代码单元格匹配。",
   "rundirectorycontrol_not_shared_failed": "结果未发布：上传失败。",
-  "rundirectorycontrol_html_only": "仅发布 HTML 输出的结果。",
   "runbutton_stop": "停止",
   "runbutton_run_hint": "在这台电脑上运行此文档的代码",
   "runbutton_options": "运行选项",

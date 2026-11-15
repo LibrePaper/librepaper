@@ -2385,7 +2385,7 @@
   "readerc_download_no_files": "Este projeto não tem arquivos para baixar.",
   "readerc_download_project_failed": "Não foi possível baixar o projeto.",
   "readerc_export_failed": "Não foi possível gerar o {target}.",
-  "readerc_figures_missing": [
+  "readerc_figures_placeholder": [
     {
       "declarations": [
         "input count",
@@ -2395,8 +2395,8 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "Não foi possível obter a figura: {missing}.",
-        "countPlural=*": "Não foi possível obter as figuras: {missing}."
+        "countPlural=one": "{count} figura está ausente; foi usado um marcador de posição.",
+        "countPlural=*": "{count} figuras estão ausentes; foram usados marcadores de posição."
       }
     }
   ],
@@ -3009,10 +3009,25 @@
   "rundirectorycontrol_share_results": "Publicar resultados",
   "rundirectorycontrol_share_hint": "Os colaboradores veem o resultado da sua última execução, mesmo sem os seus dados.",
   "rundirectorycontrol_shared": "Resultados publicados · {size}",
+  "rundirectorycontrol_shared_figures": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Resultados publicados · {size} · {count} figura da sua pasta de execução",
+        "countPlural=*": "Resultados publicados · {size} · {count} figuras da sua pasta de execução"
+      }
+    }
+  ],
   "rundirectorycontrol_not_shared_full": "Resultados não publicados: seu armazenamento está cheio.",
+  "rundirectorycontrol_not_shared_deployment": "Resultados não publicados: este servidor está cheio.",
   "rundirectorycontrol_not_shared_unmatched": "Resultados não publicados: não foi possível associar a saída às células de código.",
   "rundirectorycontrol_not_shared_failed": "Resultados não publicados: o envio falhou.",
-  "rundirectorycontrol_html_only": "Os resultados são publicados apenas a partir da saída HTML.",
   "runbutton_stop": "Parar",
   "runbutton_run_hint": "Executar o código deste documento neste computador",
   "runbutton_options": "Opções de execução",

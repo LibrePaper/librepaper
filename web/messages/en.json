@@ -2385,7 +2385,7 @@
   "readerc_download_no_files": "This project has no files to download.",
   "readerc_download_project_failed": "The project could not be downloaded.",
   "readerc_export_failed": "The {target} could not be made.",
-  "readerc_figures_missing": [
+  "readerc_figures_placeholder": [
     {
       "declarations": [
         "input count",
@@ -2395,8 +2395,8 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "Could not fetch figure: {missing}.",
-        "countPlural=*": "Could not fetch figures: {missing}."
+        "countPlural=one": "{count} figure is missing; a placeholder was used.",
+        "countPlural=*": "{count} figures are missing; placeholders were used."
       }
     }
   ],
@@ -3009,10 +3009,25 @@
   "rundirectorycontrol_share_results": "Publish results",
   "rundirectorycontrol_share_hint": "Collaborators see the output of your last run, even without your data.",
   "rundirectorycontrol_shared": "Results published · {size}",
+  "rundirectorycontrol_shared_figures": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Results published · {size} · {count} figure from your Run directory",
+        "countPlural=*": "Results published · {size} · {count} figures from your Run directory"
+      }
+    }
+  ],
   "rundirectorycontrol_not_shared_full": "Results not published: your storage is full.",
+  "rundirectorycontrol_not_shared_deployment": "Results not published: this server is full.",
   "rundirectorycontrol_not_shared_unmatched": "Results not published: the output could not be matched to the code cells.",
   "rundirectorycontrol_not_shared_failed": "Results not published: the upload failed.",
-  "rundirectorycontrol_html_only": "Results are published from HTML output only.",
   "runbutton_stop": "Stop",
   "runbutton_run_hint": "Run this document's code on this computer",
   "runbutton_options": "Run options",

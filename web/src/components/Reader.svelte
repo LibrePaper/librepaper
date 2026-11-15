@@ -101,6 +101,9 @@
   import { createSharedResults, publishProblem } from "../lib/reader/shared-results.svelte.js";
   import { splitResults, staleCells, tagCells } from "../lib/quarto-results.js";
   import { isCalepinRecord, recordOf as calepinRecordOf, staleChunks, usesCalepin } from "../lib/calepin-results.js";
+  import { referencedFigures } from "../lib/figure-references.js";
+  import { resultsFigureUrl } from "../lib/missing-figures.js";
+  import { pdfRunRecord, runFiguresOf, wantedPaths, withRunFigures } from "../lib/run-figures.js";
   import RunButton from "./reader/RunButton.svelte";
   import RunStatus from "./reader/RunStatus.svelte";
   import Avatar from "./Avatar.svelte";
@@ -1980,7 +1983,8 @@
   /// A loadable URL for a figure in the open project, for the editor's visual markup.
   async function figureUrlFor(path) {
     const digest = treeNow().digests?.[path];
-    if (!digest) return null;
+    // Not a project file: a figure the last run took from the Run directory.
+    if (!digest) return resultsFigureUrl(runResults?.files, path);
     const held = await figures.gather(SLUG, { [path]: digest }, authHeaders(KEY));
     return held.urls[path] ?? null;
   }
@@ -2355,17 +2359,74 @@
     // A Typst document's results are the files Calepin stored; a Quarto
     // document's are its cells. A record of the other kind is not this
     // document's.
-    const files = isCalepinRecord(record);
-    if (files !== (sourceFormat === "typst")) return null;
+    const calepin = isCalepinRecord(record);
+    if (calepin !== (sourceFormat === "typst")) return null;
+    // Run figures ride on both kinds of record; null when there are none.
+    const files = Array.isArray(record.files) && record.files.length ? record.files : null;
     const when = new Date(record.updatedAt);
     const date = Number.isNaN(when.getTime()) ? "" : new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" }).format(when);
     return {
-      cells: files ? null : record.cells,
-      inlines: files ? null : record.inlines ?? null,
-      files: files ? record.files : null,
+      cells: calepin ? null : record.cells,
+      inlines: calepin ? null : record.inlines ?? null,
+      files,
+      calepin,
+      own: Boolean(ownResults),
+      uploaderName: ownResults ? "" : String(record.uploaderName || ""),
       path: String(record.path || ""),
       updatedAt: String(record.updatedAt || ""),
       note: ownResults ? m.readerd_results_note_own({ date }) : m.readerd_results_note({ name: record.uploaderName || "", date }),
+    };
+  });
+  // Which referenced figures that are not project files the Run directory
+  // holds, so the draft can say "Run code to include it" for those and a plain
+  // "not in the project" for the rest. Null until the app has answered, and
+  // whenever there is no usable Run directory to ask.
+  let runDirectoryHas = $state.raw(null);
+  let hasAsked = "";
+  $effect(() => {
+    void outlineRevision;
+    void runDirectory;
+    void lastRunAt;
+    const ask = runsExplicitly && hasDesktop && runCodeOffered && runDir.usable && previewPath;
+    if (!ask) {
+      hasAsked = "";
+      if (untrack(() => runDirectoryHas) !== null) runDirectoryHas = null;
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const tree = untrack(() => treeNow());
+      const missing = wantedPaths(referencedFigures(tree), tree);
+      const key = JSON.stringify([runDirectory, lastRunAt, missing]);
+      if (key === hasAsked) return;
+      hasAsked = key;
+      let present = [];
+      if (missing.length) {
+        try {
+          present = await localQuarto.runDirectoryHas(SLUG, missing);
+        } catch {
+          // An older app has no such route: the draft then names no source.
+          if (!cancelled) {
+            hasAsked = "";
+            runDirectoryHas = null;
+          }
+          return;
+        }
+      }
+      if (cancelled || readerDisposed) return;
+      const next = new Set(present);
+      const before = runDirectoryHas;
+      runDirectoryHas = next;
+      // The draft's wording for a missing figure depends on the answer.
+      const changed = !before || before.size !== next.size || present.some((path) => !before.has(path));
+      if (changed && runPhase !== "running") {
+        stopRendering();
+        void paintPreview();
+      }
+    }, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
     };
   });
   // Run the document's code once on this computer. For Quarto the page it
@@ -2418,9 +2479,13 @@
       // Quarto HTML runs carry cell tags, so each output finds its cell even
       // when Quarto wrote no div for it. The tags are not in the stored record.
       const runTree = sourceFormat === "quarto" && !toPdf ? tagCells(tree) : tree;
+      // Figures the document shows that are not project files: the app reads
+      // them from the Run directory after the run.
+      const wanted = wantedPaths(referencedFigures(tree), tree);
       const rendered = await renderers.render(runTree, heading, {
         buildPreferences: { ...buildPreferences, backend: "local", output: toPdf ? "pdf" : "html" },
         project: SLUG,
+        wanted,
         ...(typst ? { format: toPdf ? "pdf" : "html" } : {}),
         signal: controller.signal,
       });
@@ -2474,9 +2539,16 @@
         const digest = await renderers.snapshotDigest(tree);
         if (gone()) return;
         lastRunPage = { path: tree.main, page: { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } };
+        // The run's figures are published with the cell outputs of the last
+        // HTML run of this file, which a PDF run cannot split out.
+        const record = pdfRunRecord({ path: tree.main, own: ownResults, shared: sharedResults.state.record, files: runFiguresOf(rendered.results) });
+        ownResults = { cells: record.cells, inlines: record.inlines, files: record.files, path: tree.main, updatedAt: new Date().toISOString() };
         runPhase = "idle";
         lastPdfRunAt = new Date().toISOString();
         showRunPage(tree, { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() });
+        if (shareResults && mayEdit) {
+          void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+        }
         return;
       }
       if (rendered?.ok === false || typeof rendered?.html !== "string") {
@@ -2495,7 +2567,8 @@
       if (split.ok) {
         const held = split.record.inlines ?? [];
         const inlinesHeld = held.length === inlineCount && held.every((entry) => entry.html);
-        ownResults = { cells: split.record.cells, inlines: split.record.inlines, path: tree.main, updatedAt: new Date().toISOString() };
+        const record = withRunFigures(split.record, runFiguresOf(rendered.results));
+        ownResults = { cells: record.cells, inlines: record.inlines, files: record.files, path: tree.main, updatedAt: new Date().toISOString() };
         runPhase = "idle";
         // The next edit's draft carries the outputs either way (ownResults);
         // a repaint now would replace the page that shows the inline results.
@@ -2507,7 +2580,7 @@
         // Sharing may have been turned off, or edit access lost, while the
         // run was being split: the choice at upload time is the one that counts.
         if (shareResults && mayEdit) {
-          void sharedResults.upload(split.record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+          void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
         }
         return;
       }
@@ -2571,7 +2644,7 @@
     const timer = setTimeout(async () => {
       const texts = untrack(() => treeNow()).texts ?? {};
       const text = String(texts[main] ?? "");
-      const count = results.files ? staleChunks(results.files, text, { path: main }) : await staleCells(results.cells, text, { path: main, files: texts }).catch(() => 0);
+      const count = results.calepin ? staleChunks(results.files, text, { path: main }) : await staleCells(results.cells, text, { path: main, files: texts }).catch(() => 0);
       if (!cancelled && !readerDisposed) staleCount = count;
     }, 400);
     return () => {
@@ -2583,8 +2656,6 @@
     share: shareResults,
     onshare: setShareResults,
     shareStatus: sharedResults.state.status,
-    // Calepin's results are published whatever the output.
-    pdfOutput: sourceFormat !== "typst" && ["pdf", "docx"].includes(buildPreferences.output),
   });
   const stopLatex = () => buildSettings.stopLatex();
 
@@ -2649,7 +2720,7 @@
     publishWarning ? { severity: "warning", message: publishWarning } : null,
     // A Typst draft has no place for the line that says whose run its
     // results are, so a collaborator's results are named here.
-    sourceFormat === "typst" && runResults?.files && !ownResults ? { severity: "info", message: runResults.note } : null,
+    sourceFormat === "typst" && runResults?.calepin && !ownResults ? { severity: "info", message: runResults.note } : null,
     runPhase === "failed" ? { severity: "error", message: m.readerb_run_failed() } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
@@ -2837,6 +2908,7 @@
       localExecution,
       runDirectory,
       runResults,
+      runDirectoryHas,
       latexContinuous: latexContinuous(),
       projectDigest: mayEdit ? "" : projection.state.project?.project_digest || "",
     }),
@@ -3531,8 +3603,10 @@
       const local = exportsLocally;
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
+        // A figure that is not here becomes a placeholder in the export; the
+        // export is never refused for it.
         if (target !== "html" && missing.length) {
-          throw new Error(m.readerc_figures_missing({ count: missing.length, missing: missing.join(", ") }));
+          say(m.readerc_figures_placeholder({ count: missing.length }), { kind: "problem", id: "reader:export-figures" });
         }
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
@@ -3546,6 +3620,7 @@
         project: SLUG,
         preview,
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
+        resultsFiles: runResults?.files ?? null,
         render: renderers.render,
         run: pandoc,
         local,

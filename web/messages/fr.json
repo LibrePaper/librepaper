@@ -2385,7 +2385,7 @@
   "readerc_download_no_files": "Ce projet ne contient aucun fichier à télécharger.",
   "readerc_download_project_failed": "Le projet n’a pas pu être téléchargé.",
   "readerc_export_failed": "Le {target} n’a pas pu être créé.",
-  "readerc_figures_missing": [
+  "readerc_figures_placeholder": [
     {
       "declarations": [
         "input count",
@@ -2395,8 +2395,8 @@
         "countPlural"
       ],
       "match": {
-        "countPlural=one": "Impossible de récupérer la figure : {missing}.",
-        "countPlural=*": "Impossible de récupérer les figures : {missing}."
+        "countPlural=one": "{count} figure est manquante ; un espace réservé a été utilisé.",
+        "countPlural=*": "{count} figures sont manquantes ; des espaces réservés ont été utilisés."
       }
     }
   ],
@@ -3009,10 +3009,25 @@
   "rundirectorycontrol_share_results": "Publier les résultats",
   "rundirectorycontrol_share_hint": "Les collaborateurs voient le résultat de votre dernière exécution, même sans vos données.",
   "rundirectorycontrol_shared": "Résultats publiés · {size}",
+  "rundirectorycontrol_shared_figures": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Résultats publiés · {size} · {count} figure de votre dossier d’exécution",
+        "countPlural=*": "Résultats publiés · {size} · {count} figures de votre dossier d’exécution"
+      }
+    }
+  ],
   "rundirectorycontrol_not_shared_full": "Résultats non publiés : votre stockage est plein.",
+  "rundirectorycontrol_not_shared_deployment": "Résultats non publiés : ce serveur est plein.",
   "rundirectorycontrol_not_shared_unmatched": "Résultats non publiés : la sortie n’a pas pu être associée aux cellules de code.",
   "rundirectorycontrol_not_shared_failed": "Résultats non publiés : le téléversement a échoué.",
-  "rundirectorycontrol_html_only": "Les résultats sont publiés à partir de la sortie HTML seulement.",
   "runbutton_stop": "Arrêter",
   "runbutton_run_hint": "Exécuter le code de ce document sur cet ordinateur",
   "runbutton_options": "Options d’exécution",
