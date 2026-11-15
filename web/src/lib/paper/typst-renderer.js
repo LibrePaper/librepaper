@@ -225,8 +225,10 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
    */
   function standIn(project) {
     // A project asset whose bytes are not held yet keeps its stand-in; the real bytes replace it once loaded.
+    /** @type {Record<string, string>} */
     const held = {};
     for (const path of Object.keys(assetVersions)) if (assetBytes.has(path)) held[path] = assetVersions[path];
+    /** @type {{ main: string, texts: Record<string, string>, assets: Record<string, Uint8Array>, digests: Record<string, string> }} */
     const scratch = { main, texts: { ...project.texts }, assets: {}, digests: held };
     const files = project.resultsFiles?.() ?? null;
     fillFigures(scratch, { references: referencedFigures(scratch), resultsFiles: files });
