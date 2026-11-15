@@ -147,8 +147,9 @@ function typstImports(text) {
 // `follow` (the lines after a line with one of its `tokens`).
 //   Markdown, Quarto  (document-index/adapters/markdown.js)
 //     "![" an image (its regex cannot span a line); "{{<", "include", "}}" a
-//     Quarto include, whose path may sit on its own line after "include"
-//     (follow: through the next non-blank line); "`" and "~" fences and inline
+//     Quarto include, whose parts may sit on lines of their own (follow: the
+//     lines after a "{{<" line, up to the line holding ">}}" and at most 256
+//     characters, so an unclosed "{{<" cannot sign the rest of the file); "`" and "~" fences and inline
 //     code, which blank what they hold; "$" math, which blanks too; "---" and
 //     "..." front matter, which is code.
 //   LaTeX  (document-index/adapters/latex.js)
@@ -161,11 +162,11 @@ function typstImports(text) {
 // Typst, Org and HTML have no list (their constructs span lines through
 // strings, calls, comments and attributes that no small token set bounds), so
 // they always take the full pass.
-/** @typedef {{ tokens: string[], follow: { tokens: string[], chars?: number, nonBlank?: boolean } }} FastSpec */
+/** @typedef {{ tokens: string[], follow: { tokens: string[], chars: number, until?: string } }} FastSpec */
 /** @type {FastSpec} */
 const MARKDOWN_FAST = {
   tokens: ["![", "{{<", "include", "}}", "`", "~", "$", "---", "..."],
-  follow: { tokens: ["include"], nonBlank: true },
+  follow: { tokens: ["{{<"], chars: 256, until: ">}}" },
 };
 /** @type {Record<string, FastSpec>} */
 const FAST = {
@@ -176,7 +177,7 @@ const FAST = {
     follow: { tokens: ["\\include", "\\input", "\\subfile"], chars: 256 },
   },
 };
-/** @type {Map<FastSpec, { token: RegExp, follow: RegExp }>} */
+/** @type {Map<FastSpec, { token: RegExp, follow: RegExp, until: RegExp | null }>} */
 const fastPatterns = new Map();
 
 /** @param {string[]} words */
@@ -192,12 +193,11 @@ const anyOf = (words) => new RegExp(words.map((word) => word.replace(/[.*+?^${}(
 function signature(text, spec) {
   let patterns = fastPatterns.get(spec);
   if (!patterns) {
-    patterns = { token: anyOf(spec.tokens), follow: anyOf(spec.follow.tokens) };
+    patterns = { token: anyOf(spec.tokens), follow: anyOf(spec.follow.tokens), until: spec.follow.until ? anyOf([spec.follow.until]) : null };
     fastPatterns.set(spec, patterns);
   }
   const out = [];
   let reach = 0;
-  let waiting = false;
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -205,16 +205,10 @@ function signature(text, spec) {
     if (reach > 0) {
       take = true;
       reach -= line.length + 1;
-    }
-    if (waiting) {
-      take = true;
-      if (line.trim()) waiting = false;
+      if (patterns.until?.test(line)) reach = 0;
     }
     if (take) out.push(`${i}:${line}`);
-    if (patterns.follow.test(line)) {
-      if (spec.follow.chars) reach = spec.follow.chars;
-      if (spec.follow.nonBlank) waiting = true;
-    }
+    if (patterns.follow.test(line)) reach = spec.follow.chars;
   }
   return out.join("\n");
 }

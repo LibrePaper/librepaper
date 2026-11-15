@@ -193,3 +193,18 @@ test("Quarto: a multi-line include and its included file invalidate the result",
   delete texts["part-b.qmd"];
   assert.deepEqual(paths({ main, texts }), []);
 });
+
+test("Quarto: a blank line after the include path is part of the include", () => {
+  const main = "fast-inc-tail.qmd";
+  const texts = { [main]: "{{< include\npart.qmd\n\n>}}\n", "part.qmd": "![x](x.png)\n" };
+  assert.deepEqual(paths({ main, texts }), ["x.png"]);
+  texts[main] = "{{< include\npart.qmd\njunk\n>}}\n";
+  assert.deepEqual(paths({ main, texts }), []);
+  texts[main] = "{{< include\nother.qmd\njunk\n>}}\n";
+  texts["other.qmd"] = "![o](o.png)\n";
+  assert.deepEqual(paths({ main, texts }), []);
+  texts[main] = "{{< include\nother.qmd\n\n>}}\n";
+  assert.deepEqual(paths({ main, texts }), ["o.png"]);
+  texts[main] = "{{< include\npart.qmd\n\n>}}\n";
+  assert.deepEqual(paths({ main, texts }), ["x.png"]);
+});
