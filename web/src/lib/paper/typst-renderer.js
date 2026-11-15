@@ -224,12 +224,15 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
    * @returns {boolean} whether the set changed
    */
   function standIn(project) {
-    const scratch = { main, texts: { ...project.texts }, assets: {}, digests: assetVersions };
+    // A project asset whose bytes are not held yet keeps its stand-in; the real bytes replace it once loaded.
+    const held = {};
+    for (const path of Object.keys(assetVersions)) if (assetBytes.has(path)) held[path] = assetVersions[path];
+    const scratch = { main, texts: { ...project.texts }, assets: {}, digests: held };
     const files = project.resultsFiles?.() ?? null;
     fillFigures(scratch, { references: referencedFigures(scratch), resultsFiles: files });
     /** @type {Map<string, Uint8Array>} */
     const next = new Map();
-    for (const [path, body] of Object.entries(scratch.assets)) if (!(path in assetVersions)) next.set(path, body);
+    for (const [path, body] of Object.entries(scratch.assets)) if (!assetBytes.has(path)) next.set(path, body);
     const key = [...next].map(([path, body]) => `${path}:${bytesIdentity(body)}`).join("\0");
     stand = next;
     const changed = key !== standKey;
@@ -337,18 +340,18 @@ function hashBytes(bytes) {
   return h.toString(16);
 }
 
-/** What names a run's figures: each path with its size and a hash of both ends of its data.
+/** What names a run's figures: each path with its size and a hash of all its data.
  * @param {Array<{ path: string, base64?: string }> | null} files */
 export function resultsIdentity(files) {
   return (files ?? []).map((file) => {
     const data = typeof file?.base64 === "string" ? file.base64 : "";
-    return `${file?.path}:${data.length}:${hashText(data.slice(0, 64) + "\0" + data.slice(-64))}`;
+    return `${file?.path}:${data.length}:${hashText(data)}`;
   }).join("\0");
 }
 
-/** Size and a hash of both ends of some bytes. @param {Uint8Array} body */
+/** Size and a hash of all of some bytes. @param {Uint8Array} body */
 function bytesIdentity(body) {
-  return `${body.length}:${hashBytes(body.subarray(0, 64))}:${hashBytes(body.subarray(Math.max(0, body.length - 64)))}`;
+  return `${body.length}:${hashBytes(body)}`;
 }
 
 /** The bytes at a URL, or null. @param {string} url */
