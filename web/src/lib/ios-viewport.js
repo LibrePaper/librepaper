@@ -16,7 +16,7 @@ function isIOS(nav) {
 /// Append `maximum-scale=1` to the viewport meta on iOS, once.
 export function preventFocusZoom(doc = document, nav = navigator) {
   if (!isIOS(nav)) return;
-  const meta = doc.querySelector('meta[name="viewport"]');
+  const meta = /** @type {HTMLMetaElement | null} */ (doc.querySelector('meta[name="viewport"]'));
   if (!meta || meta.content.includes("maximum-scale")) return;
   meta.content += ",maximum-scale=1";
 }
