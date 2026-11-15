@@ -299,6 +299,8 @@
     visual = false, imageUrl = null,
     // A getter for the files of the last run (or null); figures that are not project files are drawn from them.
     resultsFiles = null,
+    // Names which run those files are of; when it changes, figure widgets draw again.
+    resultsRevision = "",
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment, onchangeselect,
     // Called with the caret's formatting (formatState) while visual mode is on.
@@ -2262,6 +2264,13 @@
   $effect(() => {
     void visual;
     if (view) untrack(() => syncVisual(view));
+  });
+
+  // A new run's figures: reconfiguring the visual layer makes every figure
+  // widget resolve its image again.
+  $effect(() => {
+    void resultsRevision;
+    if (view && untrack(() => visual)) untrack(() => syncVisual(view));
   });
 
   // typst-syntax.wasm loads after the first paint. The Typst files were seen

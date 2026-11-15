@@ -1980,11 +1980,18 @@
     return { held, missing };
   }
 
+  /// The figures of the last run, only when that run was of `main`: another
+  /// document's Run directory is not this one's.
+  function resultsFilesFor(main) {
+    const results = runResults;
+    return results && main && results.path === main ? results.files ?? null : null;
+  }
+
   /// A loadable URL for a figure in the open project, for the editor's visual markup.
   async function figureUrlFor(path) {
     const digest = treeNow().digests?.[path];
     // Not a project file: a figure the last run took from the Run directory.
-    if (!digest) return resultsFigureUrl(runResults?.files, path);
+    if (!digest) return resultsFigureUrl(resultsFilesFor(previewPath), path);
     const held = await figures.gather(SLUG, { [path]: digest }, authHeaders(KEY));
     return held.urls[path] ?? null;
   }
@@ -3612,6 +3619,7 @@
       const format = displayedFormat;
       const preview = framePreview.preview();
       const local = exportsLocally;
+      const resultsFiles = resultsFilesFor(tree.main);
       // A figure that could not be fetched, or that is in neither the project
       // nor the last run, becomes a placeholder: the export is never refused.
       let unfetched = 0;
@@ -3630,7 +3638,7 @@
         project: SLUG,
         preview,
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
-        resultsFiles: runResults?.files ?? null,
+        resultsFiles,
         render: renderers.render,
         run: pandoc,
         local,
@@ -4835,7 +4843,7 @@
           <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
                          onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} />
         {/if}
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => runResults?.files ?? null} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
+        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
