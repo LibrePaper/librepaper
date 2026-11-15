@@ -16,6 +16,7 @@ const place = {
   openFile: "chapters/intro.typ",
   caret: 412,
   top: 1800,
+  offset: 240,
   layout: "split",
   preferredPane: "source",
   mobileView: "source",
@@ -70,13 +71,15 @@ const place = {
     openFile: "main.tex",
     caret: 0,
     top: 0,
+    offset: 0,
     layout: "",
     preferredPane: "",
     mobileView: "",
   });
-  storage.setItem("librepaper-place:p", JSON.stringify({ openFile: "main.tex", caret: 12.9, top: -1 }));
+  storage.setItem("librepaper-place:p", JSON.stringify({ openFile: "main.tex", caret: 12.9, top: -1, offset: -30 }));
   assert.equal(readPlace("p", storage).caret, 12);
   assert.equal(readPlace("p", storage).top, 0);
+  assert.equal(readPlace("p", storage).offset, 0, "a negative pixel offset is zero");
 }
 
 // Storage that throws is treated as no storage: reads give null, writes do nothing.

@@ -29,6 +29,8 @@ const id = "main"; const text = new LoroText(); text.insert(0, Array.from({lengt
 files.setContainer(id, text); paths.set(id, "a-main.html");
 for (let i = 0; i < 70; i++) { const file = new LoroText(); file.insert(0, 'chapter ' + i); files.setContainer('chapter-' + i, file); paths.set('chapter-' + i, 'chapter-' + i + '.html'); }
 const notes = new LoroText(); notes.insert(0, '# Notes\\n\\nA paragraph.'); files.setContainer('notes', notes); paths.set('notes', 'notes.md');
+// One paragraph that wraps into many screen rows, for the scroll inside a line.
+const long = new LoroText(); long.insert(0, Array.from({length: 3000}, (_, i) => 'word' + i).join(' ')); files.setContainer('long', long); paths.set('long', 'long.md');
 server.commit();
 const update = encode(server.export({ mode: "update" }));
 const vector = encode(server.oplogVersion().encode());
@@ -517,6 +519,7 @@ try {
   await wait(500);
   assert.ok((await source()).includes('A paragraph.'), 'the restored file shows its own text: ' + (await source()).slice(0, 40));
   assert.equal(await docWrites(), baseline, 'putting the place back writes nothing to the document');
+  assert.equal(await b.evaluate("Boolean(document.activeElement?.closest('.cm-editor'))"), false, 'putting the place back does not focus the editor');
 
   await resize(1280, 900);
   await openInExplorer('a-main.html', 'line 0 source content');
@@ -540,6 +543,15 @@ try {
   await openInExplorer('notes.md', 'A paragraph.');
   await openInExplorer('a-main.html', 'line ');
   await until('the scroll survives a visit to another file', async () => (await firstLine()) === kept, 3000);
+  // Inside one wrapped paragraph the place is the pixels into it, not its start.
+  await openInExplorer('long.md', 'word0 ');
+  await b.evaluate(`document.querySelector('.cm-scroller').scrollTop = 900`);
+  await flush(); await wait(100);
+  const into = await b.evaluate(`document.querySelector('.cm-scroller').scrollTop`);
+  assert.ok(into > 800, 'the paragraph is tall enough to scroll into: ' + into);
+  await openInExplorer('a-main.html', 'line ');
+  await openInExplorer('long.md', 'word');
+  await until('the scroll inside a wrapped paragraph survives', async () => Math.abs((await b.evaluate(`document.querySelector('.cm-scroller').scrollTop`)) - into) <= 2, 3000);
 
   // l. A reader sees less.
   await reload('?role=reader');

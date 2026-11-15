@@ -1896,6 +1896,7 @@
       openFile: ws.openFile,
       caret: here.caret,
       top: here.top,
+      offset: here.offset,
       layout: arrangement.state.layout,
       preferredPane: arrangement.state.preferredPane,
       mobileView: arrangement.state.mobileView,
@@ -1906,14 +1907,19 @@
     if (placeRestored || !editing || !editor || !ws.files.length) return;
     untrack(() => {
       placeRestored = true;
+      // A link that names a file asks to see that file, so it beats the place.
+      if (ARRIVED_FILE) return;
       const saved = readPlace(SLUG);
       if (!saved || !ws.files.some((file) => file.id === saved.openFile && file.kind === "text")) return;
       if (saved.layout) arrangement.state.layout = saved.layout;
       if (saved.preferredPane) arrangement.state.preferredPane = saved.preferredPane;
       if (saved.mobileView) arrangement.state.mobileView = saved.mobileView;
-      ws.openFile = saved.openFile;
-      // The editor takes the file on the next update, so the place is put
-      // back after it.
+      // ws.openFile is not assigned here. The file prop would then open the file
+      // with focus, which raises the phone keyboard. restorePlace opens it
+      // without focus and calls onfilechange, which sets ws.openFile itself;
+      // the file prop effect then finds the file already showing and returns.
+      // The editor takes the arrangement on the next update, so the place is
+      // put back after a tick.
       void (async () => {
         await tick();
         if (readerDisposed) return;

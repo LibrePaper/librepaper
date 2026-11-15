@@ -965,8 +965,9 @@
   // unique inside a document, and a session swap brings a new document, so
   // cache states under their owning LoroDoc as well as the file id.
   // The scroll position is not part of an EditorState, so setState drops it.
-  // It is kept in its own small cache, `tops`, as a document offset (the start
-  // of the first line on screen), and put back after each swap.
+  // It is kept in its own small cache, `tops`, as the place from scrollPlace()
+  // (the start of the block on screen and the pixels scrolled into it), and put
+  // back after each swap.
   let states = new WeakMap();
   let tops = new WeakMap();
   let activeDocument = null;
@@ -1211,28 +1212,60 @@
     view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "nearest", yMargin: 24 }) });
   }
 
-  // The caret and the offset of the first line showing at the top of the
-  // scroller, for the reader to keep while the page is hidden.
+  // Where the scroller is: the offset of the block at the top of the view and
+  // how many pixels of that block lie above the view. A wrapped line can be
+  // several screens tall, so the block alone would restore to its start.
+  // Measured the way CodeMirror's own scrollSnapshot() measures, in scrollTop
+  // coordinates, so that putting it back is the exact inverse.
+  function scrollPlace() {
+    const scrollTop = view.scrollDOM.scrollTop;
+    const block = view.lineBlockAtHeight(scrollTop);
+    return { top: block.from, offset: Math.max(0, Math.round(scrollTop - block.top)) };
+  }
+
+  // Puts the block at `place.top` `place.offset` pixels above the top of the
+  // view. Two steps: scrollIntoView first, because a view just built knows
+  // only estimated heights for lines far down and scrollIntoView measures its
+  // target; then, once that block is drawn, scrollTop is written the way a
+  // CodeMirror scroll snapshot writes it, because scrollIntoView leaves room
+  // for the editor's top scroll margin and lands that much short. The
+  // position is clamped because the file may have shrunk since.
+  function scrollBack(place) {
+    const target = view;
+    const at = () => Math.min(Math.max(0, place.top || 0), target.state.doc.length);
+    const offset = place.offset || 0;
+    target.dispatch({ effects: EditorView.scrollIntoView(at(), { y: "start", yMargin: -offset }) });
+    // A jump that follows the swap (goToIn, openAt) moves the selection and
+    // scrolls to its own target, so the second step stands down for it.
+    const selection = target.state.selection;
+    requestAnimationFrame(() => {
+      if (view !== target || !target.state.selection.eq(selection)) return;
+      target.requestMeasure({
+        read: () => null,
+        write: () => {
+          if (view === target) target.scrollDOM.scrollTop = target.lineBlockAt(at()).top + offset;
+        },
+      });
+    });
+  }
+
+  // The caret and the scroll place of the view, for the reader to keep while
+  // the page is hidden.
   export function place() {
     if (!view) return null;
-    return {
-      caret: view.state.selection.main.head,
-      top: view.lineBlockAtHeight(view.scrollDOM.scrollTop).from,
-    };
+    return { caret: view.state.selection.main.head, ...scrollPlace() };
   }
 
   // Puts back a place kept by place(), in the file already shown. It does not
   // focus the editor: focusing a field on a phone raises the keyboard, and the
   // person has not asked to type.
-  export function restorePlace(id, { caret = 0, top = 0 } = {}) {
+  export function restorePlace(id, { caret = 0, top = 0, offset = 0 } = {}) {
     if (!view || !id) return;
     show(id, { focus: false });
     const end = view.state.doc.length;
     const clamp = (at) => Math.min(Math.max(0, at), end);
-    view.dispatch({
-      selection: { anchor: clamp(caret) },
-      effects: EditorView.scrollIntoView(clamp(top), { y: "start" }),
-    });
+    view.dispatch({ selection: { anchor: clamp(caret) } });
+    scrollBack({ top, offset });
   }
 
   // Applies a formatting tool from lib/visual-markup/formatting.js to the open
@@ -2088,7 +2121,7 @@
     if (!view || !id || id === showing) return;
     if (showing && activeDocument) {
       stateMap(activeDocument).set(showing, view.state);
-      topMap(activeDocument).set(showing, view.lineBlockAtHeight(view.scrollDOM.scrollTop).from);
+      topMap(activeDocument).set(showing, scrollPlace());
     }
     const document_ = session.doc;
     const documentStates = stateMap(document_);
@@ -2130,9 +2163,7 @@
     // above has reconfigured the view. A caller that jumps somewhere (goToIn,
     // openAt) calls goTo after show and scrolls again, so that jump wins.
     const saved = topMap(document_).get(id);
-    if (saved !== undefined) {
-      view.dispatch({ effects: EditorView.scrollIntoView(Math.min(saved, view.state.doc.length), { y: "start" }) });
-    }
+    if (saved !== undefined) scrollBack(saved);
   }
 
   /// The file the view is showing, which the reader asks when it has a
