@@ -8,6 +8,7 @@ const MAX_SELECTION_TEXT = 1_000_000;
 const MAX_CONTEXT_TEXT = 4096;
 const MAX_ID = 256;
 const MAX_COORDINATE = 10_000_000;
+const MAX_SCROLL = 100_000_000;
 
 const finite = (value, min = -MAX_COORDINATE, max = MAX_COORDINATE) =>
   typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
@@ -121,6 +122,14 @@ export function validateFrameMessage(input) {
     case "reading-position":
       return Number.isSafeInteger(input.start) && input.start >= 0 && input.start <= MAX_READY_TEXT
         ? { type: "reading-position", start: input.start } : null;
+    case "scroll": {
+      // Scroll offsets come from the frame's own scroller, so they are only
+      // checked for finiteness and a generous bound. A bad bottom is dropped
+      // rather than rejecting the whole message.
+      if (!finite(input.delta, -MAX_SCROLL, MAX_SCROLL) || !finite(input.top, -MAX_SCROLL, MAX_SCROLL)) return null;
+      const bottom = finite(input.bottom, -MAX_SCROLL, MAX_SCROLL) ? input.bottom : undefined;
+      return { type: "scroll", delta: input.delta, top: input.top, ...(bottom === undefined ? {} : { bottom }) };
+    }
     default:
       return null;
   }
@@ -134,6 +143,9 @@ const RATE = {
   selection: { capacity: 48, refillPerSecond: 12 },
   // Page changes while scrolling each send one, so this is the roomiest class.
   "viewer-state": { capacity: 48, refillPerSecond: 16 },
+  // Frames send at most one scroll per animation frame while scrolling, so
+  // this allows a steady 60 per second.
+  scroll: { capacity: 60, refillPerSecond: 60 },
   default: { capacity: 40, refillPerSecond: 8 },
 };
 
