@@ -10,7 +10,8 @@
 // with it. That is why the sidebar treats everything arriving from here as
 // untrusted input rather than as fact.
 
-import { createKatexLoader, createMathTypesetter } from "../lib/math.js";
+import { createKatexCache, createKatexLoader, createMathTypesetter, typesetDetached } from "../lib/math.js";
+import { perfEnd, perfStart } from "../lib/perf-marks.js";
 import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
 import { watchPinch } from "../lib/pinch.js";
 import { morphChildren } from "./morph.js";
@@ -174,7 +175,10 @@ import { morphChildren } from "./morph.js";
   // fetched from this origin the first time a document needs one. The path is
   // written in at build time, beside the copy of KaTeX the build made.
   const loadKatex = createKatexLoader({ base: __KATEX__, document, window });
-  const typesetMath = createMathTypesetter({ base: __KATEX__, document, window, load: loadKatex });
+  // One cache of rendered formulas, shared by the live body and by the
+  // detached pages typeset before they are morphed in.
+  const katexCache = createKatexCache();
+  const typesetMath = createMathTypesetter({ base: __KATEX__, document, window, load: loadKatex, cache: katexCache });
 
   // The one mark this file draws that is not the document's: the ring around
   // whichever annotation the sidebar has singled out. Installed once, up
@@ -681,6 +685,17 @@ import { morphChildren } from "./morph.js";
     });
   }
 
+  // Give each figure in a parsed page a decoding hint, so decoding happens off
+  // the main thread. Done on the parsed page, so every keystroke yields
+  // identical attributes and the morph sees no change.
+  const FIGURE_SOURCE = /#librepaper-asset=[0-9A-Za-z%]+$/;
+  function hintFigures(root) {
+    for (const img of root.querySelectorAll("img")) {
+      if (!FIGURE_SOURCE.test(img.getAttribute("src") || "")) continue;
+      if (!img.hasAttribute("decoding")) img.setAttribute("decoding", "async");
+    }
+  }
+
   addEventListener("message", (event) => {
     if (!READER || event.source !== parent || event.origin !== READER) return;
     const message = event.data;
@@ -721,29 +736,50 @@ import { morphChildren } from "./morph.js";
       // The body is about to be replaced or morphed, so marks painted on the
       // old one no longer count as painted.
       bodyGeneration += 1;
+      const totalStart = perfStart();
+      const parseStart = perfStart();
       const parsed = new DOMParser().parseFromString(withFigureUrls(String(message.html || "")), "text/html");
+      perfEnd("lp:preview:parse", parseStart);
       // The frame this arrives in is an empty shell -- nothing rendered is
       // stored any more, so there is no page whose styles the body could
       // inherit. The page's own head comes with it, and is installed once:
       // it is the same template on every keystroke, so it is replaced only
       // when it actually differs.
       adoptStyles(parsed, message.presentation);
-      // LaTeXML output is morphed in place, so unchanged paragraphs, images
-      // and equations are never recreated. Marks go first: they split text
-      // nodes, and the morph compares the page with the unmarked source. Other
-      // formats typeset their math in place, which a morph would undo on every
-      // keystroke, so they replace the body.
-      const isLatexml = !!parsed.querySelector(".ltx_page_main, .ltx_document");
+      hintFigures(parsed.body);
+      document.documentElement.classList.add("lp-live-preview");
+      // Every format is morphed in place, so unchanged paragraphs, images and
+      // equations are never recreated. Math is typeset on the parsed page
+      // first, so the morph compares typeset with typeset and an unchanged
+      // formula keeps its nodes. Marks go first: they split text nodes, and
+      // the morph compares the page with the unmarked source.
+      const katexReady = !!window.katex;
+      // The one case that replaces rather than morphs: math waiting for a
+      // KaTeX that is not loaded yet. A page without math morphs always.
+      const awaitingKatex = !katexReady
+        && !!parsed.body.querySelector("span[data-math-style], span.math:not([data-math-style])");
+      if (katexReady) {
+        const typesetStart = perfStart();
+        typesetDetached(window.katex, parsed.body, parsed, katexCache);
+        perfEnd("lp:preview:typeset", typesetStart);
+      }
       quietly(() => {
-        if (isLatexml) {
-          removeMarks();
-          morphChildren(document.body, parsed.body);
+        const swapStart = perfStart();
+        removeMarks();
+        if (awaitingKatex) {
+          // The first document with math: the parsed nodes move in as they
+          // are, without a second parse, and typesetMath below starts the
+          // load. Later keystrokes morph.
+          document.body.replaceChildren(...document.adoptNode(parsed.body).childNodes);
         } else {
-          document.body.innerHTML = parsed.body.innerHTML;
+          morphChildren(document.body, parsed.body);
         }
+        perfEnd("lp:preview:swap", swapStart);
         // In the same breath when KaTeX is already here, so the text published
         // below is the typeset text. The first time it is not, and the
-        // rendering lands as a mutation the observer republishes.
+        // rendering lands as a mutation the observer republishes. When the
+        // page was typeset above this finds nothing to do, and covers any
+        // formula that was left over.
         typesetMath();
       });
       // Replacing the body throws away every mark on it, and the ranges to
@@ -759,7 +795,10 @@ import { morphChildren } from "./morph.js";
       if (lastRanges.length) highlight(shiftRanges(lastRanges));
       // Directly, not through the observer: the observer waits a quarter of a
       // second before republishing, and a preview should keep up with typing.
+      const publishStart = perfStart();
       publish(true);
+      perfEnd("lp:preview:publish", publishStart);
+      perfEnd("lp:preview:total", totalStart);
     }
 
     // Show the reader where a place in the text is. The offset is into the
