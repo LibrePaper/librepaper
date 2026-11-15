@@ -372,11 +372,13 @@ try {
   await wait(260);
   await until('tab bar steps aside', () => b.evaluate(`document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
   assert.equal(await b.evaluate(`document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), true, 'the mode switch steps aside too');
-  // A collapsed row is clipped, not hidden: focus lands in it and brings it back, and blurring lets it step aside again.
+  assert.ok(await b.evaluate(`document.querySelector("main.reader").getBoundingClientRect().bottom > innerHeight - 20`), 'the workspace grows into the space the bar leaves');
+  // A collapsed row is clipped, not hidden: focus lands in it and brings every bar back, and the workspace still fits the screen.
   await b.evaluate('document.querySelector(".mobile-mode-switch [data-mode=source]").focus()');
   await until('focus brings the mode switch back', () => b.evaluate('Boolean(document.activeElement.closest(".mobile-mode-switch")) && document.querySelector(".mobile-mode-slot").getBoundingClientRect().height > 40'), 3000);
+  assert.equal(await b.evaluate(`document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), false, 'focus in the mode switch brings the tab bar back too');
+  await until('the workspace fits the screen with the bars back', () => b.evaluate(`document.querySelector("main.reader").getBoundingClientRect().bottom <= innerHeight + 1 && document.documentElement.scrollHeight <= innerHeight + 1`), 3000);
   await b.evaluate('document.activeElement.blur()');
-  assert.ok(await b.evaluate(`document.querySelector("main.reader").getBoundingClientRect().bottom > innerHeight - 20`), 'the workspace grows into the space the bar leaves');
   for (const top of [400, 200]) {
     await b.evaluate(`document.querySelector(".cm-scroller").scrollTop = ${top}`);
     await flush();

@@ -4552,11 +4552,13 @@
     barHidden = false;
   });
 
-  // Reveal the bar when keyboard focus enters the nav element, so off-screen
-  // controls are never focused invisibly.
+  // Reveal the bars when keyboard focus enters one of them, so off-screen
+  // controls are never focused invisibly. Revealing them all, rather than only
+  // the row that took focus, keeps the workspace height (which counts the bars
+  // that are shown) in step with what is drawn.
   $effect(() => revealOnNavFocus(() => {
     barHidden = false;
-  }));
+  }, "body > nav, .mobile-mode-switch, .tool-band-slot"));
 </script>
 
 <svelte:window bind:innerWidth={arrangement.state.width} onresize={() => (arrangement.state.unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => { keepPlace(); session?.leave(); }} />
