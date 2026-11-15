@@ -1759,8 +1759,8 @@
           // and scrolling the document on every keystroke would make the
           // preview unreadable.
           if (update.selectionSet && !update.docChanged) oncaret?.();
-          // The formatting toolbar reads the caret's markup, so it is told on every move or edit.
-          if (update.docChanged || update.selectionSet) reportFormat(update.view);
+          // The formatting toolbar reads the caret's markup, so it is told after every move or edit, once per frame.
+          if (update.docChanged || update.selectionSet) scheduleFormat();
           // On a phone the keyboard covers the lower half of the screen, and a
           // tap is what raises it, so the tapped line goes to the top of the
           // editor where it stays in sight. Only a pointer tap that places the
@@ -1874,6 +1874,20 @@
   function reportFormat(target, path) {
     if (!visual || !onformatstate || !target) return;
     onformatstate(formatState(target, formatOf(path ?? pathOfDoc(session.doc, showing))));
+  }
+
+  // The toolbar is told once per frame, not once per transaction. Typing used
+  // to recompute the file's path, the caret's markup and the toolbar on every
+  // keystroke, and the toolbar only needs the state as of the next paint. The
+  // frame reads the view when it runs, so a view swapped in the meantime is
+  // the one reported.
+  let formatFrame = 0;
+  function scheduleFormat() {
+    if (formatFrame) return;
+    formatFrame = requestAnimationFrame(() => {
+      formatFrame = 0;
+      reportFormat(view);
+    });
   }
 
   // The prose format of a file, or empty for code and data files, which spellcheck leaves alone.
@@ -2152,6 +2166,8 @@
         unsubscribeFont();
         unsubscribeLineHeight();
         if (view) viewCallbacks.delete(view);
+        cancelAnimationFrame(formatFrame);
+        formatFrame = 0;
         view?.destroy();
         insertTargets.clear();
         // Cached states embed their UndoManager. Reset both caches together;
