@@ -5,9 +5,9 @@ title: "FAQ"
 ## How do I move a project from Overleaf?
 
 1. In Overleaf, open the project and choose Menu > Download > Source. This saves a ZIP of every file.
-2. In LibrePaper, choose New project > Upload Files and drop the ZIP on the page. Folders are kept, and a wrapper folder around the whole archive is removed.
+2. In LibrePaper, choose New project > Upload files and drop the ZIP on the page. Folders are kept. If the archive has one wrapper folder, LibrePaper removes it by default; untick the box to keep it.
 
-The browser compiler has pdfLaTeX and XeLaTeX, and LuaLaTeX projects need changes before they compile. The engine follows a `% !TEX program = xelatex` line, then the packages the document loads. Settings > Render forces one engine everywhere. BibTeX and Biber run on their own, so upload the `.bib` files with the rest of the project.
+The browser compiler has pdfLaTeX and XeLaTeX. It does not include LuaLaTeX, so LuaLaTeX projects need changes before they compile. The engine is chosen in this order: the project's **LaTeX engine** setting (Settings > Rendering), a `% !TEX program = xelatex` line, then the packages the document loads. BibTeX and Biber run on their own, so upload the `.bib` files with the rest of the project.
 
 Unsupported file types are skipped and listed after the upload. Only the files come across. Overleaf comments, tracked changes and history do not.
 
