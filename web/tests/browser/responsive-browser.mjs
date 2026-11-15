@@ -735,6 +735,11 @@ try {
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
 
   // A project opened on a phone lands on the preview, not the files or the source.
+  // Opened, not reloaded: a reload in the same tab puts back the face this tab
+  // last showed, so the place it keeps on the way out is cleared, the way a
+  // new tab starts with none. The page keeps it on pagehide and on the
+  // visibilitychange that can follow it; these listeners run after its own.
+  await b.evaluate("const forget = () => sessionStorage.clear(); addEventListener('pagehide', forget); document.addEventListener('visibilitychange', forget)");
   await b.resize(390,844);
   await b.navigate(url);
   await until('phone landing',()=>b.evaluate("Boolean(document.querySelector('.reader.mobile-document .viewport')?.getClientRects().length)"), 10000);
