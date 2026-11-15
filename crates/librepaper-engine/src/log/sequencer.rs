@@ -1356,7 +1356,7 @@ impl Sequencer {
                     "sync_delayed: this deployment is holding all the unsaved work it can",
                     "pending_budget",
                     true,
-                )
+                );
             }
         };
 
@@ -2526,36 +2526,51 @@ impl Sequencer {
         // above are I/O and waiting on them holds nothing back.
         let _turn = super::admission::heavy().await;
         let started = Instant::now();
-        let built = tokio::task::spawn_blocking(move || -> std::result::Result<LoroDoc, String> {
-            let doc = librepaper_document::document::session::new_doc();
-            if let Some(base) = base {
-                doc.import(&base).map_err(|error| error.to_string())?;
-            }
-            // One at a time, NOT `import_batch`, which is what this used to
-            // call and what §4.2.1's framing was written for.
-            //
-            // Measured 2026-09-20 (`batched_import_cost_probe`): importing a
-            // 1 MiB document as a single batch takes 1.5 ms, and adding ONE
-            // further 100-byte update to the same `import_batch` call takes
-            // 3.8 s. The cliff is in the call shape, not the bytes: 64 more
-            // updates cost nothing beyond it, and the identical batches
-            // imported one at a time take 1.8 ms and stay flat. It also
-            // dominated memory -- the batched call peaked at 400 MB of RSS
-            // for a 1 MiB document, against a §9.2 estimate of 6 MB.
-            //
-            // The log is causally ordered, because §5 refuses a batch whose
-            // dependencies are not already in `head_vector`, so replaying in
-            // row order needs no buffering of pending imports. That is the
-            // only thing `import_batch` was giving us here.
-            for batch in &batches {
-                doc.import(batch).map_err(|error| error.to_string())?;
-            }
-            Ok(doc)
-        })
+        let config = self.config.clone();
+        let built = tokio::task::spawn_blocking(
+            move || -> std::result::Result<(LoroDoc, Option<i32>), String> {
+                let doc = librepaper_document::document::session::new_doc();
+                if let Some(base) = base {
+                    doc.import(&base).map_err(|error| error.to_string())?;
+                }
+                // One at a time, NOT `import_batch`, which is what this used to
+                // call and what §4.2.1's framing was written for.
+                //
+                // Measured 2026-09-20 (`batched_import_cost_probe`): importing a
+                // 1 MiB document as a single batch takes 1.5 ms, and adding ONE
+                // further 100-byte update to the same `import_batch` call takes
+                // 3.8 s. The cliff is in the call shape, not the bytes: 64 more
+                // updates cost nothing beyond it, and the identical batches
+                // imported one at a time take 1.8 ms and stay flat. It also
+                // dominated memory -- the batched call peaked at 400 MB of RSS
+                // for a 1 MiB document, against a §9.2 estimate of 6 MB.
+                //
+                // The log is causally ordered, because §5 refuses a batch whose
+                // dependencies are not already in `head_vector`, so replaying in
+                // row order needs no buffering of pending imports. That is the
+                // only thing `import_batch` was giving us here.
+                for batch in &batches {
+                    doc.import(batch).map_err(|error| error.to_string())?;
+                }
+                // The file count the listing shows, projected here because it is
+                // CPU work too; `build` stamps it on the row below.
+                let count = i32::try_from(
+                    librepaper_document::document::projection::project(
+                        &doc,
+                        &librepaper_document::document::paths::rules(&config),
+                    )
+                    .projection
+                    .files
+                    .len(),
+                )
+                .ok();
+                Ok((doc, count))
+            },
+        )
         .await
         .map_err(|error| SequencerError::Loro(error.to_string()))?;
-        let doc = match built {
-            Ok(doc) => doc,
+        let (doc, count) = match built {
+            Ok(built) => built,
             Err(error) => {
                 inner.unreadable = Some(error.clone());
                 self.budget.note_build_failed();
@@ -2576,16 +2591,6 @@ impl Sequencer {
         // Backfills projects written before the column existed: the first
         // time anything opens one, its count is stamped. Fire and forget; a
         // failure is logged and never fails the build.
-        let count = i32::try_from(
-            librepaper_document::document::projection::project(
-                &doc,
-                &librepaper_document::document::paths::rules(&self.config),
-            )
-            .projection
-            .files
-            .len(),
-        )
-        .ok();
         if let Some(count) = count {
             let catalog = self.catalog.clone();
             let document_id = self.document_id;

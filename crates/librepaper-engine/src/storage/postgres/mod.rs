@@ -2700,11 +2700,17 @@ mod tests {
             .unwrap();
 
         let counts = catalog.listing_counts(&[paper.id]).await.unwrap();
-        assert_eq!(counts.len(), 1, "a document with no label still has a row");
+        assert_eq!(counts.len(), 1, "a fresh document still has a row");
         assert_eq!(counts[0].comments, 0);
         assert_eq!(
             counts[0].file_count, None,
-            "a project with no label does not claim to hold zero files",
+            "a project never opened does not claim to hold zero files",
+        );
+        catalog.stamp_file_count(paper.id, 3).await.unwrap();
+        assert_eq!(
+            catalog.listing_counts(&[paper.id]).await.unwrap()[0].file_count,
+            Some(3),
+            "the listing reads the count the sequencer stamped",
         );
         assert!(
             catalog.listing_counts(&[]).await.unwrap().is_empty(),
