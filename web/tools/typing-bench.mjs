@@ -52,7 +52,23 @@ async function webkitTab() {
     },
     navigate: (url) => call("POST", at("/url"), { url }),
     resize: (width, height) => call("POST", at("/window/rect"), { width, height }),
-    setCookie: (name, value) => call("POST", at("/cookie"), { cookie: { name, value, path: "/" } }),
+    setCookie: (name, value, url) => call("POST", at("/cookie"), { cookie: { name, value, path: "/", domain: new URL(url).hostname, secure: false, httpOnly: true, sameSite: "Lax" } }),
+    cookies: () => call("GET", at("/cookie")),
+    // A real click at the end of the caret's line, which gives the window and
+    // the editor focus the way a person's click would.
+    async clickCaret() {
+      const { x, y } = await this.evaluate(`(() => {
+        const view = document.querySelector(".cm-content").cmTile.view;
+        const at = view.coordsAtPos(view.state.selection.main.head);
+        return { x: Math.round(at.left), y: Math.round((at.top + at.bottom) / 2) };
+      })()`);
+      await call("POST", at("/actions"), { actions: [
+        { type: "pointer", id: "mouse", parameters: { pointerType: "mouse" }, actions: [
+          { type: "pointerMove", x, y, origin: "viewport" }, { type: "pointerDown", button: 0 }, { type: "pointerUp", button: 0 },
+        ] },
+      ] });
+      await call("POST", at("/actions"), { actions: [{ type: "key", id: "keyboard", actions: [{ type: "keyDown", value: "\uE010" }, { type: "keyUp", value: "\uE010" }] }] });
+    },
     async type(keys, gap) {
       const actions = keys.flatMap((key) => [{ type: "keyDown", value: key }, { type: "keyUp", value: key }, { type: "pause", duration: gap }]);
       await call("POST", at("/actions"), { actions: [{ type: "key", id: "keyboard", actions }] });
@@ -134,10 +150,15 @@ try {
   const source = longDocument();
   const doc = await deployment.publish({ title: "Typing bench", source_format: FORMAT, source });
   tab = WEBKIT ? await webkitTab() : await browser("chromium", join(scratch, "profile"), 19000 + Math.floor(Math.random() * 1000));
-  await tab.resize(1600, 1000);
+  if (!WEBKIT) await tab.resize(1600, 1000);
   const [name, value] = deployment.cookie.split(/=(.*)/s);
   // WebDriver sets a cookie on the page it is on.
-  if (WEBKIT) await tab.navigate(deployment.browserBase);
+  if (WEBKIT) {
+    await tab.navigate(deployment.browserBase);
+    // A narrow window is the phone layout, with no editor beside the preview.
+    // MiniBrowser runs full screen on xvfb-run's screen for that reason.
+    await until("a desktop-wide window", async () => { await tab.resize(1600, 1000).catch((e) => console.log("resize:", e.message)); const w = await tab.evaluate("innerWidth"); console.log("innerWidth", w); return w >= 1200; }, 8000);
+  }
   await tab.setCookie(name, value, deployment.browserBase);
   // Settings as the preferences page stores them, e.g.
   // PREFS='{"librepaper-keymap":"vim","librepaper-editor-visual":true}'.
@@ -148,6 +169,7 @@ try {
   try {
     await until("the editor", () => tab.evaluate(`Boolean(document.querySelector(".cm-content")?.cmTile?.view)`), 60000);
   } catch (error) {
+    if (tab.cookies) console.log("cookies:", JSON.stringify(await tab.cookies()));
     console.log(await tab.evaluate(`JSON.stringify({ url: location.href, cm: Boolean(document.querySelector(".cm-content")), keys: Object.keys(document.querySelector(".cm-content") || {}), text: document.body.innerText.slice(0, 600) })`));
     throw error;
   }
@@ -185,6 +207,9 @@ try {
   const keys = Array.from({ length: CHARS }, (_, i) => text[i % text.length]);
   let profile = null;
   if (WEBKIT) {
+    console.log("focus before:", await tab.evaluate(`document.activeElement?.className + " hasFocus=" + document.hasFocus()`));
+    await tab.clickCaret();
+    console.log("focus after click:", await tab.evaluate(`document.activeElement?.className + " hasFocus=" + document.hasFocus()`));
     // Vim starts in normal mode; A appends at the end of the line.
     if (prefs["librepaper-keymap"] === "vim") { await tab.type(["A"], 300); }
     await tab.type(keys, GAP);
