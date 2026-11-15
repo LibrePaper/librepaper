@@ -1,6 +1,6 @@
 import { m } from "../paraglide/messages.js";
 import { referencedFigures } from "../figure-references.js";
-import { fillFigures } from "../missing-figures.js";
+import { fillFigures, referenceFigures } from "../missing-figures.js";
 
 // One render of the document, from the source in this tab.
 //
@@ -288,6 +288,10 @@ export function createPreviewRenderer({
         references: referencedFigures(source),
         resultsFiles: saved?.files ?? null,
       });
+      // The live flow page names run figures by reference, as project
+      // figures, so its HTML does not carry their bytes on every keystroke.
+      if (!paged && format !== "typst" && format !== "latex") figures = [...figures, ...await referenceFigures(source)];
+      if (coordinator.superseded(guard)) return;
       // Keep a transient source identity for diagnostics and race checks. It
       // is never sent to the server as a rendering name; shared results are a
       // separate upload of a local run's output, which this person can turn off.

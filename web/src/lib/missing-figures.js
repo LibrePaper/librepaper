@@ -10,6 +10,8 @@
 
 import { normalizePath } from "./completion/paths.js";
 import { sourceFormatOf } from "./formats.js";
+import { sha256Hex } from "./digest.js";
+import { figureReference, referencedType, typeOf } from "./figures.js";
 
 /** @typedef {import("./figure-references.js").FigureReference} FigureReference */
 /** @typedef {{ path: string, text?: string, base64?: string }} ResultsFile */
@@ -237,4 +239,32 @@ export async function figureUrlFor(imageUrl, resultsFiles, file) {
     if (url) return url;
   }
   return null;
+}
+
+/**
+ * For the live flow preview: the run figures `fillFigures` put into
+ * `source.urls` as data URLs become `figureReference(sha)` URLs, the way project
+ * figures are, so each keystroke's page names them instead of carrying their
+ * bytes. Returns the `{ sha, type, bytes }` entries for the frame, which keeps
+ * them once. SVG placeholders are tiny and stay inline, as does any figure of a
+ * type the frame cannot make a blob URL for. Call it after `fillFigures`.
+ * @param {{ assets?: Record<string, Uint8Array>, urls?: Record<string, string> }} source
+ * @returns {Promise<Array<{ sha: string, type: string, bytes: Uint8Array }>>}
+ */
+export async function referenceFigures(source) {
+  const added = filled.get(source);
+  const urls = source.urls;
+  if (!added || !urls) return [];
+  /** @type {Map<string, { sha: string, type: string, bytes: Uint8Array }>} */
+  const references = new Map();
+  for (const [key, url] of [...added.urls]) {
+    const type = typeOf(key);
+    const bytes = added.assets.get(key);
+    if (!bytes || urls[key] !== url || !url.startsWith("data:") || url.startsWith("data:image/svg") || !referencedType(type)) continue;
+    const sha = await sha256Hex(bytes);
+    references.set(sha, { sha, type, bytes });
+    urls[key] = figureReference(sha);
+    added.urls.set(key, urls[key]);
+  }
+  return [...references.values()];
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { referencedFigures } from "../../src/lib/figure-references.js";
-import { fillFigures, placeholderBytes, placeholderUrl, resultsFigureUrl } from "../../src/lib/missing-figures.js";
+import { fillFigures, referenceFigures, placeholderBytes, placeholderUrl, resultsFigureUrl } from "../../src/lib/missing-figures.js";
 
 const starts = (bytes, ...head) => head.every((byte, i) => bytes[i] === byte);
 const ascii = (bytes) => new TextDecoder().decode(bytes);
@@ -100,4 +100,20 @@ test("fillFigures: LaTeX gives a bare missing name an extension to find", () => 
   const { missing } = fillFigures(source, { references: referencedFigures(source) });
   assert.deepEqual(missing.map(({ path }) => path), ["gone"]);
   assert.ok(source.assets["gone.png"]);
+});
+
+test("referenceFigures: run figures become references, SVG placeholders stay inline", async () => {
+  const source = {
+    main: "doc/main.qmd",
+    texts: { "doc/main.qmd": "![a](a.png)\n![b](gone.png)\n" },
+    urls: {},
+  };
+  fillFigures(source, { references: referencedFigures(source), resultsFiles: [{ path: "doc/a.png", base64: base64("run-a") }] });
+  const references = await referenceFigures(source);
+  assert.equal(references.length, 1);
+  assert.equal(references[0].type, "image/png");
+  assert.equal(ascii(references[0].bytes), "run-a");
+  assert.equal(source.urls["doc/a.png"], `about:blank#librepaper-asset=${references[0].sha}`);
+  assert.equal(source.urls["a.png"], source.urls["doc/a.png"]);
+  assert.ok(source.urls["doc/gone.png"].startsWith("data:image/svg+xml"));
 });

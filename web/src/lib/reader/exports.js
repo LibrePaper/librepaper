@@ -220,7 +220,10 @@ async function exportFilled({ target, format, tree, missing = [], title, slug, p
     }
     // The live preview names its figures by reference, which the download
     // cannot use, so those become the data URLs the tree was gathered with.
-    if (previewCurrent && preview?.kind === "html") return inlineBlobUrls(inlineFigureReferences(preview.html, tree));
+    // A reference the tree cannot give back (a figure of the last run, which
+    // the page names by reference) sends the export to a fresh render instead.
+    const inlined = previewCurrent && preview?.kind === "html" ? inlineFigureReferences(preview.html, tree) : null;
+    if (inlined !== null && !inlined.includes("about:blank#librepaper-asset=")) return inlineBlobUrls(inlined);
     const markdown = format === "markdown" || format === "quarto";
     const result = await render(tree, title, markdown
       ? { format: "html", project, buildPreferences: MARKDOWN_HTML }
