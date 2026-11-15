@@ -1226,6 +1226,7 @@ mod tests {
                 .flush_log_row(
                     first.id,
                     FlushRow {
+                        file_count: None,
                         expected_update_sequence: 0,
                         update_bytes: b"1234",
                         vector: b"v1",
@@ -1245,6 +1246,7 @@ mod tests {
                 .flush_log_row(
                     fork.id,
                     FlushRow {
+                        file_count: None,
                         expected_update_sequence: 0,
                         update_bytes: b"5678",
                         vector: b"v1",
@@ -1294,6 +1296,7 @@ mod tests {
                 .flush_log_row(
                     first.id,
                     FlushRow {
+                        file_count: None,
                         expected_update_sequence: 1,
                         update_bytes: b"x",
                         vector: b"v2",
@@ -1315,6 +1318,7 @@ mod tests {
                 .flush_log_row(
                     refused_project.id,
                     FlushRow {
+                        file_count: None,
                         expected_update_sequence: 0,
                         update_bytes: b"x",
                         vector: b"v1",
@@ -1543,6 +1547,7 @@ mod tests {
             .flush_log_row(
                 first.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 0,
                     update_bytes: b"framed-batch-one",
                     vector: b"vector-one",
@@ -2784,6 +2789,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 0,
                     update_bytes: b"batch-one",
                     vector: b"vector-one",
@@ -2806,6 +2812,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 0,
                     update_bytes: b"batch-one",
                     vector: b"vector-one",
@@ -2829,6 +2836,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 1,
                     update_bytes: b"batch-two",
                     vector: b"vector-two",
@@ -2889,6 +2897,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 0,
                     update_bytes: &framed,
                     vector: &real_vector,
@@ -3019,6 +3028,7 @@ mod tests {
                 .flush_log_row(
                     document.id,
                     FlushRow {
+                        file_count: None,
                         expected_update_sequence: expected,
                         update_bytes: &bytes,
                         vector: &vector,
@@ -3227,6 +3237,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 0,
                     update_bytes: &row1,
                     vector: &v1.encode(),
@@ -3239,6 +3250,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 1,
                     update_bytes: &row2,
                     vector: &v2.encode(),
@@ -3251,6 +3263,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 2,
                     update_bytes: &row3,
                     vector: &v3.encode(),

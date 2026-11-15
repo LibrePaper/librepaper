@@ -584,6 +584,17 @@ pub trait LogCatalog: Send + Sync {
         let _ = (document_id, reservation_key);
         Box::pin(async { Ok(()) })
     }
+    /// Stamps the project's file count on its document row. Called after a
+    /// build, outside any flush. The default does nothing, for a fake that
+    /// keeps no document row.
+    fn stamp_file_count(
+        &self,
+        document_id: Uuid,
+        count: i32,
+    ) -> BoxFuture<'_, postgres::Result<()>> {
+        let _ = (document_id, count);
+        Box::pin(async { Ok(()) })
+    }
     fn persistence_connection(
         &self,
         scratch: super::pending::Reservation,
@@ -660,6 +671,14 @@ impl LogCatalog for PostgresCatalog {
         minimum: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
         Box::pin(self.reserve_pending_log_bytes(document_id, reservation_key, wanted, minimum))
+    }
+
+    fn stamp_file_count(
+        &self,
+        document_id: Uuid,
+        count: i32,
+    ) -> BoxFuture<'_, postgres::Result<()>> {
+        Box::pin(self.stamp_file_count(document_id, count))
     }
 
     fn release_log_reservation<'a>(
@@ -1581,8 +1600,9 @@ impl Sequencer {
             vector,
             expected,
             identity,
+            file_count,
         ) = {
-            let inner = self.inner.lock().await;
+            let mut inner = self.inner.lock().await;
             // §10: once fenced, this sequencer's view of the log can never
             // be made durable again by writing more to it. Fail fast rather
             // than round-tripping to PostgreSQL only to be told the same
@@ -1618,6 +1638,9 @@ impl Sequencer {
                     return Err(SequencerError::Busy);
                 }
             };
+            // Computed on its own line: it takes `inner` mutably, which the
+            // tuple below would otherwise have to share with its borrows.
+            let file_count = self.file_count_of(&mut inner);
             (
                 take,
                 inner.reservation_key,
@@ -1631,6 +1654,7 @@ impl Sequencer {
                 inner.vector_through(take),
                 inner.next_sequence - 1,
                 self.identity_of(&inner),
+                file_count,
             )
         };
 
@@ -1645,6 +1669,7 @@ impl Sequencer {
                     update_bytes: &encoded,
                     vector: &vector.encode(),
                     source_format: identity.as_deref(),
+                    file_count,
                 },
                 reservation_key,
                 reserved_bytes,
@@ -1785,6 +1810,25 @@ impl Sequencer {
         let opening = librepaper_document::document::session::opening_path(&cache.doc)?;
         let format = librepaper_document::document::render::document_format(&opening)?;
         Some(format.to_string())
+    }
+
+    /// The count the listing shows: the placed files of the projection.
+    /// Retained texts with refused extensions are not files, so they are not
+    /// counted. A cold document yields `None` and the row is left alone, the
+    /// same as `identity_of`. The projection is cached on `inner` so a flush
+    /// does not project twice.
+    fn file_count_of(&self, inner: &mut Inner) -> Option<i32> {
+        let cache = inner.cache.as_ref()?;
+        if inner.projection.is_none() {
+            inner.projection = Some(Arc::new(
+                librepaper_document::document::projection::project(
+                    &cache.doc,
+                    &librepaper_document::document::paths::rules(&self.config),
+                ),
+            ));
+        }
+        let projection = inner.projection.as_ref()?;
+        i32::try_from(projection.projection.files.len()).ok()
     }
 
     // -- section 6: join -------------------------------------------------
@@ -2100,6 +2144,7 @@ impl Sequencer {
             })?;
         let expected = inner.next_sequence - 1;
         let identity = self.identity_of(&inner);
+        let file_count = self.file_count_of(&mut inner);
 
         // The connection owns scratch through commit, rollback or cancellation.
         let mut connection = self.catalog.persistence_connection(scratch).await?;
@@ -2166,6 +2211,7 @@ impl Sequencer {
                         update_bytes: &encoded,
                         vector: &vector.encode(),
                         source_format: identity.as_deref(),
+                        file_count,
                     },
                     inner.reservation_key,
                     reserved_bytes,
@@ -2527,6 +2573,29 @@ impl Sequencer {
             return Err(SequencerError::Unreadable(why));
         }
         self.budget.note_built(build_started.elapsed());
+        // Backfills projects written before the column existed: the first
+        // time anything opens one, its count is stamped. Fire and forget; a
+        // failure is logged and never fails the build.
+        let count = i32::try_from(
+            librepaper_document::document::projection::project(
+                &doc,
+                &librepaper_document::document::paths::rules(&self.config),
+            )
+            .projection
+            .files
+            .len(),
+        )
+        .ok();
+        if let Some(count) = count {
+            let catalog = self.catalog.clone();
+            let document_id = self.document_id;
+            let slug = self.slug.clone();
+            tokio::spawn(async move {
+                if let Err(error) = catalog.stamp_file_count(document_id, count).await {
+                    tracing::warn!("could not stamp the file count of {slug}: {error}");
+                }
+            });
+        }
         Ok(Cache { doc, reservation })
     }
 

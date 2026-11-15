@@ -544,6 +544,7 @@ pub async fn simulate(
                 &mut tx,
                 document_id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: next_sequence,
                     update_bytes: &framed,
                     vector: &vector.encode(),

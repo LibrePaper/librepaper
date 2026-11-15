@@ -76,6 +76,7 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
             &mut tx,
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: b"x",
                 vector: b"vector",
@@ -103,6 +104,7 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
             &mut tx,
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: b"x",
                 vector: b"vector",
@@ -132,6 +134,7 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
             &mut tx,
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 1,
                 update_bytes: b"x",
                 vector: b"vector",
@@ -151,6 +154,7 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
             &mut tx,
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 1,
                 update_bytes: b"x",
                 vector: b"vector",
@@ -237,6 +241,7 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
             &mut tx,
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: b"x",
                 vector: b"vector",
@@ -319,6 +324,7 @@ async fn durable_usage_replaces_pending_reservation_on_flush() {
             &mut tx,
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: b"x",
                 vector: b"vector",

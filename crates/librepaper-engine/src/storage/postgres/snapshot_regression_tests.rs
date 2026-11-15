@@ -93,6 +93,7 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: sequence - 1,
                     update_bytes: &framed,
                     vector: &vector,

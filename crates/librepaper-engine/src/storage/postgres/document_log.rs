@@ -112,6 +112,10 @@ pub struct FlushRow<'a> {
     /// listing and the reader route do not have to project to find out what a
     /// document is written in.
     pub source_format: Option<&'a str>,
+    /// The number of files the project's directory holds, as the listing
+    /// shows them. Written with the same COALESCE as `source_format`: `None`
+    /// leaves the row alone.
+    pub file_count: Option<i32>,
 }
 
 impl PostgresCatalog {
@@ -354,6 +358,22 @@ impl PostgresCatalog {
         Ok(sequence)
     }
 
+    /// Writes the project's file count onto its document row. Called by the
+    /// sequencer after a build, outside any flush, so it takes no fence: the
+    /// count describes the head the sequencer just read, and a later flush
+    /// stamps the count it computed itself. `IS DISTINCT FROM` keeps an
+    /// unchanged count from writing a row.
+    pub async fn stamp_file_count(&self, document_id: Uuid, count: i32) -> Result<()> {
+        sqlx::query(
+            "UPDATE documents SET file_count=$2 WHERE id=$1 AND file_count IS DISTINCT FROM $2",
+        )
+        .bind(document_id)
+        .bind(count)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn flush_log_row_charged(
         &self,
         document_id: Uuid,
@@ -493,6 +513,7 @@ impl PostgresCatalog {
                  uncompacted_update_count=uncompacted_update_count+1,
                  uncompacted_update_bytes=uncompacted_update_bytes+octet_length($3::bytea),
                  source_format=COALESCE($4,source_format),
+                 file_count=COALESCE($5,file_count),
                  updated_at=now()
                WHERE id=$1 AND update_sequence=$2 AND status='active'
                RETURNING update_sequence",
@@ -501,6 +522,7 @@ impl PostgresCatalog {
         .bind(row.expected_update_sequence)
         .bind(row.update_bytes)
         .bind(row.source_format)
+        .bind(row.file_count)
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| Error::Conflict("document sequence changed".into()))?;
