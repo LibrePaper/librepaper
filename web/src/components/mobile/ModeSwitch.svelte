@@ -9,11 +9,15 @@
   // the editor elsewhere on the page, so this renders no panels of its own; the
   // ids below are what those panels are labelled and paired by. When
   // `collapsed`, the row slides out of view while nobody is using it, which
-  // gives the document back its room; it comes back the moment focus lands in
-  // it, so a keyboard or switch user is never left without it.
+  // gives the document back its room. A collapsed row is clipped to zero height
+  // but stays focusable, so focus brings it back the moment it lands in the row.
   let { mode = "document", collapsed = false, onchange = () => {} } = $props();
 </script>
 
+<!-- The slot is the grid that collapses, as the tool band's is; the clip is the
+     grid item that shrinks, and the row inside keeps its own height. -->
+<div class="mobile-mode-slot" class:collapsed>
+<div class="mobile-mode-clip">
 <div class="mobile-mode-switch" class:collapsed>
   <Tabs
     class="mobile-mode-tabs"
@@ -27,8 +31,27 @@
     </Tabs.List>
   </Tabs>
 </div>
+</div>
+</div>
 
 <style>
+  .mobile-mode-slot {
+    display: grid;
+    grid-template-rows: 1fr;
+    flex: 0 0 auto;
+  }
+
+  .mobile-mode-slot.collapsed:not(:focus-within) {
+    grid-template-rows: 0fr;
+  }
+
+  /* clip, not hidden: a clip is not a scroll container, so focusing a clipped
+     tab cannot scroll the clip and leave the row offset once it expands. */
+  .mobile-mode-clip {
+    min-height: 0;
+    overflow: clip;
+  }
+
   .mobile-mode-switch {
     position: relative;
     z-index: 1;
@@ -40,14 +63,9 @@
     background: var(--color-shell);
   }
 
-  .mobile-mode-switch.collapsed:not(:focus-within) {
-    margin-top: calc(-2.75rem - 1px);
-    visibility: hidden;
-  }
-
   @media (prefers-reduced-motion: no-preference) {
-    .mobile-mode-switch {
-      transition: margin-top 180ms ease, visibility 180ms ease;
+    .mobile-mode-slot {
+      transition: grid-template-rows 180ms ease;
     }
   }
 

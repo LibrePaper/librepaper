@@ -372,6 +372,15 @@ try {
   await wait(260);
   await until('tab bar steps aside', () => b.evaluate(`document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
   assert.equal(await b.evaluate(`document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), true, 'the mode switch steps aside too');
+  // A collapsed row is clipped, not hidden: focus lands in it and brings it back, and blurring lets it step aside again.
+  await b.evaluate('document.querySelector(".mobile-mode-switch [data-mode=source]").focus()');
+  await until('focus brings the mode switch back', () => b.evaluate('Boolean(document.activeElement.closest(".mobile-mode-switch")) && document.querySelector(".mobile-mode-slot").getBoundingClientRect().height > 40'), 3000);
+  await b.evaluate('document.activeElement.blur()');
+  if (await b.evaluate('!!document.querySelector("#reader-source .tool-band-slot, .tool-band-slot")')) {
+    await b.evaluate('document.querySelector(".tool-band-slot .band-items button:not(:disabled)").focus()');
+    await until('focus brings the tool band back', () => b.evaluate('Boolean(document.activeElement.closest(".tool-band-slot")) && document.querySelector(".tool-band-slot").getBoundingClientRect().height > 20'), 3000);
+    await b.evaluate('document.activeElement.blur()');
+  }
   assert.ok(await b.evaluate(`document.querySelector("main.reader").getBoundingClientRect().bottom > innerHeight - 20`), 'the workspace grows into the space the bar leaves');
   for (const top of [400, 200]) {
     await b.evaluate(`document.querySelector(".cm-scroller").scrollTop = ${top}`);

@@ -120,7 +120,9 @@
 
 <!-- The band's height is its content's, not a constant, so the collapse runs on
      grid rows (0fr to 1fr) rather than a negative margin. The clip is the grid
-     item that shrinks; the band inside it keeps its own height. -->
+     item that shrinks; the band inside it keeps its own height. A collapsed
+     band is clipped to zero height but stays focusable, so focus brings it
+     back. -->
 <div class="tool-band-slot" class:collapsed>
 <div class="tool-band-clip">
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
@@ -177,16 +179,17 @@
   }
   .tool-band-slot.collapsed:not(:focus-within) {
     grid-template-rows: 0fr;
-    visibility: hidden;
   }
+  /* clip, not hidden: a clip is not a scroll container, so focusing a clipped
+     button cannot scroll the clip and leave the band offset once it expands. */
   .tool-band-clip {
     min-height: 0;
-    overflow: hidden;
+    overflow: clip;
   }
 
   @media (prefers-reduced-motion: no-preference) {
     .tool-band-slot {
-      transition: grid-template-rows 180ms ease, visibility 180ms ease;
+      transition: grid-template-rows 180ms ease;
     }
   }
 
