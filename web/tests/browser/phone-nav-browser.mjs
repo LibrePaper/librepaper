@@ -540,9 +540,24 @@ try {
   await until('phone document face after the reload', async () => (await has('.cm-editor')) && (await modeOf()) === 'mobile-document', 10000);
   await toMode('source');
   await until('scroll kept through the document face', async () => (await firstLine()) === before, 5000);
+  // A ?file= link stays in the address bar, so a reload of it is still a
+  // reload and puts the place back; a new link to another file wins.
+  await b.navigate(url + '?file=a-main.html');
+  await until('the linked file opens', async () => (await has('.cm-editor')) && (await source()).includes('line 0 source content'), 10000);
+  await toMode('source');
+  await b.evaluate(`document.querySelector('.cm-scroller').scrollTop = 1800`);
+  await flush(); await wait(100);
+  const linked = await firstLine();
+  assert.match(linked, /^line [1-9]\d+ /, 'the linked file scrolled away from the top: ' + linked);
+  await b.navigate(url + '?file=a-main.html');
+  await until('phone editor after reloading the link', async () => (await has('.cm-editor')) && (await modeOf()) === 'mobile-source', 10000);
+  await until('a reload of a link puts the place back', async () => (await firstLine()) === linked, 5000);
+  await b.navigate(url + '?file=notes.md');
+  await until('a new link to another file wins over the place', async () => (await source()).includes('A paragraph.'), 10000);
 
   // n. Opening another file and coming back keeps the scroll.
   await resize(1280, 900);
+  await openInExplorer('a-main.html', 'line 0 source content');
   await b.evaluate(`document.querySelector('.cm-scroller').scrollTop = 2400`);
   await flush(); await wait(100);
   const kept = await firstLine();

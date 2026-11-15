@@ -20,6 +20,7 @@ const place = {
   layout: "split",
   preferredPane: "source",
   mobileView: "source",
+  link: "chapters/intro.typ",
 };
 
 // A saved place comes back as it was written.
@@ -75,6 +76,7 @@ const place = {
     layout: "",
     preferredPane: "",
     mobileView: "",
+    link: "",
   });
   storage.setItem("librepaper-place:p", JSON.stringify({ openFile: "main.tex", caret: 12.9, top: -1, offset: -30 }));
   assert.equal(readPlace("p", storage).caret, 12);

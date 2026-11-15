@@ -1897,6 +1897,7 @@
       caret: here.caret,
       top: here.top,
       offset: here.offset,
+      link: ARRIVED_FILE,
       layout: arrangement.state.layout,
       preferredPane: arrangement.state.preferredPane,
       mobileView: arrangement.state.mobileView,
@@ -1907,9 +1908,11 @@
     if (placeRestored || !editing || !editor || !ws.files.length) return;
     untrack(() => {
       placeRestored = true;
-      // A link that names a file asks to see that file, so it beats the place.
-      if (ARRIVED_FILE) return;
       const saved = readPlace(SLUG);
+      // A link that names a file asks to see that file, so it beats the place.
+      // A reload keeps the link in the address bar, so a place kept under the
+      // same link is that reload's and is put back.
+      if (ARRIVED_FILE && saved?.link !== ARRIVED_FILE) return;
       if (!saved || !ws.files.some((file) => file.id === saved.openFile && file.kind === "text")) return;
       if (saved.layout) arrangement.state.layout = saved.layout;
       if (saved.preferredPane) arrangement.state.preferredPane = saved.preferredPane;

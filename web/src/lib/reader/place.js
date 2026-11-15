@@ -64,5 +64,6 @@ export function readPlace(slug, storage = defaultStorage()) {
     layout: text(value.layout),
     preferredPane: text(value.preferredPane),
     mobileView: text(value.mobileView),
+    link: text(value.link),
   };
 }
