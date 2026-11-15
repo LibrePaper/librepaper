@@ -504,7 +504,9 @@ async fn the_owner_puts_and_gets_inline_values() {
     unsafe_path["inlines"] = json!([
         {"fingerprint": fingerprint('c'), "html": "1", "path": "/etc/passwd"},
     ]);
-    let (status, _) = served.call("PUT", &owner, Some(unsafe_path.to_string())).await;
+    let (status, _) = served
+        .call("PUT", &owner, Some(unsafe_path.to_string()))
+        .await;
     assert_eq!(status, 400, "an unsafe inline path is refused");
 
     let mut calepin = calepin_record();
@@ -516,5 +518,8 @@ async fn the_owner_puts_and_gets_inline_values() {
     assert_eq!(status, 200);
     let (status, got) = served.call("GET", &owner, None).await;
     assert_eq!(status, 200, "{got}");
-    assert!(got.get("inlines").is_none(), "an absent list is not stored: {got}");
+    assert!(
+        got.get("inlines").is_none(),
+        "an absent list is not stored: {got}"
+    );
 }
