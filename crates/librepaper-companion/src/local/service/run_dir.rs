@@ -167,6 +167,49 @@ async fn open(inner: &Inner, origin: Option<&str>, project: &str) -> Result<Valu
     Ok(status_of(inner, origin, &project))
 }
 
+#[derive(serde::Deserialize)]
+struct HasBody {
+    project: String,
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
+/// `POST run-directory/has`: which of `paths` are figures in the project's
+/// Run directory. No bytes are returned.
+pub(super) async fn handle_has(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let body = match read_json_body::<HasBody>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    answer(has(inner, origin, body))
+}
+
+fn has(inner: &Inner, origin: Option<&str>, body: HasBody) -> Result<Value, Failure> {
+    let project = project_of(&body.project)?;
+    let status = inner
+        .bindings
+        .run_dir_status(origin.unwrap_or_default(), &project);
+    let present: Vec<String> = match status.path {
+        Some(folder) if status.exists => {
+            let folder = std::fs::canonicalize(&folder).unwrap_or(folder);
+            body.paths
+                .into_iter()
+                .filter(|path| crate::local::render::run_figure_present(&folder, path))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    Ok(json!({ "present": present }))
+}
+
 /// Percent-encodes `path` into a `file://` URI.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn file_uri(path: &Path) -> String {
@@ -353,6 +396,39 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn has_reports_only_figures_in_the_run_directory() {
+        let (inner, _state, _cache) = fixture().await;
+        let home = tempfile::tempdir().unwrap();
+        let folder = home.path().join("run");
+        place(&inner, Some(ORIGIN), "paper", &folder).unwrap();
+        std::fs::write(folder.join("a.png"), b"\x89PNG\r\n\x1a\n..").unwrap();
+        std::fs::write(folder.join("t.txt"), b"text").unwrap();
+        let ask = |project: &str| {
+            post(
+                "/run-directory/has",
+                json!({"project": project, "paths": ["a.png", "t.txt", "../a.png", "no.png"]}),
+            )
+        };
+        let response = handle_has(&inner, &bearer(&inner), Some(ORIGIN), ask("paper")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await, json!({"present": ["a.png"]}));
+        // A project with no Run directory has nothing.
+        let response = handle_has(&inner, &bearer(&inner), Some(ORIGIN), ask("other")).await;
+        assert_eq!(body_of(response).await, json!({"present": []}));
+        // Another origin is not told about this folder.
+        let response = handle_has(
+            &inner,
+            &bearer(&inner),
+            Some("https://other.example"),
+            ask("paper"),
+        )
+        .await;
+        assert_eq!(body_of(response).await, json!({"present": []}));
+        let response = handle_has(&inner, &bearer(&inner), None, ask("paper")).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

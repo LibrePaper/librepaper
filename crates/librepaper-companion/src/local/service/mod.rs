@@ -734,6 +734,9 @@ async fn dispatch(
         ["run-directory", "default"] if *method == Method::POST => {
             run_dir::handle_default(inner, headers, origin, request).await
         }
+        ["run-directory", "has"] if *method == Method::POST => {
+            run_dir::handle_has(inner, headers, origin, request).await
+        }
         ["run-directory", "open"] if *method == Method::POST => {
             run_dir::handle_open(inner, headers, origin, request).await
         }
@@ -1950,6 +1953,7 @@ mod supersession_tests {
                 entrypoint: "main.typ".into(),
                 binding_id: binding_id.into(),
                 manifest: Vec::new(),
+                wanted: Vec::new(),
                 options: Default::default(),
             },
             origin: origin.into(),

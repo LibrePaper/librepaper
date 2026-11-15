@@ -16,13 +16,11 @@ use serde_json::json;
 
 const DIR: &str = ".calepin";
 const MAX_DEPTH: usize = 8;
-const MAX_FILES: usize = 2000;
-const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const SKIPPED: [&str; 3] = ["fingerprint.xxh3", "expansion.json", "config.toml"];
 
 /// The `.calepin/` folder beside `entrypoint` as one JSON document, or `None`
 /// when there is no run to send: no folder, a folder that is a symlink or not
-/// a directory, a limit exceeded, an I/O error, or no `results.json`.
+/// a directory, a folder too deep, an I/O error, or no `results.json`.
 pub(super) fn results(root: &Path, entrypoint: &str) -> Option<Vec<u8>> {
     let entry_dir = Path::new(entrypoint).parent().unwrap_or(Path::new(""));
     let dir = root.join(entry_dir).join(DIR);
@@ -57,11 +55,11 @@ pub(super) fn results(root: &Path, entrypoint: &str) -> Option<Vec<u8>> {
 #[derive(Default)]
 struct Walk {
     files: BTreeMap<String, Vec<u8>>,
-    bytes: u64,
 }
 
 /// Adds the files under `dir`, whose path relative to `.calepin` is `rel`.
-/// `None` when a limit is exceeded or any entry cannot be read.
+/// `None` when the folder is too deep or any entry cannot be read. There is no
+/// size or count cap: the transport limit bounds the whole results file.
 fn collect(dir: &Path, rel: &str, depth: usize, walk: &mut Walk) -> Option<()> {
     if depth > MAX_DEPTH {
         return None;
@@ -80,14 +78,7 @@ fn collect(dir: &Path, rel: &str, depth: usize, walk: &mut Walk) -> Option<()> {
         if kind.is_dir() {
             collect(&path, &relative, depth + 1, walk)?;
         } else if kind.is_file() && !SKIPPED.contains(&name.as_str()) {
-            if walk.files.len() >= MAX_FILES || walk.bytes + metadata.len() > MAX_BYTES {
-                return None;
-            }
             let bytes = std::fs::read(&path).ok()?;
-            walk.bytes += bytes.len() as u64;
-            if walk.bytes > MAX_BYTES {
-                return None;
-            }
             walk.files.insert(format!("{DIR}/{relative}"), bytes);
         }
         // Symlinks and other special files are skipped.

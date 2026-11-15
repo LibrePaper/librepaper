@@ -115,6 +115,11 @@ pub struct JobRequest {
     /// Always `hosted`, the workspace the service owns for the document.
     pub binding_id: String,
     pub manifest: Vec<ManifestEntry>,
+    /// Project-relative paths of figures the document refers to that are not
+    /// project files, to read from the Run directory after a Quarto or Typst
+    /// run. Older pages send none.
+    #[serde(default)]
+    pub wanted: Vec<String>,
     #[serde(default)]
     pub options: JobOptions,
 }
