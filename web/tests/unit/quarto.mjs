@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { QUARTO_SIDECAR, cellFingerprint, contextId, contextFingerprint, mapDraftDiagnostics, parseQuarto, quartoSidecar, translateQuartoDiagnostics } from "../../src/lib/engines/quarto.js";
+import { QUARTO_SIDECAR, cellFingerprint, contextId, contextFingerprint, expandedInlines, inlineFingerprint, mapDraftDiagnostics, parseQuarto, quartoSidecar, sha256, translateQuartoDiagnostics } from "../../src/lib/engines/quarto.js";
 import { formatOf, outputKind } from "../../src/lib/renderers.js";
 
 const source = [
@@ -141,4 +141,50 @@ const mapped = mapDraftDiagnostics([
 ], [1, null, 7], "main.qmd");
 assert.deepEqual([mapped[0].file, mapped[0].line, mapped[0].generated], ["main.qmd", 7, false]);
 assert.deepEqual([mapped[1].line, mapped[1].generated], [0, true]);
+
+// Inline values: one walk with the cells, the record fields, the fingerprint and the sidecar.
+{
+  const inlineMain = "Start `r a` and `{python} b`.\n\n{{< include chap/a.qmd >}}\n\nEnd `r c`\n";
+  const inlineFiles = { "chap/a.qmd": "A `r d`\n```text\n`r skip`\n```\n`r e`\n" };
+  const records = expandedInlines(inlineMain, { path: "main.qmd", files: inlineFiles });
+  // Document order, the include walked where it sits; the fenced `r skip` is not a value.
+  assert.deepEqual(records.map((record) => [record.file, record.main, record.line, record.expression, record.language]), [
+    ["main.qmd", true, 1, "r a", "r"],
+    ["main.qmd", true, 1, "{python} b", "python"],
+    ["chap/a.qmd", false, 1, "r d", "r"],
+    ["chap/a.qmd", false, 5, "r e", "r"],
+    ["main.qmd", true, 5, "r c", "r"],
+  ]);
+  // Offsets of the span within its line, and the byte column after its backtick.
+  assert.deepEqual([records[0].start, records[0].end, records[0].column], [6, 11, 8]);
+  assert.equal(await inlineFingerprint(records[0]), await sha256("r\nr a"));
+  assert.equal(await inlineFingerprint(records[1]), await sha256("python\n{python} b"));
+  // Front matter is not prose.
+  assert.equal(expandedInlines("---\ntitle: \"`r x`\"\n---\n\nNo values.\n", { path: "main.qmd" }).length, 0);
+
+  const sidecarSource = "Start `r a` and `r b`\n\n{{< include part.qmd >}}\n";
+  const sidecarFiles = { "part.qmd": "Part `r c`\n" };
+  const [fa, fb, fc] = await Promise.all(expandedInlines(sidecarSource, { path: "paper.qmd", files: sidecarFiles }).map((record) => inlineFingerprint(record)));
+  // A saved entry with html "" is never placed; an unmatched fingerprint is dropped.
+  const withInlines = await quartoSidecar(sidecarSource, {
+    path: "paper.qmd",
+    strings,
+    files: sidecarFiles,
+    results: { inlines: [{ fingerprint: fa, html: "1" }, { fingerprint: fb, html: "" }, { fingerprint: fc, html: "3" }, { fingerprint: "0".repeat(64), html: "9" }] },
+  });
+  assert.deepEqual(withInlines.inlines, [
+    { line: 1, column: 8, html: "1", stale: false },
+    { line: 1, column: 7, path: "part.qmd", html: "3", stale: false },
+  ]);
+  assert.deepEqual(withInlines.outputs, []);
+
+  // The same expression twice pairs with the saved values in order.
+  const twice = await quartoSidecar("`r a`\n\n`r a`\n", { path: "paper.qmd", strings, results: { inlines: [{ fingerprint: await sha256("r\nr a"), html: "x" }, { fingerprint: await sha256("r\nr a"), html: "y" }] } });
+  assert.deepEqual(twice.inlines.map((entry) => [entry.line, entry.html]), [[1, "x"], [3, "y"]]);
+
+  // Without inline values there is no inlines key, saved or not.
+  const plainSidecar = await quartoSidecar("Plain `not code`.\n", { path: "paper.qmd", strings, results: { inlines: [{ fingerprint: fa, html: "1" }] } });
+  assert.equal("inlines" in plainSidecar, false);
+}
+
 console.log("quarto: parser, sidecar, diagnostics and identity scenarios passed");

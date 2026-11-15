@@ -10,7 +10,7 @@
 // instead of using DOMParser. Quarto's HTML is well formed apart from void
 // elements, and its data: URIs contain no angle brackets.
 
-import { cellFingerprint, expandedCells } from "./engines/quarto.js";
+import { cellFingerprint, expandedCells, expandedInlines, inlineFingerprint } from "./engines/quarto.js";
 
 const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
 
@@ -185,7 +185,36 @@ const CLASSES_LINE = /^\s*#\|\s*classes\s*:/;
 // The tree passed in is left as it was.
 export function tagCells(tree) {
   const texts = { ...(tree.texts ?? {}) };
-  const cells = expandedCells(texts[tree.main] ?? "", { path: tree.main, files: tree.texts ?? {} });
+  const files = tree.texts ?? {};
+  const cells = expandedCells(texts[tree.main] ?? "", { path: tree.main, files });
+  const inlines = expandedInlines(texts[tree.main] ?? "", { path: tree.main, files });
+  // Inline values first. Each wrap stays inside its line, so the line numbers
+  // the cell marks below count from still hold. Within a line the wraps run
+  // right to left, so an earlier span's offsets are not moved by a later one.
+  // Two records at one position (a file included twice) get one wrap: the
+  // second has no tag of its own and is left without output.
+  const inlineByFile = new Map();
+  inlines.forEach((record, index) => {
+    if (!inlineByFile.has(record.file)) inlineByFile.set(record.file, []);
+    inlineByFile.get(record.file).push({ index, line: record.line, start: record.start, end: record.end });
+  });
+  for (const [file, marks] of inlineByFile) {
+    const lines = String(texts[file] ?? "").split("\n");
+    const seen = new Set();
+    const ordered = marks
+      .filter((mark) => {
+        const key = `${mark.line}:${mark.start}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => a.line - b.line || b.start - a.start);
+    for (const { index, line, start, end } of ordered) {
+      const text = lines[line - 1];
+      lines[line - 1] = `${text.slice(0, start)}[${text.slice(start, end)}]{.lp-inline-${index}}${text.slice(end)}`;
+    }
+    texts[file] = lines.join("\n");
+  }
   const byFile = new Map();
   cells.forEach((cell, index) => {
     if (!byFile.has(cell.file)) byFile.set(cell.file, []);
@@ -252,10 +281,61 @@ function taggedOutput(tokens) {
   return cellHtml(untagged(tokens));
 }
 
+const INLINE_TAG = /^lp-inline-(\d+)$/;
+
+// The content of each `span.lp-inline-N` in the page, keyed by N. The span may
+// hold markup, so the content runs to its matching close tag. The first span
+// for an N wins.
+function inlineSpans(tokens) {
+  const spans = new Map();
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token.kind !== "open" || token.name !== "span" || token.selfClosing) continue;
+    let tag = null;
+    for (const name of classes(token)) {
+      const match = INLINE_TAG.exec(name);
+      if (match) { tag = Number(match[1]); break; }
+    }
+    if (tag === null) continue;
+    let depth = 1;
+    let j = i + 1;
+    for (; j < tokens.length && depth > 0; j += 1) {
+      const next = tokens[j];
+      if (next.kind === "open" && next.name === "span" && !next.selfClosing) depth += 1;
+      else if (next.kind === "close" && next.name === "span") depth -= 1;
+    }
+    // An unclosed span has no value; its place is left blank.
+    if (depth > 0 || spans.has(tag)) continue;
+    spans.set(tag, cellHtml(tokens.slice(i + 1, j - 1)));
+  }
+  return spans;
+}
+
+// One entry per inline value of the document, in document order. Null when the
+// document has none, or when the page carries no tagged span at all (an
+// untagged page): then the run's own page is the only honest output.
+async function inlineEntries(content, qmdSource, { path, files }) {
+  const records = expandedInlines(qmdSource, { path, files });
+  if (!records.length) return null;
+  const spans = inlineSpans(content);
+  if (!spans.size) return null;
+  const entries = [];
+  for (let i = 0; i < records.length; i += 1) {
+    entries.push({
+      fingerprint: await inlineFingerprint(records[i]),
+      html: spans.get(i) ?? "",
+      ...(records[i].main ? {} : { path: records[i].file }),
+    });
+  }
+  return entries;
+}
+
 export async function splitResults(html, qmdSource, { path = "main.qmd", files = null } = {}) {
   let found;
+  let content;
   try {
-    found = findCells(contentTokens(tokenize(String(html ?? ""))));
+    content = contentTokens(tokenize(String(html ?? "")));
+    found = findCells(content);
   } catch (error) {
     if (error instanceof ParseError) return { ok: false, reason: "parse" };
     throw error;
@@ -286,7 +366,14 @@ export async function splitResults(html, qmdSource, { path = "main.qmd", files =
       ...(expected[i].main ? {} : { path: expected[i].file }),
     });
   }
-  return { ok: true, record: { version: 1, path, cells } };
+  // Inline values never fail the split: without them the record is the same as before.
+  let inlines = null;
+  try {
+    inlines = await inlineEntries(content, qmdSource, { path, files });
+  } catch {
+    inlines = null;
+  }
+  return { ok: true, record: { version: 1, path, cells, ...(inlines ? { inlines } : {}) } };
 }
 
 /// How many of the document's executed cells have no saved output with the

@@ -156,3 +156,78 @@ assert.deepEqual(await splitResults("<main id=\"quarto-document-content\"><div c
   const untaggedOne = await splitResults(`<main id="quarto-document-content"><div class="cell"><p>x</p></div></main>`, "```{r}\n1\n```\n");
   assert.equal(untaggedOne.record.cells[0].html, '<div class="cell"><p>x</p></div>');
 }
+
+// Inline values: tagCells wraps them in the run copy, splitResults pairs them back.
+{
+  const { expandedInlines, inlineFingerprint } = await import("../../src/lib/engines/quarto.js");
+  const mainText = [
+    "---", "title: \"`r not_here`\"", "---", "",
+    "Start `r a` and `{r} b`.", "",
+    "| x | y |", "|---|---|", "| `r c` | z |", "",
+    "```text", "`r skipped`", "```", "",
+    "```{r}", "#| label: m1", "1", "```", "",
+    "Tail `r d` done", "",
+  ].join("\n");
+  const tagged = tagCells({ main: "main.qmd", texts: { "main.qmd": mainText } });
+  // Front matter and the text fence are left alone; the cell's tag goes in
+  // after its fence line, and the inline edits do not move it.
+  assert.equal(tagged.texts["main.qmd"], [
+    "---", "title: \"`r not_here`\"", "---", "",
+    "Start [`r a`]{.lp-inline-0} and [`{r} b`]{.lp-inline-1}.", "",
+    "| x | y |", "|---|---|", "| [`r c`]{.lp-inline-2} | z |", "",
+    "```text", "`r skipped`", "```", "",
+    "```{r}", "#| classes: lp-cell-0", "#| label: m1", "1", "```", "",
+    "Tail [`r d`]{.lp-inline-3} done", "",
+  ].join("\n"));
+
+  // A document without inline values is tagged exactly as before.
+  assert.equal(tagCells({ main: "x.qmd", texts: { "x.qmd": "```{r}\n1\n```\n" } }).texts["x.qmd"], "```{r}\n#| classes: lp-cell-0\n1\n```\n");
+
+  const page = [
+    '<main id="quarto-document-content">',
+    '<p>Start <span class="lp-inline-0">3</span> and <span class="lp-inline-1"><em onclick="x()">4</em>\n</span>.</p>',
+    '<table><tr><td><span class="lp-inline-2">z</span></td></tr></table>',
+    '<div class="cell lp-cell-0"><div class="cell-output"><pre>1</pre></div></div>',
+    "<p>Tail 9 done</p>",
+    "</main>",
+  ].join("\n");
+  const split = await splitResults(page, mainText, { path: "main.qmd" });
+  assert.equal(split.ok, true);
+  assert.equal(split.record.cells.length, 1);
+  const fingerprints = await Promise.all(expandedInlines(mainText, { path: "main.qmd" }).map((record) => inlineFingerprint(record)));
+  assert.equal(fingerprints.length, 4);
+  // Markup inside a span is kept, its handlers and newlines are not; a missing tag gives "".
+  assert.deepEqual(split.record.inlines, [
+    { fingerprint: fingerprints[0], html: "3" },
+    { fingerprint: fingerprints[1], html: "<em>4</em> " },
+    { fingerprint: fingerprints[2], html: "z" },
+    { fingerprint: fingerprints[3], html: "" },
+  ]);
+
+  // A page with no tagged span, or a document with no inline values, has no inlines key.
+  const untagged = await splitResults('<main id="quarto-document-content"><div class="cell"><p>1</p></div></main>', mainText, { path: "main.qmd" });
+  assert.equal(untagged.ok, true);
+  assert.equal("inlines" in untagged.record, false);
+  const noInline = await splitResults(page, "```{r}\n#| label: m1\n1\n```\n", { path: "main.qmd" });
+  assert.equal(noInline.ok, true);
+  assert.equal("inlines" in noInline.record, false);
+
+  // An unclosed span gives no value and does not fail the split.
+  const broken = await splitResults('<main id="quarto-document-content"><p>Start <span class="lp-inline-0">3</p><div class="cell lp-cell-0"><div class="cell-output"><pre>1</pre></div></div></main>', "Start `r a`\n\n```{r}\n1\n```\n", { path: "main.qmd" });
+  assert.equal(broken.ok, true);
+  assert.equal("inlines" in broken.record, false);
+
+  // Inline values of an included file are tagged in that file and carry its path.
+  const incMain = "Start `r a`\n\n{{< include chap/a.qmd >}}\n\n```{r}\n1\n```\n";
+  const incFiles = { "chap/a.qmd": "In `r d`\n" };
+  const incTagged = tagCells({ main: "main.qmd", texts: { "main.qmd": incMain, ...incFiles } });
+  assert.equal(incTagged.texts["chap/a.qmd"], "In [`r d`]{.lp-inline-1}\n");
+  assert.equal(incTagged.texts["main.qmd"], "Start [`r a`]{.lp-inline-0}\n\n{{< include chap/a.qmd >}}\n\n```{r}\n#| classes: lp-cell-0\n1\n```\n");
+  const incPage = '<main id="quarto-document-content"><p>Start <span class="lp-inline-0">1</span></p><p>In <span class="lp-inline-1">2</span></p><div class="cell lp-cell-0"><div class="cell-output"><pre>1</pre></div></div></main>';
+  const incSplit = await splitResults(incPage, incMain, { path: "main.qmd", files: incFiles });
+  const [fa, fd] = await Promise.all(expandedInlines(incMain, { path: "main.qmd", files: incFiles }).map((record) => inlineFingerprint(record)));
+  assert.deepEqual(incSplit.record.inlines, [
+    { fingerprint: fa, html: "1" },
+    { fingerprint: fd, html: "2", path: "chap/a.qmd" },
+  ]);
+}

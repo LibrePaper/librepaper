@@ -23,8 +23,8 @@ import { m } from "../paraglide/messages.js";
 // context that declared some of those names and not others. They are
 // arguments now, and the guards are gone with them.
 
-/** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, quartoResults?: { cells: unknown[], note?: string } | null, calepinResults?: { files: any[] } | null }} PreviewTree */
-/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectory?: string, runResults?: { path?: string, updatedAt?: string, note?: string, cells?: unknown[], files?: any[] } | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
+/** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, quartoResults?: { cells: unknown[], inlines?: unknown[], note?: string } | null, calepinResults?: { files: any[] } | null }} PreviewTree */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectory?: string, runResults?: { path?: string, updatedAt?: string, note?: string, cells?: unknown[], inlines?: unknown[], files?: any[] } | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
 /** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
@@ -158,7 +158,7 @@ export function createPreviewRenderer({
     // every render so a stale one never lingers. Only the file the results
     // were made from gets them.
     const saved = start.runResults && start.runResults.path === source.main ? start.runResults : null;
-    source.quartoResults = format === "quarto" && saved?.cells ? { cells: saved.cells, note: saved.note } : null;
+    source.quartoResults = format === "quarto" && saved?.cells ? { cells: saved.cells, inlines: saved.inlines ?? null, note: saved.note } : null;
     source.calepinResults = format === "typst" && saved?.files ? { files: saved.files } : null;
     debug("preview: tree", source.main, format, Object.keys(source.texts || {}).length);
     // The collaboration session exists before its first document state arrives.
