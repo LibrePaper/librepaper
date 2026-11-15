@@ -23,7 +23,7 @@ Publish a DMARC record. Start with `p=quarantine` and a `rua` address, read the 
 _dmarc.paper.example TXT "v=DMARC1; p=quarantine; rua=mailto:admin@paper.example"
 ```
 
-If your DNS host supports CAA records, limit who may issue certificates. Caddy uses Let's Encrypt and falls back to ZeroSSL, which issues through Sectigo. Publish these records:
+If your DNS host supports CAA records, limit who may issue certificates. Caddy gets certificates from Let's Encrypt or ZeroSSL, and ZeroSSL issues through Sectigo. The kit does not choose between them. Publish these records:
 
 ```
 paper.example. CAA 0 issue "letsencrypt.org"
@@ -52,7 +52,7 @@ Repeat this on every new or rebuilt server.
 
 ### Network firewall
 
-Docker publishes ports past ufw and other host firewalls, so filter at your provider's network firewall instead.
+Docker publishes container ports past ufw and other host firewalls, so filter at your provider's network firewall instead.
 
 | Priority | Action | Protocol | Source port | Destination port | TCP flags |
 |---|---|---|---|---|---|
@@ -66,7 +66,7 @@ Docker publishes ports past ufw and other host firewalls, so filter at your prov
 | 7 | Allow | UDP | | 41641 | |
 | last | Deny | IPv4 | | | |
 
-A stateless firewall does not track connections. Rule 1 admits replies to connections that the server opens, such as backups, image pulls and certificate renewals. It matches only packets with the ACK or RST flag, so it never admits a new connection. Rules 5 and 6 match the source port, which admits DNS and NTP replies. Rule 7 is for Tailscale, so leave it out if you do not use Tailscale. Drop rule 2 once SSH runs over Tailscale, as described in [Private access with Tailscale](#private-access-with-tailscale). Many provider firewalls filter IPv4 only, so check what listens on the server's IPv6 address.
+A stateless firewall does not track connections. Rule 1 admits replies to connections the server opens, such as backups, image pulls and certificate renewals. It matches only packets with the ACK or RST flag, so it never admits a new connection. Rules 5 and 6 match the source port, which admits DNS and NTP replies. Rule 7 is for Tailscale, so leave it out if you do not use Tailscale. Drop rule 2 once SSH runs over Tailscale, as described in [Private access with Tailscale](#private-access-with-tailscale). Many provider firewalls filter IPv4 only, so check what listens on the server's IPv6 address.
 
 Test with a listener, not a port scan. A closed port can look the same with and without the firewall.
 
@@ -83,8 +83,8 @@ A change can take several minutes to apply. Run other apps on the same server wi
 
 Only you need SSH and the admin console, so they do not have to be open to the whole internet.
 
-- **With a fixed IP address**, you can skip Tailscale. Allow SSH only from that address in the provider firewall. Limit the admin console to it with a `remote_ip` matcher like the one in step 5 below.
-- **Without one**, an allow list breaks whenever your address changes. Home connections get new addresses from time to time, and a laptop changes address with every network it joins.
+- **With a fixed IP address**, skip Tailscale. Allow SSH only from that address in the provider firewall, and limit the admin console to it with a `remote_ip` matcher like the one in step 5 below.
+- **Without one**, an allow list breaks whenever your address changes. Home connections change address from time to time, and a laptop changes address with every network it joins.
 
 [Tailscale](https://tailscale.com) solves this. It is a hosted service that joins your devices into a private network, called a tailnet, over encrypted WireGuard connections. Each device keeps the same private address in `100.64.0.0/10` on any network. The server joins as one more device. SSH and the admin console then answer only tailnet addresses, while the app and documents stay public.
 
@@ -145,7 +145,7 @@ The setup takes seven steps.
 6. On your own machines, point the admin name at the server's tailnet address. Add a line such as `100.64.0.10 admin.paper.example` to `/etc/hosts`. A browser that uses DNS over HTTPS may ignore `/etc/hosts` and get a 403 from the public address. In Firefox, add the name to `ExcludedDomains` in the `DNSOverHTTPS` policy.
 7. Once SSH works over the tailnet, remove the SSH rule from the provider firewall.
 
-If Tailscale fails on the server, you can still get in through the public address. Practice this once before you need it.
+If Tailscale fails on the server, you can still get in through the public address. Practice this once before you need it:
 
 1. Turn off the provider firewall.
 2. Wait a few minutes until the change applies.
