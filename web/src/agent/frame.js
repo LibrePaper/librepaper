@@ -753,14 +753,16 @@ import { morphChildren } from "./morph.js";
       // first, so the morph compares typeset with typeset and an unchanged
       // formula keeps its nodes. Marks go first: they split text nodes, and
       // the morph compares the page with the unmarked source.
-      const katexReady = !!window.katex;
+      // KaTeX puts itself on the window when its script loads.
+      const katex = /** @type {any} */ (window).katex;
+      const katexReady = !!katex;
       // The one case that replaces rather than morphs: math waiting for a
       // KaTeX that is not loaded yet. A page without math morphs always.
       const awaitingKatex = !katexReady
         && !!parsed.body.querySelector("span[data-math-style], span.math:not([data-math-style])");
       if (katexReady) {
         const typesetStart = perfStart();
-        typesetDetached(window.katex, parsed.body, parsed, katexCache);
+        typesetDetached(katex, parsed.body, parsed, katexCache);
         perfEnd("lp:preview:typeset", typesetStart);
       }
       quietly(() => {
