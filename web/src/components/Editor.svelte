@@ -966,8 +966,8 @@
   // cache states under their owning LoroDoc as well as the file id.
   // The scroll position is not part of an EditorState, so setState drops it.
   // It is kept in its own small cache, `tops`, as the place from scrollPlace()
-  // (the start of the block on screen and the pixels scrolled into it), and put
-  // back after each swap.
+  // (the position on the top screen row and the pixels scrolled into it), and
+  // put back after each swap.
   let states = new WeakMap();
   let tops = new WeakMap();
   let activeDocument = null;
@@ -1212,41 +1212,28 @@
     view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "nearest", yMargin: 24 }) });
   }
 
-  // Where the scroller is: the offset of the block at the top of the view and
-  // how many pixels of that block lie above the view. A wrapped line can be
-  // several screens tall, so the block alone would restore to its start.
-  // Measured the way CodeMirror's own scrollSnapshot() measures, in scrollTop
-  // coordinates, so that putting it back is the exact inverse.
+  // Where the scroller is: the position on the screen row at the top of the
+  // view, and how many pixels of that row lie above the view. A row and not
+  // a line, because a wrapped line can be several screens tall and its start
+  // would be a long way from where the reader was.
   function scrollPlace() {
-    const scrollTop = view.scrollDOM.scrollTop;
-    const block = view.lineBlockAtHeight(scrollTop);
-    return { top: block.from, offset: Math.max(0, Math.round(scrollTop - block.top)) };
+    const edge = view.scrollDOM.getBoundingClientRect().top;
+    const left = view.contentDOM.getBoundingClientRect().left + 1;
+    const top = view.posAtCoords({ x: left, y: edge + 1 }, false);
+    const row = view.coordsAtPos(top, 1);
+    return { top, offset: row ? Math.max(0, Math.round(edge - row.top)) : 0 };
   }
 
-  // Puts the block at `place.top` `place.offset` pixels above the top of the
-  // view. Two steps: scrollIntoView first, because a view just built knows
-  // only estimated heights for lines far down and scrollIntoView measures its
-  // target; then, once that block is drawn, scrollTop is written the way a
-  // CodeMirror scroll snapshot writes it, because scrollIntoView leaves room
-  // for the editor's top scroll margin and lands that much short. The
-  // position is clamped because the file may have shrunk since.
+  // Scrolls the row holding `place.top` back to `place.offset` pixels above
+  // the top of the view. scrollIntoView keeps the editor's top scroll margin
+  // clear of its target, so that margin is added back here, the way
+  // CodeMirror combines the sources of it. One scroll request and nothing
+  // deferred, so a jump or a collaborator shown right after replaces it.
   function scrollBack(place) {
-    const target = view;
-    const at = () => Math.min(Math.max(0, place.top || 0), target.state.doc.length);
-    const offset = place.offset || 0;
-    target.dispatch({ effects: EditorView.scrollIntoView(at(), { y: "start", yMargin: -offset }) });
-    // A jump that follows the swap (goToIn, openAt) moves the selection and
-    // scrolls to its own target, so the second step stands down for it.
-    const selection = target.state.selection;
-    requestAnimationFrame(() => {
-      if (view !== target || !target.state.selection.eq(selection)) return;
-      target.requestMeasure({
-        read: () => null,
-        write: () => {
-          if (view === target) target.scrollDOM.scrollTop = target.lineBlockAt(at()).top + offset;
-        },
-      });
-    });
+    const at = Math.min(Math.max(0, place.top || 0), view.state.doc.length);
+    let margin = 0;
+    for (const source of view.state.facet(EditorView.scrollMargins)) margin = Math.max(margin, source(view)?.top ?? 0);
+    view.dispatch({ effects: EditorView.scrollIntoView(at, { y: "start", yMargin: -((place.offset || 0) + margin) }) });
   }
 
   // The caret and the scroll place of the view, for the reader to keep while
