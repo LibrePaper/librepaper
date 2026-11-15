@@ -221,6 +221,7 @@
     lintGutter,
     lintKeymap,
     setDiagnostics as setLintDiagnostics,
+    forEachDiagnostic,
     openLintPanel,
   } from "@codemirror/lint";
   import { LoroExtensions } from "../../vendor/loro-codemirror/index.ts";
@@ -976,11 +977,6 @@
   // here.
   let all = [];
   let shown = [];
-  // What the view was last given, with the document it was given for and the
-  // check switch it was given under. A compile that changes nothing skips the
-  // rebuild of the lint state and the gutter. Cleared wherever the lint state
-  // may have been rebuilt without this module's knowledge.
-  let lastLint = null;
   // The last problem count spoken, so a compile that changes nothing is silent.
   let announced = "";
 
@@ -994,13 +990,18 @@
     return textIdForPath(doc, diagnostic.file);
   }
 
-  /// Whether two lists of painted diagnostics are the same, item by item.
-  function sameDiagnostics(a, b) {
-    if (a.length !== b.length) return false;
-    return a.every((item, i) => {
-      const other = b[i];
-      return item.from === other.from && item.to === other.to && item.severity === other.severity && item.message === other.message;
+  /// Whether the view's lint state already holds exactly these diagnostics.
+  /// The state maps what it holds through every edit, so this compares against
+  /// what is on screen now, whatever happened since the last call: typing, a
+  /// file switch, or a reconfigure that emptied it.
+  function lintHolds(state, list) {
+    let index = 0;
+    let same = true;
+    forEachDiagnostic(state, (diagnostic, from, to) => {
+      const item = list[index++];
+      if (!item || item.from !== from || item.to !== to || item.severity !== diagnostic.severity || item.message !== diagnostic.message) same = false;
     });
+    return same && index === list.length;
   }
 
   /// Paints what a compile had to say: an underline on the span it names, a
@@ -1047,14 +1048,11 @@
       })
       .sort((a, b) => a.from - b.from);
     // With the check off nothing is drawn in the source, and the reader's list
-    // of messages is unchanged. Positions are document-relative, so a new
-    // document always gets a dispatch, even when the list reads the same.
-    const checkNow = untrack(() => check);
-    const drawn = checkNow ? shown : [];
-    if (!lastLint || lastLint.doc !== view.state.doc || lastLint.check !== checkNow || !sameDiagnostics(lastLint.drawn, drawn)) {
-      view.dispatch(setLintDiagnostics(view.state, drawn));
-      lastLint = { doc: view.state.doc, check: checkNow, drawn };
-    }
+    // of messages is unchanged. A live preview compiles on every keystroke and
+    // mostly says the same again, so a list the view already shows is not sent:
+    // rebuilding the lint state redraws the gutter.
+    const drawn = untrack(() => check) ? shown : [];
+    if (!lintHolds(view.state, drawn)) view.dispatch(setLintDiagnostics(view.state, drawn));
     // The gutter marks are the only sign of a compile's result, and a screen
     // reader gets none of them, so the counts are spoken when they change.
     const errors = shown.filter((diagnostic) => diagnostic.severity === "error").length;
@@ -1820,9 +1818,6 @@
   /// is the one that follows them.
   function syncFeatures(target, id = showing) {
     if (!target) return;
-    // Reconfiguring the check rebuilds the lint state, which then holds nothing
-    // until the next setDiagnostics, so the memo of what was drawn is stale.
-    lastLint = null;
     target.dispatch({
       effects: [
         completionCompartment.reconfigure(completionOn(untrack(() => completion))),
@@ -2165,7 +2160,6 @@
         states = new WeakMap();
         undoManager = null;
         undoManagerDoc = null;
-        lastLint = null;
         view = null;
         activeDocument = null;
         showing = "";
