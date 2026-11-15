@@ -3,9 +3,8 @@
 //! `/api/documents/{slug}/results`: GET (Read), PUT and DELETE (Edit). The
 //! record is not a project file; its bytes count toward the owner's storage.
 //!
-//! The quota refusal (413) is not covered here: the shared fixture builds the
-//! catalogue with the default 50 MiB owner policy, and filling it needs
-//! several 20 MiB documents.
+//! The quota refusal (413) is exercised by pushing the owner's usage to just
+//! under the default 50 MiB policy through the document's uncompacted bytes.
 //!
 //! Needs `LIBREPAPER_TEST_POSTGRES_URL` and is skipped without it.
 
@@ -522,4 +521,169 @@ async fn the_owner_puts_and_gets_inline_values() {
         got.get("inlines").is_none(),
         "an absent list is not stored: {got}"
     );
+}
+
+const SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_quarto_record_with_run_figures_round_trips_and_is_charged_raw() {
+    let Some(deployment) = deployment("results-run-figures").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    // Large enough that base64 (a third bigger) would show in the charge.
+    let svg = format!("{SVG}<!--{}-->", "x".repeat(30_000));
+    let mut body = record();
+    body["files"] = json!([{"path": "figs/plot.svg", "base64": b64(svg.as_bytes())}]);
+
+    let (status, put) = served.call("PUT", &owner, Some(body.to_string())).await;
+    assert_eq!(status, 200, "{put}");
+    let bytes = put["bytes"].as_i64().unwrap();
+    assert!(bytes >= svg.len() as i64, "charges the raw bytes");
+    assert!(bytes < (svg.len() * 4 / 3) as i64, "not the base64 text: {bytes}");
+
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert_eq!(got["files"][0]["path"], "figs/plot.svg");
+    assert_eq!(got["files"][0]["base64"], b64(svg.as_bytes()));
+    assert!(got["files"][0].get("blob").is_none());
+    assert_eq!(got["bytes"], put["bytes"]);
+
+    let before = served.storage().await;
+    let (status, deleted) = served.call("DELETE", &owner, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(deleted["bytes"], put["bytes"]);
+    let after = served.storage().await;
+    assert_eq!(
+        before["usage"]["chargedBytes"].as_i64().unwrap()
+            - after["usage"]["chargedBytes"].as_i64().unwrap(),
+        bytes
+    );
+    let files: i64 = sqlx::query_scalar("SELECT count(*) FROM document_result_files")
+        .fetch_one(served.catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(files, 0, "the file rows went with the record");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_replaced_record_replaces_its_files() {
+    let Some(deployment) = deployment("results-replace-files").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    let mut first = record();
+    first["files"] = json!([{"path": "a.svg", "base64": b64(SVG.as_bytes())}]);
+    let (status, _) = served.call("PUT", &owner, Some(first.to_string())).await;
+    assert_eq!(status, 200);
+    let mut second = record();
+    second["files"] = json!([{"path": "b.svg", "base64": b64(SVG.as_bytes())}]);
+    let (status, _) = served.call("PUT", &owner, Some(second.to_string())).await;
+    assert_eq!(status, 200);
+    let (_, got) = served.call("GET", &owner, None).await;
+    assert_eq!(got["files"].as_array().unwrap().len(), 1);
+    assert_eq!(got["files"][0]["path"], "b.svg");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_calepin_record_with_a_run_figure_round_trips() {
+    let Some(deployment) = deployment("results-calepin-figure").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    let mut body = calepin_record();
+    body["files"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"path": "plots/a.svg", "base64": b64(SVG.as_bytes())}));
+    let (status, put) = served.call("PUT", &owner, Some(body.to_string())).await;
+    assert_eq!(status, 200, "{put}");
+    let (_, got) = served.call("GET", &owner, None).await;
+    assert_eq!(got["files"], body["files"], "the wire shape is unchanged");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn bad_run_figures_are_refused() {
+    let Some(deployment) = deployment("results-bad-figures").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    for (name, file) in [
+        ("text", json!({"path": "a.svg", "text": SVG})),
+        ("not an image", json!({"path": "a.png", "base64": b64(b"hello")})),
+        ("under .librepaper", json!({"path": ".librepaper/a.svg", "base64": b64(SVG.as_bytes())})),
+    ] {
+        let mut body = record();
+        body["files"] = json!([file]);
+        let (status, _) = served.call("PUT", &owner, Some(body.to_string())).await;
+        assert_eq!(status, 400, "{name}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_record_over_the_quota_is_refused_with_the_storage_reason() {
+    let Some(deployment) = deployment("results-over-quota").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    // Leave the owner 100 bytes of room.
+    let usage = served.storage().await["usage"]["chargedBytes"]
+        .as_i64()
+        .unwrap();
+    sqlx::query("UPDATE documents SET uncompacted_update_bytes = uncompacted_update_bytes + $1 WHERE slug=$2")
+        .bind(50 * 1024 * 1024 - 100 - usage)
+        .bind(&served.deployment_slug)
+        .execute(served.catalog.pool())
+        .await
+        .unwrap();
+
+    // Past the pre-read bound.
+    let big = format!("{SVG}<!--{}-->", "x".repeat(3 * 1024 * 1024));
+    let mut body = record();
+    body["files"] = json!([{"path": "a.svg", "base64": b64(big.as_bytes())}]);
+    let (status, refused) = served.call("PUT", &owner, Some(body.to_string())).await;
+    assert_eq!(status, 413, "{refused}");
+    assert_eq!(refused["reason"], "storage");
+
+    // Under the pre-read bound, over the exact quota.
+    let mut body = record();
+    body["files"] = json!([{"path": "a.svg", "base64": b64(format!("{SVG}<!--{}-->", "x".repeat(2000)).as_bytes())}]);
+    let (status, refused) = served.call("PUT", &owner, Some(body.to_string())).await;
+    assert_eq!(status, 413, "{refused}");
+    assert_eq!(refused["reason"], "storage");
+    let (status, _) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 404, "nothing was stored");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn there_are_no_count_caps_on_cells() {
+    let Some(deployment) = deployment("results-no-caps").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    let mut body = record();
+    body["cells"] = Value::Array(
+        (0..2500)
+            .map(|_| json!({"fingerprint": fingerprint('a'), "label": null, "html": "<p>x</p>"}))
+            .collect(),
+    );
+    let (status, put) = served.call("PUT", &owner, Some(body.to_string())).await;
+    assert_eq!(status, 200, "{put}");
 }

@@ -57,7 +57,7 @@ pub use ownership::WriterLease;
 pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, DocumentStorage, NewAccount, NewAsset, NewDocument,
 };
-pub use results::{ResultsRecord, ResultsWrite};
+pub use results::{ResultsBlob, ResultsRecord, ResultsRoom, ResultsWrite};
 pub use tags::{built_in_refusal, DocumentTagRecord, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
