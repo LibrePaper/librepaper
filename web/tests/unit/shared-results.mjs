@@ -34,7 +34,7 @@ test("a document without results reads as null", async () => {
 test("identical results are not uploaded twice", async () => {
   await withFetch(async () => new Response(JSON.stringify({ bytes: 120, updatedAt: "2026-11-12T10:00:00Z" }), { status: 200 }), async (calls) => {
     const shared = createSharedResults("paper", () => ({}));
-    assert.deepEqual(await shared.upload(record), { kind: "shared", bytes: 120 });
+    assert.deepEqual(await shared.upload(record), { kind: "shared", bytes: 120, figures: 0 });
     await shared.upload(record);
     assert.equal(calls.filter((call) => call.options?.method === "PUT").length, 1);
     await shared.upload({ ...record, path: "other.qmd" });

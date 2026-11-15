@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { referencedFigures } from "../../src/lib/figure-references.js";
 import { fillFigures, referenceFigures, placeholderBytes, placeholderUrl, resultsFigureUrl } from "../../src/lib/missing-figures.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 const starts = (bytes, ...head) => head.every((byte, i) => bytes[i] === byte);
 const ascii = (bytes) => new TextDecoder().decode(bytes);

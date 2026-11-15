@@ -144,7 +144,7 @@ export function resultsFigureUrl(resultsFiles, path) {
 /// What an earlier call put into a tree, which a project session may hand out
 /// again on the next render. Taken out first, so a figure that has since become
 /// a project file, or left the run, is not mistaken for one that is there.
-/** @type {WeakMap<object, { assets: Map<string, unknown>, urls: Map<string, string> }>} */
+/** @type {WeakMap<object, { assets: Map<string, Uint8Array>, urls: Map<string, string> }>} */
 const filled = new WeakMap();
 
 const FLOW = new Set(["markdown", "quarto", "org", "html"]);

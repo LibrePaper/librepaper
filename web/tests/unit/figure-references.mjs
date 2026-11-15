@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { figurePath, referencedFigures } from "../../src/lib/figure-references.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
+await loadOrgSyntaxForTests();
 
 const paths = (tree) => referencedFigures(tree).map(({ path }) => path);
 

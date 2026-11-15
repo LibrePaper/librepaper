@@ -20,7 +20,7 @@ import { m } from "../paraglide/messages.js";
 import { isLegacy, outcome, rangeOf, sinceMet } from "./negotiate.js";
 
 /** @typedef {{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, replaceHash: (hash: string) => void }} DesktopDeps */
-/** @typedef {{ generation?: number, deadlineSeconds?: number, snapshot?: string }} DesktopJob */
+/** @typedef {{ generation?: number, deadlineSeconds?: number, snapshot?: string, wanted?: string[] }} DesktopJob */
 /** @typedef {{ main: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array | ArrayBuffer | string>, digests?: Record<string, string>, files?: Record<string, unknown> }} DesktopTree */
 /** @typedef {{ path: string, sha256: string, size: number }} ManifestFile */
 /** @typedef {{ signal?: AbortSignal, onProgress?: (progress: { done: number, total: number, scope?: string }) => void }} BuildCallbacks */

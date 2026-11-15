@@ -61,7 +61,8 @@ export function runFigureFiles(files) {
 }
 
 /** A Quarto record with this run's figures on it; unchanged when there are none.
- * @template T @param {T} record @param {Array<object>} files */
+ * @template {object} T @param {T} record @param {Array<object>} files
+ * @returns {T & { files?: Array<object> }} */
 export function withRunFigures(record, files) {
   return files.length ? { ...record, files } : record;
 }

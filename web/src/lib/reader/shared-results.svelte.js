@@ -69,7 +69,7 @@ export async function putResults(slug, record, headers = authHeaders("", "applic
 export function createSharedResults(slug, headers = () => authHeaders("")) {
   const state = $state({
     /** @type {any} */ record: null,
-    /** @type {{kind: "idle" | "shared" | "failed" | "skipped", bytes?: number, reason?: "storage" | "unmatched" | "network"}} */
+    /** @type {{kind: "idle" | "shared" | "failed" | "skipped", bytes?: number, figures?: number, reason?: "storage" | "deployment" | "unmatched" | "network"}} */
     status: { kind: "idle" },
   });
   let uploadedHash = "";
