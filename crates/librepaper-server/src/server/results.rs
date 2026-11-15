@@ -3,9 +3,8 @@
 //! One record per project, uploaded by an editor after a local render and
 //! shown by every collaborator's draft. A Quarto record carries per-cell and
 //! inline-value HTML; a Calepin record carries the files of its `.calepin/`
-//! folder. It is not a
-//! project file: it is never listed, synced or versioned. Its bytes count
-//! toward the owner's storage.
+//! folder. It is not a project file: it is never listed, synced or versioned.
+//! Its bytes count toward the owner's storage.
 
 use std::collections::HashSet;
 
