@@ -42,14 +42,16 @@ export function figurePath({ format, file, main, name, resolveFile }) {
  * project has such files. Until they load those adapters list nothing, and a
  * preview or a run can come before the editor has opened a file of that kind.
  * A parser that cannot load leaves the references empty, as before.
+ * Null when the project has no such file, so a caller need not wait at all.
  * @param {{ texts?: Record<string, string> }} tree
+ * @returns {Promise<unknown> | null}
  */
-export async function figureSyntaxReady(tree) {
+export function figureSyntaxReady(tree) {
   const names = Object.keys(tree?.texts ?? {});
-  await Promise.all([
-    names.some((name) => /\.typ$/i.test(name)) ? loadTypstSyntax() : null,
-    names.some((name) => /\.org$/i.test(name)) ? loadOrgSyntax() : null,
-  ]);
+  const typst = names.some((name) => /\.typ$/i.test(name));
+  const org = names.some((name) => /\.org$/i.test(name));
+  if (!typst && !org) return null;
+  return Promise.all([typst ? loadTypstSyntax() : null, org ? loadOrgSyntax() : null]);
 }
 
 /** @param {string} text @returns {number[]} offsets at which each line starts */

@@ -284,8 +284,11 @@ export function createPreviewRenderer({
       }
       // Every figure the document names resolves to something: a project
       // file, a figure of the last run, or a placeholder. Never a hole.
-      await figureSyntaxReady(source);
-      if (coordinator.superseded(guard)) return;
+      const parsers = figureSyntaxReady(source);
+      if (parsers) {
+        await parsers;
+        if (coordinator.superseded(guard)) return;
+      }
       const { missing: missingFigures } = fillFigures(source, {
         references: referencedFigures(source),
         resultsFiles: saved?.files ?? null,
