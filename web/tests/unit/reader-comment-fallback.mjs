@@ -24,6 +24,9 @@ const context = vm.createContext({
   renderers: { formatOf: () => "latex" },
   sync: { documentRangeFor: () => ({ start: 50, end: 60 }) },
   WeakSet,
+  // The ready-path timing marks (lib/perf-marks.js) record nothing here.
+  perfStart: () => 0,
+  perfEnd: () => {},
 });
 vm.runInContext(`${code}; this.anchorComments = anchorComments;`, context);
 

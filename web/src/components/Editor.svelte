@@ -2261,10 +2261,10 @@
         // retaining one while clearing the other makes menu availability and
         // the state bound to the view disagree after a lifecycle rebind.
         states = new WeakMap();
-        tops = new WeakMap();
-        lastSeen = null;
         undoManager = null;
         undoManagerDoc = null;
+        tops = new WeakMap();
+        lastSeen = null;
         view = null;
         activeDocument = null;
         showing = "";
