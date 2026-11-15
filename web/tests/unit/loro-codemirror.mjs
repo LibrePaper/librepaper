@@ -273,9 +273,9 @@ test("a remote caret sent with an edit takes its own offsets, not the mapped one
   const state = EditorState.create({ doc: "hello", extensions: [ephemeralStateField] });
   const next = state.update({
     changes: { from: 0, insert: "XY" },
-    effects: ephemeralEffect.of({ type: "cursor", peer: "1", cursor: { anchor: 9, head: 9 } }),
+    effects: ephemeralEffect.of({ type: "cursor", peer: "1", cursor: { anchor: 6, head: 6 } }),
   }).state;
-  assert.deepEqual(next.field(ephemeralStateField).remoteCursors.get("1"), { anchor: 9, head: 9 });
+  assert.deepEqual(next.field(ephemeralStateField).remoteCursors.get("1"), { anchor: 6, head: 6 });
 });
 
 test("a remote caret in another text of the document resolves to a delete", () => {
@@ -310,9 +310,12 @@ test("a remote caret that arrives before its edit is resolved again when the edi
   const ours = new EphemeralStore();
   const theirs = new EphemeralStore();
   const view = new View(EditorState.create({ doc: "hello", extensions: [ephemeralStateField] }));
+  // The sync plugin first, as in the editor, so imported edits reach the view.
+  const sync = view.attach(new LoroSyncPluginValue(view, doc, mainText));
   const plugin = view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
   t.after(() => {
     plugin.destroy();
+    sync.destroy();
     ours.destroy();
     theirs.destroy();
   });
@@ -350,9 +353,12 @@ test("a peer's first caret, attached to characters not yet imported, is stored o
   const ours = new EphemeralStore();
   const theirs = new EphemeralStore();
   const view = new View(EditorState.create({ doc: "hello", extensions: [ephemeralStateField] }));
+  // The sync plugin first, as in the editor, so imported edits reach the view.
+  const sync = view.attach(new LoroSyncPluginValue(view, doc, mainText));
   const plugin = view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
   t.after(() => {
     plugin.destroy();
+    sync.destroy();
     ours.destroy();
     theirs.destroy();
   });
@@ -379,4 +385,15 @@ test("creating a doc-changing transaction does not move the carets of its start 
   const next = s1.update({ changes: { from: 0, insert: "XX" } }).state;
   assert.equal(s1.field(ephemeralStateField).remoteCursors.get("7").anchor, 6);
   assert.equal(next.field(ephemeralStateField).remoteCursors.get("7").anchor, 8);
+});
+
+// A caret resolved before a checkout shortened the text arrives past its end.
+// It is clamped, and the next edit maps it instead of throwing.
+test("a caret past the end of a shorter text is clamped and maps without throwing", () => {
+  const short = EditorState.create({ doc: "short", extensions: [ephemeralStateField] }).update({
+    effects: ephemeralEffect.of({ type: "cursor", peer: "7", cursor: { anchor: 90, head: 95 } }),
+  }).state;
+  assert.deepEqual(short.field(ephemeralStateField).remoteCursors.get("7"), { anchor: 5, head: 5 });
+  const next = short.update({ changes: { from: 0, insert: "a much longer text " } }).state;
+  assert.equal(next.field(ephemeralStateField).remoteCursors.get("7").anchor, 24);
 });
