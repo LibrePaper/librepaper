@@ -459,6 +459,24 @@ try {
   assert.notEqual(dark.color, light.color, 'the active tab colour follows the theme');
   for (const paintOf of [dark, light]) assert.notEqual(paintOf.background, 'rgba(0, 0, 0, 0)', 'the bar is opaque');
 
+  // m. A phone that discards the hidden tab reloads it: the person comes back
+  // to the editor face, scrolled where they left it, not to the top of the preview.
+  await reload();
+  await resize(390);
+  await until('phone shell before the reload', () => has('.mobile-tab-bar'), 10000);
+  await toMode('source');
+  const firstLine = () => b.evaluate(`(() => {
+    const scroller = document.querySelector('.cm-scroller'); const top = scroller.getBoundingClientRect().top;
+    return [...document.querySelectorAll('.cm-line')].find(line => line.getBoundingClientRect().bottom > top + 1)?.textContent || '';
+  })()`);
+  await b.evaluate(`document.querySelector('.cm-scroller').scrollTop = 2400`);
+  await flush(); await wait(100);
+  const before = await firstLine();
+  assert.match(before, /^line [1-9]\d+ /, 'the editor scrolled away from the top: ' + before);
+  await b.navigate(url);
+  await until('phone editor after the reload', async () => (await has('.cm-editor')) && (await modeOf()) === 'mobile-source', 10000);
+  await until('scroll put back', async () => (await firstLine()) === before, 5000);
+
   // l. A reader sees less.
   await reload('?role=reader');
   await resize(390);
