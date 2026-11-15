@@ -313,8 +313,8 @@ test("a remote caret that arrives before its edit is resolved again when the edi
   const plugin = view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
   t.after(() => {
     plugin.destroy();
-    ours.free();
-    theirs.free();
+    ours.destroy();
+    theirs.destroy();
   });
 
   // The peer's caret after "hello" arrives and resolves against our copy.
@@ -353,8 +353,8 @@ test("a peer's first caret, attached to characters not yet imported, is stored o
   const plugin = view.attach(new EphemeralPlugin(view, doc, { name: "Ada", colorClassName: "c1" }, ours, mainText));
   t.after(() => {
     plugin.destroy();
-    ours.free();
-    theirs.free();
+    ours.destroy();
+    theirs.destroy();
   });
 
   // The peer types "XY" after "hello" and its caret sits between X and Y.
