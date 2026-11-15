@@ -2,7 +2,7 @@
 title: "Agents"
 ---
 
-LibrePaper works with the coding agent you already use: Claude Code, Codex, Pi or opencode. The agent reads your document, comments on it and suggests changes. You accept or reject each suggestion, as you would a coauthor's. Your model and your credentials stay with you, and no AI runs on the LibrePaper server.
+LibrePaper works with the coding agent you already use: Claude Code, Codex, Pi or opencode. The agent reads your document, comments on it and suggests changes. You accept or reject each suggestion, as you would a coauthor's. Your model and your credentials stay with you. The LibrePaper server runs no AI model of its own.
 
 There are two ways to connect an agent:
 
@@ -27,7 +27,7 @@ The first paste installs the LibrePaper skill if it is missing, which happens on
 
 The agent connects, tells you what it reached and asks what you want done.
 
-To connect again later, use the copy icon on the token's row, which copies the same instructions. Tokens created before this release have no copy icon; create a new token and revoke the old one to get one.
+To connect again later, use the copy icon on the token's row, which copies the same instructions. A row has a copy icon only if LibrePaper holds the token. Tokens made by earlier versions have none, so create a new token and revoke the old one.
 
 The connection instructions contain the token, so it sits in your agent's chat, where your model provider and the chat history can see it. To keep it out of the chat, see [Other connections](#other-connections).
 
@@ -49,7 +49,7 @@ npx skills update librepaper
 
 The [desktop app](desktop-app.html) finds the agents installed on your computer. Install one of the agents below, restart LibrePaper, and pick it in the Chat tab of the Agent panel. In a browser, the Chat tab points you to the desktop app.
 
-Claude Code and Codex connect through small adapters from npm, which need Node.js 22 or newer. On Linux, install the current LTS from [nodejs.org](https://nodejs.org), because distribution packages are often too old.
+Claude Code, Codex and Pi connect through small adapters from npm, which need Node.js 22 or newer. On Linux, install the current LTS from [nodejs.org](https://nodejs.org), because distribution packages are often too old.
 
 ```sh
 # Install Node.js on macOS
@@ -71,7 +71,7 @@ claude
 npm install -g @agentclientprotocol/claude-agent-acp
 ```
 
-If you skip the adapter, LibrePaper offers to fetch it the first time you start Claude Code. Installing it yourself keeps a version that does not change under you.
+If you skip the adapter, LibrePaper offers to fetch it the first time you use the agent. A fetched adapter downloads again each time you use it, so install it yourself to keep a version that does not change under you.
 
 ### Codex
 
@@ -112,28 +112,28 @@ Any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.co
 
 A token gives one agent access to one project, and you can revoke it at any time. The agent can run anywhere: on your computer, on a home server, in CI or behind a chat bot.
 
-When you click **New token**, you pick a permission and an expiry. You can also name the token (its comments and suggestions appear under that name), and set an hourly comment limit. The name defaults to "Agent".
+When you click **New token**, you pick a permission and an expiry. The defaults are Comment and 7 days. You can also name the token. Its comments and suggestions appear under that name, which defaults to "Agent". A token that can comment also takes an hourly comment limit. Leave it empty for no limit.
 
 | Permission | What the agent can do |
 |---|---|
 | Read | Read the project. |
 | Comment | Read and comment. |
 | Suggest | Everything Comment allows, plus tracked suggestions. A Suggest token cannot apply edits directly; the server enforces this. |
-| Edit | Everything Suggest allows, plus direct edits, and creating or deleting text files. Comment cannot change text, and Suggest only as tracked suggestions. Edit tokens expire after one day by default. |
+| Edit | Everything Suggest allows, plus direct edits, and creating, renaming or deleting text files. Comment cannot change text, and Suggest only as tracked suggestions. Choosing Edit turns a 7-day expiry into one day. |
 
 ### What a token cannot do
 
-A token reaches only its own project. It cannot upload images, publish, share or run code. Each token has an hourly comment limit, which you set when you create it. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
+A token reaches only its own project. It cannot upload images, publish, share or run code. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
 
-A token stops working when it expires, when you revoke it with the trash button in the Agent tab of the Agent panel, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
+A token stops working when it expires, when you revoke it with the revoke button on its row in the Agent tab, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
 
 ## Tasks
 
-The Tasks tab of the Agent panel lists tasks. Each task shows its instruction text with a copy icon. Click the icon, paste the text into any agent, and the agent works on it in the project.
+The Tasks tab of the Agent panel lists ready-made tasks in groups: Writing, Review and Document. Search filters them. Each task shows its instruction text with a copy icon. Click the icon, paste the text into any agent, and the agent works on it in the project.
 
-In the desktop app, most tasks also have a **Run** button. It opens the task in the built-in agent. There you choose the scope (the selection, one file or the whole document), and then send it.
+In the desktop app, most tasks also have a **Run** button. It opens the task in the built-in agent. There you choose the scope (the selection, one file or the whole document), and then send it. **Address comments** and **Fix diagnostics** have no Run button; copy them instead.
 
-The tab has two ready-made tasks, **Address comments** and **Fix diagnostics**. Comments and diagnostics have a robot button too, which sends that item to the built-in agent.
+Each unresolved comment and each diagnostic has a robot button, which sends that item to the built-in agent. The built-in agent runs in the desktop app.
 
 ## Other connections
 
