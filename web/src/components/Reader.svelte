@@ -2438,6 +2438,7 @@
         if (record) {
           // The run's own page is kept whether or not the draft shows it.
           const recordDigest = toPdf ? await renderers.snapshotDigest(tree) : "";
+          if (gone()) return;
           lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: recordDigest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
           // The files Calepin stored go into the browser's own draft, PDF or
           // HTML, so the preview stays the draft between runs.
