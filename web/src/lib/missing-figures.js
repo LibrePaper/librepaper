@@ -158,7 +158,9 @@ const FLOW = new Set(["markdown", "quarto", "org", "html"]);
  * as an alias of the resolved path in `urls` only; `assets` holds real paths.
  * @param {{ main?: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, digests?: Record<string, string> }} source
  * @param {{ references: FigureReference[], resultsFiles?: ResultsFile[] | null }} options
- * @returns {{ missing: FigureReference[] }}
+ * @returns {{ missing: FigureReference[], placeholders: Array<{ path: string, name: string }> }}
+ *   `placeholders` lists every reference that got a placeholder, the
+ *   unfetchable project files included.
  */
 export function fillFigures(source, { references, resultsFiles }) {
   const assets = (source.assets ??= {});
@@ -166,7 +168,8 @@ export function fillFigures(source, { references, resultsFiles }) {
   const earlier = filled.get(source);
   for (const [key, value] of earlier?.assets ?? []) if (assets[key] === value) delete assets[key];
   for (const [key, value] of earlier?.urls ?? []) if (urls[key] === value) delete urls[key];
-  const added = { assets: new Map(), urls: new Map() };
+  for (const [key, value] of earlier?.shadowed ?? []) if (!Object.hasOwn(urls, key)) urls[key] = value;
+  const added = { assets: new Map(), urls: new Map(), shadowed: new Map() };
   filled.set(source, added);
   /** @param {string} key @param {Uint8Array} bytes @param {string} url */
   const put = (key, bytes, url) => {
@@ -180,6 +183,8 @@ export function fillFigures(source, { references, resultsFiles }) {
   const latex = sourceFormatOf(source.main ?? "") === "latex";
   /** @type {FigureReference[]} */
   const missing = [];
+  /** @type {Array<{ path: string, name: string }>} */
+  const placeholders = [];
   const reported = new Set();
   for (const reference of references) {
     let { path } = reference;
@@ -193,6 +198,7 @@ export function fillFigures(source, { references, resultsFiles }) {
         put(path, decodeBase64(base64), `data:${mimeOf(path)};base64,${base64}`);
       } else {
         put(path, placeholderBytes(path), placeholderUrl(path));
+        placeholders.push({ path: reference.path, name: reference.name });
         const key = `${reference.path}\0${reference.file}\0${reference.line}`;
         if (!held && !reported.has(key)) {
           reported.add(key);
@@ -202,13 +208,16 @@ export function fillFigures(source, { references, resultsFiles }) {
     }
     const alias = reference.name;
     if (flow && alias && alias !== path) {
-      if (!Object.hasOwn(urls, alias) && Object.hasOwn(urls, path)) {
+      // Every authored name resolves from the main file's directory, so the
+      // alias wins over an unrelated project file stored under that key.
+      if (Object.hasOwn(urls, path) && urls[alias] !== urls[path]) {
+        if (Object.hasOwn(urls, alias) && !added.urls.has(alias) && !added.shadowed.has(alias)) added.shadowed.set(alias, urls[alias]);
         urls[alias] = urls[path];
         added.urls.set(alias, urls[alias]);
       }
     }
   }
-  return { missing };
+  return { missing, placeholders };
 }
 
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".svg", ".pdf"];

@@ -2408,7 +2408,6 @@
       const missing = wantedPaths(referencedFigures(tree), tree);
       const key = JSON.stringify([runDirectory, lastRunAt, missing]);
       if (key === hasAsked) return;
-      hasAsked = key;
       let present = [];
       if (missing.length) {
         try {
@@ -2423,6 +2422,7 @@
         }
       }
       if (cancelled || readerDisposed) return;
+      hasAsked = key;
       const next = new Set(present);
       const before = runDirectoryHas;
       runDirectoryHas = next;
@@ -2608,7 +2608,19 @@
             const record = { version: 1, path: tree.main, cells: [], inlines: [], files };
             void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
           }
-        } else sharedResults.skip("none");
+        } else {
+          // A run that made no figures still replaces what an earlier run
+          // left for this document, so stale figures do not outlive it.
+          const sharedHeld = sharedResults.state.record;
+          const hadPrevious = ownResults?.path === tree.main || (sharedHeld && sharedHeld.path === tree.main);
+          if (hadPrevious) {
+            ownResults = { cells: [], inlines: [], files: [], path: tree.main, updatedAt: new Date().toISOString() };
+            if (shareResults && mayEdit) {
+              const record = { version: 1, path: tree.main, cells: [], inlines: [] };
+              void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+            } else sharedResults.skip("none");
+          } else sharedResults.skip("none");
+        }
         showRunPage(tree, { kind: "html", html: rendered.html });
         return;
       }

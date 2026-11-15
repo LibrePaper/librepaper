@@ -224,10 +224,10 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
    * @returns {boolean} whether the set changed
    */
   function standIn(project) {
-    // A project asset whose bytes are not held yet keeps its stand-in; the real bytes replace it once loaded.
-    /** @type {Record<string, string>} */
-    const held = {};
-    for (const path of Object.keys(assetVersions)) if (assetBytes.has(path)) held[path] = assetVersions[path];
+    // Every project asset is listed, so a run figure never stands in for one
+    // by the same path. One whose bytes are not held yet keeps a placeholder
+    // stand-in; the real bytes replace it once loaded.
+    const held = { ...assetVersions };
     /** @type {{ main: string, texts: Record<string, string>, assets: Record<string, Uint8Array>, digests: Record<string, string> }} */
     const scratch = { main, texts: { ...project.texts }, assets: {}, digests: held };
     const files = project.resultsFiles?.() ?? null;

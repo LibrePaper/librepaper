@@ -74,6 +74,20 @@ function lineOf(starts, offset) {
 }
 
 /**
+ * Local module paths a Typst file imports (`#import "mod.typ": x`). Package
+ * imports (`@preview/...`) are skipped.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function typstImports(text) {
+  const out = [];
+  for (const match of text.matchAll(/#import\s+"([^"\n]+)"/g)) {
+    if (!match[1].startsWith("@")) out.push(match[1]);
+  }
+  return out;
+}
+
+/**
  * Every image reference in the main document and in the files it includes, in
  * document order, each resolved by the path rule above. `tree` is the
  * `{ main, texts, assets?, digests? }` the renderers take.
@@ -101,6 +115,12 @@ export function referencedFigures(tree) {
     if (!index) continue;
     const format = sourceFormatOf(main) || index.format;
     const starts = lineStarts(text);
+    if (index.format === "typst") {
+      for (const name of typstImports(text)) {
+        const target = project.resolveFile(file, name, "include");
+        if (target && !seen.has(target)) queue.push(target);
+      }
+    }
     for (const item of [...index.items].sort((a, b) => a.range[0] - b.range[0])) {
       if (item.name === undefined) continue;
       if (item.kind === "asset") {

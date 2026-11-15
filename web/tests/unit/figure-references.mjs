@@ -59,3 +59,14 @@ test("figurePath ignores URLs and honours the path rule", () => {
 test("a tree without its main text refers to nothing", () => {
   assert.deepEqual(referencedFigures({ main: "x.md", texts: {} }), []);
 });
+
+test("Typst follows local imports but not package imports", () => {
+  const tree = {
+    main: "main.typ",
+    texts: {
+      "main.typ": '#import "lib/mod.typ": f\n#import "@preview/x:1.0.0": g\n',
+      "lib/mod.typ": '#image("m.png")\n',
+    },
+  };
+  assert.deepEqual(paths(tree), ["lib/m.png"]);
+});

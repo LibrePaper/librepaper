@@ -122,15 +122,16 @@ export function pandocMath(html) {
 /// `files` of the last run's results, or null.
 export function figuresForExport(tree, { references = referencedFigures(tree), resultsFiles = null } = {}) {
   const copy = { ...tree, assets: { ...tree.assets }, urls: { ...tree.urls } };
-  const { missing } = fillFigures(copy, { references, resultsFiles });
-  return { tree: copy, missing };
+  const { missing, placeholders } = fillFigures(copy, { references, resultsFiles });
+  return { tree: copy, missing, placeholders };
 }
 
 /// An authored HTML page is exported as written, so each src naming a missing
-/// figure is replaced by the placeholder picture.
-function placeholderSources(html, missing) {
+/// figure, or a project figure that could not be fetched, is replaced by the
+/// placeholder picture.
+function placeholderSources(html, placeholders) {
   let out = html;
-  for (const { name, path } of missing) {
+  for (const { name, path } of placeholders) {
     for (const quote of ['"', "'"]) out = out.split(`src=${quote}${name}${quote}`).join(`src=${quote}${placeholderUrl(path)}${quote}`);
   }
   return out;
@@ -161,13 +162,13 @@ export async function exportFile({ tree: given, resultsFiles = null, ...options 
   // A local build reads the Run directory itself; filling the tree would
   // upload stale figures and placeholders over the fresh ones.
   // A target that falls back to the browser (Typst DOCX, say) still needs the fill.
-  const { tree, missing } = madeLocally(options.format, options.target, options.local) ? { tree: given, missing: [] } : figuresForExport(given, { resultsFiles });
-  const file = await exportFilled({ ...options, tree, missing });
+  const { tree, missing, placeholders } = madeLocally(options.format, options.target, options.local) ? { tree: given, missing: [], placeholders: [] } : figuresForExport(given, { resultsFiles });
+  const file = await exportFilled({ ...options, tree, missing, placeholders });
   return { ...file, missing };
 }
 
 /** @param {any} args */
-async function exportFilled({ target, format, tree, missing = [], title, slug, project = "", preview, previewCurrent, render: renderIn, run, local = false, compiler = compilerAvailable }) {
+async function exportFilled({ target, format, tree, missing = [], placeholders = missing, title, slug, project = "", preview, previewCurrent, render: renderIn, run, local = false, compiler = compilerAvailable }) {
   const reused = previewCurrent && preview?.kind === target ? preview : null;
   const render = (source, name, options) => renderIn(source, name, options);
 
@@ -221,7 +222,7 @@ async function exportFilled({ target, format, tree, missing = [], title, slug, p
     if (format === "html") {
       const source = tree.texts?.[tree.main];
       if (typeof source !== "string") throw new Error(m.exports_html_unreadable());
-      return placeholderSources(source, missing);
+      return placeholderSources(source, placeholders);
     }
     // The live preview names its figures by reference, which the download
     // cannot use, so those become the data URLs the tree was gathered with.

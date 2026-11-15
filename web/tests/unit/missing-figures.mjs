@@ -121,3 +121,28 @@ test("referenceFigures: run figures become references, SVG placeholders stay inl
   assert.equal(source.urls["a.png"], source.urls["doc/a.png"]);
   assert.ok(source.urls["doc/gone.png"].startsWith("data:image/svg+xml"));
 });
+
+test("fillFigures: a flow alias beats an unrelated project file under the same key, and is undone", () => {
+  const source = {
+    main: "doc/main.qmd",
+    texts: { "doc/main.qmd": "![p](plot.png)\n" },
+    assets: { "plot.png": new Uint8Array([1]), "doc/plot.png": new Uint8Array([2]) },
+    urls: { "plot.png": "blob:root", "doc/plot.png": "blob:doc" },
+  };
+  const references = [{ path: "doc/plot.png", name: "plot.png", file: "doc/main.qmd", line: 1 }];
+  fillFigures(source, { references });
+  assert.equal(source.urls["plot.png"], "blob:doc");
+  fillFigures(source, { references: [] });
+  assert.equal(source.urls["plot.png"], "blob:root");
+});
+
+test("fillFigures: lists every placeholder, including unfetchable project files", () => {
+  const source = { main: "main.qmd", texts: { "main.qmd": "" }, digests: { "a.png": "x" } };
+  const references = [
+    { path: "a.png", name: "a.png", file: "main.qmd", line: 1 },
+    { path: "b.png", name: "b.png", file: "main.qmd", line: 2 },
+  ];
+  const { missing, placeholders } = fillFigures(source, { references });
+  assert.deepEqual(missing.map(({ path }) => path), ["b.png"]);
+  assert.deepEqual(placeholders, [{ path: "a.png", name: "a.png" }, { path: "b.png", name: "b.png" }]);
+});
