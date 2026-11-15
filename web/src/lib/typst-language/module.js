@@ -62,6 +62,26 @@ export function changedRange(before, after) {
   return { from: prefix, to: before.length - suffix, insert: after.slice(prefix, after.length - suffix) };
 }
 
+/**
+ * Lezer's flat buffer cursor over a typed array. Tree.build takes a plain
+ * array as a cursor over its own flat buffer, but a typed array would be taken
+ * for a cursor itself, so this class supplies the same interface and the tree
+ * is not copied into a plain array. Mirrors FlatBufferCursor in @lezer/common.
+ */
+class TreeBufferCursor {
+  constructor(buffer, index) {
+    this.buffer = buffer;
+    this.index = index;
+  }
+  get id() { return this.buffer[this.index - 4]; }
+  get start() { return this.buffer[this.index - 3]; }
+  get end() { return this.buffer[this.index - 2]; }
+  get size() { return this.buffer[this.index - 1]; }
+  get pos() { return this.index; }
+  next() { this.index -= 4; }
+  fork() { return new TreeBufferCursor(this.buffer, this.index); }
+}
+
 function build(exports) {
   const names = kindNames(exports);
   const nodeSet = nodeSetOf(names);
@@ -86,12 +106,13 @@ function build(exports) {
     // tree_len counts u32s; the root comes last and its size covers them all.
     const words = exports.tree_len();
     const memory = exports.memory.buffer;
-    if (words < 4 || ptr + words * 4 > memory.byteLength || new Uint32Array(memory, ptr, words)[words - 1] !== words) {
-      throw new Error("typst-syntax: bad tree");
-    }
-    // Tree.build wants a plain array (a typed array would be taken for a cursor).
-    const buffer = Array.from(new Uint32Array(memory, ptr, words));
-    return Tree.build({ buffer, nodeSet, topID, length });
+    if (words < 4 || ptr + words * 4 > memory.byteLength) throw new Error("typst-syntax: bad tree");
+    // Copy the words out with a memcpy rather than reading them in place: the
+    // module's memory is reused by the next parse and can grow, so the tree
+    // must not alias it. Tree.build reads the copy through a cursor.
+    const copy = new Uint32Array(memory, ptr, words).slice();
+    if (copy[words - 1] !== words) throw new Error("typst-syntax: bad tree");
+    return Tree.build({ buffer: new TreeBufferCursor(copy, copy.length), nodeSet, topID, length });
   };
 
   /** Live sources, oldest first: key -> { handle, text }. */
