@@ -33,10 +33,10 @@ export function watchScrolls(selector, onscroll) {
   return () => document.removeEventListener("scroll", onScroll, { capture: true });
 }
 
-/// Calls `onreveal()` whenever keyboard focus enters the site bar (`body > nav`). Returns stop().
-export function revealOnNavFocus(onreveal) {
+/// Calls `onreveal()` whenever keyboard focus enters the site bar (`body > nav`), or any other bar `selector` names. Returns stop().
+export function revealOnNavFocus(onreveal, selector = "body > nav") {
   function onNavFocus(event) {
-    if (event.target.closest("body > nav")) onreveal();
+    if (event.target instanceof Element && event.target.closest(selector)) onreveal();
   }
   document.addEventListener("focusin", onNavFocus);
   return () => document.removeEventListener("focusin", onNavFocus);

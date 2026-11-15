@@ -12,7 +12,9 @@ import { listenForSignOut } from "../lib/local-data.js";
 import { signedOutHref } from "../lib/api.js";
 import { markDocumentLanguage } from "../lib/locale.js";
 import { installTips } from "../lib/tip.js";
+import { preventFocusZoom } from "../lib/ios-viewport.js";
 
+preventFocusZoom();
 markDocumentLanguage();
 // The one tooltip, for every element that carries data-tip.
 installTips();

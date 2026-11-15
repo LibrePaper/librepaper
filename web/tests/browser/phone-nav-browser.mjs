@@ -373,6 +373,12 @@ try {
   await until('tab bar steps aside', () => b.evaluate(`document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
   assert.equal(await b.evaluate(`document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), true, 'the mode switch steps aside too');
   assert.ok(await b.evaluate(`document.querySelector("main.reader").getBoundingClientRect().bottom > innerHeight - 20`), 'the workspace grows into the space the bar leaves');
+  // A collapsed row is clipped, not hidden: focus lands in it and brings every bar back, and the workspace still fits the screen.
+  await b.evaluate('document.querySelector(".mobile-mode-switch [data-mode=source]").focus()');
+  await until('focus brings the mode switch back', () => b.evaluate('Boolean(document.activeElement.closest(".mobile-mode-switch")) && document.querySelector(".mobile-mode-slot").getBoundingClientRect().height > 40'), 3000);
+  assert.equal(await b.evaluate(`document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), false, 'focus in the mode switch brings the tab bar back too');
+  await until('the workspace fits the screen with the bars back', () => b.evaluate(`document.querySelector("main.reader").getBoundingClientRect().bottom <= innerHeight + 1 && document.documentElement.scrollHeight <= innerHeight + 1`), 3000);
+  await b.evaluate('document.activeElement.blur()');
   for (const top of [400, 200]) {
     await b.evaluate(`document.querySelector(".cm-scroller").scrollTop = ${top}`);
     await flush();
@@ -382,6 +388,26 @@ try {
   assert.equal(await b.evaluate(`document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), false, 'the mode switch comes back with the bar');
   await b.evaluate(`document.querySelector(".cm-scroller").scrollTop = 0`);
   await flush();
+
+  // g3. Scrolling the preview does the same: the frame agent reports scroll positions to the app, which sets the bars aside and brings them back.
+  await toMode('document');
+  // The preview is on the app's origin here, so the test reaches into it directly.
+  const fromPreview = (code) => b.evaluate(`document.querySelector("iframe[title=Document]").contentWindow.eval(${JSON.stringify(code)})`);
+  await until('preview frame', () => b.evaluate('document.querySelector("iframe[title=Document]")?.contentDocument?.readyState === "complete"'), 10000);
+  await fromPreview("for (const top of [200, 400, 600]) parent.postMessage({ librepaper: true, type: 'scroll', delta: 200, top, bottom: 5000 }, '*')");
+  await wait(260);
+  await until('preview sets the tab bar aside', () => b.evaluate(`document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
+  await until('preview collapses the mode switch', () => b.evaluate(`document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), 3000);
+  // The preview's tool band steps aside too, and focus on its first live control (never the inert measuring copy) brings it back.
+  const bandControl = '[...document.querySelectorAll("#reader-document .tool-band-slot :is(button, select):not(:disabled)")].find((node) => !node.closest(".band-measure, [inert]"))';
+  assert.equal(await b.evaluate(`document.querySelector("#reader-document .tool-band-slot").classList.contains("collapsed")`), true, 'the preview tool band steps aside');
+  await b.evaluate(`${bandControl}.focus()`);
+  await until('focus brings the tool band back', () => b.evaluate('Boolean(document.activeElement.closest(".tool-band-slot")) && document.querySelector("#reader-document .tool-band-slot").getBoundingClientRect().height > 20'), 3000);
+  await b.evaluate('document.activeElement.blur()');
+  await fromPreview("for (const top of [400, 200]) parent.postMessage({ librepaper: true, type: 'scroll', delta: -200, top, bottom: 5000 }, '*')");
+  await wait(260);
+  await until('preview brings the tab bar back', () => b.evaluate(`!document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
+  await until('preview brings the mode switch back', () => b.evaluate(`!document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), 3000);
 
   // h. File, Edit, View and Insert are lists, not menus hanging from a trigger.
   for (const id of ['file', 'edit', 'view', 'insert']) {

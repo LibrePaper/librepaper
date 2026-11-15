@@ -718,8 +718,8 @@
 
   // Scroll tracking for mobile bar hide/show: called by scroll listeners and
   // frame scroll messages. Hide the bars when scrolling down past threshold,
-  // show them when scrolling up or at top. The mode switch and the tab bar
-  // step aside together.
+  // show them when scrolling up or at top. The mode switch, the pane's tool
+  // band and the tab bar step aside together.
   function noteScroll(delta, top, bottom) {
     barHidden = compact ? barHiddenAfter(barHidden, delta, top, bottom) : false;
   }
@@ -4533,11 +4533,13 @@
     barHidden = false;
   });
 
-  // Reveal the bar when keyboard focus enters the nav element, so off-screen
-  // controls are never focused invisibly.
+  // Reveal the bars when keyboard focus enters one of them, so off-screen
+  // controls are never focused invisibly. Revealing them all, rather than only
+  // the row that took focus, keeps the workspace height (which counts the bars
+  // that are shown) in step with what is drawn.
   $effect(() => revealOnNavFocus(() => {
     barHidden = false;
-  }));
+  }, "body > nav, .mobile-mode-switch, .tool-band-slot"));
 </script>
 
 <svelte:window bind:innerWidth={arrangement.state.width} onresize={() => (arrangement.state.unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
@@ -4878,7 +4880,7 @@
       {:else if Editor && sourceBound}
         {#if formatBarInPane}
           <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
-                         onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} />
+                         onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} collapsed={compact && barHidden} />
         {/if}
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
@@ -5041,6 +5043,7 @@
   {#snippet previewControls()}
     {#if viewerView || previewDownloads.length}
       <PreviewControls view={viewerView} tool={viewerTool} busy={previewBusy} dark={darkNow} {findAsk}
+        collapsed={compact && barHidden}
         onpresent={() => preview?.present()}
         send={(message) => {
           // The one message that is also a preference: remember what was chosen.

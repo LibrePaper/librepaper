@@ -28,7 +28,9 @@
   // `ondownload(format)` saves one of them. `findAsk` counts the times the frame
   // asked for the search row (Ctrl or Cmd+F pressed inside it), so a second
   // press focuses the field again even though the row is already open.
-  let { view = null, tool = "select", busy = false, dark = false, findAsk = 0, send, onmode, ontool, downloads = [], ondownload, onpresent } = $props();
+  // `collapsed` slides the band out of view while the phone's scroll hides the
+  // bars; the find row below it is not part of the band and stays as it is.
+  let { view = null, tool = "select", busy = false, dark = false, findAsk = 0, send, onmode, ontool, downloads = [], ondownload, onpresent, collapsed = false } = $props();
 
   // pdf.js's own steps, and its own ceiling and floor. A zoom button moves by
   // a tenth of the *drawn* scale rather than by a step of this list: the list
@@ -150,7 +152,7 @@
 
 {#if view || downloads.length}
 <div class="preview-band">
-  <ToolBand {items} label={m.previewcontrols_page_view()}>
+  <ToolBand {items} label={m.previewcontrols_page_view()} {collapsed}>
     {#snippet item(entry)}
       {#if entry.id === "pages"}
         <IconButton icon="panel-left" label={m.common_pages()} tone="plain" size="btn-icon-sm"
