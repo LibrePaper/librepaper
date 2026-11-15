@@ -965,8 +965,9 @@
   // unique inside a document, and a session swap brings a new document, so
   // cache states under their owning LoroDoc as well as the file id.
   // The scroll position is not part of an EditorState, so setState drops it.
-  // It is kept in its own small cache, `tops`, as a document offset (the start
-  // of the first line on screen), and put back after each swap.
+  // It is kept in its own small cache, `tops`, as the place from scrollPlace()
+  // (the position on the top screen row and the pixels scrolled into it), and
+  // put back after each swap.
   let states = new WeakMap();
   let tops = new WeakMap();
   let activeDocument = null;
@@ -1211,28 +1212,60 @@
     view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "nearest", yMargin: 24 }) });
   }
 
-  // The caret and the offset of the first line showing at the top of the
-  // scroller, for the reader to keep while the page is hidden.
+  // Where the scroller is: the position on the screen row at the top of the
+  // view, and how many pixels of that row lie above the view. A row and not
+  // a line, because a wrapped line can be several screens tall and its start
+  // would be a long way from where the reader was.
+  // A hidden editor (the phone showing the document) has no geometry to read,
+  // so it answers with the last place measured while it was on screen.
+  let lastSeen = null;
+  function scrollPlace() {
+    if (!view.scrollDOM.getClientRects().length) {
+      return lastSeen?.file === showing ? { top: lastSeen.top, offset: lastSeen.offset } : { top: 0, offset: 0 };
+    }
+    return measuredPlace();
+  }
+  function noteSeen() {
+    if (view?.scrollDOM.getClientRects().length) lastSeen = { file: showing, ...measuredPlace() };
+  }
+  function measuredPlace() {
+    const edge = view.scrollDOM.getBoundingClientRect().top;
+    const left = view.contentDOM.getBoundingClientRect().left + 1;
+    const top = view.posAtCoords({ x: left, y: edge + 1 }, false);
+    const row = view.coordsAtPos(top, 1);
+    return { top, offset: row ? Math.max(0, Math.round(edge - row.top)) : 0 };
+  }
+
+  // Scrolls the row holding `place.top` back to `place.offset` pixels above
+  // the top of the view. scrollIntoView keeps the editor's top scroll margin
+  // clear of its target, so that margin is added back here, the way
+  // CodeMirror combines the sources of it. One scroll request and nothing
+  // deferred, so a jump or a collaborator shown right after replaces it.
+  function scrollBack(place) {
+    const at = Math.min(Math.max(0, place.top || 0), view.state.doc.length);
+    lastSeen = { file: showing, top: at, offset: place.offset || 0 };
+    let margin = 0;
+    for (const source of view.state.facet(EditorView.scrollMargins)) margin = Math.max(margin, source(view)?.top ?? 0);
+    view.dispatch({ effects: EditorView.scrollIntoView(at, { y: "start", yMargin: -((place.offset || 0) + margin) }) });
+  }
+
+  // The caret and the scroll place of the view, for the reader to keep while
+  // the page is hidden.
   export function place() {
     if (!view) return null;
-    return {
-      caret: view.state.selection.main.head,
-      top: view.lineBlockAtHeight(view.scrollDOM.scrollTop).from,
-    };
+    return { caret: view.state.selection.main.head, ...scrollPlace() };
   }
 
   // Puts back a place kept by place(), in the file already shown. It does not
   // focus the editor: focusing a field on a phone raises the keyboard, and the
   // person has not asked to type.
-  export function restorePlace(id, { caret = 0, top = 0 } = {}) {
+  export function restorePlace(id, { caret = 0, top = 0, offset = 0 } = {}) {
     if (!view || !id) return;
     show(id, { focus: false });
     const end = view.state.doc.length;
     const clamp = (at) => Math.min(Math.max(0, at), end);
-    view.dispatch({
-      selection: { anchor: clamp(caret) },
-      effects: EditorView.scrollIntoView(clamp(top), { y: "start" }),
-    });
+    view.dispatch({ selection: { anchor: clamp(caret) } });
+    scrollBack({ top, offset });
   }
 
   // Applies a formatting tool from lib/visual-markup/formatting.js to the open
@@ -2088,7 +2121,7 @@
     if (!view || !id || id === showing) return;
     if (showing && activeDocument) {
       stateMap(activeDocument).set(showing, view.state);
-      topMap(activeDocument).set(showing, view.lineBlockAtHeight(view.scrollDOM.scrollTop).from);
+      topMap(activeDocument).set(showing, scrollPlace());
     }
     const document_ = session.doc;
     const documentStates = stateMap(document_);
@@ -2130,9 +2163,7 @@
     // above has reconfigured the view. A caller that jumps somewhere (goToIn,
     // openAt) calls goTo after show and scrolls again, so that jump wins.
     const saved = topMap(document_).get(id);
-    if (saved !== undefined) {
-      view.dispatch({ effects: EditorView.scrollIntoView(Math.min(saved, view.state.doc.length), { y: "start" }) });
-    }
+    if (saved !== undefined) scrollBack(saved);
   }
 
   /// The file the view is showing, which the reader asks when it has a
@@ -2166,6 +2197,12 @@
         parent: host,
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
+      // Keeps lastSeen current while the editor is on screen, once a frame at most.
+      let seenFrame = 0;
+      const onScroll = () => {
+        if (!seenFrame) seenFrame = requestAnimationFrame(() => { seenFrame = 0; noteSeen(); });
+      };
+      view.scrollDOM.addEventListener("scroll", onScroll, { passive: true });
       syncKeys(view);
       syncFeatures(view, initial.first);
       const unsubscribeMode = onMode(() => { syncTheme(view); syncVisual(view); });
@@ -2213,6 +2250,8 @@
         unsubscribeMode();
         unsubscribeFont();
         unsubscribeLineHeight();
+        view?.scrollDOM.removeEventListener("scroll", onScroll);
+        cancelAnimationFrame(seenFrame);
         if (view) viewCallbacks.delete(view);
         cancelAnimationFrame(formatFrame);
         formatFrame = 0;
@@ -2223,6 +2262,7 @@
         // the state bound to the view disagree after a lifecycle rebind.
         states = new WeakMap();
         tops = new WeakMap();
+        lastSeen = null;
         undoManager = null;
         undoManagerDoc = null;
         view = null;

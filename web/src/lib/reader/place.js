@@ -60,8 +60,10 @@ export function readPlace(slug, storage = defaultStorage()) {
     openFile: value.openFile,
     caret: offset(value.caret),
     top: offset(value.top),
+    offset: offset(value.offset),
     layout: text(value.layout),
     preferredPane: text(value.preferredPane),
     mobileView: text(value.mobileView),
+    link: text(value.link),
   };
 }
