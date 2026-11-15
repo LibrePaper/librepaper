@@ -136,8 +136,10 @@ function typstImports(text) {
 // labels, citations, everything) on every keystroke. So the last full result is
 // remembered with a signature of the main text: only the lines that could
 // contribute an image, an include, or the context that decides whether a later
-// line counts (a fence, front matter, math, a brace or comment). Line numbers
-// are part of the signature because results carry them. While the signature,
+// line counts (a fence, front matter, math, a brace or comment). Which lines
+// are blank is part of the signature too: a blank line ends a paragraph, which
+// decides where math and other spans stop, without touching a signed line.
+// Line numbers are part of it because results carry them. While the signature,
 // the known paths and every included file's text are unchanged, the result is
 // too.
 //
@@ -197,6 +199,7 @@ function signature(text, spec) {
     fastPatterns.set(spec, patterns);
   }
   const out = [];
+  const blank = [];
   let reach = 0;
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
@@ -208,9 +211,11 @@ function signature(text, spec) {
       if (patterns.until?.test(line)) reach = 0;
     }
     if (take) out.push(`${i}:${line}`);
+    if (!line.trim()) blank.push(i);
     if (patterns.follow.test(line)) reach = spec.follow.chars;
   }
-  return out.join("\n");
+  // The blank-line indices are digits and commas, set apart by a NUL.
+  return `${out.join("\n")}\0${blank.join(",")}`;
 }
 
 /** @typedef {{ mainPath: string, format: string, knownKey: string, signature: string, others: Map<string, string | undefined>, result: FigureReference[] }} Memo */

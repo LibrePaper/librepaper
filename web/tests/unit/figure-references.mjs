@@ -208,3 +208,13 @@ test("Quarto: a blank line after the include path is part of the include", () =>
   texts[main] = "{{< include\npart.qmd\n\n>}}\n";
   assert.deepEqual(paths({ main, texts }), ["x.png"]);
 });
+
+test("Quarto: a blank line that ends a paragraph ends the math around an image", () => {
+  const main = "fast-para.qmd";
+  const texts = { [main]: "$x\ntext\n![a](a.png)\ny$\n" };
+  assert.deepEqual(paths({ main, texts }), []);
+  texts[main] = "$x\n\n![a](a.png)\ny$\n";
+  assert.deepEqual(paths({ main, texts }), ["a.png"]);
+  texts[main] = "$x\ntext\n![a](a.png)\ny$\n";
+  assert.deepEqual(paths({ main, texts }), []);
+});
