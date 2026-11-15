@@ -2592,8 +2592,16 @@
         // Nothing to share. The cells may live in included files, whose
         // outputs cannot be paired with the main file, so the run's own page
         // is kept until the next edit rather than thrown away; a document
-        // with no code at all loses nothing by showing it.
-        sharedResults.skip("none");
+        // with no code at all loses nothing by showing it. Figures the run
+        // made (an include: false producer cell) are still kept and shared.
+        const files = runFiguresOf(rendered.results);
+        if (files.length) {
+          ownResults = { cells: [], inlines: [], files, path: tree.main, updatedAt: new Date().toISOString() };
+          if (shareResults && mayEdit) {
+            const record = { version: 1, path: tree.main, cells: [], inlines: [], files };
+            void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+          }
+        } else sharedResults.skip("none");
         showRunPage(tree, { kind: "html", html: rendered.html });
         return;
       }
