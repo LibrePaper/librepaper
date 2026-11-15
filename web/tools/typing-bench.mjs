@@ -9,9 +9,15 @@
 // FORMAT=latex|typst|markdown (latex), LINES=1500, CHARS=150, GAP=100 (ms
 // between keystrokes), CPU=4 (Chromium CPU throttling, a stand-in for a
 // slower engine), PROFILE=path to write the raw .cpuprofile, TOP=30.
+//
+// BROWSER=webkit measures in WebKitGTK instead, the desktop app's engine,
+// through WEBKIT_WEBDRIVER (its WebKitWebDriver) and the MiniBrowser beside
+// it; run it under xvfb-run. WebKit offers no CPU profile over WebDriver, so
+// only the latency is reported.
 import { readFileSync, readdirSync, writeFileSync, mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
 import { browser, until, pause } from "../tests/helpers/browser-driver.mjs";
 import { startDeployment } from "../tests/helpers/deployment.mjs";
 
@@ -22,6 +28,41 @@ const CHARS = Number(process.env.CHARS || 150);
 const GAP = Number(process.env.GAP || 100);
 const CPU = Number(process.env.CPU || 1);
 const TOP = Number(process.env.TOP || 30);
+const WEBKIT = process.env.BROWSER === "webkit";
+
+/// The subset of the CDP tab this script uses, over WebDriver to WebKitGTK.
+async function webkitTab() {
+  const driver = process.env.WEBKIT_WEBDRIVER;
+  if (!driver) throw new Error("set WEBKIT_WEBDRIVER to WebKitGTK's WebKitWebDriver");
+  const miniBrowser = resolve(driver, "../../libexec/webkit2gtk-4.1/MiniBrowser");
+  const port = 24000 + Math.floor(Math.random() * 1000);
+  const child = spawn(driver, [`--port=${port}`], { stdio: "ignore" });
+  const call = async (method, path, body) => {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers: { "content-type": "application/json" }, body: body && JSON.stringify(body) });
+    const json = await response.json();
+    if (json.value?.error) throw new Error(`${json.value.error}: ${json.value.message}`);
+    return json.value;
+  };
+  await until("WebKitWebDriver", async () => (await fetch(`http://127.0.0.1:${port}/status`)).ok, 20000);
+  const { sessionId } = await call("POST", "/session", { capabilities: { alwaysMatch: { "webkitgtk:browserOptions": { binary: miniBrowser, args: ["--automation"] } } } });
+  const at = (path) => `/session/${sessionId}${path}`;
+  return {
+    async evaluate(expression) {
+      return call("POST", at("/execute/async"), { script: `const done = arguments[arguments.length - 1]; Promise.resolve(${expression}).then(done, (error) => done({ __error: String(error) }));`, args: [] });
+    },
+    navigate: (url) => call("POST", at("/url"), { url }),
+    resize: (width, height) => call("POST", at("/window/rect"), { width, height }),
+    setCookie: (name, value) => call("POST", at("/cookie"), { cookie: { name, value, path: "/" } }),
+    async type(keys, gap) {
+      const actions = keys.flatMap((key) => [{ type: "keyDown", value: key }, { type: "keyUp", value: key }, { type: "pause", duration: gap }]);
+      await call("POST", at("/actions"), { actions: [{ type: "key", id: "keyboard", actions }] });
+    },
+    async close() {
+      await call("DELETE", at("")).catch(() => {});
+      child.kill();
+    },
+  };
+}
 
 const example = { latex: ["tutorial-latex", "tex"], typst: ["tutorial-typst", "typ"], markdown: ["tutorial-markdown", "md"] }[FORMAT];
 if (!example) throw new Error(`unknown FORMAT ${FORMAT}`);
@@ -92,9 +133,11 @@ let tab;
 try {
   const source = longDocument();
   const doc = await deployment.publish({ title: "Typing bench", source_format: FORMAT, source });
-  tab = await browser("chromium", join(scratch, "profile"), 19000 + Math.floor(Math.random() * 1000));
+  tab = WEBKIT ? await webkitTab() : await browser("chromium", join(scratch, "profile"), 19000 + Math.floor(Math.random() * 1000));
   await tab.resize(1600, 1000);
   const [name, value] = deployment.cookie.split(/=(.*)/s);
+  // WebDriver sets a cookie on the page it is on.
+  if (WEBKIT) await tab.navigate(deployment.browserBase);
   await tab.setCookie(name, value, deployment.browserBase);
   // Settings as the preferences page stores them, e.g.
   // PREFS='{"librepaper-keymap":"vim","librepaper-editor-visual":true}'.
@@ -124,10 +167,12 @@ try {
       const start = event.timeStamp;
       requestAnimationFrame(() => setTimeout(() => window.__latency.push(performance.now() - start), 0));
     }, true);
-    new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) if (entry.name === "keydown" || entry.name === "keypress" || entry.name === "beforeinput" || entry.name === "input")
-        window.__events.push({ name: entry.name, duration: entry.duration, processing: entry.processingEnd - entry.processingStart });
-    }).observe({ type: "event", durationThreshold: 16, buffered: false });
+    try {
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) if (entry.name === "keydown" || entry.name === "keypress" || entry.name === "beforeinput" || entry.name === "input")
+          window.__events.push({ name: entry.name, duration: entry.duration, processing: entry.processingEnd - entry.processingStart });
+      }).observe({ type: "event", durationThreshold: 16, buffered: false });
+    } catch {}
     window.__loaf = [];
     try {
       new PerformanceObserver((list) => {
@@ -136,34 +181,44 @@ try {
     } catch {}
   })()`);
   await pause(500);
-  const press = async (key, code, vk, shift = false) => {
-    await tab.command("Input.dispatchKeyEvent", { type: "keyDown", key, text: key, unmodifiedText: key.toLowerCase(), code, windowsVirtualKeyCode: vk, modifiers: shift ? 8 : 0 });
-    await tab.command("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, modifiers: shift ? 8 : 0 });
-  };
-  // Vim starts in normal mode; A appends at the end of the line.
-  if (prefs["librepaper-keymap"] === "vim") { await press("A", "KeyA", 65, true); await pause(300); }
-  if (CPU > 1) await tab.command("Emulation.setCPUThrottlingRate", { rate: CPU });
-  await tab.command("Profiler.enable");
-  await tab.command("Profiler.setSamplingInterval", { interval: 200 });
-  await tab.command("Profiler.start");
   const text = "the quick brown fox jumps over the lazy dog ";
-  for (let i = 0; i < CHARS; i++) {
-    const c = text[i % text.length];
-    await tab.command("Input.dispatchKeyEvent", { type: "keyDown", key: c, text: c, unmodifiedText: c, code: c === " " ? "Space" : `Key${c.toUpperCase()}`, windowsVirtualKeyCode: c === " " ? 32 : c.toUpperCase().charCodeAt(0) });
-    await tab.command("Input.dispatchKeyEvent", { type: "keyUp", key: c, code: c === " " ? "Space" : `Key${c.toUpperCase()}`, windowsVirtualKeyCode: c === " " ? 32 : c.toUpperCase().charCodeAt(0) });
-    await pause(GAP);
+  const keys = Array.from({ length: CHARS }, (_, i) => text[i % text.length]);
+  let profile = null;
+  if (WEBKIT) {
+    // Vim starts in normal mode; A appends at the end of the line.
+    if (prefs["librepaper-keymap"] === "vim") { await tab.type(["A"], 300); }
+    await tab.type(keys, GAP);
+    await pause(1500);
+  } else {
+    const press = async (key, code, vk, shift = false) => {
+      await tab.command("Input.dispatchKeyEvent", { type: "keyDown", key, text: key, unmodifiedText: key.toLowerCase(), code, windowsVirtualKeyCode: vk, modifiers: shift ? 8 : 0 });
+      await tab.command("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, modifiers: shift ? 8 : 0 });
+    };
+    if (prefs["librepaper-keymap"] === "vim") { await press("A", "KeyA", 65, true); await pause(300); }
+    if (CPU > 1) await tab.command("Emulation.setCPUThrottlingRate", { rate: CPU });
+    await tab.command("Profiler.enable");
+    await tab.command("Profiler.setSamplingInterval", { interval: 200 });
+    await tab.command("Profiler.start");
+    for (const c of keys) {
+      const code = c === " " ? "Space" : `Key${c.toUpperCase()}`;
+      const vk = c === " " ? 32 : c.toUpperCase().charCodeAt(0);
+      await tab.command("Input.dispatchKeyEvent", { type: "keyDown", key: c, text: c, unmodifiedText: c, code, windowsVirtualKeyCode: vk });
+      await tab.command("Input.dispatchKeyEvent", { type: "keyUp", key: c, code, windowsVirtualKeyCode: vk });
+      await pause(GAP);
+    }
+    await pause(1500);
+    ({ profile } = await tab.command("Profiler.stop"));
+    if (CPU > 1) await tab.command("Emulation.setCPUThrottlingRate", { rate: 1 });
+    if (process.env.PROFILE) writeFileSync(process.env.PROFILE, JSON.stringify(profile));
   }
-  await pause(1500);
-  const { profile } = await tab.command("Profiler.stop");
-  if (CPU > 1) await tab.command("Emulation.setCPUThrottlingRate", { rate: 1 });
-  if (process.env.PROFILE) writeFileSync(process.env.PROFILE, JSON.stringify(profile));
   const latency = await tab.evaluate("window.__latency");
   const events = await tab.evaluate("window.__events");
   const loaf = await tab.evaluate("window.__loaf");
   const typed = await tab.evaluate(`document.querySelector(".cm-content").cmTile.view.state.doc.toString().includes("quick brown fox")`);
-  const summary = summarise(profile);
-  console.log(`format ${FORMAT}, ${lines} lines, ${CHARS} keys every ${GAP} ms, cpu x${CPU}, text arrived: ${typed}`);
+  console.log(`${WEBKIT ? "webkit" : "chromium"}, format ${FORMAT}, ${lines} lines, ${CHARS} keys every ${GAP} ms, cpu x${CPU}, text arrived: ${typed}`);
   console.log("keydown -> after next frame (ms):", stats(latency));
+  if (profile) {
+  const summary = summarise(profile);
   const keydowns = events.filter((e) => e.name === "keydown");
   console.log(`event timing >=16ms: ${events.length} entries; keydown ${keydowns.length}`, keydowns.length ? stats(keydowns.map((e) => e.duration)) : "");
   console.log(`main thread busy ${summary.busy.toFixed(0)} ms of ${summary.span.toFixed(0)} ms (${(100 * summary.busy / summary.span).toFixed(0)}%), ${(summary.busy / CHARS).toFixed(1)} ms per key`);
@@ -178,6 +233,7 @@ try {
   for (const line of summary.self) console.log(line);
   console.log("\ninclusive time:");
   for (const line of summary.total) console.log(line);
+  }
 } finally {
   await tab?.close().catch(() => {});
   await deployment.stop();
