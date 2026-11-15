@@ -72,3 +72,13 @@ if (!existsSync(typstWasm)) {
     assert.equal(asked.length, before);
   }
 }
+
+// Identities tell equal-length edits and swapped equal-size figures apart.
+{
+  const { hashText, resultsIdentity } = await import("../../src/lib/paper/typst-renderer.js");
+  assert.notEqual(hashText("abcd"), hashText("abce"));
+  const a = resultsIdentity([{ path: "p.png", base64: "AAAA" }]);
+  assert.notEqual(a, resultsIdentity([{ path: "p.png", base64: "BBBB" }]));
+  assert.equal(a, resultsIdentity([{ path: "p.png", base64: "AAAA" }]));
+  assert.equal(resultsIdentity(null), "");
+}

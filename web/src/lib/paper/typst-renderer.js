@@ -230,7 +230,7 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
     /** @type {Map<string, Uint8Array>} */
     const next = new Map();
     for (const [path, body] of Object.entries(scratch.assets)) if (!(path in assetVersions)) next.set(path, body);
-    const key = [...next].map(([path, body]) => `${path}:${body.length}`).join("\0");
+    const key = [...next].map(([path, body]) => `${path}:${bytesIdentity(body)}`).join("\0");
     stand = next;
     const changed = key !== standKey;
     standKey = key;
@@ -299,7 +299,7 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
    */
   function prepare(project, preamble, onUpdate = () => {}) {
     setProject(project);
-    const key = [main, preamble, JSON.stringify(assetVersions), String(textsRev), String(project.texts?.[main]?.length ?? 0), String(project.resultsFiles?.()?.length ?? 0)].join("\0");
+    const key = [main, preamble, JSON.stringify(assetVersions), String(textsRev), hashText(project.texts?.[main] ?? ""), resultsIdentity(project.resultsFiles?.() ?? null)].join("\0");
     if (key === preparedKey) return Promise.resolve(false);
     if (preparing) {
       again = true;
@@ -321,6 +321,34 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
 
   const mathCss = styleOf(compilePage("$x$"));
   return { render, frame, unframe, mathCss, setProject, prepare };
+}
+
+/** FNV-1a over a string, as hex. @param {string} text */
+export function hashText(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0;
+  return h.toString(16);
+}
+
+/** FNV-1a over bytes, as hex. @param {Uint8Array} bytes */
+function hashBytes(bytes) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; i += 1) h = Math.imul(h ^ bytes[i], 0x01000193) >>> 0;
+  return h.toString(16);
+}
+
+/** What names a run's figures: each path with its size and a hash of both ends of its data.
+ * @param {Array<{ path: string, base64?: string }> | null} files */
+export function resultsIdentity(files) {
+  return (files ?? []).map((file) => {
+    const data = typeof file?.base64 === "string" ? file.base64 : "";
+    return `${file?.path}:${data.length}:${hashText(data.slice(0, 64) + "\0" + data.slice(-64))}`;
+  }).join("\0");
+}
+
+/** Size and a hash of both ends of some bytes. @param {Uint8Array} body */
+function bytesIdentity(body) {
+  return `${body.length}:${hashBytes(body.subarray(0, 64))}:${hashBytes(body.subarray(Math.max(0, body.length - 64)))}`;
 }
 
 /** The bytes at a URL, or null. @param {string} url */
