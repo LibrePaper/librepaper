@@ -88,7 +88,8 @@ export class ImageWidget extends WidgetType {
   private resolver: ImageResolver | null;
 
   eq(other: WidgetType): boolean {
-    return other instanceof ImageWidget && other.src === this.src && other.style === this.style;
+    // A new resolver (a new run's figures) redraws the image.
+    return other instanceof ImageWidget && other.src === this.src && other.style === this.style && other.resolver === this.resolver;
   }
 
   toDOM(view: EditorView): HTMLElement {
@@ -169,7 +170,7 @@ export class FigureWidget extends WidgetType {
   }
 
   eq(other: WidgetType): boolean {
-    return other instanceof FigureWidget && other.key === this.key;
+    return other instanceof FigureWidget && other.key === this.key && other.resolver === this.resolver;
   }
 
   toDOM(view: EditorView): HTMLElement {

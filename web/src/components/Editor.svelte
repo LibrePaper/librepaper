@@ -1841,7 +1841,7 @@
     if (!on) return [];
     if (/\.(md|markdown|qmd|org|typ)$/i.test(path)) {
       const format = /\.org$/i.test(path) ? "org" : /\.qmd$/i.test(path) ? "quarto" : /\.typ$/i.test(path) ? "typst" : "markdown";
-      return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), resultsFiles: () => untrack(() => resultsFiles)?.() ?? null, dark: mode() === "dark", project: format === "typst" ? () => paperProject(path) : null, openInclude: (name) => openIncluded(path, name) });
+      return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), resultsFiles: () => untrack(() => resultsFiles)?.() ?? null, resultsRevision: () => untrack(() => resultsRevision), dark: mode() === "dark", project: format === "typst" ? () => paperProject(path) : null, openInclude: (name) => openIncluded(path, name) });
     }
     return visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), resultsFiles: () => untrack(() => resultsFiles)?.() ?? null, dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) });
   }

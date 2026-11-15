@@ -60,8 +60,9 @@ function numberBlocks(htmls) {
 
 class PaperWidget extends WidgetType {
   // `others` is non-null only for a header's title block: the text its Preamble pill shows.
-  constructor(html, from, path, imageUrl, math = null, others = null) {
+  constructor(html, from, path, imageUrl, math = null, others = null, revision = "") {
     super();
+    this.revision = revision;
     this.html = html;
     this.from = from;
     this.path = path;
@@ -73,7 +74,7 @@ class PaperWidget extends WidgetType {
   }
 
   eq(other) {
-    return other.html === this.html && other.mathKey === this.mathKey && other.others === this.others;
+    return other.html === this.html && other.mathKey === this.mathKey && other.others === this.others && other.revision === this.revision;
   }
 
   toDOM(view) {
@@ -134,7 +135,7 @@ function isTitleBlock(html) {
   return /^\s*<header class="title-block[" ]/.test(html);
 }
 
-function build(state, path, imageUrl, adapter, project) {
+function build(state, path, imageUrl, adapter, project, revision = () => "") {
   const renderer = currentPaperRenderer(adapter.module);
   if (!renderer) return { decorations: Decoration.none, rendered: [], gaps: new Set(), taken: NO_RANGES };
   // A renderer that compiles in the project (Typst) is told which one before it draws.
@@ -217,7 +218,7 @@ function build(state, path, imageUrl, adapter, project) {
     rendered.push(block);
     marks.push(
       Decoration.replace({
-        widget: new PaperWidget(html, block.from, path, imageUrl, numbering?.get(block) ?? null, others),
+        widget: new PaperWidget(html, block.from, path, imageUrl, numbering?.get(block) ?? null, others, revision()),
         block: true,
       }).range(block.from, block.to),
     );
@@ -240,16 +241,16 @@ function build(state, path, imageUrl, adapter, project) {
   return { decorations: Decoration.set(marks, true), rendered, gaps, taken: taken.length ? taken : NO_RANGES };
 }
 
-function paperField(path, imageUrl, adapter, project) {
+function paperField(path, imageUrl, adapter, project, revision) {
   return StateField.define({
-    create: (state) => build(state, path, imageUrl, adapter, project),
+    create: (state) => build(state, path, imageUrl, adapter, project, revision),
     update(value, transaction) {
       if (
         transaction.docChanged ||
         transaction.selection ||
         transaction.effects.some((effect) => effect.is(refreshPaper))
       ) {
-        return build(transaction.state, path, imageUrl, adapter, project);
+        return build(transaction.state, path, imageUrl, adapter, project, revision);
       }
       return value;
     },
@@ -339,14 +340,15 @@ function stepInto(field, direction) {
 /// `main` the open file's path, `texts` every project text by path, `assets` each asset path to a version,
 /// `assetUrl(path)` a fetchable URL for an asset or null.
 /// `resultsFiles()` returns the files of the last run (or null): a figure that is not a project file is drawn from them, and one that is in neither is drawn as a placeholder.
+/// `resultsRevision()` names the last run's results; a widget drawn for another revision is drawn again.
 /// `dark` puts `lp-dark` on the editor, which the house stylesheet answers.
 /// `openInclude(name)` opens the file a fold's include names; without it the include fold has no button.
 /// The paper field finds the folds from the text and says which ones it draws (its taken ranges); the fold layer leaves those ranges alone.
-export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, resultsFiles = null, dark = false, project = null, openInclude = null } = {}) {
+export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, resultsFiles = null, resultsRevision = () => "", dark = false, project = null, openInclude = null } = {}) {
   const adapter = paperFormat(format);
   if (!adapter) return [];
   const figureUrl = imageUrl || resultsFiles ? (/** @type {string} */ file) => figureUrlFor(imageUrl ?? (() => null), resultsFiles, file) : null;
-  const field = paperField(path, figureUrl, adapter, project);
+  const field = paperField(path, figureUrl, adapter, project, resultsRevision);
   return [
     caretParked,
     field,
