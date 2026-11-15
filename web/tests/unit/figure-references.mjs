@@ -104,7 +104,7 @@ for (const [label, main, build] of [
   [
     "Quarto",
     "fast-q.qmd",
-    (prose, path = "a.png") => `# Title\n\n${prose}\n\n![alt\n](${path})\n`,
+    (prose, path = "a.png") => `# Title\n\n${prose}\n\n![alt](${path})\n`,
   ],
   [
     "LaTeX",
@@ -158,7 +158,7 @@ for (const [label, main, build] of [
   });
 }
 
-test("Quarto: a token-free line edit inside an options-free wrapped image still tracks the next line", () => {
+test("Quarto: an image whose alt text wraps is no figure, and joining the lines makes it one", () => {
   const main = "fast-wrap.qmd";
   const texts = { [main]: "![one\ntwo](a.png)\n" };
   assert.deepEqual(figures({ main, texts }), []);
