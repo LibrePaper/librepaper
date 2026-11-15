@@ -218,3 +218,28 @@ test("Quarto: a blank line that ends a paragraph ends the math around an image",
   texts[main] = "$x\ntext\n![a](a.png)\ny$\n";
   assert.deepEqual(paths({ main, texts }), []);
 });
+
+test("Quarto: a heading between multi-line math delimiters frees the image", () => {
+  const main = "fast-mathhead.qmd";
+  const texts = { [main]: "$x\ntext\n![a](a.png)\ny$\n" };
+  assert.deepEqual(paths({ main, texts }), []);
+  texts[main] = "$x\n# Heading\n![a](a.png)\ny$\n";
+  assert.deepEqual(paths({ main, texts }), ["a.png"]);
+  texts[main] = "$x\ntext\n![a](a.png)\ny$\n";
+  assert.deepEqual(paths({ main, texts }), []);
+});
+
+test("Quarto: single-line math keeps the fast path, and a display block stays correct across prose edits", () => {
+  const single = "fast-math1.qmd";
+  const texts = { [single]: "Let $x$ be \\$5.\n\nprose\n\n![a](a.png)\n" };
+  const first = referencedFigures({ main: single, texts });
+  texts[single] = texts[single].replace("prose", "other prose");
+  assert.deepEqual(referencedFigures({ main: single, texts }), first);
+  const block = "fast-math2.qmd";
+  const more = { [block]: "$$\nx\n$$\n\n![a](a.png)\n\n$$\ny\ntext\n$$\n" };
+  assert.deepEqual(paths({ main: block, texts: more }), ["a.png"]);
+  more[block] = more[block].replace("text", "# Heading");
+  assert.deepEqual(paths({ main: block, texts: more }), ["a.png"]);
+  more[block] = "$$\nx\n![a](a.png)\n$$\n";
+  assert.deepEqual(paths({ main: block, texts: more }), []);
+});

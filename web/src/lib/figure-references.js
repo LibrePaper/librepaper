@@ -161,14 +161,21 @@ function typstImports(text) {
 //     skips up to 200 characters, options included, between the command and
 //     its {path}, so a line within 256 characters after \includegraphics,
 //     \input, \include or \subfile is signed as well (follow).
+// Markdown also blanks math, and a math span can cross unsigned lines in a way
+// a blank line does not show (a line between the delimiters that becomes a
+// heading ends the paragraph and breaks the span). Math is the only blanking
+// that can span unsigned lines, so a main text with math across a line break
+// (a line with an odd number of unescaped "$", or of "$$") has no signature and
+// takes the full pass. Fenced code is counted too, which is only conservative.
 // Typst, Org and HTML have no list (their constructs span lines through
 // strings, calls, comments and attributes that no small token set bounds), so
 // they always take the full pass.
-/** @typedef {{ tokens: string[], follow: { tokens: string[], chars: number, until?: string } }} FastSpec */
+/** @typedef {{ tokens: string[], follow: { tokens: string[], chars: number, until?: string }, math?: boolean }} FastSpec */
 /** @type {FastSpec} */
 const MARKDOWN_FAST = {
   tokens: ["![", "{{<", "include", "}}", "`", "~", "$", "---", "..."],
   follow: { tokens: ["{{<"], chars: 256, until: ">}}" },
+  math: true,
 };
 /** @type {Record<string, FastSpec>} */
 const FAST = {
@@ -185,12 +192,17 @@ const fastPatterns = new Map();
 /** @param {string[]} words */
 const anyOf = (words) => new RegExp(words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"));
 
+const UNESCAPED_DOLLAR = /(?<!\\)\$/g;
+const UNESCAPED_DISPLAY = /(?<!\\)\$\$/g;
+/** @param {string} line @param {RegExp} pattern */
+const count = (line, pattern) => line.match(pattern)?.length ?? 0;
+
 /**
  * The lines of `text` that matter to the fast path, each with its 0-based
  * number, in one string.
  * @param {string} text
  * @param {FastSpec} spec
- * @returns {string}
+ * @returns {string | null} null when the text has multi-line math and spec.math is set
  */
 function signature(text, spec) {
   let patterns = fastPatterns.get(spec);
@@ -210,6 +222,7 @@ function signature(text, spec) {
       reach -= line.length + 1;
       if (patterns.until?.test(line)) reach = 0;
     }
+    if (spec.math && line.includes("$") && (count(line, UNESCAPED_DOLLAR) % 2 || count(line, UNESCAPED_DISPLAY) % 2)) return null;
     if (take) out.push(`${i}:${line}`);
     if (!line.trim()) blank.push(i);
     if (patterns.follow.test(line)) reach = spec.follow.chars;
@@ -236,10 +249,11 @@ export function referencedFigures(tree) {
   const known = new Set([...Object.keys(texts), ...Object.keys(tree.assets ?? {}), ...Object.keys(tree.digests ?? {})].map(normalizePath));
   const mainFormat = sourceFormatOf(main);
   const spec = FAST[mainFormat];
-  const knownKey = spec ? [...known].sort().join("\n") : "";
-  const mainSignature = spec ? signature(texts[main], spec) : "";
+  const mainSignature = spec ? signature(texts[main], spec) : null;
+  const fast = spec && mainSignature !== null;
+  const knownKey = fast ? [...known].sort().join("\n") : "";
   if (
-    memo && spec && memo.mainPath === main && memo.format === mainFormat && memo.knownKey === knownKey &&
+    memo && fast && memo.mainPath === main && memo.format === mainFormat && memo.knownKey === knownKey &&
     memo.signature === mainSignature && [...memo.others].every(([file, text]) => texts[file] === text)
   ) {
     return memo.result.map((reference) => ({ ...reference }));
@@ -278,9 +292,9 @@ export function referencedFigures(tree) {
       }
     }
   }
-  if (spec && ready) {
+  if (fast && ready) {
     const others = new Map([...seen].filter((file) => file !== main).map((file) => [file, texts[file]]));
-    memo = { mainPath: main, format: mainFormat, knownKey, signature: mainSignature, others, result: out.map((reference) => ({ ...reference })) };
+    memo = { mainPath: main, format: mainFormat, knownKey, signature: /** @type {string} */ (mainSignature), others, result: out.map((reference) => ({ ...reference })) };
   }
   return out;
 }
