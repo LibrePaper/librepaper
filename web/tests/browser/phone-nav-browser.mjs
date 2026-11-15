@@ -486,31 +486,60 @@ try {
   for (const paintOf of [dark, light]) assert.notEqual(paintOf.background, 'rgba(0, 0, 0, 0)', 'the bar is opaque');
 
   // m. A phone that discards the hidden tab reloads it: the person comes back
-  // to the editor face, scrolled where they left it, not to the top of the preview.
-  await reload();
-  await resize(390);
-  await until('phone shell before the reload', () => has('.mobile-tab-bar'), 10000);
-  await toMode('source');
+  // to the editor face, the file and the scroll they left, not to the top of
+  // the preview. A file other than the one the project opens on is the case
+  // that matters: the swap to it happens while the editor is being built, and
+  // it must show its own text and write nothing.
   const firstLine = () => b.evaluate(`(() => {
     const scroller = document.querySelector('.cm-scroller'); const top = scroller.getBoundingClientRect().top;
     return [...document.querySelectorAll('.cm-line')].find(line => line.getBoundingClientRect().bottom > top + 1)?.textContent || '';
   })()`);
+  const source = () => b.evaluate(`document.querySelector('.cm-content')?.textContent || ''`);
+  const docWrites = () => b.evaluate(`window.roomSent.filter(message => message.type?.startsWith('doc-update')).length`);
+  const openInExplorer = async (path, marker) => {
+    await click(`.explorer-row[data-tip="${path}"]`);
+    await until(`${path} in the source`, async () => (await source()).includes(marker), 5000);
+  };
+  const reloadOnPhone = async () => {
+    await b.navigate(url);
+    await until('phone editor after the reload', async () => (await has('.cm-editor')) && (await modeOf()) === 'mobile-source', 10000);
+  };
+  // The stand-in server builds a new document on every load, so each load
+  // sends this browser's copy back once. That is the baseline; restoring the
+  // place must add nothing to it.
+  await reload();
+  await wait(500);
+  const baseline = await docWrites();
+  await openInExplorer('notes.md', 'A paragraph.');
+  await resize(390);
+  await toMode('source');
+  await reloadOnPhone();
+  await wait(500);
+  assert.ok((await source()).includes('A paragraph.'), 'the restored file shows its own text: ' + (await source()).slice(0, 40));
+  assert.equal(await docWrites(), baseline, 'putting the place back writes nothing to the document');
+
+  await resize(1280, 900);
+  await openInExplorer('a-main.html', 'line 0 source content');
+  await resize(390);
+  await toMode('source');
   await b.evaluate(`document.querySelector('.cm-scroller').scrollTop = 2400`);
   await flush(); await wait(100);
   const before = await firstLine();
   assert.match(before, /^line [1-9]\d+ /, 'the editor scrolled away from the top: ' + before);
-  await b.navigate(url);
-  await until('phone editor after the reload', async () => (await has('.cm-editor')) && (await modeOf()) === 'mobile-source', 10000);
+  await reloadOnPhone();
   await until('scroll put back', async () => (await firstLine()) === before, 5000);
+  await wait(500);
+  assert.equal(await docWrites(), baseline, 'putting the scroll back writes nothing to the document');
 
   // n. Opening another file and coming back keeps the scroll.
   await resize(1280, 900);
   await b.evaluate(`document.querySelector('.cm-scroller').scrollTop = 2400`);
   await flush(); await wait(100);
   const kept = await firstLine();
-  await click('.explorer-row[data-tip="notes.md"]'); await wait(300);
-  await click('.explorer-row[data-tip="a-main.html"]'); await wait(300);
-  assert.equal(await firstLine(), kept, 'the scroll survives a visit to another file');
+  assert.match(kept, /^line [1-9]\d+ /, 'the editor scrolled away from the top: ' + kept);
+  await openInExplorer('notes.md', 'A paragraph.');
+  await openInExplorer('a-main.html', 'line ');
+  await until('the scroll survives a visit to another file', async () => (await firstLine()) === kept, 3000);
 
   // l. A reader sees less.
   await reload('?role=reader');
