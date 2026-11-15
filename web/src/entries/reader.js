@@ -14,9 +14,11 @@ import { listenForSignOut } from "../lib/local-data.js";
 import { signedOutHref } from "../lib/api.js";
 import { markDocumentLanguage } from "../lib/locale.js";
 import { installTips } from "../lib/tip.js";
+import { preventFocusZoom } from "../lib/ios-viewport.js";
 import { reloadOnStaleChunks } from "../lib/stale-chunks.js";
 import loroWasmUrl from "loro-crdt/web/loro_wasm_bg.wasm?url";
 
+preventFocusZoom();
 markDocumentLanguage();
 // A deploy can leave this tab asking for chunks the server no longer has.
 reloadOnStaleChunks();

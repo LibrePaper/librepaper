@@ -7,7 +7,9 @@ import { start as startTheme } from "../lib/theme.js";
 import Device from "../components/Device.svelte";
 import { markDocumentLanguage } from "../lib/locale.js";
 import { installTips } from "../lib/tip.js";
+import { preventFocusZoom } from "../lib/ios-viewport.js";
 
+preventFocusZoom();
 markDocumentLanguage();
 // The one tooltip, for every element that carries data-tip.
 installTips();
