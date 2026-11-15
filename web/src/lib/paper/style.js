@@ -81,6 +81,27 @@ export function paperStylesheet(pageCss) {
   // The widget is a flow root so its children's margins stay inside it: CodeMirror
   // measures the widget's height, and a margin that collapsed out would be missed.
   // The last child keeps its bottom margin, which is the gap to the next block.
+  // A code card's caption bar sits on its code (the house's file-name bar). A card whose code is not in the
+  // document is dashed, so it reads as not part of the document while staying readable.
+  const cellStyle = `.cm-lp-paper .lp-paper-cell-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6em;
+  padding-bottom: 0.35rem;
+}
+.cm-lp-paper .lp-paper-cell-lang { font-family: var(--lp-mono); font-size: 0.75rem; }
+.cm-lp-paper .lp-paper-cell-label { font-family: var(--lp-sans); }
+.cm-lp-paper .lp-paper-cell-note {
+  margin-left: auto;
+  font-family: var(--lp-sans);
+  font-size: 0.72rem;
+  color: var(--lp-muted);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.cm-lp-paper .lp-paper-cell-quiet,
+.cm-lp-paper .lp-paper-cell-quiet + pre { border-style: dashed; }
+`;
   return [
     `@scope (.cm-lp-paper) {\n${scoped}
 :scope, .lp-dark :scope {
@@ -107,5 +128,6 @@ a { text-decoration: underline; }
 pre { white-space: pre; }
 }`,
     sourceType,
+    cellStyle,
   ].join("\n");
 }
