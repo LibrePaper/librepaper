@@ -31,7 +31,10 @@
   // keeps a roving tabindex. `toolbar` makes the band a toolbar with arrow-key
   // movement over its visible buttons. `onmenuselect` runs after a menu entry
   // has run, so a caller can hand the focus back.
-  let { items = [], item, end = undefined, label = "", toolbar = false, hidden = $bindable([]), onmenuselect = undefined } = $props();
+  // `collapsed` slides the band out of view while nobody is using it, so the
+  // content below takes its height back, the same as the phone's mode switch.
+  // It comes back the moment focus lands in the band.
+  let { items = [], item, end = undefined, label = "", toolbar = false, hidden = $bindable([]), onmenuselect = undefined, collapsed = false } = $props();
 
   let row = $state(null);
   let measure = $state(null);
@@ -115,6 +118,11 @@
   }
 </script>
 
+<!-- The band's height is its content's, not a constant, so the collapse runs on
+     grid rows (0fr to 1fr) rather than a negative margin. The clip is the grid
+     item that shrinks; the band inside it keeps its own height. -->
+<div class="tool-band-slot" class:collapsed>
+<div class="tool-band-clip">
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
 <div class="tool-band" role={toolbar ? "toolbar" : "group"} tabindex={toolbar ? -1 : undefined} aria-label={label} bind:this={row} {onkeydown}>
   <div class="band-items">
@@ -155,14 +163,38 @@
     <span class="band-measured" data-more><IconButton icon="more-horizontal" label={m.previewcontrols_more()} tone="plain" /></span>
   </div>
 </div>
+</div>
+</div>
 
 <style>
+  /* The slot is the grid that collapses; its one row is the band's height when
+     shown and nothing when hidden. The clip may shrink below the band's own
+     min-height, which is what lets the row reach 0. */
+  .tool-band-slot {
+    display: grid;
+    grid-template-rows: 1fr;
+    flex: 0 0 auto;
+  }
+  .tool-band-slot.collapsed:not(:focus-within) {
+    grid-template-rows: 0fr;
+    visibility: hidden;
+  }
+  .tool-band-clip {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .tool-band-slot {
+      transition: grid-template-rows 180ms ease, visibility 180ms ease;
+    }
+  }
+
   /* The band is a size container: its width is the pane's, not its contents',
      which is what keeps measuring from feeding back into itself. */
   .tool-band {
     position: relative;
     container-type: inline-size;
-    flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: calc(var(--spacing) * 1);

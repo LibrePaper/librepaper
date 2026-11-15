@@ -702,8 +702,8 @@
 
   // Scroll tracking for mobile bar hide/show: called by scroll listeners and
   // frame scroll messages. Hide the bars when scrolling down past threshold,
-  // show them when scrolling up or at top. The mode switch and the tab bar
-  // step aside together.
+  // show them when scrolling up or at top. The mode switch, the pane's tool
+  // band and the tab bar step aside together.
   function noteScroll(delta, top, bottom) {
     barHidden = compact ? barHiddenAfter(barHidden, delta, top, bottom) : false;
   }
@@ -4853,7 +4853,7 @@
       {:else if Editor && sourceBound}
         {#if formatBarInPane}
           <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
-                         onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} />
+                         onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} collapsed={compact && barHidden} />
         {/if}
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
@@ -5016,6 +5016,7 @@
   {#snippet previewControls()}
     {#if viewerView || previewDownloads.length}
       <PreviewControls view={viewerView} tool={viewerTool} busy={previewBusy} dark={darkNow} {findAsk}
+        collapsed={compact && barHidden}
         onpresent={() => preview?.present()}
         send={(message) => {
           // The one message that is also a preference: remember what was chosen.

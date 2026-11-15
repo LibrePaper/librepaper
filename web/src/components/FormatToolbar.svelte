@@ -17,7 +17,9 @@
   // `available` is the Edit menu's availability by command id: a tool whose
   // command is unavailable is drawn disabled. `onmenuselect` runs after a tool
   // chosen from the "..." menu, so the editor can take the focus back.
-  let { active = null, modalEditor = false, available = null, onformat = () => {}, oninsert = () => {}, oncommand = () => {}, onmenuselect = undefined } = $props();
+  // `collapsed` slides the row out of view while the phone's scroll hides the
+  // bars; it is passed on to the band.
+  let { active = null, modalEditor = false, available = null, onformat = () => {}, oninsert = () => {}, oncommand = () => {}, onmenuselect = undefined, collapsed = false } = $props();
 
   // A tool whose command is unavailable is drawn disabled, and a disabled button
   // cannot take the focus, so it is neither an arrow-key stop nor the Tab stop.
@@ -53,7 +55,7 @@
   });
 </script>
 
-<ToolBand {items} toolbar label={m.formattoolbar_label()} bind:hidden={moved} {onmenuselect}>
+<ToolBand {items} toolbar label={m.formattoolbar_label()} bind:hidden={moved} {onmenuselect} {collapsed}>
   {#snippet item(entry)}
     {@const tool = entry.tool}
     <!-- The mousedown is cancelled so the click does not take the focus from
