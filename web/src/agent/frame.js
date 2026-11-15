@@ -10,7 +10,9 @@
 // with it. That is why the sidebar treats everything arriving from here as
 // untrusted input rather than as fact.
 
-import { createKatexLoader, createMathTypesetter } from "../lib/math.js";
+import { createKatexCache, createKatexLoader, createMathTypesetter, typesetDetached } from "../lib/math.js";
+import { perfEnd, perfStart } from "../lib/perf-marks.js";
+import { imageSize } from "./image-size.js";
 import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
 import { watchPinch } from "../lib/pinch.js";
 import { morphChildren } from "./morph.js";
@@ -174,7 +176,10 @@ import { morphChildren } from "./morph.js";
   // fetched from this origin the first time a document needs one. The path is
   // written in at build time, beside the copy of KaTeX the build made.
   const loadKatex = createKatexLoader({ base: __KATEX__, document, window });
-  const typesetMath = createMathTypesetter({ base: __KATEX__, document, window, load: loadKatex });
+  // One cache of rendered formulas, shared by the live body and by the
+  // detached pages typeset before they are morphed in.
+  const katexCache = createKatexCache();
+  const typesetMath = createMathTypesetter({ base: __KATEX__, document, window, load: loadKatex, cache: katexCache });
 
   // The one mark this file draws that is not the document's: the ring around
   // whichever annotation the sidebar has singled out. Installed once, up
@@ -660,6 +665,8 @@ import { morphChildren } from "./morph.js";
   // blob URL before the page is parsed, so the bytes cross the channel once
   // rather than inside every keystroke's HTML.
   const frameFigures = new Map();
+  // Each figure's natural size, read from its bytes, by digest.
+  const frameFigureSizes = new Map();
   // The types a figure may be given. The reader sends the type it worked out
   // from the file name, and this end does not trust it: an SVG or HTML blob
   // would run as this origin. figures.js has the other copy of this list.
@@ -672,6 +679,8 @@ import { morphChildren } from "./morph.js";
       if (frameFigures.has(item.sha)) continue;
       const type = FRAME_FIGURE_TYPES.has(item.type) ? item.type : "application/octet-stream";
       frameFigures.set(item.sha, URL.createObjectURL(new Blob([item.bytes], { type })));
+      const natural = imageSize(item.bytes);
+      if (natural) frameFigureSizes.set(item.sha, natural);
     }
   }
   function withFigureUrls(html) {
@@ -679,6 +688,24 @@ import { morphChildren } from "./morph.js";
       const url = frameFigures.get(sha);
       return url ? `${url}#librepaper-asset=${sha}` : whole;
     });
+  }
+
+  // Give each figure in a parsed page its decoding hint and, when the page
+  // sets no size of its own, its natural size, so the browser knows the aspect
+  // ratio before the bytes decode. Done on the parsed page, so every
+  // keystroke yields identical attributes and the morph sees no change.
+  const FIGURE_SOURCE = /#librepaper-asset=([0-9A-Za-z%]+)$/;
+  function sizeFigures(root) {
+    for (const img of root.querySelectorAll("img")) {
+      const match = FIGURE_SOURCE.exec(img.getAttribute("src") || "");
+      if (!match) continue;
+      if (!img.hasAttribute("decoding")) img.setAttribute("decoding", "async");
+      const natural = frameFigureSizes.get(match[1]);
+      if (!natural || img.hasAttribute("width") || img.hasAttribute("height")) continue;
+      if (img.style.width || img.style.height) continue;
+      img.setAttribute("width", String(natural.width));
+      img.setAttribute("height", String(natural.height));
+    }
   }
 
   addEventListener("message", (event) => {
@@ -721,29 +748,46 @@ import { morphChildren } from "./morph.js";
       // The body is about to be replaced or morphed, so marks painted on the
       // old one no longer count as painted.
       bodyGeneration += 1;
+      const totalStart = perfStart();
+      const parseStart = perfStart();
       const parsed = new DOMParser().parseFromString(withFigureUrls(String(message.html || "")), "text/html");
+      perfEnd("lp:preview:parse", parseStart);
       // The frame this arrives in is an empty shell -- nothing rendered is
       // stored any more, so there is no page whose styles the body could
       // inherit. The page's own head comes with it, and is installed once:
       // it is the same template on every keystroke, so it is replaced only
       // when it actually differs.
       adoptStyles(parsed, message.presentation);
-      // LaTeXML output is morphed in place, so unchanged paragraphs, images
-      // and equations are never recreated. Marks go first: they split text
-      // nodes, and the morph compares the page with the unmarked source. Other
-      // formats typeset their math in place, which a morph would undo on every
-      // keystroke, so they replace the body.
-      const isLatexml = !!parsed.querySelector(".ltx_page_main, .ltx_document");
+      sizeFigures(parsed.body);
+      document.documentElement.classList.add("lp-live-preview");
+      // Every format is morphed in place, so unchanged paragraphs, images and
+      // equations are never recreated. Math is typeset on the parsed page
+      // first, so the morph compares typeset with typeset and an unchanged
+      // formula keeps its nodes. Marks go first: they split text nodes, and
+      // the morph compares the page with the unmarked source.
+      const katexReady = !!window.katex;
+      if (katexReady) {
+        const typesetStart = perfStart();
+        typesetDetached(window.katex, parsed.body, parsed, katexCache);
+        perfEnd("lp:preview:typeset", typesetStart);
+      }
       quietly(() => {
-        if (isLatexml) {
-          removeMarks();
+        const swapStart = perfStart();
+        removeMarks();
+        if (katexReady) {
           morphChildren(document.body, parsed.body);
         } else {
-          document.body.innerHTML = parsed.body.innerHTML;
+          // KaTeX is not here yet (the first document with math, or none): the
+          // parsed nodes move in as they are, without a second parse, and
+          // typesetMath below starts the load. Later keystrokes morph.
+          document.body.replaceChildren(...document.adoptNode(parsed.body).childNodes);
         }
+        perfEnd("lp:preview:swap", swapStart);
         // In the same breath when KaTeX is already here, so the text published
         // below is the typeset text. The first time it is not, and the
-        // rendering lands as a mutation the observer republishes.
+        // rendering lands as a mutation the observer republishes. When the
+        // page was typeset above this finds nothing to do, and covers any
+        // formula that was left over.
         typesetMath();
       });
       // Replacing the body throws away every mark on it, and the ranges to
@@ -759,7 +803,10 @@ import { morphChildren } from "./morph.js";
       if (lastRanges.length) highlight(shiftRanges(lastRanges));
       // Directly, not through the observer: the observer waits a quarter of a
       // second before republishing, and a preview should keep up with typing.
+      const publishStart = perfStart();
       publish(true);
+      perfEnd("lp:preview:publish", publishStart);
+      perfEnd("lp:preview:total", totalStart);
     }
 
     // Show the reader where a place in the text is. The offset is into the
