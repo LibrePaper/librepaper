@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { EXPORT_TARGETS, exportAvailability, exportFile, madeLocally, unrunCells } from "../../src/lib/reader/exports.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+// The Typst adapter lists figures only once its parser is loaded.
+await loadTypstSyntaxForTests();
 
 const all = (...formats) => (format) => formats.includes(format);
 
