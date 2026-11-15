@@ -218,3 +218,32 @@ test("the initial check: a differing view is replaced from the document, not wri
   assert.equal(batches.filter((batch) => batch.by === "local").length, 0);
   inStep();
 });
+
+test("the initial check: a plugin destroyed before it runs writes nothing", async () => {
+  // The editor swaps one file's state for another's with `setState`, which
+  // destroys the first file's plugin. When the swap comes in the same tick the
+  // view was built, the first plugin's deferred check must not run: it would
+  // put the first file's text into the view now showing the second, and the
+  // second file's plugin would write that into its own text.
+  const doc = new LoroDoc();
+  const files = doc.getMap("files");
+  files.setContainer("main.md", new LoroText()).insert(0, "main text");
+  files.setContainer("notes.md", new LoroText()).insert(0, "notes text");
+  doc.commit();
+  const batches = [];
+  doc.subscribe((batch) => batches.push(batch));
+  const textOf = (path) => (document_) => document_.getMap("files").get(path);
+
+  const view = new View(EditorState.create({ doc: "main text" }));
+  const first = view.attach(new LoroSyncPluginValue(view, doc, textOf("main.md")));
+  first.destroy();
+  view.plugins = [];
+  view.state = EditorState.create({ doc: "notes text" });
+  view.attach(new LoroSyncPluginValue(view, doc, textOf("notes.md")));
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(view.text, "notes text");
+  assert.equal(textOf("notes.md")(doc).toString(), "notes text");
+  assert.equal(batches.filter((batch) => batch.by === "local").length, 0);
+});

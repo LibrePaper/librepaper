@@ -489,6 +489,15 @@ try {
   await until('phone editor after the reload', async () => (await has('.cm-editor')) && (await modeOf()) === 'mobile-source', 10000);
   await until('scroll put back', async () => (await firstLine()) === before, 5000);
 
+  // n. Opening another file and coming back keeps the scroll.
+  await resize(1280, 900);
+  await b.evaluate(`document.querySelector('.cm-scroller').scrollTop = 2400`);
+  await flush(); await wait(100);
+  const kept = await firstLine();
+  await click('.explorer-row[data-tip="notes.md"]'); await wait(300);
+  await click('.explorer-row[data-tip="a-main.html"]'); await wait(300);
+  assert.equal(await firstLine(), kept, 'the scroll survives a visit to another file');
+
   // l. A reader sees less.
   await reload('?role=reader');
   await resize(390);
