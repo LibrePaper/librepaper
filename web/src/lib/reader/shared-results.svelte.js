@@ -1,5 +1,20 @@
 import { authHeaders } from "../api.js";
+import { m } from "../paraglide/messages.js";
 import { sha256 } from "../results-hash.js";
+
+/**
+ * The line that says a run's results could not be published, or null when
+ * the last upload did not fail. The Run code menu and Diagnostics both show
+ * this text, so they never disagree.
+ * @param {{kind?: string, reason?: string} | null | undefined} status
+ * @returns {string | null}
+ */
+export function publishProblem(status) {
+  if (status?.kind !== "failed") return null;
+  if (status.reason === "storage") return m.rundirectorycontrol_not_shared_full();
+  if (status.reason === "unmatched") return m.rundirectorycontrol_not_shared_unmatched();
+  return m.rundirectorycontrol_not_shared_failed();
+}
 
 // The shared results of a document that runs code: one record the owner's storage
 // holds, uploaded after a local run and fetched by everyone who opens the

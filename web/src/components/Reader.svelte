@@ -98,7 +98,7 @@
   import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
   import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { locale } from "../lib/locale.js";
-  import { createSharedResults } from "../lib/reader/shared-results.svelte.js";
+  import { createSharedResults, publishProblem } from "../lib/reader/shared-results.svelte.js";
   import { splitResults, staleCells, tagCells } from "../lib/quarto-results.js";
   import { isCalepinRecord, recordOf as calepinRecordOf, staleChunks, usesCalepin } from "../lib/calepin-results.js";
   import RunButton from "./reader/RunButton.svelte";
@@ -2605,8 +2605,14 @@
     return quarto.executedCells(quarto.parseQuarto(text, { path: previewPath })).length > 0;
   });
 
+  // A run whose results could not be published is named here too, so the
+  // results are not lost without the user noticing. The line goes once a later
+  // run publishes or sharing is turned off.
+  const publishWarning = $derived(shareResults && mayEdit ? publishProblem(sharedResults.state.status) : null);
+
   const localAppDiagnostics = $derived([
     needsRun ? { severity: "info", message: m.readerb_run_quarto_hint() } : null,
+    publishWarning ? { severity: "warning", message: publishWarning } : null,
     // A Typst draft has no place for the line that says whose run its
     // results are, so a collaborator's results are named here.
     sourceFormat === "typst" && runResults?.files && !ownResults ? { severity: "info", message: runResults.note } : null,

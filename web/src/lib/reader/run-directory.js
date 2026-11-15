@@ -2,6 +2,7 @@
 // the desktop app sends back with a job, and the hint a missing data file gets.
 import { m } from "../paraglide/messages.js";
 import { storageBytes } from "../quota-preferences.js";
+import { publishProblem } from "./shared-results.svelte.js";
 
 // The wording R, Python, Julia and the shell use when a file is not where the
 // code looked for it.
@@ -112,10 +113,5 @@ export function shareLineOf({ share = true, pdfOutput = false, shareStatus = { k
   if (!share) return "";
   if (pdfOutput) return m.rundirectorycontrol_html_only();
   if (shareStatus.kind === "shared") return m.rundirectorycontrol_shared({ size: storageBytes(shareStatus.bytes ?? 0) });
-  if (shareStatus.kind === "failed") {
-    if (shareStatus.reason === "storage") return m.rundirectorycontrol_not_shared_full();
-    if (shareStatus.reason === "unmatched") return m.rundirectorycontrol_not_shared_unmatched();
-    return m.rundirectorycontrol_not_shared_failed();
-  }
-  return "";
+  return publishProblem(shareStatus) ?? "";
 }
