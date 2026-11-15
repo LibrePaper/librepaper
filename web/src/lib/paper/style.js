@@ -73,16 +73,9 @@ export function paperStylesheet(pageCss) {
     // widgets' own margins give the gap the preview has.
     ".cm-editor.cm-lp-paper-editor .cm-line.cm-lp-paper-gap { height: 0; padding: 0; font-size: 0; line-height: 0; overflow: hidden; }",
   ].join("\n");
-  // The overrides sit inside the same @scope, after the page rules: a scoped
-  // rule beats an unscoped one of equal specificity, so outside it they lose.
-  // The rest puts back what the page leaves to the browser's defaults and the
-  // app's reset takes away, and stops the editor's pre-wrap from turning the
-  // line breaks between rendered tags into blank lines.
-  // The widget is a flow root so its children's margins stay inside it: CodeMirror
-  // measures the widget's height, and a margin that collapsed out would be missed.
-  // The last child keeps its bottom margin, which is the gap to the next block.
   // A code card's caption bar sits on its code (the house's file-name bar). A card whose code is not in the
-  // document is dashed, so it reads as not part of the document while staying readable.
+  // document is dashed, so it reads as not part of the document while staying readable. These rules sit
+  // outside the @scope and win over the page's on specificity (two classes against one).
   const cellStyle = `.cm-lp-paper .lp-paper-cell-head {
   display: flex;
   align-items: baseline;
@@ -102,6 +95,14 @@ export function paperStylesheet(pageCss) {
 .cm-lp-paper .lp-paper-cell-quiet,
 .cm-lp-paper .lp-paper-cell-quiet + pre { border-style: dashed; }
 `;
+  // The overrides sit inside the same @scope, after the page rules: a scoped
+  // rule beats an unscoped one of equal specificity, so outside it they lose.
+  // The rest puts back what the page leaves to the browser's defaults and the
+  // app's reset takes away, and stops the editor's pre-wrap from turning the
+  // line breaks between rendered tags into blank lines.
+  // The widget is a flow root so its children's margins stay inside it: CodeMirror
+  // measures the widget's height, and a margin that collapsed out would be missed.
+  // The last child keeps its bottom margin, which is the gap to the next block.
   return [
     `@scope (.cm-lp-paper) {\n${scoped}
 :scope, .lp-dark :scope {
