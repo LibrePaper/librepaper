@@ -1202,30 +1202,6 @@
     view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "nearest", yMargin: 24 }) });
   }
 
-  // The caret and the offset of the first line showing at the top of the
-  // scroller, for the reader to keep while the page is hidden.
-  export function place() {
-    if (!view) return null;
-    return {
-      caret: view.state.selection.main.head,
-      top: view.lineBlockAtHeight(view.scrollDOM.scrollTop).from,
-    };
-  }
-
-  // Puts back a place kept by place(), in the file already shown. It does not
-  // focus the editor: focusing a field on a phone raises the keyboard, and the
-  // person has not asked to type.
-  export function restorePlace(id, { caret = 0, top = 0 } = {}) {
-    if (!view || !id) return;
-    show(id, { focus: false });
-    const end = view.state.doc.length;
-    const clamp = (at) => Math.min(Math.max(0, at), end);
-    view.dispatch({
-      selection: { anchor: clamp(caret) },
-      effects: EditorView.scrollIntoView(clamp(top), { y: "start" }),
-    });
-  }
-
   // Applies a formatting tool from lib/visual-markup/formatting.js to the open
   // file, in its own format, then puts the caret back in the editor. Named
   // formatSelection because `format` is the document's format prop.
