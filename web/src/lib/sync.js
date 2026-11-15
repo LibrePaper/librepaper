@@ -15,7 +15,12 @@ import { anchorOne } from "./anchor.js";
 // Markup, as far as this is concerned: characters that are syntax in markdown
 // or typst and never part of a word. Replaced by spaces rather than removed,
 // so an offset into the flattened copy is still an offset into the original.
-const MARKUP = /[#*_`~=$@<>[\]()|\\{}]/g;
+//
+// The quotes, dashes and ellipsis are on the list too, because the renderers
+// set them as typography: `'` and `"` become curly quotes, `--` and `---`
+// become dashes, `...` becomes an ellipsis. Both sides blank them, so "don't"
+// and "don’t", "--" and "–", "..." and "…" all flatten to the same words.
+const MARKUP = /[#*_`~=$@<>[\]()|\\{}'".\-‘’‚‛“”„‟′″–—―…«»‹›]/g;
 
 // The markup of an HTML source is not a character but a tag, and its entities
 // are words spelled sideways. Both are blanked rather than removed, and an
@@ -75,8 +80,11 @@ function flattenWith(text, format) {
     const character = blanked[at];
     // The characters a run of whitespace can be made of. Tested by hand rather
     // than by a regular expression, because this runs once per character of a
-    // document that may be megabytes of base64.
-    if (character === " " || character === "\n" || character === "\t" || character === "\r" || character === "\f" || character === "\v") {
+    // document that may be megabytes of base64. The non-breaking and thin
+    // spaces are whitespace to a reader and the renderers keep them, so they
+    // collapse into the same run.
+    if (character === " " || character === "\n" || character === "\t" || character === "\r" || character === "\f" || character === "\v" ||
+      character === "\u00a0" || character === "\u202f" || character === "\u2009" || character === "\u2007") {
       // One space for the run, remembered at the first character of it.
       if (wasSpace) continue;
       wasSpace = true;
@@ -177,11 +185,33 @@ function findOnce(haystack, needle) {
 const NEARBY_LINES = 3;
 
 // The places worth trying, nearest first: where the caret actually is, then
-// the start of each line around it. A caret on a blank line, in a formula or
-// in a code fence has nothing to match on -- but the prose beside it does, and
-// that is what the reader is looking at.
+// the start of each word on the caret's own line (nearest first, alternating
+// forward and back), then the start of each line around it. A caret on a blank
+// line, in a formula or in a code fence has nothing to match on -- but the
+// prose beside it does, and that is what the reader is looking at.
+//
+// The words on the caret's own line come before the other lines because a
+// paragraph is usually one line in the source. When the words right after the
+// caret do not survive rendering -- a citation, a link, a cross-reference, a
+// formula -- the next word along the same line is still in the same paragraph,
+// whereas the start of the next line is often a different one. Only words
+// within twice WINDOW of the caret are tried, as the phrase taken from each
+// reaches WINDOW characters anyway.
 function* nearby(text, caret) {
   yield caret;
+  const lineStart = caret > 0 ? text.lastIndexOf("\n", caret - 1) + 1 : 0;
+  const lineEnd = text.indexOf("\n", caret);
+  const end = lineEnd === -1 ? text.length : lineEnd;
+  const reach = 2 * WINDOW;
+  const wordStart = (at) => !/\s/.test(text[at]) && (at === 0 || /\s/.test(text[at - 1]));
+  const forward = [];
+  for (let at = caret + 1; at < Math.min(end, caret + reach + 1); at++) if (wordStart(at)) forward.push(at);
+  const backward = [];
+  for (let at = caret - 1; at >= Math.max(lineStart, caret - reach); at--) if (wordStart(at)) backward.push(at);
+  for (let step = 0; step < Math.max(forward.length, backward.length); step++) {
+    if (forward[step] !== undefined) yield forward[step];
+    if (backward[step] !== undefined) yield backward[step];
+  }
   const starts = [];
   for (let at = 0; at !== -1; at = text.indexOf("\n", at + 1)) starts.push(at === 0 ? 0 : at + 1);
   const here = starts.findIndex((start, index) => start <= caret && (starts[index + 1] ?? Infinity) > caret);
