@@ -4,7 +4,7 @@ title: "Quarto"
 
 [Quarto](https://quarto.org) turns a Markdown file with R, Python or Julia code into a report, slides or a PDF.
 
-## Two places for your files
+## Where your files live
 
 The document is shared. The files its code reads stay on your computer.
 

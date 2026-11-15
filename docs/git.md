@@ -157,7 +157,7 @@ These stay out:
 - build outputs the project does not accept, such as `.aux` and `.log`. A rendered PDF is accepted as a figure, so add it to `.gitignore` to keep it out;
 - comments, suggestions and chat, which live only in the web project. Pending suggestions are left out of pulled text.
 
-A project holds up to 200 files. One push can carry up to 32 MiB by default. Your server may set other limits.
+A project holds up to 200 files. Your server may set other limits.
 
 For a Quarto project, the repository can also be the [Run directory](notebooks/quarto.html#git-tutorial) your code runs in. Scripts such as `.R` and `.py` are not accepted by the project, so they stay in the repository.
 

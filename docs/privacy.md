@@ -95,7 +95,7 @@ The browser also keeps data of its own on your device.
 - **Edit history and named versions** stay as long as the document exists. An owner can trim history, which permanently removes older history and named versions. When the owner trims, it also removes project chat. An editor's trim leaves chat. See [storage and history](./architecture/document.html#storage-and-history).
 - **Project chat** stays until the owner clears it, the owner trims the project's history, or the owner deletes the project. Chat counts toward the owner's storage. Clearing chat deletes it at once.
 - **Published results** stay until someone deletes them in the storage settings, or the project is purged. Each new publish replaces the record.
-- **Share links** expire after seven days unless the owner picks another time. The record of an expired or revoked link is removed when the project is purged.
+- **Share links** expire after seven days unless the owner picks another time or no expiry. The record of an expired or revoked link is removed when the project is purged.
 - **Agent tokens** stop working when they expire or are revoked. Their records, expired and revoked ones included, are removed when the project is purged.
 - **Moderation records** have no automatic expiry. They stay after the account or project they concern is gone, so that a block stays in force and the reason for an action can be shown later. A banned handle stays listed until the ban is lifted or becomes an account block.
 - **Copyright notices:** records that identify an account named in a copyright notice are kept for six months, or one year when the Copyright Act requires it. The account is kept blocked, not erased, for that time. See the [terms of service](terms.html#moderation).

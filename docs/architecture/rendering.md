@@ -65,7 +65,7 @@ A dropped socket loses nothing. Comments are posted over HTTP. On reconnect, the
 
 Identity comes from GitHub or Google in the browser. A headless terminal signs in through the deployment's device flow with `librepaper login`. Browser-started local agents receive a five-minute token, renewed automatically while the page is open and scoped to the current document and link. Both sign-in paths end in a policy-gated handle that everything else keys on. Cookies use `__Host-` names on HTTPS. OAuth uses PKCE and state cookies. Logout is POST-only.
 
-Access comes from a grant on an account or from a share link. Links name a role (reader, commenter, suggester or editor) and expire after 7 days by default. Only hashes of link keys are recorded. Edit and suggest links always require sign-in. Read and comment links require it too, unless the owner chose "Anyone with the link" and the deployment's `[access]` switch for that role is on.
+Access comes from a grant on an account or from a share link. Links name a role (reader, commenter, suggester or editor) and expire after 7 days by default. Only hashes of link keys are recorded. A link requires sign-in unless the owner chose "Anyone with the link" and the deployment's `[access]` switch for that role is on. Someone who has not signed in can at most comment, whatever the link's role.
 
 Each project an editor opens online is kept in this browser, with application resources, editor modules, project identity and metadata, so it can be opened again without a connection. Opening a project as a reader or commenter stops this browser offering it offline. Signing out clears every local project.
 

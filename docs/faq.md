@@ -26,7 +26,7 @@ Unsupported file types are skipped and listed after the upload. Only the files c
   \setmainfont{FiraSans-Regular.otf}[Path=fonts/, BoldFont=FiraSans-Bold.otf]
   ```
 
-pdfLaTeX cannot use `.ttf` or `.otf` files. `.woff` and `.woff2` files are for HTML, and Typst and LaTeX cannot read them. HTML previews use the browser's default fonts, so use the PDF view to see your fonts. Everyone who can open the project, read links included, downloads the font files, so check that the font licence allows that.
+pdfLaTeX cannot use `.ttf` or `.otf` files. `.woff` and `.woff2` files are for HTML, and Typst and LaTeX cannot read them. HTML previews use LibrePaper's own fonts, so use the PDF view to see yours. Everyone who can open the project, read links included, downloads the font files, so check that the font licence allows that.
 
 ## How much does it cost to run LibrePaper?
 
