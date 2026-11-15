@@ -284,26 +284,23 @@ async fn run_with(
                 );
                 // The stored results let the browser draw Calepin's chunks
                 // with its own Typst compiler. Only a successful run sends them.
+                let calepin = if key.format == Format::Typst {
+                    calepin::results(&root, &request.entrypoint)
+                } else {
+                    None
+                };
+                let room = MAX_RESULT_BYTES - calepin.as_ref().map_or(0, Vec::len).min(MAX_RESULT_BYTES);
                 let figures = match (runs_code, run_dir.as_ref()) {
                     (true, Some(run_dir)) if !request.wanted.is_empty() => {
-                        run_figures::collect(run_dir, &request.wanted, MAX_RESULT_BYTES / 2)
+                        run_figures::collect(run_dir, &request.wanted, room)
                     }
                     _ => Vec::new(),
                 };
-                if key.format == Format::Typst {
-                    if let Some(bytes) = calepin::results(&root, &request.entrypoint) {
-                        let room = MAX_RESULT_BYTES.saturating_sub(bytes.len());
-                        let mut used = 0;
-                        let figures: Vec<_> = figures
-                            .into_iter()
-                            .take_while(|(_, f)| {
-                                used += f.len() / 3 * 4 + 64;
-                                used <= room
-                            })
-                            .collect();
-                        files.insert("results".into(), run_figures::append(bytes, &figures));
-                    }
-                } else if let Some(bytes) = run_figures::results(&figures) {
+                let results = match calepin {
+                    Some(bytes) => Some(run_figures::append(bytes, &figures)),
+                    None => run_figures::results(&figures),
+                };
+                if let Some(bytes) = results {
                     files.insert("results".into(), bytes);
                 }
                 status.status = JobState::Done;
