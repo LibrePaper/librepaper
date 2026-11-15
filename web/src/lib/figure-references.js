@@ -16,8 +16,8 @@ import { dirname, normalizePath, resolvePath } from "./completion/paths.js";
 import { indexFile } from "./document-index/adapters/index.js";
 import { createProjectIndex } from "./document-index/project.js";
 import { sourceFormatOf } from "./formats.js";
-import { loadOrgSyntax } from "./org-language/module.js";
-import { loadTypstSyntax } from "./typst-language/module.js";
+import { loadOrgSyntax, orgSyntax } from "./org-language/module.js";
+import { loadTypstSyntax, typstSyntax } from "./typst-language/module.js";
 
 /** @typedef {{ path: string, name: string, file: string, line: number }} FigureReference */
 
@@ -59,6 +59,42 @@ function lineStarts(text) {
   const starts = [0];
   for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) starts.push(i + 1);
   return starts;
+}
+
+// referencedFigures runs on every keystroke, but most keystrokes leave the
+// included files alone, so each file's index and line starts are kept keyed by
+// path and exact text. Only a file whose text changed is parsed again. The
+// cached index and starts are never mutated (the loop sorts a copy of
+// `items`), so sharing them between calls is safe. Bounded to the 64 most
+// recently used paths.
+const INDEX_CACHE_LIMIT = 64;
+/** @type {Map<string, { text: string, index: import("./document-index/schema.js").FileIndex | null, starts: number[] }>} */
+const indexCache = new Map();
+
+/**
+ * The index and line starts of one file, from the cache when its text is
+ * unchanged. The Typst and Org adapters index nothing until their parser has
+ * loaded, so a file of those formats is only cached once its parser is ready;
+ * otherwise a render that came first would keep an empty index.
+ * @param {string} file
+ * @param {string} text
+ */
+function indexed(file, text) {
+  const hit = indexCache.get(file);
+  if (hit && hit.text === text) {
+    indexCache.delete(file);
+    indexCache.set(file, hit);
+    return hit;
+  }
+  const entry = { text, index: indexFile(file, text), starts: lineStarts(text) };
+  const format = sourceFormatOf(file);
+  const ready = (format !== "typst" || typstSyntax() !== null) && (format !== "org" || orgSyntax() !== null);
+  if (ready) {
+    indexCache.delete(file);
+    indexCache.set(file, entry);
+    if (indexCache.size > INDEX_CACHE_LIMIT) indexCache.delete(indexCache.keys().next().value);
+  }
+  return entry;
 }
 
 /** @param {number[]} starts @param {number} offset @returns {number} 1-based line */
@@ -111,10 +147,9 @@ export function referencedFigures(tree) {
     seen.add(file);
     const text = texts[file];
     if (typeof text !== "string") continue;
-    const index = indexFile(file, text);
+    const { index, starts } = indexed(file, text);
     if (!index) continue;
     const format = sourceFormatOf(main) || index.format;
-    const starts = lineStarts(text);
     if (index.format === "typst") {
       for (const name of typstImports(text)) {
         const target = project.resolveFile(file, name, "include");
