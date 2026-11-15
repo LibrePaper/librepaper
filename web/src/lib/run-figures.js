@@ -64,7 +64,7 @@ export function runFigureFiles(files) {
  * @template {object} T @param {T} record @param {Array<object>} files
  * @returns {T & { files?: Array<object> }} */
 export function withRunFigures(record, files) {
-  return files.length ? { ...record, files } : record;
+  return files.length ? Object.assign({}, record, { files }) : record;
 }
 
 /** The record a Quarto PDF run publishes: this run's figures, and the cell
