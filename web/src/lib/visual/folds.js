@@ -1,5 +1,5 @@
 import { Facet, StateEffect, StateField } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType } from "@codemirror/view";
+import { Decoration, EditorView, ViewPlugin, WidgetType } from "@codemirror/view";
 import { m } from "../paraglide/messages.js";
 import { revealingSelection } from "../visual-markup/markup.ts";
 import { mergeFolds } from "./merge-folds.js";
@@ -19,16 +19,23 @@ const NONE = [];
 /// the same text. A finder that was not ready returned nothing, and nothing was kept.
 export const refreshFolds = StateEffect.define();
 
+// Finding the folds parses the whole document, about 1.7 ms per keystroke on a
+// 1,700-line file in Chrome and several times that in the desktop app's WebKit.
+// So an edit does not find them again: the folds in place are mapped through
+// the edit, and refreshFolds, sent after a pause in typing, finds them again.
+const REFIND_DELAY = 400;
+
 // A block replacement has to come from a state field, not a view plugin. The
-// folds are found only when the text changes or refreshFolds arrives; a
-// selection change, or a new set of taken ranges, only redraws.
+// folds are found when refreshFolds arrives and mapped through each edit until
+// then; a selection change, or a new set of taken ranges, only redraws.
 const foldField = StateField.define({
   create: (state) => foldState(state, findIn(state)),
   update(value, tr) {
     const refresh = tr.effects.some((effect) => effect.is(refreshFolds));
     const ranges = takenOf(tr.state);
     if (!tr.docChanged && !tr.selection && !refresh && ranges === value.taken) return value;
-    const next = foldState(tr.state, tr.docChanged || refresh ? findIn(tr.state) : value.folds);
+    const folds = refresh ? findIn(tr.state) : tr.docChanged ? mapFolds(tr.changes, value.folds) : value.folds;
+    const next = foldState(tr.state, folds);
     // A move that leaves the same folds drawn keeps the old set, so nothing is redrawn.
     if (!tr.docChanged && !refresh && ranges === value.taken && sameDrawn(next.drawn, value.drawn)) return value;
     return next;
@@ -42,7 +49,7 @@ const foldField = StateField.define({
 /// such as a title block with its own pill; no fold is drawn inside them. Null,
 /// the default, takes no ranges.
 export function foldLayer(findFolds, { openInclude = null, taken = null } = {}) {
-  return [finderFacet.of({ findFolds, openInclude, taken }), foldField];
+  return [finderFacet.of({ findFolds, openInclude, taken }), foldField, refindAfterPause];
 }
 
 // The ranges another layer draws, for a state.
@@ -56,6 +63,50 @@ function findIn(state) {
   const text = state.doc.toString();
   return mergeFolds(text, state.facet(finderFacet).findFolds(text));
 }
+
+// The folds that survive an edit, moved to where their text now is. A fold the
+// edit touched is left out rather than mapped: its text may now read differently
+// to its finder, and the refresh after the pause finds it again. Typing does not
+// touch a drawn fold, since the caret there reveals it, so this matters for
+// remote or programmatic changes. A fold whose whole text was deleted maps to
+// nothing and is dropped.
+function mapFolds(changes, folds) {
+  const mapped = [];
+  for (const fold of folds) {
+    if (changes.touchesRange(fold.from, fold.to)) continue;
+    const from = changes.mapPos(fold.from, 1);
+    const to = changes.mapPos(fold.to, -1);
+    if (to > from) mapped.push({ ...fold, from, to });
+  }
+  return mapped;
+}
+
+// Sends refreshFolds once typing pauses, so the folds are found again after the
+// edits that were mapped through. Dispatching from update() would re-enter the
+// view, so the dispatch waits for a timer.
+const refindAfterPause = ViewPlugin.fromClass(
+  class {
+    constructor(view) {
+      this.view = view;
+      this.timer = undefined;
+      this.destroyed = false;
+    }
+
+    update(update) {
+      if (!update.docChanged) return;
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => {
+        this.timer = undefined;
+        if (!this.destroyed) this.view.dispatch({ effects: refreshFolds.of(null) });
+      }, REFIND_DELAY);
+    }
+
+    destroy() {
+      this.destroyed = true;
+      clearTimeout(this.timer);
+    }
+  },
+);
 
 // A fold is drawn unless the selection touches it; a touched fold shows its
 // source as ordinary lines, the whole fold at once. A parked caret (the layer

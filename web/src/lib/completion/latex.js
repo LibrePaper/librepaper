@@ -223,6 +223,16 @@ function referenceResult(context, p, inner) {
 }
 
 /**
+ * Where the LaTeX source can answer: one of its own end-anchored patterns
+ * matches the line before the cursor. These are the very constants the source
+ * tests, so the two cannot drift (a wrapped \cite argument is the
+ * bibliography source's, see bibliographyTrigger).
+ * @param {string} before the line's text up to the cursor
+ */
+export const latexTrigger = (before) =>
+  [REFERENCE, INCLUDE, GRAPHIC, BIBLIOGRAPHY, PACKAGE, ENVIRONMENT, COMMAND].some((pattern) => pattern.test(before));
+
+/**
  * Completion source for LaTeX. Returns null for any other format.
  * @param {() => { path: string, format: string, texts: Record<string, string>, files: string[] }} project
  */

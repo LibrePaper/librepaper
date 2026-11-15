@@ -45,7 +45,8 @@
   // The bracket keymap goes with auto-closing brackets. Its Backspace deletes an
   // empty pair even without closeBrackets, so leaving it in the main keymap
   // would leave the switch half off.
-  const completionOn = (on) => (on ? autocompletion({ activateOnTyping: true }) : []);
+  // Typing wakes completion only where a source can answer (see completionWake), so prose costs no query.
+  const completionOn = (on, project) => (on ? [autocompletion({ activateOnTyping: false }), completionWake(project)] : []);
   // The LaTeX \end insertion and environment indentation, for LaTeX files only.
   const latexAssistOn = (on, isLatex) => (isLatex ? latexAssistExtensions(on) : []);
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
@@ -240,7 +241,7 @@
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
-  import { completionExtension, formatOfPath } from "../lib/completion/index.js";
+  import { completionExtension, completionWake, formatOfPath } from "../lib/completion/index.js";
   import { createLiveIndex } from "../lib/document-index/live.js";
   import { labelList } from "../lib/document-index/labels.js";
   import { indexEditing, indexDiagnostics, indexChanged } from "../lib/document-index-extensions/index.js";
@@ -1631,7 +1632,7 @@
         highlightSelectionMatches(),
         sourceHighlighting,
         sourceLanguage(path, format),
-        completionCompartment.of(completionOn(untrack(() => completion))),
+        completionCompartment.of(completionOn(untrack(() => completion), completionProject)),
         completionExtension({
           project: completionProject,
           sources: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(session.doc, showing)) })],
@@ -1759,8 +1760,8 @@
           // and scrolling the document on every keystroke would make the
           // preview unreadable.
           if (update.selectionSet && !update.docChanged) oncaret?.();
-          // The formatting toolbar reads the caret's markup, so it is told on every move or edit.
-          if (update.docChanged || update.selectionSet) reportFormat(update.view);
+          // The formatting toolbar reads the caret's markup, so it is told after every move or edit, once per frame.
+          if (update.docChanged || update.selectionSet) scheduleFormat();
           // On a phone the keyboard covers the lower half of the screen, and a
           // tap is what raises it, so the tapped line goes to the top of the
           // editor where it stays in sight. Only a pointer tap that places the
@@ -1820,7 +1821,7 @@
     if (!target) return;
     target.dispatch({
       effects: [
-        completionCompartment.reconfigure(completionOn(untrack(() => completion))),
+        completionCompartment.reconfigure(completionOn(untrack(() => completion), completionProject)),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
         latexAssistCompartment.reconfigure(latexAssistOn(untrack(() => latexAssist), sourceFormat(pathOfDoc(session.doc, id), format) === "latex")),
         spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => target.state.doc.toString())),
@@ -1874,6 +1875,20 @@
   function reportFormat(target, path) {
     if (!visual || !onformatstate || !target) return;
     onformatstate(formatState(target, formatOf(path ?? pathOfDoc(session.doc, showing))));
+  }
+
+  // The toolbar is told once per frame, not once per transaction. Typing used
+  // to recompute the file's path, the caret's markup and the toolbar on every
+  // keystroke, and the toolbar only needs the state as of the next paint. The
+  // frame reads the view when it runs, so a view swapped in the meantime is
+  // the one reported.
+  let formatFrame = 0;
+  function scheduleFormat() {
+    if (formatFrame) return;
+    formatFrame = requestAnimationFrame(() => {
+      formatFrame = 0;
+      reportFormat(view);
+    });
   }
 
   // The prose format of a file, or empty for code and data files, which spellcheck leaves alone.
@@ -2152,6 +2167,8 @@
         unsubscribeFont();
         unsubscribeLineHeight();
         if (view) viewCallbacks.delete(view);
+        cancelAnimationFrame(formatFrame);
+        formatFrame = 0;
         view?.destroy();
         insertTargets.clear();
         // Cached states embed their UndoManager. Reset both caches together;
