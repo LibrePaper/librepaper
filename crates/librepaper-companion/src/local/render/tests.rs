@@ -709,3 +709,10 @@ async fn real_latexmk_renders_a_pdf_and_synctex_with_its_default_command() {
     assert!(outcome.files["artifact"].starts_with(b"%PDF-"));
     assert!(outcome.files.contains_key("synctex"));
 }
+
+#[test]
+fn oversize_results_are_dropped_and_others_kept() {
+    assert!(within_result_bound(None).is_none());
+    assert_eq!(within_result_bound(Some(vec![1, 2])), Some(vec![1, 2]));
+    assert!(within_result_bound(Some(vec![0; MAX_RESULT_BYTES + 1])).is_none());
+}

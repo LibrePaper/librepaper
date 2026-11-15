@@ -301,7 +301,7 @@ async fn run_with(
                     Some(bytes) => Some(run_figures::append(bytes, &figures)),
                     None => run_figures::results(&figures),
                 };
-                if let Some(bytes) = results {
+                if let Some(bytes) = within_result_bound(results) {
                     files.insert("results".into(), bytes);
                 }
                 status.status = JobState::Done;
@@ -363,6 +363,23 @@ async fn run_with(
         .map(|(name, bytes)| (name.clone(), protocol::OutputEntry::from_bytes(bytes)))
         .collect();
     JobOutcome { status, files }
+}
+
+/// The results file, unless it is past the transport bound: the client would
+/// reject the whole output, so an oversize one is dropped and the artifact is
+/// still delivered.
+fn within_result_bound(results: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    results.filter(|bytes| {
+        let fits = bytes.len() <= MAX_RESULT_BYTES;
+        if !fits {
+            eprintln!(
+                "librepaper: dropping the run results ({} bytes, over the {} byte limit)",
+                bytes.len(),
+                MAX_RESULT_BYTES
+            );
+        }
+        fits
+    })
 }
 
 fn provenance(request: &JobRequest) -> Provenance {
