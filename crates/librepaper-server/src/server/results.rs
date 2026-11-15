@@ -447,7 +447,6 @@ fn results_error(error: librepaper_engine::storage::postgres::Error) -> Reply {
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine as _;
     use serde_json::{json, Value};
 
     use super::*;
