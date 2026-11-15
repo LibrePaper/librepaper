@@ -124,7 +124,6 @@
   import { waitStageOf } from "../lib/reader/wait-stage.js";
   import PreviewWaiting from "./reader/PreviewWaiting.svelte";
   import { previewNotes } from "../lib/reader/preview-notes.js";
-  import { readPlace, savePlace } from "../lib/reader/place.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import { VERBS, motivationFor } from "../lib/annotating.js";
@@ -1858,45 +1857,6 @@
     editor?.goToIn(view.caret.file, view.caret.at);
   }
 
-  // A phone discards a hidden tab and reloads it when the person returns. This
-  // tab's sessionStorage survives that reload, so the place kept while the page
-  // was hidden (face, file, caret and scroll) is put back once. A new tab or
-  // link starts fresh, because sessionStorage is per tab. Nothing goes to the
-  // server: the place belongs to this device.
-  function keepPlace() {
-    if (!editing || !editor || !ws.openFile || ws.figure) return;
-    const here = editor.place?.();
-    if (!here) return;
-    savePlace(SLUG, {
-      openFile: ws.openFile,
-      caret: here.caret,
-      top: here.top,
-      layout: arrangement.state.layout,
-      preferredPane: arrangement.state.preferredPane,
-      mobileView: arrangement.state.mobileView,
-    });
-  }
-  let placeRestored = false;
-  $effect(() => {
-    if (placeRestored || !editing || !editor || !ws.files.length) return;
-    untrack(() => {
-      placeRestored = true;
-      const saved = readPlace(SLUG);
-      if (!saved || !ws.files.some((file) => file.id === saved.openFile && file.kind === "text")) return;
-      if (saved.layout) arrangement.state.layout = saved.layout;
-      if (saved.preferredPane) arrangement.state.preferredPane = saved.preferredPane;
-      if (saved.mobileView) arrangement.state.mobileView = saved.mobileView;
-      ws.openFile = saved.openFile;
-      // The editor takes the file on the next update, so the place is put
-      // back after it.
-      void (async () => {
-        await tick();
-        if (readerDisposed) return;
-        editor?.restorePlace(saved.openFile, saved);
-      })();
-    });
-  });
-
   const restoreBusy = $derived(timeline.state.restoreBusy);
   const restoreMoved = $derived(timeline.state.restoreMoved);
   const restoreName = $derived(timeline.describe(timeline.state.restoreSha));
@@ -3361,11 +3321,7 @@
   // Kept current for the background work that consults it.
   $effect(() => {
     const track = () => {
-      const nowHidden = document.visibilityState === "hidden";
-      // The page is leaving the screen: keep the place before a phone may
-      // discard this tab.
-      if (nowHidden && !hidden) keepPlace();
-      hidden = nowHidden;
+      hidden = document.visibilityState === "hidden";
       if (!hidden && !mayEdit) projection.resume();
       // A hidden tab skipped its renders; draw once now rather than wait for
       // the next edit.
@@ -4552,14 +4508,16 @@
     barHidden = false;
   });
 
-  // Reveal the bar when keyboard focus enters the nav element, so off-screen
-  // controls are never focused invisibly.
+  // Reveal the bars when keyboard focus enters one of them, so off-screen
+  // controls are never focused invisibly. Revealing them all, rather than only
+  // the row that took focus, keeps the workspace height (which counts the bars
+  // that are shown) in step with what is drawn.
   $effect(() => revealOnNavFocus(() => {
     barHidden = false;
-  }));
+  }, "body > nav, .mobile-mode-switch, .tool-band-slot"));
 </script>
 
-<svelte:window bind:innerWidth={arrangement.state.width} onresize={() => (arrangement.state.unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => { keepPlace(); session?.leave(); }} />
+<svelte:window bind:innerWidth={arrangement.state.width} onresize={() => (arrangement.state.unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
 
 {#snippet faceSwitch()}
   <div class="face-switch" role="group" aria-label={m.readerd_workspace_view()}>
