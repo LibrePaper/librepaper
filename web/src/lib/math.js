@@ -41,24 +41,68 @@ export function prepareQuartoMath(root) {
   return prepared;
 }
 
-/// Renders every span in place. `throwOnError: false` because a formula with
-/// a typo in it is the author's to see, in red, rather than a reason to show
-/// nothing; `output: "html"` because the alternative writes MathML beside the
-/// HTML, and the text of a passage is what comments are anchored into -- a
-/// formula that appears twice in that text would be a passage that reads
-/// differently from how it looks.
-export function typeset(katex, spans, numbering) {
+/// The options every formula is rendered with. `throwOnError: false` because a
+/// formula with a typo in it is the author's to see, in red, rather than a
+/// reason to show nothing; `output: "html"` because the alternative writes
+/// MathML beside the HTML, and the text of a passage is what comments are
+/// anchored into -- a formula that appears twice in that text would be a
+/// passage that reads differently from how it looks.
+function katexOptions(display) {
+  return { displayMode: display, throwOnError: false, output: "html" };
+}
+
+/// Renders every span in place. With a `cache` from `createKatexCache`, the
+/// HTML comes from it and is set as the span's content, so a formula seen
+/// before costs a lookup.
+export function typeset(katex, spans, numbering, cache) {
   for (const span of spans) {
     const source = span.textContent;
     span.setAttribute?.("data-equation-source", source);
     const display = span.dataset.mathStyle === "display";
     if (!display && numbering && linkReference(span, source, numbering)) continue;
-    katex.render(display ? (numbering?.tex.get(span) ?? source) : source, span, {
-      displayMode: display,
-      throwOnError: false,
-      output: "html",
-    });
+    const tex = display ? (numbering?.tex.get(span) ?? source) : source;
+    if (cache) {
+      span.innerHTML = cache.html(katex, tex, display);
+    } else {
+      katex.render(tex, span, katexOptions(display));
+    }
   }
+}
+
+/// Memoizes KaTeX's HTML by formula, so a repaint that changes one formula
+/// typesets that one and looks up the rest. The key carries the display flag,
+/// since the same TeX sets differently inline and displayed. The Map keeps
+/// insertion order, which here doubles as recency: a hit moves its key to the
+/// end, and past `limit` entries the one at the front, the least recently
+/// used, is dropped.
+export function createKatexCache(limit = 5000) {
+  const entries = new Map();
+  return {
+    html(katex, tex, display) {
+      const key = (display ? "D" : "I") + tex;
+      const hit = entries.get(key);
+      if (hit !== undefined) {
+        entries.delete(key);
+        entries.set(key, hit);
+        return hit;
+      }
+      const html = katex.renderToString(tex, katexOptions(display));
+      entries.set(key, html);
+      if (entries.size > limit) entries.delete(entries.keys().next().value);
+      return html;
+    },
+  };
+}
+
+/// Typesets a parsed document that is not in the page yet, so that it can be
+/// swapped in already rendered rather than showing raw TeX for a moment.
+/// Returns whether there was anything to typeset.
+export function typesetDetached(katex, root, document, cache) {
+  prepareQuartoMath(root);
+  const spans = untypeset(root);
+  if (spans.length === 0) return false;
+  typeset(katex, spans, numberDocument(root, document), cache);
+  return true;
 }
 
 // An inline \ref{k} or \eqref{k} of a known label becomes a link to the
@@ -164,19 +208,19 @@ export function createKatexLoader({ base, document, window }) {
  * rendering lands once the script has loaded, which is a mutation the
  * agent's observer republishes like any other.
  */
-export function createMathTypesetter({ base, document, window, load = createKatexLoader({ base, document, window }) }) {
+export function createMathTypesetter({ base, document, window, load = createKatexLoader({ base, document, window }), cache }) {
   return function typesetMath() {
     prepareQuartoMath(document.body);
     const spans = untypeset(document.body);
     if (spans.length === 0) return false;
     if (window.katex) {
-      typeset(window.katex, spans, numberDocument(document.body, document));
+      typeset(window.katex, spans, numberDocument(document.body, document), cache);
       return true;
     }
     // The spans may have been replaced by the time the script arrives, so
     // they are found again rather than kept.
     load().then(
-      (katex) => typeset(katex, untypeset(document.body), numberDocument(document.body, document)),
+      (katex) => typeset(katex, untypeset(document.body), numberDocument(document.body, document), cache),
       () => {},
     );
     return false;

@@ -3,11 +3,13 @@
 import assert from "node:assert/strict";
 import {
   applyNumbering,
+  createKatexCache,
   createMathTypesetter,
   displaySources,
   numberDocument,
   prepareQuartoMath,
   typeset,
+  typesetDetached,
   untypeset,
 } from "../../src/lib/math.js";
 import { numberDisplays, rewriteDisplay } from "../../src/lib/math-numbering.js";
@@ -240,4 +242,55 @@ function numbered(spans, links = [], taken = {}) {
   assert.ok(verbatim.tex.includes("\\verb|50%|"));
 }
 
-console.log("math: spans, KaTeX options, one lazy load, retry after failure passed");
+// The cache renders each (TeX, display) pair once, keeps display and inline
+// apart, and drops the least recently used entry past its limit.
+{
+  let calls = 0;
+  const katex = { renderToString: (tex, options) => { calls += 1; return `<${options.displayMode ? "D" : "I"}>${tex}</>`; } };
+  const cache = createKatexCache(2);
+  assert.equal(cache.html(katex, "a", false), "<I>a</>");
+  assert.equal(cache.html(katex, "a", false), "<I>a</>");
+  assert.equal(calls, 1, "identical request answered from the cache");
+  assert.equal(cache.html(katex, "a", true), "<D>a</>");
+  assert.equal(calls, 2, "display and inline cached apart");
+
+  // Recency: "a" inline was just used, so "D a" is the oldest when "b" arrives.
+  cache.html(katex, "a", false);
+  cache.html(katex, "b", false);
+  assert.equal(calls, 3);
+  cache.html(katex, "a", false);
+  assert.equal(calls, 3, "the recently used entry survives");
+  cache.html(katex, "a", true);
+  assert.equal(calls, 4, "the oldest entry was evicted");
+}
+
+// typeset with a cache sets the cached HTML, and the same data attribute.
+{
+  let calls = 0;
+  const katex = { renderToString: (tex) => { calls += 1; return `<k>${tex}</k>`; }, render: () => { throw new Error("render used with a cache"); } };
+  const cache = createKatexCache();
+  const spans = [span("inline", "x^2"), span("display", "\\frac{1}{2}")];
+  typeset(katex, spans, undefined, cache);
+  assert.equal(spans[0].innerHTML, "<k>x^2</k>");
+  assert.equal(spans[0].getAttribute("data-equation-source"), "x^2");
+  assert.equal(spans[1].innerHTML, "<k>\\frac{1}{2}</k>");
+  assert.equal(spans[1].getAttribute("data-equation-source"), "\\frac{1}{2}");
+  typeset(katex, [span("inline", "x^2")], undefined, cache);
+  assert.equal(calls, 2, "the repeated formula came from the cache");
+}
+
+// A detached document is typeset in full, and reports nothing to do once done.
+{
+  const spans = [span("inline", "x^2"), span("display", "\\frac{1}{2}")];
+  const root = { querySelectorAll: (selector) => (selector === "span[data-math-style]" ? spans : []) };
+  const document = { getElementById: () => null, createElement: (tag) => span(tag, "") };
+  const katex = { renderToString: (tex) => `<k>${tex}</k>` };
+  const cache = createKatexCache();
+  assert.equal(typesetDetached(katex, root, document, cache), true);
+  assert.equal(spans[0].innerHTML, "<k>x^2</k>");
+  assert.equal(spans[1].innerHTML, "<k>\\frac{1}{2}</k>");
+  spans.forEach((s) => { s.firstElementChild = { className: "katex" }; });
+  assert.equal(typesetDetached(katex, root, document, cache), false);
+}
+
+console.log("math: spans, KaTeX options, one lazy load, retry after failure, cache and detached typesetting passed");
