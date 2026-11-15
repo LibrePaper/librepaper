@@ -4,43 +4,42 @@ title: "Document and storage"
 
 ## The document
 
-A directory is held as four maps in one CRDT document:
+A project is one Loro CRDT document. Its roots are:
 
-| map | keys | values |
+| root | keys | values |
 | --- | --- | --- |
-| `files` | file id | text |
-| `paths` | file id | path |
-| `assets` | path | digest of bytes |
-| `meta` | engine, markers | document settings |
+| `files` | file id | the text of the file |
+| `paths` | file id | the path the text is known by |
+| `assets` | path | digest of the bytes |
+| `meta` | `latex.engine`, other settings | document settings |
 
-Text is stored under an opaque id. Paths are separate entries pointing at ids. Renames move strings in `paths` without touching text. Comments name files by id, so renames don't orphan reviews. Agents rename through `document_files` and sync pushes send renames, so they keep the id too. Figure bytes sit in the object store under their digest. Identical uploads are stored once. The editable source is authoritative. Comment ranges are translated to source when made.
+Plus `changes` for pending [track changes](review.html#track-changes) and `anchors` for [comment](review.html#comments) records.
 
-The CRDT is a single Rust library linked natively on the server and compiled to WebAssembly in the browser. Every offset counts UTF-16 code units, as browsers do. Cursors use Unicode code points. Server diffs use code points. Browser diffs use UTF-16. Diff information never crosses the network. Each side computes from its own state. Both are pinned by tests.
+Text is stored under an opaque id, and paths point at ids. A rename moves a string in `paths` and leaves the text alone, so comments, which name files by id, survive renames. Agents rename through `document_files`, and sync pushes send renames, so they keep the id too. Figure bytes sit in the object store under their digest, and identical uploads are stored once. The editable source is authoritative.
 
-Each document's log is capped by `log_quota_mib`. That advanced config defaults to 32 MB. New edits are refused at the limit. Deployments whose limits cannot accept work they cannot save are refused at startup.
+Offsets in the API and in the browser count UTF-16 code units, as browsers do. Loro cursors and the track-change planner count Unicode code points, and the server converts between the two. Diff information never crosses the network: each side computes it from its own state, and both are pinned by tests.
+
+The log of each document is capped by `[limits].log_quota_mib`, which defaults to 32 MiB. New edits are refused at the limit. The server refuses to start if its limits cannot accept work it could not save.
 
 ## Storage and history
 
-PostgreSQL holds metadata, update logs and review state. The object store holds immutable blobs keyed by digest or never-reused names.
+PostgreSQL holds metadata, update logs and review state. The object store holds immutable blobs, keyed by digest or by names that are never reused.
 
-Document state is persisted as a compressed base plus an ordered log in Postgres, compacted periodically. History is retained by default, but an owner can explicitly trim older edit history and named versions. Trimmed history cannot be recovered from the live document. Trimming also deletes all project chat.
+Document state is a compressed base plus an ordered log in Postgres, compacted periodically. History is kept by default. An owner can trim older edit history and named versions, and trimmed history cannot be recovered from the live document. When the owner trims, project chat is deleted too. An editor's trim leaves chat alone.
 
-Project chat is stored with the document, apart from the edit log. It counts toward the owner's storage, and it has no message cap.
+Project chat is stored with the document, apart from the edit log. It counts toward the owner's storage and has no message cap.
 
-A checkpoint records the whole directory as a canonical tree. Checkpoints are written when somebody labels a moment or restores an earlier version.
+A checkpoint records the whole directory as a canonical tree. Checkpoints are written when somebody labels a moment or restores an earlier version. Source archives, keyed by tree digest, are built on request rather than at checkpoint time.
 
-Source archives, keyed by tree digest, are produced on request, not at checkpoint time. They are content-addressed and the fastest way to retrieve a document at a point in time.
+Uploads reserve quota before the blob write starts and release it if cancelled. Limits:
 
-Document assets are content-addressed. Identical uploads are stored once. Uploads reserve quota before the blob write begins and release it if cancelled.
-
-Storage limits:
 - `[limits].publisher_storage_mib`
 - `[limits].deployment_storage_mib`
 - `[limits].publisher_uploads_per_hour`
 - `[limits].log_quota_mib`
 
-Owners can set softer history budgets and retention thresholds but cannot raise deployment hard limits. Documents may expire based on creation or last edit.
+Owners can set softer history budgets and retention, under `[retention]`, but cannot raise the deployment's hard limits. Documents can expire based on creation or last edit.
 
-`librepaper admin backup` writes a snapshot-consistent Postgres dump plus referenced objects and verifies it. The command does not encrypt or schedule backup copies. `restore` restores into a fresh database and directory. It does not independently replay account-deletion requests.
+`librepaper admin backup` writes a snapshot-consistent Postgres dump, the referenced objects and a manifest, and verifies them. It does not encrypt the backup or schedule copies. `librepaper admin restore` restores into a new directory and an empty PostgreSQL database.
 
-Maintenance (compaction, archiving, deletion) runs on an in-process bounded queue. An idle deployment issues no maintenance queries. Reclamation releases storage only after physical deletion. Superseded objects become eligible after a grace period.
+Maintenance (compaction, archiving, deletion) runs on a bounded in-process queue. Reclaimed storage is released only after physical deletion. Superseded objects become eligible after a grace period.
