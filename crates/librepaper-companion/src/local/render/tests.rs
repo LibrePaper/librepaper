@@ -39,6 +39,7 @@ fn fixture(format: &str, output: &str, entrypoint: &str) -> Fixture {
             sha256: librepaper_base::digest::Digest::of(bytes).to_hex(),
             size: bytes.len() as u64,
         }],
+        wanted: Vec::new(),
         options: Default::default(),
     };
     Fixture {

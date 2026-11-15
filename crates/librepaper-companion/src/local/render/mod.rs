@@ -35,10 +35,17 @@ use crate::local::protocol::{
 };
 
 mod calepin;
+mod run_figures;
 pub mod discovery;
 pub mod records;
 pub mod tool;
 pub mod workspace;
+
+/// Whether `path` is a figure the Run directory `folder` holds, for
+/// `POST run-directory/has`.
+pub fn run_figure_present(folder: &Path, path: &str) -> bool {
+    run_figures::has(folder, path)
+}
 
 pub use tool::{Format, Key, Output, Record};
 
@@ -277,10 +284,27 @@ async fn run_with(
                 );
                 // The stored results let the browser draw Calepin's chunks
                 // with its own Typst compiler. Only a successful run sends them.
+                let figures = match (runs_code, run_dir.as_ref()) {
+                    (true, Some(run_dir)) if !request.wanted.is_empty() => {
+                        run_figures::collect(run_dir, &request.wanted, MAX_RESULT_BYTES / 2)
+                    }
+                    _ => Vec::new(),
+                };
                 if key.format == Format::Typst {
                     if let Some(bytes) = calepin::results(&root, &request.entrypoint) {
-                        files.insert("results".into(), bytes);
+                        let room = MAX_RESULT_BYTES.saturating_sub(bytes.len());
+                        let mut used = 0;
+                        let figures: Vec<_> = figures
+                            .into_iter()
+                            .take_while(|(_, f)| {
+                                used += f.len() / 3 * 4 + 64;
+                                used <= room
+                            })
+                            .collect();
+                        files.insert("results".into(), run_figures::append(bytes, &figures));
                     }
+                } else if let Some(bytes) = run_figures::results(&figures) {
+                    files.insert("results".into(), bytes);
                 }
                 status.status = JobState::Done;
             }
