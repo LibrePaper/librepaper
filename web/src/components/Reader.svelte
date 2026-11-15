@@ -2472,7 +2472,9 @@
       // every one of them came back from the run. Otherwise the run's own page
       // is shown until the next edit.
       const inlineCount = quarto.expandedInlines(tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts }).length;
-      const split = await splitResults(rendered.html, tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts });
+      // Split Quarto's page as it came: the preview copy carries the house
+      // caption labels, which the draft would then add a second time.
+      const split = await splitResults(rendered.exportHtml ?? rendered.html, tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts });
       if (gone()) return;
       if (split.ok) {
         const held = split.record.inlines ?? [];
