@@ -158,7 +158,9 @@ function placeholderSources(html, missing) {
 /// message is a plain sentence.
 export async function exportFile({ tree: given, resultsFiles = null, ...options }) {
   await figureSyntaxReady(given);
-  const { tree, missing } = figuresForExport(given, { resultsFiles });
+  // A local build reads the Run directory itself; filling the tree would
+  // upload stale figures and placeholders over the fresh ones.
+  const { tree, missing } = options.local ? { tree: given, missing: [] } : figuresForExport(given, { resultsFiles });
   const file = await exportFilled({ ...options, tree, missing });
   return { ...file, missing };
 }

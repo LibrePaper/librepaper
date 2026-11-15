@@ -155,7 +155,7 @@ const FLOW = new Set(["markdown", "quarto", "org", "html"]);
  * then a placeholder. A project file whose blob could not be fetched also gets
  * a placeholder, without being counted as missing. For the flow formats the
  * renderer looks a src up exactly as written, so the name as written is added
- * as an alias of the resolved path.
+ * as an alias of the resolved path in `urls` only; `assets` holds real paths.
  * @param {{ main?: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, digests?: Record<string, string> }} source
  * @param {{ references: FigureReference[], resultsFiles?: ResultsFile[] | null }} options
  * @returns {{ missing: FigureReference[] }}
@@ -202,10 +202,6 @@ export function fillFigures(source, { references, resultsFiles }) {
     }
     const alias = reference.name;
     if (flow && alias && alias !== path) {
-      if (!Object.hasOwn(assets, alias) && Object.hasOwn(assets, path)) {
-        assets[alias] = assets[path];
-        added.assets.set(alias, assets[alias]);
-      }
       if (!Object.hasOwn(urls, alias) && Object.hasOwn(urls, path)) {
         urls[alias] = urls[path];
         added.urls.set(alias, urls[alias]);

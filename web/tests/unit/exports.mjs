@@ -152,6 +152,15 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   assert.equal(file.name, "paper.pdf");
 }
 
+// A local export sends the tree as given: no run figures, no placeholders.
+{
+  const render = makeRender({ pdf: Uint8Array.of(1), diagnostics: [] });
+  const tree = { main: "doc/main.qmd", texts: { "doc/main.qmd": "![a](plot.png)\n" }, assets: {} };
+  const file = await exportFile({ ...base, target: "pdf", format: "quarto", tree, local: true, resultsFiles: [{ path: "doc/plot.png", base64: "AA==" }], render, run: makeRun() });
+  assert.deepEqual(file.missing, []);
+  assert.deepEqual(render.calls[0].tree.assets, {});
+}
+
 // HTML routes.
 {
   const render = makeRender({ html: "<p>made</p>", diagnostics: [] });

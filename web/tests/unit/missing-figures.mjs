@@ -82,11 +82,12 @@ test("fillFigures: flow formats also answer to the name as written", () => {
     urls: { "doc/fig.png": "data:image/png;base64,AA==" },
   };
   const { missing } = fillFigures(source, { references: referencedFigures(source) });
-  assert.equal(source.assets["fig.png"], bytes);
+  assert.equal(source.assets["fig.png"], undefined, "an alias is never a file");
   assert.equal(source.urls["fig.png"], "data:image/png;base64,AA==");
   assert.deepEqual(missing.map(({ path }) => path), ["doc/gone.png"]);
   assert.ok(source.urls["gone.png"].startsWith("data:image/svg+xml"));
-  assert.ok(source.assets["gone.png"]);
+  assert.equal(source.assets["gone.png"], undefined);
+  assert.ok(source.assets["doc/gone.png"]);
 });
 
 test("fillFigures: a figure filled earlier does not hide a later miss", () => {
