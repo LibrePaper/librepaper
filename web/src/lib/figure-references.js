@@ -72,9 +72,18 @@ const INDEX_CACHE_LIMIT = 64;
 const indexCache = new Map();
 
 /**
+ * Whether the parser the file's adapter reads with has loaded. The Typst and
+ * Org adapters index nothing before it has.
+ * @param {string} file
+ */
+function parserReady(file) {
+  const format = sourceFormatOf(file);
+  return (format !== "typst" || typstSyntax() !== null) && (format !== "org" || orgSyntax() !== null);
+}
+
+/**
  * The index and line starts of one file, from the cache when its text is
- * unchanged. The Typst and Org adapters index nothing until their parser has
- * loaded, so a file of those formats is only cached once its parser is ready;
+ * unchanged. A file is only cached once its parser is ready (parserReady);
  * otherwise a render that came first would keep an empty index.
  * @param {string} file
  * @param {string} text
@@ -87,9 +96,7 @@ function indexed(file, text) {
     return hit;
   }
   const entry = { text, index: indexFile(file, text), starts: lineStarts(text) };
-  const format = sourceFormatOf(file);
-  const ready = (format !== "typst" || typstSyntax() !== null) && (format !== "org" || orgSyntax() !== null);
-  if (ready) {
+  if (parserReady(file)) {
     indexCache.delete(file);
     indexCache.set(file, entry);
     if (indexCache.size > INDEX_CACHE_LIMIT) indexCache.delete(indexCache.keys().next().value);
@@ -123,6 +130,99 @@ function typstImports(text) {
   return out;
 }
 
+
+// A keystroke in ordinary prose cannot change which figures and includes a
+// document names, yet the full pass above indexes the whole main file (headings,
+// labels, citations, everything) on every keystroke. So the last full result is
+// remembered with a signature of the main text: only the lines that could
+// contribute an image, an include, or the context that decides whether a later
+// line counts (a fence, front matter, math, a brace or comment). Line numbers
+// are part of the signature because results carry them. While the signature,
+// the known paths and every included file's text are unchanged, the result is
+// too.
+//
+// Invariant, per format: every line the adapter reads an asset or include
+// from, or whose content can change how another such line is read, contains
+// one of `tokens`; a construct that continues past its first line is covered by
+// `follow` (the lines after a line with one of its `tokens`).
+//   Markdown, Quarto  (document-index/adapters/markdown.js)
+//     "![" an image (its regex cannot span a line); "{{<", "include", "}}" a
+//     Quarto include, whose path may sit on its own line after "include"
+//     (follow: through the next non-blank line); "`" and "~" fences and inline
+//     code, which blank what they hold; "$" math, which blanks too; "---" and
+//     "..." front matter, which is code.
+//   LaTeX  (document-index/adapters/latex.js)
+//     "\\" any command, including \includegraphics, \input and the
+//     environments (verbatim) and \verb that make a command inert; "%" comments;
+//     "{" "}" "[" "]" the argument groups and options; "$" math. argumentOf
+//     skips up to 200 characters, options included, between the command and
+//     its {path}, so a line within 256 characters after \includegraphics,
+//     \input, \include or \subfile is signed as well (follow).
+// Typst, Org and HTML have no list (their constructs span lines through
+// strings, calls, comments and attributes that no small token set bounds), so
+// they always take the full pass.
+/** @typedef {{ tokens: string[], follow: { tokens: string[], chars?: number, nonBlank?: boolean } }} FastSpec */
+/** @type {FastSpec} */
+const MARKDOWN_FAST = {
+  tokens: ["![", "{{<", "include", "}}", "`", "~", "$", "---", "..."],
+  follow: { tokens: ["include"], nonBlank: true },
+};
+/** @type {Record<string, FastSpec>} */
+const FAST = {
+  markdown: MARKDOWN_FAST,
+  quarto: MARKDOWN_FAST,
+  latex: {
+    tokens: ["\\", "%", "{", "}", "[", "]", "$"],
+    follow: { tokens: ["\\include", "\\input", "\\subfile"], chars: 256 },
+  },
+};
+/** @type {Map<FastSpec, { token: RegExp, follow: RegExp }>} */
+const fastPatterns = new Map();
+
+/** @param {string[]} words */
+const anyOf = (words) => new RegExp(words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"));
+
+/**
+ * The lines of `text` that matter to the fast path, each with its 0-based
+ * number, in one string.
+ * @param {string} text
+ * @param {FastSpec} spec
+ * @returns {string}
+ */
+function signature(text, spec) {
+  let patterns = fastPatterns.get(spec);
+  if (!patterns) {
+    patterns = { token: anyOf(spec.tokens), follow: anyOf(spec.follow.tokens) };
+    fastPatterns.set(spec, patterns);
+  }
+  const out = [];
+  let reach = 0;
+  let waiting = false;
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let take = patterns.token.test(line);
+    if (reach > 0) {
+      take = true;
+      reach -= line.length + 1;
+    }
+    if (waiting) {
+      take = true;
+      if (line.trim()) waiting = false;
+    }
+    if (take) out.push(`${i}:${line}`);
+    if (patterns.follow.test(line)) {
+      if (spec.follow.chars) reach = spec.follow.chars;
+      if (spec.follow.nonBlank) waiting = true;
+    }
+  }
+  return out.join("\n");
+}
+
+/** @typedef {{ mainPath: string, format: string, knownKey: string, signature: string, others: Map<string, string | undefined>, result: FigureReference[] }} Memo */
+/** @type {Memo | null} */
+let memo = null;
+
 /**
  * Every image reference in the main document and in the files it includes, in
  * document order, each resolved by the path rule above. `tree` is the
@@ -135,18 +235,30 @@ export function referencedFigures(tree) {
   const texts = tree?.texts ?? {};
   if (!main || typeof texts[main] !== "string") return [];
   const known = new Set([...Object.keys(texts), ...Object.keys(tree.assets ?? {}), ...Object.keys(tree.digests ?? {})].map(normalizePath));
+  const mainFormat = sourceFormatOf(main);
+  const spec = FAST[mainFormat];
+  const knownKey = spec ? [...known].sort().join("\n") : "";
+  const mainSignature = spec ? signature(texts[main], spec) : "";
+  if (
+    memo && spec && memo.mainPath === main && memo.format === mainFormat && memo.knownKey === knownKey &&
+    memo.signature === mainSignature && [...memo.others].every(([file, text]) => texts[file] === text)
+  ) {
+    return memo.result.map((reference) => ({ ...reference }));
+  }
   const project = createProjectIndex();
   project.setFiles([...known]);
   /** @type {FigureReference[]} */
   const out = [];
   const seen = new Set();
   const queue = [main];
+  let ready = true;
   while (queue.length) {
     const file = /** @type {string} */ (queue.shift());
     if (seen.has(file)) continue;
     seen.add(file);
     const text = texts[file];
     if (typeof text !== "string") continue;
+    if (!parserReady(file)) ready = false;
     const { index, starts } = indexed(file, text);
     if (!index) continue;
     const format = sourceFormatOf(main) || index.format;
@@ -166,6 +278,10 @@ export function referencedFigures(tree) {
         if (target && !seen.has(target)) queue.push(target);
       }
     }
+  }
+  if (spec && ready) {
+    const others = new Map([...seen].filter((file) => file !== main).map((file) => [file, texts[file]]));
+    memo = { mainPath: main, format: mainFormat, knownKey, signature: mainSignature, others, result: out.map((reference) => ({ ...reference })) };
   }
   return out;
 }

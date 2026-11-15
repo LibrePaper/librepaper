@@ -94,3 +94,102 @@ test("an included file whose text changes is re-indexed", () => {
   texts["cache-part.qmd"] = "![y](y.png)\n![z](z.png)\n";
   assert.deepEqual(paths({ main: "cache-doc.qmd", texts }), ["y.png", "z.png"]);
 });
+
+// The fast path skips the full index when an edit touches no line that could
+// name a figure or include. Each test uses its own file names so the
+// single-entry memo of one test never serves another.
+const figures = (tree) => referencedFigures(tree).map(({ path, line }) => [path, line]);
+
+for (const [label, main, build] of [
+  [
+    "Quarto",
+    "fast-q.qmd",
+    (prose, path = "a.png") => `# Title\n\n${prose}\n\n![alt\n](${path})\n`,
+  ],
+  [
+    "LaTeX",
+    "fast-l.tex",
+    (prose, path = "a.png") => `\\section{T}\n\n${prose}\n\n\\includegraphics[width=3cm,\n  height=2cm]\n  {${path}}\n`,
+  ],
+]) {
+  test(`${label}: prose edits keep the result, and the array is a fresh copy`, () => {
+    const texts = { [main]: build("some words") };
+    const first = referencedFigures({ main, texts });
+    texts[main] = build("some more words, edited");
+    const second = referencedFigures({ main, texts });
+    assert.deepEqual(second, first);
+    assert.notEqual(second, first);
+    second[0].path = "mutated";
+    second.push({ path: "x", name: "x", file: main, line: 1 });
+    assert.deepEqual(referencedFigures({ main, texts }), first);
+  });
+
+  test(`${label}: adding and removing an image reference changes the result`, () => {
+    const texts = { [main]: build("words") };
+    assert.equal(referencedFigures({ main, texts }).length, 1);
+    texts[main] = `${build("words")}${main.endsWith(".tex") ? "\\includegraphics{b.png}\n" : "![b](b.png)\n"}`;
+    assert.equal(referencedFigures({ main, texts }).length, 2);
+    texts[main] = build("words");
+    assert.equal(referencedFigures({ main, texts }).length, 1);
+  });
+
+  test(`${label}: a line inserted above an image updates its line`, () => {
+    const texts = { [main]: build("words") };
+    const before = referencedFigures({ main, texts })[0].line;
+    texts[main] = `\n${texts[main]}`;
+    assert.equal(referencedFigures({ main, texts })[0].line, before + 1);
+  });
+
+  test(`${label}: editing the path on a continuation line updates the result`, () => {
+    const texts = { [main]: build("words") };
+    assert.deepEqual(paths({ main, texts }), ["a.png"]);
+    texts[main] = build("words", "other.png");
+    assert.deepEqual(paths({ main, texts }), ["other.png"]);
+  });
+
+  test(`${label}: a change to the known files invalidates`, () => {
+    const texts = { [main]: build("words") };
+    const tree = { main, texts, digests: {} };
+    assert.equal(referencedFigures(tree).length, 1);
+    tree.digests = { "a.png": "x" };
+    assert.deepEqual(figures(tree).map(([path]) => path), ["a.png"]);
+    const other = { main, texts: { ...texts, "extra.txt": "x" }, digests: tree.digests };
+    assert.equal(referencedFigures(other).length, 1);
+  });
+}
+
+test("Quarto: a token-free line edit inside an options-free wrapped image still tracks the next line", () => {
+  const main = "fast-wrap.qmd";
+  const texts = { [main]: "![one\ntwo](a.png)\n" };
+  assert.deepEqual(figures({ main, texts }), []);
+  texts[main] = "![one two](a.png)\n";
+  assert.deepEqual(figures({ main, texts }), [["a.png", 1]]);
+});
+
+test("LaTeX: clearing an option line between the command and its path (a blank line) drops the figure", () => {
+  const main = "fast-blank.tex";
+  const texts = { [main]: "\\includegraphics[width=3cm,\nheight=2cm,\n]\n{a.png}\n" };
+  assert.deepEqual(paths({ main, texts }), ["a.png"]);
+  texts[main] = "\\includegraphics[width=3cm,\n\n]\n{a.png}\n";
+  assert.deepEqual(paths({ main, texts }), []);
+});
+
+test("Quarto: a fence opened by a token line hides the images it holds", () => {
+  const main = "fast-fence.qmd";
+  const texts = { [main]: "```\n![a](a.png)\n```\n" };
+  assert.deepEqual(paths({ main, texts }), []);
+  texts[main] = "text\n![a](a.png)\n```\n";
+  assert.deepEqual(paths({ main, texts }), ["a.png"]);
+});
+
+test("Quarto: a multi-line include and its included file invalidate the result", () => {
+  const main = "fast-inc.qmd";
+  const texts = { [main]: "{{< include\n\n  part-a.qmd\n>}}\n", "part-a.qmd": "![x](x.png)\n", "part-b.qmd": "![y](y.png)\n" };
+  assert.deepEqual(paths({ main, texts }), ["x.png"]);
+  texts[main] = "{{< include\n\n  part-b.qmd\n>}}\n";
+  assert.deepEqual(paths({ main, texts }), ["y.png"]);
+  texts["part-b.qmd"] = "![z](z.png)\n";
+  assert.deepEqual(paths({ main, texts }), ["z.png"]);
+  delete texts["part-b.qmd"];
+  assert.deepEqual(paths({ main, texts }), []);
+});
