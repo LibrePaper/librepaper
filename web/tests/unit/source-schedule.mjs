@@ -6,11 +6,15 @@ import { createSourceSchedule } from "../../src/lib/reader/source-schedule.js";
 
 function fakeClock() {
   let nextId = 1;
+  let time = 0;
   const timers = new Map();
   const frames = new Map();
   return {
     timers,
     frames,
+    // The injected clock: time only moves when a test calls `advance()`.
+    now: () => time,
+    advance(ms) { time += ms; },
     setTimer(run, ms) {
       const id = nextId++;
       timers.set(id, { run, ms });
@@ -48,10 +52,157 @@ function fakeClock() {
   assert.equal(clock.timers.size, 0, "a fast format does not wait on a timer");
   clock.fireFrames();
   assert.equal(paints, 1, "the frame paints once");
+  clock.advance(150);
   schedule.changed();
-  assert.equal(clock.frames.size, 1, "a change after the frame fired requests a new frame");
+  assert.equal(clock.frames.size, 1, "a change one interval after the paint requests a new frame");
   clock.fireFrames();
   assert.equal(paints, 2);
+}
+
+// A keystroke after a quiet spell paints on the next frame. The interval only
+// holds back keystrokes that follow a paint closely.
+{
+  const clock = fakeClock();
+  let paints = 0;
+  const schedule = createSourceSchedule({
+    ...clock, editing: () => true, format: () => "typst", paint: () => paints++, hidden: () => false,
+  });
+  schedule.changed();
+  clock.fireFrames();
+  clock.advance(1000);
+  schedule.changed();
+  assert.equal(clock.frames.size, 1, "after a quiet spell the next keystroke requests a frame at once");
+  assert.equal(clock.timers.size, 0, "and waits on no cap timer");
+  clock.fireFrames();
+  assert.equal(paints, 2);
+}
+
+// Keystrokes within 150 ms of a paint wait for the cap timer, which asks for one
+// frame when the interval has passed. The burst does not add timers or frames.
+{
+  const clock = fakeClock();
+  let paints = 0;
+  const schedule = createSourceSchedule({
+    ...clock, editing: () => true, format: () => "typst", paint: () => paints++, hidden: () => false,
+  });
+  schedule.changed();
+  clock.fireFrames();
+  clock.advance(50);
+  schedule.changed();
+  assert.equal(clock.frames.size, 0, "a keystroke inside the interval requests no frame");
+  assert.equal(clock.timers.size, 1, "it waits on one cap timer");
+  assert.equal([...clock.timers.values()][0].ms, 100, "the timer waits out the rest of the 150 ms");
+  clock.advance(30);
+  for (let i = 0; i < 4; i++) schedule.changed();
+  assert.equal(clock.timers.size, 1, "the rest of the burst keeps the one cap timer");
+  assert.equal(clock.frames.size, 0, "and requests no frame of its own");
+  clock.advance(70);
+  clock.fireTimers();
+  assert.equal(clock.frames.size, 1, "the cap timer requests exactly one frame");
+  assert.equal(paints, 1, "nothing paints until that frame runs");
+  clock.fireFrames();
+  assert.equal(paints, 2, "the frame paints once");
+}
+
+// The burst's last keystroke is painted. The capped frame reads the source as
+// it stands when it runs, so the text painted is the final one.
+{
+  const clock = fakeClock();
+  let text = "";
+  const painted = [];
+  const schedule = createSourceSchedule({
+    ...clock, editing: () => true, format: () => "typst", paint: () => painted.push(text), hidden: () => false,
+  });
+  text = "a";
+  schedule.changed();
+  clock.fireFrames();
+  clock.advance(20);
+  text = "ab";
+  schedule.changed();
+  text = "abc";
+  schedule.changed();
+  text = "abcd";
+  schedule.changed();
+  clock.advance(130);
+  clock.fireTimers();
+  clock.fireFrames();
+  assert.deepEqual(painted, ["a", "abcd"], "the burst ends with one paint of its last text");
+}
+
+// A collaborator's edit while a capped repaint is pending neither adds a timer
+// nor paints: the capped repaint renders the newer text.
+{
+  const clock = fakeClock();
+  let paints = 0;
+  const schedule = createSourceSchedule({
+    ...clock, editing: () => true, format: () => "markdown", paint: () => paints++, hidden: () => false,
+  });
+  schedule.changed();
+  clock.fireFrames();
+  clock.advance(20);
+  schedule.changed();
+  schedule.changed({ remote: true });
+  assert.equal(clock.timers.size, 1, "the remote edit adds no timer beside the cap timer");
+  assert.equal(clock.frames.size, 0);
+  clock.advance(130);
+  clock.fireTimers();
+  clock.fireFrames();
+  assert.equal(paints, 2, "the capped repaint paints once, and the remote edit adds none");
+}
+
+// A change off the fast path drops a pending cap timer, as it drops a frame,
+// and the passive wait takes its place.
+{
+  const clock = fakeClock();
+  let editing = true;
+  const schedule = createSourceSchedule({
+    ...clock, editing: () => editing, format: () => "typst", paint: () => {}, hidden: () => false, passive: 1000,
+  });
+  schedule.changed();
+  clock.fireFrames();
+  clock.advance(20);
+  schedule.changed();
+  assert.equal(clock.timers.size, 1);
+  editing = false;
+  schedule.changed();
+  assert.equal(clock.timers.size, 1, "the passive wait replaces the cap timer");
+  assert.equal([...clock.timers.values()][0].ms, 1000);
+  assert.equal(clock.frames.size, 0);
+}
+
+// cancel() and dispose() clear a pending cap timer, so no capped paint runs
+// afterwards.
+{
+  const clock = fakeClock();
+  let paints = 0;
+  const schedule = createSourceSchedule({
+    ...clock, editing: () => true, format: () => "typst", paint: () => paints++, hidden: () => false,
+  });
+  schedule.changed();
+  clock.fireFrames();
+  clock.advance(20);
+  schedule.changed();
+  assert.equal(clock.timers.size, 1);
+  schedule.cancel();
+  assert.equal(clock.timers.size, 0, "cancel clears the cap timer");
+  clock.advance(130);
+  clock.fireTimers();
+  assert.equal(clock.frames.size, 0, "a cancelled cap timer requests no frame");
+
+  const other = createSourceSchedule({
+    ...clock, editing: () => true, format: () => "typst", paint: () => paints++, hidden: () => false,
+  });
+  other.changed();
+  clock.fireFrames();
+  clock.advance(20);
+  other.changed();
+  assert.equal(clock.timers.size, 1);
+  other.dispose();
+  assert.equal(clock.timers.size, 0, "dispose clears the cap timer");
+  clock.advance(130);
+  clock.fireTimers();
+  assert.equal(clock.frames.size, 0, "a disposed cap timer requests no frame");
+  assert.equal(paints, 2, "only the two paints that ran before the cancel and dispose painted");
 }
 
 // Continuous LaTeX: an editing change takes the frame path, not the debounce.
