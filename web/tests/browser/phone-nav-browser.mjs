@@ -376,11 +376,6 @@ try {
   await b.evaluate('document.querySelector(".mobile-mode-switch [data-mode=source]").focus()');
   await until('focus brings the mode switch back', () => b.evaluate('Boolean(document.activeElement.closest(".mobile-mode-switch")) && document.querySelector(".mobile-mode-slot").getBoundingClientRect().height > 40'), 3000);
   await b.evaluate('document.activeElement.blur()');
-  if (await b.evaluate('!!document.querySelector("#reader-source .tool-band-slot, .tool-band-slot")')) {
-    await b.evaluate('document.querySelector(".tool-band-slot .band-items button:not(:disabled)").focus()');
-    await until('focus brings the tool band back', () => b.evaluate('Boolean(document.activeElement.closest(".tool-band-slot")) && document.querySelector(".tool-band-slot").getBoundingClientRect().height > 20'), 3000);
-    await b.evaluate('document.activeElement.blur()');
-  }
   assert.ok(await b.evaluate(`document.querySelector("main.reader").getBoundingClientRect().bottom > innerHeight - 20`), 'the workspace grows into the space the bar leaves');
   for (const top of [400, 200]) {
     await b.evaluate(`document.querySelector(".cm-scroller").scrollTop = ${top}`);
@@ -401,6 +396,12 @@ try {
   await wait(260);
   await until('preview sets the tab bar aside', () => b.evaluate(`document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
   await until('preview collapses the mode switch', () => b.evaluate(`document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), 3000);
+  // The preview's tool band steps aside too, and focus on its first live control (never the inert measuring copy) brings it back.
+  const bandControl = '[...document.querySelectorAll("#reader-document .tool-band-slot :is(button, select):not(:disabled)")].find((node) => !node.closest(".band-measure, [inert]"))';
+  assert.equal(await b.evaluate(`document.querySelector("#reader-document .tool-band-slot").classList.contains("collapsed")`), true, 'the preview tool band steps aside');
+  await b.evaluate(`${bandControl}.focus()`);
+  await until('focus brings the tool band back', () => b.evaluate('Boolean(document.activeElement.closest(".tool-band-slot")) && document.querySelector("#reader-document .tool-band-slot").getBoundingClientRect().height > 20'), 3000);
+  await b.evaluate('document.activeElement.blur()');
   await fromPreview("for (const top of [400, 200]) parent.postMessage({ librepaper: true, type: 'scroll', delta: -200, top, bottom: 5000 }, '*')");
   await wait(260);
   await until('preview brings the tab bar back', () => b.evaluate(`!document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
