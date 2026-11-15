@@ -2171,21 +2171,6 @@
   ],
   "preview_notes_shown_inside": "{name} 显示在 {path} 中。",
   "preview_render_could_not_render": "无法渲染",
-  "preview_render_missing_figures": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "无法获取图片：{names}",
-        "countPlural=*": "无法获取图片：{names}"
-      }
-    }
-  ],
   "preview_render_no_output": "编译器没有生成预览，也没有生成日志",
   "preview_rendering_label": "正在渲染预览",
   "previewcontrols_find_count": "{current} / {total}",
@@ -3046,5 +3031,7 @@
   "preview_render_run_directory_not_linked": "运行文件夹中的 {path} 无法提供给 Quarto。",
   "preview_render_run_directory_missing_file": "代码会在您的运行文件夹中查找文件：{path}。",
   "common_scripts_stay_local": "脚本和数据保存在你的电脑上。Quarto 会从你的运行文件夹中运行它们。",
-  "preview_render_run_directory_project_only": "{path} 在 LibrePaper 中，但代码从你的运行文件夹读取文件。请将它复制到运行文件夹。"
+  "preview_render_run_directory_project_only": "{path} 在 LibrePaper 中，但代码从你的运行文件夹读取文件。请将它复制到运行文件夹。",
+  "preview_render_figure_in_run_directory": "{name} 在您的运行文件夹中。请运行代码以包含它。",
+  "preview_render_figure_not_found": "{name} 不在项目中，也不在上次运行中。"
 }

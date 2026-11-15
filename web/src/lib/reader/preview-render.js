@@ -1,4 +1,6 @@
 import { m } from "../paraglide/messages.js";
+import { referencedFigures } from "../figure-references.js";
+import { fillFigures, referenceFigures } from "../missing-figures.js";
 
 // One render of the document, from the source in this tab.
 //
@@ -24,7 +26,7 @@ import { m } from "../paraglide/messages.js";
 // arguments now, and the guards are gone with them.
 
 /** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, quartoResults?: { cells: unknown[], inlines?: unknown[], note?: string } | null, calepinResults?: { files: any[] } | null }} PreviewTree */
-/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectory?: string, runResults?: { path?: string, updatedAt?: string, note?: string, cells?: unknown[], inlines?: unknown[], files?: any[] } | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectory?: string, runResults?: { path?: string, updatedAt?: string, note?: string, cells?: unknown[], inlines?: unknown[], files?: any[] } | null, runDirectoryHas?: Set<string> | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
 /** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
@@ -210,7 +212,7 @@ export function createPreviewRenderer({
       // the shortcut below. It is only looked at here; the compile takes it.
       const manualWaiting = manualPending();
       /** @param {string} id */
-      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution, start.runDirectory ?? "", start.runResults?.updatedAt ?? ""]);
+      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution, start.runDirectory ?? "", start.runResults?.updatedAt ?? "", [...(start.runDirectoryHas ?? [])].sort().join("\0")]);
       const held = finished.get(source.main);
       /** @type {string | undefined} */
       let early;
@@ -271,14 +273,8 @@ export function createPreviewRenderer({
         const { held, missing } = await gather(source.digests, { urls: needsUrls ? "reference" : false });
         debug("preview: assets", Object.keys(held.assets || {}).length, missing);
         if (coordinator.superseded(guard)) return;
-        // A flow page remains useful when an image blob is unavailable:
-        // render its text and let the image appear missing. Paged formats
-        // still require a complete tree.
-        if (paged || (format === "latex" && htmlPreview)) {
-          if (missing.length) {
-            throw new Error(m.preview_render_missing_figures({ count: missing.length, names: missing.join(", ") }));
-          }
-        }
+        // A figure whose blob is unavailable draws as a placeholder below,
+        // for every format: no render is blocked on a missing figure.
         source.assets = held.assets;
         // Authored figure URLs and cached Quarto output assets are both part
         // of this render. Keep both inventories when the figure collector
@@ -286,6 +282,16 @@ export function createPreviewRenderer({
         source.urls = { ...(source.urls || {}), ...held.urls };
         figures = held.references ?? [];
       }
+      // Every figure the document names resolves to something: a project
+      // file, a figure of the last run, or a placeholder. Never a hole.
+      const { missing: missingFigures } = fillFigures(source, {
+        references: referencedFigures(source),
+        resultsFiles: saved?.files ?? null,
+      });
+      // The live flow page names run figures by reference, as project
+      // figures, so its HTML does not carry their bytes on every keystroke.
+      if (!paged && format !== "typst" && format !== "latex") figures = [...figures, ...await referenceFigures(source)];
+      if (coordinator.superseded(guard)) return;
       // Keep a transient source identity for diagnostics and race checks. It
       // is never sent to the server as a rendering name; shared results are a
       // separate upload of a local run's output, which this person can turn off.
@@ -318,7 +324,18 @@ export function createPreviewRenderer({
       // including with "" when this one produced none.
       else status.recordLog(rendered?.log || "");
       const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, log, sources } = rendered;
-      const contextual = (said || []).map((item) => diagnosticContext(item, source, identity));
+      // Quarto and Typst figures can come from the author's Run directory, so
+      // the editor's file warning is replaced by one that says which it is.
+      const figureWarnings = (format === "quarto" || format === "typst")
+        ? missingFigures.map((figure) => ({
+          severity: "warning",
+          message: start.runDirectoryHas?.has(figure.path)
+            ? m.preview_render_figure_in_run_directory({ name: figure.name })
+            : m.preview_render_figure_not_found({ name: figure.name }),
+          file: figure.file, line: figure.line, column: 1, end_line: figure.line, end_column: 1,
+        }))
+        : [];
+      const contextual = [...(said || []), ...figureWarnings].map((item) => diagnosticContext(item, source, identity));
       // An in-flight preview may finish after another keystroke: HTML and
       // Typst may show that intermediate progress while the queued render
       // catches up. Navigation and main-file changes still invalidate it;

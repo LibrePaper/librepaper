@@ -2171,21 +2171,6 @@
   ],
   "preview_notes_shown_inside": "{name}は{path}の中に表示されます。",
   "preview_render_could_not_render": "レンダリングできませんでした",
-  "preview_render_missing_figures": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "図を取得できませんでした：{names}",
-        "countPlural=*": "図を取得できませんでした：{names}"
-      }
-    }
-  ],
   "preview_render_no_output": "コンパイラーがプレビューもログも出力しませんでした",
   "preview_rendering_label": "プレビューをレンダリング中",
   "previewcontrols_find_count": "{current} / {total}",
@@ -3046,5 +3031,7 @@
   "preview_render_run_directory_not_linked": "実行フォルダー内の {path} を Quarto で利用できるようにできませんでした。",
   "preview_render_run_directory_missing_file": "コードは実行フォルダー内のファイルを探しています: {path}。",
   "common_scripts_stay_local": "スクリプトとデータはお使いのコンピューターに残ります。Quartoは実行フォルダーからそれらを実行します。",
-  "preview_render_run_directory_project_only": "{path}はLibrePaperにありますが、コードは実行フォルダーのファイルを読み込みます。実行フォルダーにコピーしてください。"
+  "preview_render_run_directory_project_only": "{path}はLibrePaperにありますが、コードは実行フォルダーのファイルを読み込みます。実行フォルダーにコピーしてください。",
+  "preview_render_figure_in_run_directory": "{name}は実行フォルダーにあります。コードを実行して含めてください。",
+  "preview_render_figure_not_found": "{name}はプロジェクトにも前回の実行にもありません。"
 }

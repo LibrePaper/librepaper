@@ -12,14 +12,12 @@
 
 import { call, needsOf } from "../renderer-wasm.js";
 import { fetchNeeds as fetchPackages, ROUNDS } from "../needs.js";
+import { referencedFigures } from "../figure-references.js";
+import { fillFigures } from "../missing-figures.js";
 
 // Enough for a screenful of blocks and their recent edits, without holding a
 // whole long document's worth of HTML.
 const CACHE_LIMIT = 2000;
-// An asset larger than this is not fetched for the paper view, nor are more
-// than TOTAL_LIMIT bytes of them together.
-const ASSET_LIMIT = 8 * 1024 * 1024;
-const TOTAL_LIMIT = 64 * 1024 * 1024;
 
 // Typst's HTML export drops the content of its layout containers. The first
 // rule keeps aligned content in a div with a `text-align` style, using the
@@ -47,8 +45,10 @@ const FRAME_MARK_HTML = '<div id="lp-frame-mark"></div>';
  * What the paper view knows of the project.
  * `texts` maps project paths to text; `assets` maps asset paths to a version
  * (their digest) that changes when the bytes do; `assetUrl(path)` resolves an
- * asset to a URL the page can fetch, or null.
- * @typedef {{ main: string, texts: Record<string, string>, assets?: Record<string, string>, assetUrl?: (path: string) => Promise<string | null> | string | null }} PaperProject
+ * asset to a URL the page can fetch, or null. `resultsFiles()` gives the
+ * files of the last run, whose figures stand in for ones the project lacks;
+ * a figure in neither is drawn as a placeholder.
+ * @typedef {{ main: string, texts: Record<string, string>, assets?: Record<string, string>, assetUrl?: (path: string) => Promise<string | null> | string | null, resultsFiles?: () => Array<{ path: string, base64?: string }> | null }} PaperProject
  * @typedef {{
  *   render: (source: string) => string,
  *   frame: (prefix: string) => { before: string, after: string } | null,
@@ -102,6 +102,9 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
   let assetVersions = {};
   /** @type {Map<string, { version: string, bytes: Uint8Array }>} */
   const assetBytes = new Map();
+  /** @type {Map<string, Uint8Array>} figures the project lacks, from the last run or as placeholders */
+  let stand = new Map();
+  let standKey = "";
   /** @type {Map<string, Uint8Array>} packages, by path, for the life of the renderer */
   const fetched = new Map();
   let revision = 0;
@@ -142,6 +145,7 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
   function loadFiles() {
     if (loaded === revision) return;
     wasm.clear_files();
+    for (const [path, body] of stand) if (!assetBytes.has(path)) call(wasm, "add_file", path, body);
     for (const [path, text] of Object.entries(texts)) call(wasm, "add_file", path, text);
     for (const [path, held] of assetBytes) call(wasm, "add_file", path, held.bytes);
     for (const [path, body] of fetched) {
@@ -213,11 +217,29 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
   let preparing = null;
   let again = false;
 
+  /**
+   * Figures the sources name that are not project files: those of the last
+   * run, else a placeholder, so an image never fails the block that draws it.
+   * @param {PaperProject} project
+   * @returns {boolean} whether the set changed
+   */
+  function standIn(project) {
+    const scratch = { main, texts: { ...project.texts }, assets: {}, digests: assetVersions };
+    const files = project.resultsFiles?.() ?? null;
+    fillFigures(scratch, { references: referencedFigures(scratch), resultsFiles: files });
+    /** @type {Map<string, Uint8Array>} */
+    const next = new Map();
+    for (const [path, body] of Object.entries(scratch.assets)) if (!(path in assetVersions)) next.set(path, body);
+    const key = [...next].map(([path, body]) => `${path}:${body.length}`).join("\0");
+    stand = next;
+    const changed = key !== standKey;
+    standKey = key;
+    return changed;
+  }
+
   /** The assets the project's texts mention that are not held yet. @param {string} preamble */
   function wantedAssets(preamble) {
     const haystack = preamble + "\n" + Object.values(texts).join("\n");
-    let total = 0;
-    for (const held of assetBytes.values()) total += held.bytes.length;
     return Object.keys(assetVersions).filter((path) => {
       if (assetBytes.has(path)) return false;
       const base = path.slice(path.lastIndexOf("/") + 1);
@@ -228,8 +250,6 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
   async function run(/** @type {PaperProject} */ project, /** @type {string} */ preamble, /** @type {() => void} */ onUpdate) {
     let changed = false;
     // Assets: fetched once per path and version, as bytes.
-    let total = 0;
-    for (const held of assetBytes.values()) total += held.bytes.length;
     const mainText = project.texts?.[project.main] ?? "";
     for (const path of wantedAssets(preamble + "\n" + mainText)) {
       const version = assetVersions[path];
@@ -237,15 +257,15 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
         const url = await project.assetUrl?.(path);
         if (!url) continue;
         const body = await fetchBytes(url);
-        if (!body || body.length > ASSET_LIMIT || total + body.length > TOTAL_LIMIT) continue;
+        if (!body) continue;
         if (assetVersions[path] !== version) continue;
-        total += body.length;
         assetBytes.set(path, { version, bytes: body });
         changed = true;
       } catch {
         // An asset that cannot be fetched leaves its block showing source.
       }
     }
+    if (standIn(project)) changed = true;
     if (changed) bump();
     // Packages: the preamble alone, compiled until nothing more is wanted.
     // The packages a document names are in its preamble, so this runs once
@@ -279,7 +299,7 @@ export async function createTypstPaperRenderer(bytes, { fetchNeeds = fetchPackag
    */
   function prepare(project, preamble, onUpdate = () => {}) {
     setProject(project);
-    const key = [main, preamble, JSON.stringify(assetVersions), String(textsRev)].join("\0");
+    const key = [main, preamble, JSON.stringify(assetVersions), String(textsRev), String(project.texts?.[main]?.length ?? 0), String(project.resultsFiles?.()?.length ?? 0)].join("\0");
     if (key === preparedKey) return Promise.resolve(false);
     if (preparing) {
       again = true;

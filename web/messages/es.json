@@ -2186,21 +2186,6 @@
   ],
   "preview_notes_shown_inside": "{name} se muestra dentro de {path}.",
   "preview_render_could_not_render": "no se pudo compilar",
-  "preview_render_missing_figures": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "no se pudo obtener la figura: {names}",
-        "countPlural=*": "no se pudieron obtener las figuras: {names}"
-      }
-    }
-  ],
   "preview_render_no_output": "el compilador no produjo vista previa ni registro",
   "preview_rendering_label": "Compilando vista previa",
   "previewcontrols_find_count": "{current} de {total}",
@@ -3061,5 +3046,7 @@
   "preview_render_run_directory_not_linked": "No se pudo poner {path} de su carpeta de ejecución a disposición de Quarto.",
   "preview_render_run_directory_missing_file": "El código busca archivos en su carpeta de ejecución: {path}.",
   "common_scripts_stay_local": "Los scripts y los datos se quedan en su equipo. Quarto los ejecuta desde su carpeta de ejecución.",
-  "preview_render_run_directory_project_only": "{path} está en LibrePaper, pero el código lee los archivos de su carpeta de ejecución. Cópielo en su carpeta de ejecución."
+  "preview_render_run_directory_project_only": "{path} está en LibrePaper, pero el código lee los archivos de su carpeta de ejecución. Cópielo en su carpeta de ejecución.",
+  "preview_render_figure_in_run_directory": "{name} está en su carpeta de ejecución. Ejecute el código para incluirlo.",
+  "preview_render_figure_not_found": "{name} no está en el proyecto ni en la última ejecución."
 }

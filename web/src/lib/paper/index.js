@@ -22,23 +22,12 @@ import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
 import HOUSE_CSS from "../house-css.js";
 import { paperOverlays } from "./overlays.js";
+import { figureUrlFor, placeholderUrl } from "../missing-figures.js";
 
 const refreshPaper = StateEffect.define();
 
 // The taken ranges of a state that draws no block in place of a fold. Shared, so the fold layer's identity check sees no change.
 const NO_RANGES = [];
-
-const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".svg", ".pdf"];
-
-async function resolveImage(imageUrl, file) {
-  const url = await imageUrl(file);
-  if (url || /\.[^/]+$/.test(file)) return url;
-  for (const extension of IMAGE_EXTENSIONS) {
-    const found = await imageUrl(file + extension);
-    if (found) return found;
-  }
-  return null;
-}
 
 // The TeX of a block's display formulas, by the HTML the block was drawn as, so a selection change does not parse every block again.
 const sourcesByHtml = new Map();
@@ -105,11 +94,14 @@ class PaperWidget extends WidgetType {
         const src = img.getAttribute("src");
         if (!src || isExternal(src)) continue;
         const resolved = resolveImagePath("/" + this.path(), src).replace(/^\/+/, "");
-        resolveImage(this.imageUrl, resolved)
+        // A figure that is neither a project file nor in the last run is drawn as a placeholder.
+        Promise.resolve(this.imageUrl(resolved))
           .then((url) => {
-            if (url) img.src = url;
+            img.src = url || placeholderUrl(resolved);
           })
-          .catch(() => {});
+          .catch(() => {
+            img.src = placeholderUrl(resolved);
+          });
       }
     }
 
@@ -346,13 +338,15 @@ function stepInto(field, direction) {
 /// `project()` returns `{ main, texts, assets, assetUrl }` for a format that compiles in the project (Typst):
 /// `main` the open file's path, `texts` every project text by path, `assets` each asset path to a version,
 /// `assetUrl(path)` a fetchable URL for an asset or null.
+/// `resultsFiles()` returns the files of the last run (or null): a figure that is not a project file is drawn from them, and one that is in neither is drawn as a placeholder.
 /// `dark` puts `lp-dark` on the editor, which the house stylesheet answers.
 /// `openInclude(name)` opens the file a fold's include names; without it the include fold has no button.
 /// The paper field finds the folds from the text and says which ones it draws (its taken ranges); the fold layer leaves those ranges alone.
-export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, dark = false, project = null, openInclude = null } = {}) {
+export function paperVisual({ format = "markdown", path = () => "", imageUrl = null, resultsFiles = null, dark = false, project = null, openInclude = null } = {}) {
   const adapter = paperFormat(format);
   if (!adapter) return [];
-  const field = paperField(path, imageUrl, adapter, project);
+  const figureUrl = imageUrl || resultsFiles ? (/** @type {string} */ file) => figureUrlFor(imageUrl ?? (() => null), resultsFiles, file) : null;
+  const field = paperField(path, figureUrl, adapter, project);
   return [
     caretParked,
     field,

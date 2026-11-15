@@ -881,3 +881,22 @@ test("implicit labels and labels of other targets take no number", () => {
   });
   assert.deepEqual(Object.fromEntries(numbering(project)), { "label:fig:e": 1 });
 });
+
+test("a Quarto or Typst asset no project file matches is left to the preview; other formats warn", () => {
+  const project = createProjectIndex();
+  project.setFiles(["a.qmd", "a.typ", "a.md"]);
+  for (const [path, format, kind] of [["a.qmd", "quarto"], ["a.typ", "typst"], ["a.md", "markdown"]]) {
+    project.update({
+      path,
+      format,
+      length: 10,
+      items: [
+        { kind: "asset", name: "fig.png", range: [0, 5], nameRange: [0, 5] },
+        { kind: "include", name: "gone.txt", range: [5, 9], nameRange: [5, 9] },
+      ],
+    });
+  }
+  assert.deepEqual(diagnostics(project, "a.qmd").map((d) => d.name), ["gone.txt"]);
+  assert.deepEqual(diagnostics(project, "a.typ").map((d) => d.name), ["gone.txt"]);
+  assert.deepEqual(diagnostics(project, "a.md").map((d) => d.name), ["fig.png", "gone.txt"]);
+});

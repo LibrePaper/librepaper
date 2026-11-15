@@ -8,6 +8,7 @@ import { loadKatex } from '../../katex.js';
 import { registerWidget, replaceRange, WidgetContext } from './widget-registry';
 import { m } from "../../paraglide/messages.js";
 import { iconElement } from '../../icons.js';
+import { placeholderUrl } from '../../missing-figures.js';
 
 export class MathWidget extends WidgetType {
   private text: string;
@@ -243,7 +244,11 @@ export class FigureWidget extends WidgetType {
     const path = resolveImagePath(this.resolver.currentPath(), src);
     Promise.resolve(this.resolver.resolve(path, src)).then(url => {
       if (!this.destroyed && url) image.src = url;
-      else if (!url) image.classList.add('cm-lv-image-missing');
+      else if (!this.destroyed) {
+        // A figure that is not there is drawn as a labelled box, not a broken image.
+        image.classList.add('cm-lv-image-missing');
+        image.src = placeholderUrl(path);
+      }
     });
     return image;
   }

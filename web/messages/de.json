@@ -2186,21 +2186,6 @@
   ],
   "preview_notes_shown_inside": "{name} wird in {path} angezeigt.",
   "preview_render_could_not_render": "konnte nicht gerendert werden",
-  "preview_render_missing_figures": [
-    {
-      "declarations": [
-        "input count",
-        "local countPlural = count: plural"
-      ],
-      "selectors": [
-        "countPlural"
-      ],
-      "match": {
-        "countPlural=one": "Abbildung konnte nicht abgerufen werden: {names}",
-        "countPlural=*": "Abbildungen konnten nicht abgerufen werden: {names}"
-      }
-    }
-  ],
   "preview_render_no_output": "der Compiler hat weder eine Vorschau noch ein Protokoll erzeugt",
   "preview_rendering_label": "Vorschau wird gerendert",
   "previewcontrols_find_count": "{current} von {total}",
@@ -3061,5 +3046,7 @@
   "preview_render_run_directory_not_linked": "{path} aus Ihrem Ausführungsordner konnte Quarto nicht bereitgestellt werden.",
   "preview_render_run_directory_missing_file": "Der Code sucht Dateien in Ihrem Ausführungsordner: {path}.",
   "common_scripts_stay_local": "Skripte und Daten bleiben auf Ihrem Computer. Quarto führt sie aus Ihrem Ausführungsordner aus.",
-  "preview_render_run_directory_project_only": "{path} liegt in LibrePaper, aber Code liest Dateien aus Ihrem Ausführungsordner. Kopieren Sie sie in Ihren Ausführungsordner."
+  "preview_render_run_directory_project_only": "{path} liegt in LibrePaper, aber Code liest Dateien aus Ihrem Ausführungsordner. Kopieren Sie sie in Ihren Ausführungsordner.",
+  "preview_render_figure_in_run_directory": "{name} liegt in Ihrem Ausführungsordner. Führen Sie den Code aus, um es einzubinden.",
+  "preview_render_figure_not_found": "{name} ist weder im Projekt noch in der letzten Ausführung vorhanden."
 }
