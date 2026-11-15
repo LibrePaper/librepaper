@@ -99,7 +99,7 @@
   import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { locale } from "../lib/locale.js";
   import { createSharedResults } from "../lib/reader/shared-results.svelte.js";
-  import { splitResults, staleCells } from "../lib/quarto-results.js";
+  import { splitResults, staleCells, tagCells } from "../lib/quarto-results.js";
   import { isCalepinRecord, recordOf as calepinRecordOf, staleChunks, usesCalepin } from "../lib/calepin-results.js";
   import RunButton from "./reader/RunButton.svelte";
   import RunStatus from "./reader/RunStatus.svelte";
@@ -2405,7 +2405,10 @@
       const typst = sourceFormat === "typst";
       // Typst keeps its own output choice; Markdown and Quarto share theirs.
       const toPdf = typst ? typstOutput !== "html" : buildPreferences.output === "pdf";
-      const rendered = await renderers.render(tree, heading, {
+      // Quarto HTML runs carry cell tags, so each output finds its cell even
+      // when Quarto wrote no div for it. The tags are not in the stored record.
+      const runTree = sourceFormat === "quarto" && !toPdf ? tagCells(tree) : tree;
+      const rendered = await renderers.render(runTree, heading, {
         buildPreferences: { ...buildPreferences, backend: "local", output: toPdf ? "pdf" : "html" },
         project: SLUG,
         ...(typst ? { format: toPdf ? "pdf" : "html" } : {}),

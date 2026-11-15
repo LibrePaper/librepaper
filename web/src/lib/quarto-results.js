@@ -172,17 +172,108 @@ function cellHtml(tokens) {
   return out.join("");
 }
 
+// Quarto writes a `div.cell` only for a chunk that prints something, so a
+// silent chunk (say `source("R/load.R")` under echo: false) has no div and
+// cannot be paired by position. A `classes:` option puts a tag on its div.
+const TAG = /^lp-cell-(\d+)$/;
+const CLASS_ATTR = /(\sclass\s*=\s*)(?:(["'])([^"']*)\2|([^\s>]+))/i;
+const OPTION_LINE = /^\s*#\|\s*[^:]+?\s*:/;
+const CLASSES_LINE = /^\s*#\|\s*classes\s*:/;
+
+// The tagged copy of each executed cell's source: a `#| classes: lp-cell-N`
+// line after its opening fence, N being the cell's index in expandedCells.
+// The tree passed in is left as it was.
+export function tagCells(tree) {
+  const texts = { ...(tree.texts ?? {}) };
+  const cells = expandedCells(texts[tree.main] ?? "", { path: tree.main, files: tree.texts ?? {} });
+  const byFile = new Map();
+  cells.forEach((cell, index) => {
+    if (!byFile.has(cell.file)) byFile.set(cell.file, []);
+    byFile.get(cell.file).push({ index, startLine: cell.startLine });
+  });
+  for (const [file, marks] of byFile) {
+    const lines = String(texts[file] ?? "").split("\n");
+    // Lines keep their "\r", so an inserted line gets one too in a CRLF file.
+    const cr = lines.length > 1 && lines[0].endsWith("\r") ? "\r" : "";
+    // Bottom up, so the fence lines of the cells still to be tagged hold.
+    for (const { index, startLine } of marks.sort((a, b) => b.startLine - a.startLine)) {
+      const tag = `lp-cell-${index}`;
+      let at = startLine + 1;
+      while (at < lines.length && OPTION_LINE.test(lines[at]) && !CLASSES_LINE.test(lines[at])) at += 1;
+      if (at < lines.length && CLASSES_LINE.test(lines[at])) lines[at] = addClass(lines[at], tag);
+      else lines.splice(startLine + 1, 0, `#| classes: ${tag}${cr}`);
+    }
+    texts[file] = lines.join("\n");
+  }
+  return { ...tree, texts };
+}
+
+// Appends a tag to an existing `classes:` value, keeping its quotes or flow
+// list intact. A second `classes:` key would be a duplicate YAML key.
+function addClass(line, tag) {
+  const [, head, space, value, tail] = /^(\s*#\|\s*classes\s*:)([ \t]*)(.*?)(\s*)$/.exec(line);
+  const quote = value[0];
+  let next;
+  if (value.length >= 2 && (quote === '"' || quote === "'") && value.endsWith(quote)) next = `${value.slice(0, -1)} ${tag}${quote}`;
+  else if (value.startsWith("[") && value.endsWith("]")) {
+    const inner = value.slice(1, -1).trim();
+    next = `[${inner ? `${inner}, ` : ""}${tag}]`;
+  } else next = value ? `${value} ${tag}` : tag;
+  return `${head}${space || " "}${next}${tail}`;
+}
+
+// The index a tagged cell's outer div carries, or null for an untagged cell.
+function cellTag(tokens) {
+  for (const name of classes(tokens[0])) {
+    const match = TAG.exec(name);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+// The tokens of a tagged cell with its tag class taken off the outer div, so
+// the tag never reaches the stored record.
+function untagged(tokens) {
+  const [open, ...rest] = tokens;
+  const raw = open.raw.replace(CLASS_ATTR, (_all, lead, quote, quoted, bare) => {
+    const kept = (quoted ?? bare ?? "").split(/\s+/).filter((name) => name && !TAG.test(name)).join(" ");
+    return quote === undefined && quoted === undefined ? `${lead}${kept}` : `${lead}${quote}${kept}${quote}`;
+  });
+  return [{ ...open, raw }, ...rest];
+}
+
+// The output of a tagged cell. A cell Quarto wrote with nothing in it (silent
+// and without output) gives "", which draws as no output.
+function taggedOutput(tokens) {
+  if (cellHtml(tokens.slice(1, -1)).trim() === "") return "";
+  return cellHtml(untagged(tokens));
+}
+
 export async function splitResults(html, qmdSource, { path = "main.qmd", files = null } = {}) {
-  let htmlCells;
+  let found;
   try {
-    htmlCells = findCells(contentTokens(tokenize(String(html ?? "")))).map(cellHtml);
+    found = findCells(contentTokens(tokenize(String(html ?? ""))));
   } catch (error) {
     if (error instanceof ParseError) return { ok: false, reason: "parse" };
     throw error;
   }
   const expected = expandedCells(qmdSource, { path, files });
-  if (!htmlCells.length || !expected.length) return { ok: false, reason: "no-cells" };
-  if (htmlCells.length !== expected.length) return { ok: false, reason: "count-mismatch" };
+  if (!found.length || !expected.length) return { ok: false, reason: "no-cells" };
+  const tags = found.map(cellTag);
+  let htmlCells;
+  if (tags.some((tag) => tag !== null)) {
+    // Paired by tag. A tag outside the expected range is ignored, and an
+    // expected cell with no div has no output.
+    const byIndex = new Map();
+    found.forEach((tokens, at) => {
+      const tag = tags[at];
+      if (tag !== null && tag < expected.length && !byIndex.has(tag)) byIndex.set(tag, taggedOutput(tokens));
+    });
+    htmlCells = expected.map((_, i) => byIndex.get(i) ?? "");
+  } else {
+    if (found.length !== expected.length) return { ok: false, reason: "count-mismatch" };
+    htmlCells = found.map(cellHtml);
+  }
   const cells = [];
   for (let i = 0; i < expected.length; i += 1) {
     cells.push({

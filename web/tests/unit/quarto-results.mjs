@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { cellFingerprint, parseQuarto } from "../../src/lib/engines/quarto.js";
-import { splitResults } from "../../src/lib/quarto-results.js";
+import { splitResults, tagCells } from "../../src/lib/quarto-results.js";
 
 const read = (name) => fs.readFileSync(new URL(`../fixtures/quarto-results/${name}`, import.meta.url), "utf8");
 const html = read("u.html");
@@ -103,4 +103,56 @@ assert.deepEqual(await splitResults("<main id=\"quarto-document-content\"><div c
 
   assert.equal(expandedCells("{{< include ../x.qmd >}}\n", { path: "main.qmd", files: { "../x.qmd": cell("x") } }).length, 1, "falls back to the name as written");
   assert.equal(expandedCells("{{< include /part.qmd >}}\n", { path: "main.qmd", files }).length, 0);
+}
+
+// Tagging: each executed cell gets `#| classes: lp-cell-N` directly after its
+// opening fence, in the file it lives in. The input tree is left alone.
+{
+  const cell = (n, options = "") => `\`\`\`{r}\n${options}${n}\n\`\`\`\n`;
+  const files = {
+    "chap/a.qmd": `${cell("a")}\n{{< include b.qmd >}}\n`,
+    "chap/b.qmd": cell("b", "#| label: b1\n"),
+  };
+  const main = `${cell("m1")}\n{{< include chap/a.qmd >}}\n\n${cell("m2", "#| classes: \"hidden extra\"\n#| label: m2\n")}`;
+  const tree = { main: "main.qmd", texts: { ...files, "main.qmd": main } };
+  const before = JSON.stringify(tree);
+
+  const tagged = tagCells(tree);
+  assert.equal(JSON.stringify(tree), before, "the input tree is not mutated");
+  assert.notEqual(tagged.texts, tree.texts);
+  assert.equal(tagged.main, "main.qmd");
+  // Cells in document order: m1 is 0, a is 1, b (included by a) is 2, m2 is 3.
+  assert.equal(tagged.texts["main.qmd"], "```{r}\n#| classes: lp-cell-0\nm1\n```\n\n{{< include chap/a.qmd >}}\n\n```{r}\n#| classes: \"hidden extra lp-cell-3\"\n#| label: m2\nm2\n```\n");
+  assert.equal(tagged.texts["chap/a.qmd"], "```{r}\n#| classes: lp-cell-1\na\n```\n\n{{< include b.qmd >}}\n");
+  assert.equal(tagged.texts["chap/b.qmd"], "```{r}\n#| classes: lp-cell-2\n#| label: b1\nb\n```\n");
+
+  // A bare classes value and a flow list take the tag without breaking YAML.
+  const forms = tagCells({ main: "x.qmd", texts: { "x.qmd": "```{r}\n#| classes:\n1\n```\n\n```{r}\n#| classes: [a, b]\n2\n```\n" } });
+  assert.equal(forms.texts["x.qmd"], "```{r}\n#| classes: lp-cell-0\n1\n```\n\n```{r}\n#| classes: [a, b, lp-cell-1]\n2\n```\n");
+
+  // A CRLF file gets CRLF inserted lines.
+  const crlf = tagCells({ main: "c.qmd", texts: { "c.qmd": "```{r}\r\n1\r\n```\r\n" } });
+  assert.equal(crlf.texts["c.qmd"], "```{r}\r\n#| classes: lp-cell-0\r\n1\r\n```\r\n");
+
+  // The tagged source's output pairs by tag. Cell 1 (a) and cell 3 (m2) printed
+  // nothing, so Quarto wrote no div for them and they get "". The tag class is
+  // gone from the stored html.
+  const rendered = `<main id="quarto-document-content"><div class="cell lp-cell-2"><p>b</p></div><div class="cell lp-cell-0"><p>m1</p></div></main>`;
+  const split = await splitResults(rendered, main, { path: "main.qmd", files: tree.texts });
+  assert.equal(split.ok, true);
+  assert.deepEqual(split.record.cells.map((c) => c.html), ['<div class="cell"><p>m1</p></div>', "", '<div class="cell"><p>b</p></div>', ""]);
+  assert.deepEqual(split.record.cells.map((c) => c.path ?? null), [null, "chap/a.qmd", "chap/b.qmd", null]);
+
+  // A tagged cell whose div holds only echoed code is also "".
+  const codeOnly = `<main id="quarto-document-content"><div class="cell lp-cell-0"><div class="cell-code"><pre>x</pre></div></div></main>`;
+  assert.equal((await splitResults(codeOnly, "```{r}\n1\n```\n")).record.cells[0].html, "");
+
+  // A tag outside the expected range is ignored.
+  const stray = `<main id="quarto-document-content"><div class="cell lp-cell-9"><p>x</p></div></main>`;
+  assert.equal((await splitResults(stray, "```{r}\n1\n```\n")).record.cells[0].html, "");
+
+  // Without any tag the pairing stays positional, count checks included.
+  assert.deepEqual(await splitResults(`<main id="quarto-document-content"><div class="cell"><p>x</p></div></main>`, "```{r}\n1\n```\n```{r}\n2\n```\n"), { ok: false, reason: "count-mismatch" });
+  const untaggedOne = await splitResults(`<main id="quarto-document-content"><div class="cell"><p>x</p></div></main>`, "```{r}\n1\n```\n");
+  assert.equal(untaggedOne.record.cells[0].html, '<div class="cell"><p>x</p></div>');
 }

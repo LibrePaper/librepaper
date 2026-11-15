@@ -414,6 +414,8 @@ export async function quartoSidecar(source, { path = "main.qmd", results = null,
   const matched = matchResults(results, cells);
   const ordered = [];
   for (const [cell, output] of matched) {
+    // An empty output is a silent cell: nothing is placed under it.
+    if (!String(output.html ?? "")) continue;
     const entry = { line: cell.startLine + 1, html: String(output.html ?? "").replace(/\r?\n/g, " "), stale: output.stale };
     if (!cell.main) entry.path = cell.file;
     ordered.push({ entry, order: cells.indexOf(cell) });
