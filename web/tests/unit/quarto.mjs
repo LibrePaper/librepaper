@@ -170,7 +170,7 @@ assert.deepEqual([mapped[1].line, mapped[1].generated], [0, true]);
     path: "paper.qmd",
     strings,
     files: sidecarFiles,
-    results: { inlines: [{ fingerprint: fa, html: "1" }, { fingerprint: fb, html: "" }, { fingerprint: fc, html: "3" }, { fingerprint: "0".repeat(64), html: "9" }] },
+    results: { inlines: [{ fingerprint: fa, html: "1" }, { fingerprint: fb, html: "" }, { fingerprint: fc, html: "3", path: "part.qmd" }, { fingerprint: "0".repeat(64), html: "9" }] },
   });
   assert.deepEqual(withInlines.inlines, [
     { line: 1, column: 8, html: "1", stale: false },
