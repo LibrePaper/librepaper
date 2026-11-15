@@ -242,3 +242,5 @@ a.quarto-title-author-orcid{text-decoration:none}a.quarto-title-author-orcid svg
 section.quarto-appendix-section{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--lp-rule)}
 .quarto-appendix-heading{font:600 .85rem var(--lp-sans);color:var(--lp-muted);border:0;margin:0 0 .5rem}
 .quarto-appendix-contents{font-size:.9rem;line-height:1.5}.quarto-appendix-contents .license{display:block;margin:0 0 .5rem}.quarto-appendix-contents .license a{color:inherit}
+/* live preview only: a long document's preview skips layout and paint of the blocks far off screen on each keystroke. Paint containment (which content-visibility implies) clips overflow, so a block that draws outside its own box is left out: margin notes and their captions, and the wide column classes. */
+@media screen{html.lp-live-preview body>:not(.margin,aside,.margin-caption,[class*="column-"]):not(:has(.margin,aside,.margin-caption,[class*="column-"])){content-visibility:auto;contain-intrinsic-size:auto 20em}}

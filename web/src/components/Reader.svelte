@@ -151,6 +151,8 @@
   import ClearChatDialog from "./reader/ClearChatDialog.svelte";
   import IdentityDialog from "./reader/IdentityDialog.svelte";
   import { m } from "../lib/paraglide/messages.js";
+  // Opt-in timing marks for the typing bench (web/tools/typing-bench.mjs).
+  import { perfEnd, perfStart } from "../lib/perf-marks.js";
 
   // The demo sandbox at /try runs wholly in this browser. Its slug and
   // document URL are the ones in lib/try-project.js, which is imported only
@@ -654,14 +656,20 @@
   function anchorComments(list, { rendered = true } = {}) {
     if (rendered) {
       for (const comment of list) fallbackPlaced.delete(comment);
+      const t = perfStart();
       anchorAll(docText || "", list, docText === null ? null : docView);
+      perfEnd("lp:reader:anchorAll", t);
     } else {
       const released = list.filter((comment) => fallbackPlaced.has(comment) && !comment.attachment?.attached_by_hand);
       for (const comment of released) fallbackPlaced.delete(comment);
+      const t = perfStart();
       if (released.length) anchorAll(docText || "", released, docText === null ? null : docView);
+      perfEnd("lp:reader:anchorAll", t);
     }
     if (mayEdit) {
+      const t = perfStart();
       placeSources(session, list);
+      perfEnd("lp:reader:placeSources", t);
       for (const comment of list) {
         if (!comment.attachment?.attached_by_hand) continue;
         comment.start = comment.end = null;
@@ -673,6 +681,7 @@
       }
     }
     if (mayEdit && docText !== null) {
+      const t = perfStart();
       let tree = null;
       for (const comment of list) {
         if (comment.start != null || comment.sourceStart == null || !comment.sourcePath) continue;
@@ -688,6 +697,7 @@
           fallbackPlaced.add(comment);
         }
       }
+      perfEnd("lp:reader:sourceFallback", t);
     }
     for (const comment of list) applyAnchorFlags(comment);
   }
@@ -695,9 +705,15 @@
   function reanchor() {
     if (!frameReady || !commentsReady || docText === null) return;
     anchorComments(comments);
+    let t = perfStart();
     annotations.publish();
+    perfEnd("lp:reader:annotationsPublish", t);
+    t = perfStart();
     applyHighlights();
+    perfEnd("lp:reader:highlights", t);
+    t = perfStart();
     pushCommentMarks();
+    perfEnd("lp:reader:commentMarks", t);
   }
 
   // Scroll tracking for mobile bar hide/show: called by scroll listeners and
@@ -710,9 +726,12 @@
 
   function fromFrame(message) {
     switch (message.type) {
-      case "ready":
+      case "ready": {
+        const readyStart = perfStart();
         docText = typeof message.text === "string" ? message.text : "";
+        const flatStart = perfStart();
         docView = flatten(docText);
+        perfEnd("lp:reader:flatten", flatStart);
         // The first time the frame says it is there is the first moment
         // anything can be sent to it. A paint made before this went to a
         // window that had not navigated yet and was lost -- which is what a
@@ -725,12 +744,18 @@
         if (first) replayPreview();
         // Whatever was painted before is gone with the rebuilt DOM.
         frameOverlays.reset();
+        const reanchorStart = perfStart();
         reanchor();
+        perfEnd("lp:reader:reanchor", reanchorStart);
+        const selectionStart = perfStart();
         applySelection();
+        perfEnd("lp:reader:selection", selectionStart);
         if (first) {
           void paintPreview();
         }
+        perfEnd("lp:reader:ready", readyStart);
         break;
+      }
       case "viewer-drawn":
         // The pages of the newest delivery are on screen, so the waiting
         // display gives way to them. A paint of an older delivery does not.
