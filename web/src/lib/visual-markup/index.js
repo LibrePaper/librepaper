@@ -25,11 +25,9 @@ import { COMMANDS, ENVIRONMENTS } from "./languages/latex/catalog.ts";
 import { loadKatex } from "../katex.js";
 import { rewriteDisplay } from "../math-numbering.js";
 import { m } from "../paraglide/messages.js";
+import { figureUrlFor } from "../missing-figures.js";
 
 export { VISUAL_FORMATS } from "./formats.js";
-
-// LaTeX's \includegraphics often leaves the extension off, so these are tried in turn.
-const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".svg", ".pdf"];
 
 // The facts about the open LaTeX project that the widgets read: labels, citations,
 // acronyms, macros, theorems, heading numbers and the citation style. Every field starts empty.
@@ -77,9 +75,10 @@ export function factsUpdate(facts) {
 /// The visual layer for one LaTeX file, or nothing for any other format: Markdown, Quarto, Org and Typst are drawn by the paper view (lib/paper).
 /// `path` returns the open file's project path (no leading slash), for resolving relative image paths.
 /// `imageUrl(path)` resolves a project path (no leading slash) to a URL an <img> can load, or null.
+/// `resultsFiles()` returns the files of the last run (or null); a figure that is not a project file is drawn from them.
 /// `dark` picks the dark colours.
 /// `openInclude(name)` opens the file an \input, \include or \subfile names; without it the chip has no button.
-export function visualMarkup(format, { path = () => "", imageUrl = null, dark = false, openInclude = null } = {}) {
+export function visualMarkup(format, { path = () => "", imageUrl = null, resultsFiles = null, dark = false, openInclude = null } = {}) {
   if (format !== "latex") return [];
 
   const extensions = [
@@ -97,13 +96,13 @@ export function visualMarkup(format, { path = () => "", imageUrl = null, dark = 
     }),
   ];
 
-  if (imageUrl) {
+  if (imageUrl || resultsFiles) {
     // Upstream resolves against leading-slash paths; LibrePaper's have none.
     extensions.push(
       imageResolver.of(
         createImageResolver(
           () => "/" + path(),
-          (resolved) => resolveImage(imageUrl, resolved.replace(/^\/+/, "")),
+          (resolved) => figureUrlFor(imageUrl ?? (() => null), resultsFiles, resolved.replace(/^\/+/, "")),
         ),
       ),
     );
@@ -113,16 +112,6 @@ export function visualMarkup(format, { path = () => "", imageUrl = null, dark = 
   extensions.push(factsField);
 
   return extensions;
-}
-
-async function resolveImage(imageUrl, file) {
-  const url = await imageUrl(file);
-  if (url || /\.[^/]+$/.test(file)) return url;
-  for (const extension of IMAGE_EXTENSIONS) {
-    const found = await imageUrl(file + extension);
-    if (found) return found;
-  }
-  return null;
 }
 
 // KaTeX lacks some math environments and has no \label, so the formula is

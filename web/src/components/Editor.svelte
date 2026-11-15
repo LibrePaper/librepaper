@@ -297,6 +297,8 @@
     // A suggester's typing is always tracked: tracking starts on and cannot be stopped.
     suggestOnly = false,
     visual = false, imageUrl = null,
+    // A getter for the files of the last run (or null); figures that are not project files are drawn from them.
+    resultsFiles = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment, onchangeselect,
     // Called with the caret's formatting (formatState) while visual mode is on.
@@ -1837,9 +1839,9 @@
     if (!on) return [];
     if (/\.(md|markdown|qmd|org|typ)$/i.test(path)) {
       const format = /\.org$/i.test(path) ? "org" : /\.qmd$/i.test(path) ? "quarto" : /\.typ$/i.test(path) ? "typst" : "markdown";
-      return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", project: format === "typst" ? () => paperProject(path) : null, openInclude: (name) => openIncluded(path, name) });
+      return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), resultsFiles: () => untrack(() => resultsFiles)?.() ?? null, dark: mode() === "dark", project: format === "typst" ? () => paperProject(path) : null, openInclude: (name) => openIncluded(path, name) });
     }
-    return visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) });
+    return visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), resultsFiles: () => untrack(() => resultsFiles)?.() ?? null, dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) });
   }
   // The source-code chrome for a file. It is dropped only where the visual layer draws the file,
   // the same test visualOn applies, so a .bib or .py file keeps its line numbers in visual mode.
@@ -1989,7 +1991,7 @@
     const tree = session.doc ? treeForDoc(session.doc) : { texts: {}, digests: {} };
     const texts = {};
     for (const [file, text] of Object.entries(tree.texts)) texts[file] = String(text ?? "");
-    return { main: path, texts, assets: { ...tree.digests }, assetUrl: (file) => untrack(() => imageUrl)?.(file) ?? null };
+    return { main: path, texts, assets: { ...tree.digests }, assetUrl: (file) => untrack(() => imageUrl)?.(file) ?? null, resultsFiles: () => untrack(() => resultsFiles)?.() ?? null };
   }
   function addTextToDoc(doc, path, body = "") {
     const files = doc.getMap("files"), paths = doc.getMap("paths");
