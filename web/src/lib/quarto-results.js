@@ -351,10 +351,13 @@ export async function splitResults(html, qmdSource, { path = "main.qmd", files =
     }
     return inlines ? { ok: true, record: { version: 1, path, cells: [], inlines } } : { ok: false, reason: "no-cells" };
   }
-  if (!found.length) return { ok: false, reason: "no-cells" };
   const tags = found.map(cellTag);
   let htmlCells;
-  if (tags.some((tag) => tag !== null)) {
+  if (!found.length) {
+    // No cell div at all. The cells stay in the record with no output, and the
+    // inline values below decide whether there is anything to keep.
+    htmlCells = expected.map(() => "");
+  } else if (tags.some((tag) => tag !== null)) {
     // Paired by tag. A tag outside the expected range is ignored, and an
     // expected cell with no div has no output.
     const byIndex = new Map();
@@ -383,6 +386,8 @@ export async function splitResults(html, qmdSource, { path = "main.qmd", files =
   } catch {
     inlines = null;
   }
+  // A page with no cell div and no inline value has nothing to publish.
+  if (!found.length && !inlines) return { ok: false, reason: "no-cells" };
   return { ok: true, record: { version: 1, path, cells, ...(inlines ? { inlines } : {}) } };
 }
 

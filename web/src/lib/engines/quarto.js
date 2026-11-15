@@ -159,22 +159,67 @@ function inlineLanguage(segment) {
   return /^([A-Za-z][\w-]*)/.exec(segment)?.[1] ?? "";
 }
 
+// The code spans of one line, CommonMark style. A run of n backticks opens a
+// span that closes at the next run of exactly n backticks; with no closing run
+// the opening run is literal text. A backslash before a backtick outside a span
+// escapes it. Each span carries `start`/`end` (UTF-16 offsets, backticks
+// included) and `n` (the run length).
+function codeSpans(line) {
+  const spans = [];
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === "\\" && line[i + 1] === "`") {
+      i += 2;
+      continue;
+    }
+    if (line[i] !== "`") {
+      i += 1;
+      continue;
+    }
+    let run = i;
+    while (line[run] === "`") run += 1;
+    const n = run - i;
+    let close = -1;
+    let at = run;
+    while (at < line.length && close < 0) {
+      if (line[at] !== "`") {
+        at += 1;
+        continue;
+      }
+      let end = at;
+      while (line[end] === "`") end += 1;
+      if (end - at === n) close = at;
+      at = end;
+    }
+    if (close < 0) {
+      i = run;
+      continue;
+    }
+    spans.push({ start: i, end: close + n, n, content: line.slice(run, close) });
+    i = close + n;
+  }
+  return spans;
+}
+
 function inlineOccurrence(line, path, lineNumber, occurrence) {
   const matches = [];
-  const pattern = /`([^`\n]+)`/g;
-  for (const match of line.matchAll(pattern)) {
-    if (!executableInline(match[0])) continue;
-    const expression = match[1].trim();
+  // Only a single-backtick span can hold an inline value. A longer run is
+  // literal text, and its content is not scanned for spans of its own.
+  for (const span of codeSpans(line)) {
+    if (span.n !== 1) continue;
+    const whole = line.slice(span.start, span.end);
+    if (!executableInline(whole)) continue;
+    const expression = span.content.trim();
     matches.push({
       id: `${path}#inline-${lineNumber}-${occurrence + matches.length}`,
       expression,
       language: inlineLanguage(expression),
       line: lineNumber,
       // Rust records the byte column immediately after the opening tick.
-      column: new TextEncoder().encode(line.slice(0, match.index + 1)).length + 1,
+      column: new TextEncoder().encode(line.slice(0, span.start + 1)).length + 1,
       // UTF-16 offsets of the whole span, backticks included, within its line.
-      start: match.index,
-      end: match.index + match[0].length,
+      start: span.start,
+      end: span.end,
       source: line,
     });
   }

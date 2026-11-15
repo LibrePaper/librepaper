@@ -231,3 +231,21 @@ assert.deepEqual(await splitResults("<main id=\"quarto-document-content\"><div c
     { fingerprint: fd, html: "2", path: "chap/a.qmd" },
   ]);
 }
+
+// A page with no cell div still publishes its inline values; every expected cell stays, with no output.
+{
+  const { expandedCells, inlineFingerprint, expandedInlines } = await import("../../src/lib/engines/quarto.js");
+  const source = "Value `r x`.\n\n```{r}\n#| echo: false\nx <- 1\n```\n";
+  const page = '<main id="quarto-document-content"><p>Value <span class="lp-inline-0">5</span>.</p></main>';
+  const split = await splitResults(page, source, { path: "main.qmd" });
+  const [cell] = expandedCells(source, { path: "main.qmd" });
+  assert.equal(split.ok, true);
+  assert.deepEqual(split.record.cells, [{ fingerprint: await cellFingerprint(cell), label: null, html: "" }]);
+  const [inline] = expandedInlines(source, { path: "main.qmd" });
+  assert.deepEqual(split.record.inlines, [{ fingerprint: await inlineFingerprint(inline), html: "5" }]);
+  // Without an inline value to keep, a page with no cell div is still no-cells.
+  assert.deepEqual(await splitResults("<main id=\"quarto-document-content\"><p>plain</p></main>", source, { path: "main.qmd" }), { ok: false, reason: "no-cells" });
+  // A backtick run longer than one is literal text: the tagged line is left as it is.
+  const literal = "Shown as `` `r x` `` here.\n";
+  assert.equal(tagCells({ main: "main.qmd", texts: { "main.qmd": literal } }).texts["main.qmd"], literal);
+}

@@ -86,6 +86,10 @@ const multiInline = parseQuarto("`r 1 + 1`\n`r 2 + 2`", { path: "paper.qmd" }).i
 assert.deepEqual(multiInline.map((item) => item.id), ["paper.qmd#inline-1-0", "paper.qmd#inline-2-0"]);
 const duplicateInlineSource = "Values: `r 1 + 1`, `r 1 + 1`.";
 const duplicateInline = parseQuarto(duplicateInlineSource, { path: "paper.qmd" }).inlineRecords;
+// Code spans follow CommonMark: a longer backtick run is literal, and a backslash escapes a tick.
+assert.deepEqual(parseQuarto("Shown as `` `r x` `` here.", { path: "paper.qmd" }).inlineRecords, []);
+assert.deepEqual(parseQuarto("Escaped \\`r x\\` here.", { path: "paper.qmd" }).inlineRecords, []);
+assert.deepEqual(expandedInlines("`r a` and `` `r b` ``", { path: "paper.qmd" }).map((record) => record.expression), ["r a"]);
 const incomplete = "---\ntitle: Still editing\n\n# Intro\n\nText";
 assert.equal(parseQuarto(incomplete).diagnostics[0].severity, "warning");
 assert.equal(await contextId({ format: "html", profiles: ["default"], parameters: { seed: 1 } }), await contextId({ format: "html", profiles: ["default"], parameters: { seed: 1 } }));
