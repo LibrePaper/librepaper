@@ -476,3 +476,45 @@ async fn an_unsafe_cell_path_is_refused() {
     let (status, _) = served.call("GET", &owner, None).await;
     assert_eq!(status, 404, "nothing was stored");
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_owner_puts_and_gets_inline_values() {
+    let Some(deployment) = deployment("results-inlines").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let mut inlined = record();
+    inlined["inlines"] = json!([
+        {"fingerprint": fingerprint('c'), "html": "42"},
+        {"fingerprint": fingerprint('d'), "html": "7", "path": "sections/part.qmd"},
+    ]);
+    let (status, put) = served.call("PUT", &owner, Some(inlined.to_string())).await;
+    assert_eq!(status, 200, "{put}");
+
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert_eq!(got["inlines"][0]["html"], "42");
+    assert!(got["inlines"][0].get("path").is_none(), "{got}");
+    assert_eq!(got["inlines"][1]["path"], "sections/part.qmd");
+
+    let mut unsafe_path = record();
+    unsafe_path["inlines"] = json!([
+        {"fingerprint": fingerprint('c'), "html": "1", "path": "/etc/passwd"},
+    ]);
+    let (status, _) = served.call("PUT", &owner, Some(unsafe_path.to_string())).await;
+    assert_eq!(status, 400, "an unsafe inline path is refused");
+
+    let mut calepin = calepin_record();
+    calepin["inlines"] = json!([{"fingerprint": fingerprint('c'), "html": "1"}]);
+    let (status, _) = served.call("PUT", &owner, Some(calepin.to_string())).await;
+    assert_eq!(status, 400, "a calepin record holds no inline values");
+
+    let (status, _) = served.call("PUT", &owner, Some(record().to_string())).await;
+    assert_eq!(status, 200);
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert!(got.get("inlines").is_none(), "an absent list is not stored: {got}");
+}
