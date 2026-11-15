@@ -385,12 +385,14 @@ try {
 
   // g3. Scrolling the preview does the same: the frame agent reports scroll positions to the app, which sets the bars aside and brings them back.
   await toMode('document');
-  await until('preview frame', () => b.frameEvaluate('document.readyState === "complete"'), 10000);
-  await b.frameEvaluate("for (const top of [200, 400, 600]) parent.postMessage({ librepaper: true, type: 'scroll', delta: 200, top, bottom: 5000 }, '*')");
+  // The preview is on the app's origin here, so the test reaches into it directly.
+  const fromPreview = (code) => b.evaluate(`document.querySelector("iframe[title=Document]").contentWindow.eval(${JSON.stringify(code)})`);
+  await until('preview frame', () => b.evaluate('document.querySelector("iframe[title=Document]")?.contentDocument?.readyState === "complete"'), 10000);
+  await fromPreview("for (const top of [200, 400, 600]) parent.postMessage({ librepaper: true, type: 'scroll', delta: 200, top, bottom: 5000 }, '*')");
   await wait(260);
   await until('preview sets the tab bar aside', () => b.evaluate(`document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
   await until('preview collapses the mode switch', () => b.evaluate(`document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), 3000);
-  await b.frameEvaluate("for (const top of [400, 200]) parent.postMessage({ librepaper: true, type: 'scroll', delta: -200, top, bottom: 5000 }, '*')");
+  await fromPreview("for (const top of [400, 200]) parent.postMessage({ librepaper: true, type: 'scroll', delta: -200, top, bottom: 5000 }, '*')");
   await wait(260);
   await until('preview brings the tab bar back', () => b.evaluate(`!document.querySelector(".mobile-tab-bar").classList.contains("hidden")`), 3000);
   await until('preview brings the mode switch back', () => b.evaluate(`!document.querySelector(".mobile-mode-switch").classList.contains("collapsed")`), 3000);
