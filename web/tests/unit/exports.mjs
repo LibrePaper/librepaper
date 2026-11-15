@@ -161,6 +161,14 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   assert.deepEqual(render.calls[0].tree.assets, {});
 }
 
+// A target the command does not make falls back to the browser, so it is filled even when local.
+{
+  const render = makeRender({ html: "<p>made</p>", diagnostics: [] });
+  const tree = { main: "doc/main.typ", texts: { "doc/main.typ": "#image(\"plot.png\")\n" }, assets: {} };
+  await exportFile({ ...base, target: "docx", format: "typst", tree, local: true, resultsFiles: [{ path: "doc/plot.png", base64: "AA==" }], render, run: makeRun() }).catch(() => {});
+  assert.ok("doc/plot.png" in render.calls[0].tree.assets, "the run's figure is in the tree");
+}
+
 // HTML routes.
 {
   const render = makeRender({ html: "<p>made</p>", diagnostics: [] });

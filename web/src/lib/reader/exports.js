@@ -160,7 +160,8 @@ export async function exportFile({ tree: given, resultsFiles = null, ...options 
   await figureSyntaxReady(given);
   // A local build reads the Run directory itself; filling the tree would
   // upload stale figures and placeholders over the fresh ones.
-  const { tree, missing } = options.local ? { tree: given, missing: [] } : figuresForExport(given, { resultsFiles });
+  // A target that falls back to the browser (Typst DOCX, say) still needs the fill.
+  const { tree, missing } = madeLocally(options.format, options.target, options.local) ? { tree: given, missing: [] } : figuresForExport(given, { resultsFiles });
   const file = await exportFilled({ ...options, tree, missing });
   return { ...file, missing };
 }
