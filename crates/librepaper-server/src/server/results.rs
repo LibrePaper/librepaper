@@ -155,7 +155,8 @@ fn is_safe_path(path: &str) -> bool {
 fn validate_files(files: &[ResultsFile], calepin: bool) -> Result<(), &'static str> {
     let mut seen = HashSet::new();
     for file in files {
-        if file.path.len() > MAX_PATH_BYTES || !librepaper_base::paths::RelPath::is_local(&file.path)
+        if file.path.len() > MAX_PATH_BYTES
+            || !librepaper_base::paths::RelPath::is_local(&file.path)
         {
             return Err("a result file path must be a safe relative path");
         }
@@ -191,7 +192,13 @@ fn validate_files(files: &[ResultsFile], calepin: bool) -> Result<(), &'static s
 /// its base64 files. Each such entry keeps only its path and `"blob": true`.
 fn split_record(
     record: &ResultsRecord,
-) -> Result<(String, Vec<librepaper_engine::storage::postgres::ResultsBlob>), &'static str> {
+) -> Result<
+    (
+        String,
+        Vec<librepaper_engine::storage::postgres::ResultsBlob>,
+    ),
+    &'static str,
+> {
     use librepaper_engine::storage::postgres::ResultsBlob;
     let Ok(Value::Object(mut stored)) = serde_json::to_value(record) else {
         return Err("invalid results record");
@@ -216,7 +223,8 @@ fn split_record(
     if !entries.is_empty() {
         stored.insert("files".into(), Value::Array(entries));
     }
-    let body = serde_json::to_string(&Value::Object(stored)).map_err(|_| "invalid results record")?;
+    let body =
+        serde_json::to_string(&Value::Object(stored)).map_err(|_| "invalid results record")?;
     Ok((body, blobs))
 }
 
@@ -575,16 +583,25 @@ mod tests {
         let good = b64(SVG.as_bytes());
         let cases = [
             ("text", json!([{"path": "a.svg", "text": SVG}])),
-            ("not an asset", json!([{"path": "a.png", "base64": b64(b"hello")}])),
+            (
+                "not an asset",
+                json!([{"path": "a.png", "base64": b64(b"hello")}]),
+            ),
             ("not base64", json!([{"path": "a.png", "base64": "***"}])),
-            ("under .librepaper", json!([{"path": ".librepaper/a.svg", "base64": good}])),
+            (
+                "under .librepaper",
+                json!([{"path": ".librepaper/a.svg", "base64": good}]),
+            ),
             ("unsafe path", json!([{"path": "../a.svg", "base64": good}])),
             ("absolute path", json!([{"path": "/a.svg", "base64": good}])),
             (
                 "duplicate",
                 json!([{"path": "a.svg", "base64": good}, {"path": "a.svg", "base64": good}]),
             ),
-            ("under .calepin", json!([{"path": ".calepin/a.svg", "base64": good}])),
+            (
+                "under .calepin",
+                json!([{"path": ".calepin/a.svg", "base64": good}]),
+            ),
         ];
         for (name, files) in cases {
             let mut record = quarto();

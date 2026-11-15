@@ -35,9 +35,9 @@ use crate::local::protocol::{
 };
 
 mod calepin;
-mod run_figures;
 pub mod discovery;
 pub mod records;
+mod run_figures;
 pub mod tool;
 pub mod workspace;
 
@@ -289,7 +289,8 @@ async fn run_with(
                 } else {
                     None
                 };
-                let room = MAX_RESULT_BYTES - calepin.as_ref().map_or(0, Vec::len).min(MAX_RESULT_BYTES);
+                let room =
+                    MAX_RESULT_BYTES - calepin.as_ref().map_or(0, Vec::len).min(MAX_RESULT_BYTES);
                 let figures = match (runs_code, run_dir.as_ref()) {
                     (true, Some(run_dir)) if !request.wanted.is_empty() => {
                         run_figures::collect(run_dir, &request.wanted, room)

@@ -547,7 +547,10 @@ async fn a_quarto_record_with_run_figures_round_trips_and_is_charged_raw() {
     assert_eq!(status, 200, "{put}");
     let bytes = put["bytes"].as_i64().unwrap();
     assert!(bytes >= svg.len() as i64, "charges the raw bytes");
-    assert!(bytes < (svg.len() * 4 / 3) as i64, "not the base64 text: {bytes}");
+    assert!(
+        bytes < (svg.len() * 4 / 3) as i64,
+        "not the base64 text: {bytes}"
+    );
 
     let (status, got) = served.call("GET", &owner, None).await;
     assert_eq!(status, 200, "{got}");
@@ -623,8 +626,14 @@ async fn bad_run_figures_are_refused() {
     let owner = served.owner.clone();
     for (name, file) in [
         ("text", json!({"path": "a.svg", "text": SVG})),
-        ("not an image", json!({"path": "a.png", "base64": b64(b"hello")})),
-        ("under .librepaper", json!({"path": ".librepaper/a.svg", "base64": b64(SVG.as_bytes())})),
+        (
+            "not an image",
+            json!({"path": "a.png", "base64": b64(b"hello")}),
+        ),
+        (
+            "under .librepaper",
+            json!({"path": ".librepaper/a.svg", "base64": b64(SVG.as_bytes())}),
+        ),
     ] {
         let mut body = record();
         body["files"] = json!([file]);

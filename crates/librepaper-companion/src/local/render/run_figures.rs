@@ -187,7 +187,9 @@ mod tests {
         assert!(sniff(b"RIFF\0\0\0\0WEBPVP8 "));
         assert!(sniff(b"%PDF-1.7"));
         assert!(sniff(b"<svg xmlns=\"x\"/>"));
-        assert!(sniff(b"\n <?xml version=\"1.0\"?>\n<!-- c -->\n<!DOCTYPE svg>\n<svg/>"));
+        assert!(sniff(
+            b"\n <?xml version=\"1.0\"?>\n<!-- c -->\n<!DOCTYPE svg>\n<svg/>"
+        ));
         assert!(!sniff(b"just text"));
         assert!(!sniff(b"<html><svg/></html>"));
         assert!(!sniff(b""));
@@ -233,8 +235,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let elsewhere = tempfile::tempdir().unwrap();
         write(&elsewhere.path().join("real.png"), PNG);
-        std::os::unix::fs::symlink(elsewhere.path().join("real.png"), dir.path().join("link.png"))
-            .unwrap();
+        std::os::unix::fs::symlink(
+            elsewhere.path().join("real.png"),
+            dir.path().join("link.png"),
+        )
+        .unwrap();
         let got = collect(dir.path(), &wanted(&["link.png"]), usize::MAX);
         assert_eq!(got.len(), 1);
         assert!(has(dir.path(), "link.png"));
@@ -255,8 +260,9 @@ mod tests {
         assert_eq!(made["files"][0]["path"], "a.png");
         assert!(made["files"][0]["base64"].is_string());
         assert!(results(&[]).is_none());
-        let base = serde_json::to_vec(&json!({"version": 1, "files": [{"path": "x", "text": "y"}]}))
-            .unwrap();
+        let base =
+            serde_json::to_vec(&json!({"version": 1, "files": [{"path": "x", "text": "y"}]}))
+                .unwrap();
         let both: Value = serde_json::from_slice(&append(base, &figures)).unwrap();
         assert_eq!(both["files"].as_array().unwrap().len(), 2);
         assert_eq!(both["files"][1]["path"], "a.png");

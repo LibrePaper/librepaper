@@ -99,8 +99,7 @@ impl PostgresCatalog {
         .fetch_one(&mut *conn)
         .await?;
         let owner_usage = usage_bytes(&mut conn, UsageScope::Owner(owner_id), Sources::ALL).await?;
-        let deployment_usage =
-            usage_bytes(&mut conn, UsageScope::Deployment, Sources::ALL).await?;
+        let deployment_usage = usage_bytes(&mut conn, UsageScope::Deployment, Sources::ALL).await?;
         Ok(ResultsRoom {
             owner: (self.policy.owner_bytes - owner_usage + old).max(0),
             deployment: (self.policy.deployment_bytes - deployment_usage + old).max(0),
