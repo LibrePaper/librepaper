@@ -342,6 +342,17 @@ function startLazy(entries, ctx) {
         } catch {
           /* a page that cannot be built stays a sized, blank page */
         }
+        // A page that could not be drawn and is still in view would wait for
+        // the next scroll to be tried again, which a reader looking at a blank
+        // page may never give it. Try again shortly, a little later each time,
+        // so canvas memory freed in the meantime can be used.
+        if (!entry.built && entry.failures > 0 && entry.failures < MAX_BUILD_FAILURES) {
+          setTimeout(() => {
+            if (gone() || entry.built || !entry.wanted || queue.includes(entry)) return;
+            queue.push(entry);
+            void pump();
+          }, 400 * entry.failures);
+        }
       }
     } finally {
       pumping = false;
