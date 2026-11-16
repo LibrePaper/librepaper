@@ -2115,6 +2115,7 @@
   "outline_filter_open_todos": "未完成的 TODO",
   "outline_filter_tag": "标签：{tag}",
   "outline_no_headings": "此文件中没有标题。",
+  "panelboundary_failed": "页面的这一部分已停止工作。LibrePaper 的其余部分正常。",
   "panels_git": "Git",
   "panels_shared": "与我分享",
   "panels_trash": "回收站",
