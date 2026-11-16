@@ -21,6 +21,7 @@
 
   let body = $state("");
   let field = $state(null);
+  let card = $state(null);
 
   // A remark about the whole document quotes nothing, so the draft names what
   // it is about instead.
@@ -30,8 +31,27 @@
       : m.commentcomposer_quotation({ exact: pending?.exact ?? "" }),
   );
 
+  // The card mounts as the Comments tab is opened, and that tab or its panel
+  // may not be showing yet, so focus is retried for a short while until the
+  // field is visible, then the card is scrolled into place and focused.
   $effect(() => {
-    field?.focus({ preventScroll: true });
+    if (!field) return;
+    let frame = 0;
+    let tries = 0;
+    const attempt = () => {
+      const visible = field.checkVisibility?.() ?? field.offsetParent !== null;
+      if (visible) {
+        // The card first, for its quotation; then the field, which a long
+        // quotation can push below the column's edge.
+        card?.scrollIntoView({ block: "nearest" });
+        field.scrollIntoView({ block: "nearest" });
+        field.focus({ preventScroll: true });
+        return;
+      }
+      if (++tries < 30) frame = requestAnimationFrame(attempt);
+    };
+    frame = requestAnimationFrame(attempt);
+    return () => cancelAnimationFrame(frame);
   });
 
   function send() {
@@ -55,7 +75,7 @@
   }
 </script>
 
-<article id="composer" class="card composer lp-control-tonal-brand p-2" aria-label={m.commentcomposer_aria()}>
+<article bind:this={card} id="composer" class="card composer lp-control-tonal-brand p-2" aria-label={m.commentcomposer_aria()}>
   <div class="flex flex-col gap-2">
     <blockquote class="quote border-[var(--color-brand)] border-l-2 pl-3 text-sm">{quotation}</blockquote>
 

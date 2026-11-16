@@ -564,13 +564,19 @@ import { morphChildren } from "./morph.js";
   // is reading it, and it is tried across the width, because the middle of a
   // page can be a figure, a margin, or the gap between two columns.
   function readingPosition() {
-    if (!table?.nodes.length) return 0;
-    const y = Math.min(Math.max(1, innerHeight - 1), 80);
+    if (!table?.nodes.length) return null;
+    const y = readingY();
     for (const fraction of [0.5, 0.25, 0.75]) {
       const at = offsetAtPoint(Math.round(innerWidth * fraction), y);
       if (at !== null) return at;
     }
-    return 0;
+    return null;
+  }
+
+  // The probe height shared by the text offset and the PDF point, so both
+  // describe the same line.
+  function readingY() {
+    return Math.min(Math.max(1, innerHeight - 1), 80);
   }
 
   function offsetAtPoint(x, y) {
@@ -731,6 +737,7 @@ import { morphChildren } from "./morph.js";
       setSurface(message.surface);
     }
     if (message.type === "fonts") addFonts(message.faces);
+    if (message.type === "repaint") repaint();
     if (message.type === "highlight") highlight(message.ranges || []);
     // The editor's live preview. The document being previewed is not yet
     // published, so it arrives as HTML over this channel rather than as a
@@ -843,7 +850,8 @@ import { morphChildren } from "./morph.js";
       return;
     }
     if (message.type === "reading-position") {
-      post({ type: "reading-position", start: readingPosition() });
+      if (innerHeight > 0 && innerWidth > 0) measureReading();
+      post({ type: "reading-position", start: lastReading.start, pdf: lastReading.pdf });
       return;
     }
     if (message.type === "synctex-locate") {
@@ -860,6 +868,37 @@ import { morphChildren } from "./morph.js";
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   });
+
+  // Repaint nudge. WebKit (the macOS app's WKWebView) can leave this frame
+  // unpainted after it is resized or brought back into view, and it stays
+  // blank until the DOM next changes. An opacity just under 1 invalidates the
+  // whole page without moving anything. The MutationObserver watches
+  // document.body only (childList and characterData), so this style change on
+  // documentElement does not trigger a republish. The debounce matches the
+  // stream of resizes a window drag produces.
+  let nudgeTimer = 0;
+  // The opacity to restore while a nudge is in flight, or null when none is.
+  let nudging = null;
+  function repaint() {
+    clearTimeout(nudgeTimer);
+    nudgeTimer = setTimeout(nudge, 150);
+  }
+  function nudge() {
+    nudgeTimer = 0;
+    // A nudge already in flight has invalidated the page, and it will restore
+    // the value it captured. Starting another would capture "0.999" instead.
+    if (nudging !== null) return;
+    const style = document.documentElement.style;
+    const previous = style.opacity;
+    nudging = previous;
+    style.opacity = "0.999";
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (previous === "") style.removeProperty("opacity");
+      else style.opacity = previous;
+      nudging = null;
+    }));
+  }
+  addEventListener("resize", repaint);
 
   // A document in a frame cannot be pinch-zoomed by the browser on its own, so
   // left alone a pinch magnifies the whole application around it. CSS zoom on
@@ -1088,6 +1127,22 @@ import { morphChildren } from "./morph.js";
   // document preview is a cross-origin iframe, so its scroll events never
   // reach the Reader; this listener sees all inner element scrolls.
   const scrollOffsets = new WeakMap();
+  // The reader's place as last measured while the frame was visible. On a
+  // phone the frame is hidden by the time the reader asks for it, when there is
+  // no layout to probe, so the answer comes from here.
+  // It is measured in the animation frame that flushes scroll values (see
+  // onScroll), never on a timer: a timer lags the last scroll by its delay, and
+  // a switch away from the frame inside that delay would find the answer one
+  // scroll behind.
+  let lastReading = { start: null, pdf: null };
+  function measureReading() {
+    if (!(innerHeight > 0 && innerWidth > 0)) return;
+    lastReading = {
+      start: readingPosition(),
+      pdf: globalThis.librepaperViewer?.pointFromClient?.(Math.round(innerWidth / 2), readingY()) || null,
+    };
+  }
+
   let scrollRAFHandle = null;
   let pendingScrollDelta = 0;
   let pendingScrollTop = 0;
@@ -1118,6 +1173,7 @@ import { morphChildren } from "./morph.js";
     if (scrollRAFHandle === null) {
       scrollRAFHandle = requestAnimationFrame(() => {
         scrollRAFHandle = null;
+        measureReading();
         post({
           type: "scroll",
           delta: Math.round(pendingScrollDelta),
@@ -1147,6 +1203,9 @@ import { morphChildren } from "./morph.js";
     if (!force && current === published) return;
     published = current;
     post({ type: "ready", text: current });
+    // Measured a frame later, once the new layout has settled, through the same
+    // rAF path the scroll batch uses.
+    requestAnimationFrame(measureReading);
   }
 
   let pending = null;

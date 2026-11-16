@@ -811,6 +811,9 @@
       case "click":
         followPreviewClick(message.offset, message.pdf);
         break;
+      case "reading-position":
+        followReadingPosition(message.start, message.pdf);
+        break;
       case "focus":
         void focusAnnotation(message.id);
         break;
@@ -3219,18 +3222,14 @@
     return true;
   }
 
-  // A plain click in the preview puts the source caret where the words clicked
-  // are in the source, and scrolls the source to show it. The keyboard stays
-  // with the document: the source is moved, not focused. Only the open file is
-  // searched, so a click never switches files, and only on a wide window where
-  // the source is beside the document -- a phone shows one pane at a time and a
-  // click there is for reading.
-  function followPreviewClick(offset, pdfPoint = null) {
-    if (!linked || compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
-    if (effectiveLayout !== "split" && effectiveLayout !== "source") return;
+  // The source offset that matches a place in the preview, or null when there
+  // is none in the open file. SyncTeX is tried first for a PDF point, then the
+  // text the place carried. With `exact` false the words need not match
+  // word-for-word, so a place that landed on a nearby line still counts.
+  function sourceOffsetForPreview(offset, pdfPoint, { exact = true } = {}) {
+    if (!editor || docText === null || !openFile) return null;
     const text = editor.text();
-    if (typeof text !== "string") return;
-    let at = null;
+    if (typeof text !== "string") return null;
     // SyncTeX is only for LaTeX. Any other format, or a SyncTeX point that does
     // not resolve to the open file, falls back to the text the click carried.
     const precise = pdfPoint && sourceFormat === "latex" && painted.synctex
@@ -3238,15 +3237,26 @@
       : null;
     if (precise && session.idOf(precise.path) === openFile) {
       // SyncTeX gives a line and no column, so the start of that line is the place.
-      at = synctexOffsetOfLine(text, precise.line);
-    } else {
-      if (offset === null || offset === undefined) return;
-      const openPath = session?.paths?.get(openFile) || "";
-      const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
-      // Exact words only: the widening search a double-click allows would, on
-      // every single click, now and then land somewhere nearby instead.
-      at = sync.sourcePlaceFor(docText, Number(offset) || 0, text, format, { exact: true });
+      return synctexOffsetOfLine(text, precise.line);
     }
+    if (offset === null || offset === undefined) return null;
+    const openPath = session?.paths?.get(openFile) || "";
+    const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
+    return sync.sourcePlaceFor(docText, Number(offset) || 0, text, format, { exact });
+  }
+
+  // A plain click in the preview puts the source caret where the words clicked
+  // are in the source, and scrolls the source to show it. The keyboard stays
+  // with the document: the source is moved, not focused. Only the open file is
+  // searched, so a click never switches files, and only on a wide window where
+  // the source is beside the document. On a phone the source instead catches up
+  // when the reader switches to it (see followReadingPosition).
+  function followPreviewClick(offset, pdfPoint = null) {
+    if (!linked || compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
+    if (effectiveLayout !== "split" && effectiveLayout !== "source") return;
+    // Exact words only: the widening search a double-click allows would, on
+    // every single click, now and then land somewhere nearby instead.
+    const at = sourceOffsetForPreview(offset, pdfPoint, { exact: true });
     if (at === null || at === undefined) return;
     previewPlacing = true;
     try {
@@ -3254,6 +3264,35 @@
     } finally {
       previewPlacing = false;
     }
+  }
+
+  // Set when the reader switches from the preview to the source on a phone, so
+  // that only the reply to that request moves the source.
+  let positionAsked = false;
+  function askReadingPosition() {
+    positionAsked = true;
+    tell({ type: "reading-position" });
+  }
+
+  // The preview's answer to askReadingPosition: the source moves to the place
+  // the reader was looking at. Focus stays out of it so the phone keyboard does
+  // not open.
+  function followReadingPosition(start, pdfPoint) {
+    if (!positionAsked) return;
+    positionAsked = false;
+    if (!linked || !compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
+    if (activeMobileView !== "source") return;
+    const at = sourceOffsetForPreview(start, pdfPoint, { exact: false });
+    if (at === null || at === undefined) return;
+    // The source pane has only just been shown, so it is laid out next frame.
+    requestAnimationFrame(() => {
+      previewPlacing = true;
+      try {
+        editor.goTo(at, { focus: false });
+      } finally {
+        previewPlacing = false;
+      }
+    });
   }
 
   function setLinked(on) {
@@ -4611,6 +4650,20 @@
     barHidden = false;
   });
 
+  // Asks the preview where the reader is when they switch from it to the
+  // source on a phone, so the source can be moved to match. Only compact and
+  // the pane itself are tracked; the rest is read untracked.
+  let previousMobileView = null;
+  $effect(() => {
+    const view = activeMobileView;
+    const previous = previousMobileView;
+    previousMobileView = view;
+    if (!compact || previous !== "document" || view !== "source") return;
+    untrack(() => {
+      if (linked && editing && comparing === "") askReadingPosition();
+    });
+  });
+
   // Reveal the bars when keyboard focus enters one of them, so off-screen
   // controls are never focused invisibly. Revealing them all, rather than only
   // the row that took focus, keeps the workspace height (which counts the bars
@@ -4980,7 +5033,7 @@
       {:else if Editor && sourceBound}
         {#if formatBarInPane}
           <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
-                         onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} collapsed={compact && barHidden} />
+                         onmenuselect={() => setTimeout(() => { if (!document.activeElement?.closest?.("#composer")) editor?.focus?.(); }, 60)} collapsed={compact && barHidden} />
         {/if}
         <PanelBoundary name="the source editor">
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
