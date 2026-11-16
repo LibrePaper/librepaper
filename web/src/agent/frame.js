@@ -92,6 +92,10 @@ import { morphChildren } from "./morph.js";
     if ((next !== "light" && next !== "dark") || next === paper) return;
     paper = next;
     applyPaper();
+    // Drawn diagrams are in the palette of the old paper. `diagrams` is first
+    // used from the message listener, which runs only after this module has
+    // finished, so the const is always initialized by then.
+    diagrams.retheme();
     // The washes are mixed from the paper, so the marks are painted again.
     if (lastRanges.length) highlight(lastRanges);
   }

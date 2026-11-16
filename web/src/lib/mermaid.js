@@ -92,14 +92,19 @@ export function createDiagramRenderer({ document, window, load, cache, theme }) 
   let initialized = null;
   let chain = Promise.resolve();
 
-  const keyFor = (source) => `${theme()}\u0000${source}`;
+  const keyFor = (source, palette = theme()) => `${palette}\u0000${source}`;
 
-  function holder(svg, caption, pre) {
+  // The source and theme are kept on the figure so retheme() can turn it back
+  // into a listing when the paper changes.
+  function holder(svg, source, pre, palette = theme()) {
     const owner = pre.ownerDocument || document;
     const figure = owner.createElement("figure");
     figure.setAttribute("class", "lp-mermaid");
     figure.setAttribute("data-lp-mermaid", "");
+    figure.setAttribute("data-lp-mermaid-source", source);
+    figure.setAttribute("data-lp-mermaid-theme", palette);
     figure.innerHTML = svg;
+    const caption = figureCaption(source);
     if (caption) {
       const figcaption = owner.createElement("figcaption");
       // Text, never markup: the caption comes from the document's source.
@@ -118,7 +123,7 @@ export function createDiagramRenderer({ document, window, load, cache, theme }) 
         undrawn += 1;
         continue;
       }
-      pre.replaceWith(holder(svg, figureCaption(source), pre));
+      pre.replaceWith(holder(svg, source, pre));
     }
     return undrawn;
   }
@@ -131,35 +136,65 @@ export function createDiagramRenderer({ document, window, load, cache, theme }) 
       mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: wanted });
       initialized = wanted;
     }
-    // The page may have changed while the script loaded, so the diagrams are
-    // found again rather than kept from the first look.
-    for (const pre of findDiagrams(document.body)) {
-      const source = diagramSource(pre);
-      const key = keyFor(source);
-      const cached = cache.get(key);
-      if (cached) {
-        pre.replaceWith(holder(cached, figureCaption(source), pre));
-        continue;
-      }
-      // A half-typed diagram is not an error: its listing stays as it is.
-      let parsed = false;
-      try {
-        parsed = await mermaid.parse(source, { suppressErrors: true });
-      } catch {
-        parsed = false;
-      }
-      if (!parsed) continue;
-      const id = `lp-mermaid-${counter++}`;
-      try {
-        const { svg } = await mermaid.render(id, source);
-        cache.set(key, svg);
-        if (pre.isConnected) pre.replaceWith(holder(svg, figureCaption(source), pre));
-      } catch {
-        // A failed render can leave its scratch elements behind.
-        document.getElementById(id)?.remove();
-        document.getElementById(`d${id}`)?.remove();
+    // Sources tried in this call, so an invalid one is not tried again and again.
+    const attempted = new Set();
+    // Each pass finds the diagrams again, since the page may have changed while
+    // the script loaded or a render ran. Another pass follows only a swap; a
+    // listing whose source moved on meanwhile is picked up by that pass or by
+    // the next render().
+    let replaced = true;
+    while (replaced) {
+      replaced = false;
+      for (const pre of findDiagrams(document.body)) {
+        const source = diagramSource(pre);
+        const key = keyFor(source, wanted);
+        const cached = cache.get(key);
+        if (cached) {
+          pre.replaceWith(holder(cached, source, pre, wanted));
+          continue;
+        }
+        if (attempted.has(key)) continue;
+        attempted.add(key);
+        // A half-typed diagram is not an error: its listing stays as it is.
+        let parsed = false;
+        try {
+          parsed = await mermaid.parse(source, { suppressErrors: true });
+        } catch {
+          parsed = false;
+        }
+        if (!parsed) continue;
+        const id = `lp-mermaid-${counter++}`;
+        try {
+          const { svg } = await mermaid.render(id, source);
+          cache.set(key, svg);
+          // The same <pre> may have been morphed to a newer source while this
+          // was drawing; the old drawing must not replace the newer listing.
+          if (pre.isConnected && diagramSource(pre) === source) {
+            pre.replaceWith(holder(svg, source, pre, wanted));
+            replaced = true;
+          }
+        } catch {
+          // A failed render can leave its scratch elements behind.
+          document.getElementById(id)?.remove();
+          document.getElementById(`d${id}`)?.remove();
+        }
       }
     }
+  }
+
+  // Turns drawn diagrams whose theme is no longer the current one back into
+  // listings, and draws them again in the current palette.
+  function retheme() {
+    const wanted = theme();
+    for (const figure of document.body.querySelectorAll("figure.lp-mermaid")) {
+      const source = figure.getAttribute("data-lp-mermaid-source");
+      if (source === null || figure.getAttribute("data-lp-mermaid-theme") === wanted) continue;
+      const pre = document.createElement("pre");
+      pre.setAttribute("class", "mermaid");
+      pre.textContent = source;
+      figure.replaceWith(pre);
+    }
+    return render();
   }
 
   function render() {
@@ -179,5 +214,5 @@ export function createDiagramRenderer({ document, window, load, cache, theme }) 
     return false;
   }
 
-  return { applyCached, render };
+  return { applyCached, render, retheme };
 }
