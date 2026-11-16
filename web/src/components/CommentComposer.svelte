@@ -41,7 +41,10 @@
     const attempt = () => {
       const visible = field.checkVisibility?.() ?? field.offsetParent !== null;
       if (visible) {
+        // The card first, for its quotation; then the field, which a long
+        // quotation can push below the column's edge.
         card?.scrollIntoView({ block: "nearest" });
+        field.scrollIntoView({ block: "nearest" });
         field.focus({ preventScroll: true });
         return;
       }
