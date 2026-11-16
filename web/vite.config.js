@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import { readFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { KATEX_PATH } from "./tools/katex-path.mjs";
+import { MERMAID_PATH } from "./tools/mermaid-path.mjs";
 
 // What this build owns in the output directory, and clears before it writes.
 // The directory is shared -- the renderers and the README are put there by
@@ -40,6 +41,7 @@ const vendorWatchAssets = {
   configResolved(config) { watchingBuild = Boolean(config.build.watch); },
   async writeBundle() {
     if (watchingBuild) await import(`./tools/vendor-katex.mjs?watch=${Date.now()}`);
+    if (watchingBuild) await import(`./tools/vendor-mermaid.mjs?watch=${Date.now()}`);
   },
 };
 
@@ -53,7 +55,7 @@ try {
 } catch { /* a build outside a checkout has no commit */ }
 
 export default defineConfig({
-  define: { __APP_VERSION__: JSON.stringify(appVersion), __APP_COMMIT__: JSON.stringify(appCommit), __KATEX__: JSON.stringify(KATEX_PATH) },
+  define: { __APP_VERSION__: JSON.stringify(appVersion), __APP_COMMIT__: JSON.stringify(appCommit), __KATEX__: JSON.stringify(KATEX_PATH), __MERMAID__: JSON.stringify(MERMAID_PATH) },
   root: resolve(import.meta.dirname, "pages"),
   publicDir: resolve(import.meta.dirname, "public"),
   // `configFile: false` because there is no `svelte.config.js` and none is

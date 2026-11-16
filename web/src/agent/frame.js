@@ -11,6 +11,7 @@
 // untrusted input rather than as fact.
 
 import { createKatexCache, createKatexLoader, createMathTypesetter, typesetDetached } from "../lib/math.js";
+import { createDiagramCache, createDiagramRenderer, createMermaidLoader } from "../lib/mermaid.js";
 import { perfEnd, perfStart } from "../lib/perf-marks.js";
 import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
 import { watchPinch } from "../lib/pinch.js";
@@ -165,6 +166,9 @@ import { morphChildren } from "./morph.js";
     html.librepaper-preview .lp-cell-output :is(figure, figcaption) { text-align: center; }
     html.librepaper-preview .lp-cell-output figcaption { font-size: 0.85em; opacity: 0.7; }
     html.librepaper-preview .lp-cell-output-stale { opacity: 0.5; border-left: 3px dashed currentColor; padding-left: 0.75em; }
+    html.librepaper-preview .lp-mermaid { margin: 1em 0; text-align: center; }
+    html.librepaper-preview .lp-mermaid svg { max-width: 100%; height: auto; }
+    html.librepaper-preview .lp-mermaid figcaption { font-size: 0.85em; opacity: 0.7; }
     html.librepaper-preview .lp-results-note { font-size: 0.85em; opacity: 0.7; }
   `;
   const previewStyle = document.createElement("style");
@@ -179,6 +183,16 @@ import { morphChildren } from "./morph.js";
   // detached pages typeset before they are morphed in.
   const katexCache = createKatexCache();
   const typesetMath = createMathTypesetter({ base: __KATEX__, document, window, load: loadKatex, cache: katexCache });
+  // Mermaid diagrams, drawn the same way: a cache of drawn SVG shared by the
+  // live body and the detached page, and a loader for Mermaid itself, which
+  // is fetched from this origin the first time a document has a diagram.
+  const diagrams = createDiagramRenderer({
+    document,
+    window,
+    load: createMermaidLoader({ base: __MERMAID__, document, window }),
+    cache: createDiagramCache(),
+    theme: () => (document.documentElement.classList.contains("librepaper-dark") ? "dark" : "default"),
+  });
 
   // The one mark this file draws that is not the document's: the ring around
   // whichever annotation the sidebar has singled out. Installed once, up
@@ -765,6 +779,9 @@ import { morphChildren } from "./morph.js";
         typesetDetached(katex, parsed.body, parsed, katexCache);
         perfEnd("lp:preview:typeset", typesetStart);
       }
+      // Diagrams already drawn are swapped in on the parsed page too, so the
+      // morph compares drawn with drawn and an unchanged diagram keeps its nodes.
+      diagrams.applyCached(parsed.body);
       quietly(() => {
         const swapStart = perfStart();
         removeMarks();
@@ -783,6 +800,7 @@ import { morphChildren } from "./morph.js";
         // page was typeset above this finds nothing to do, and covers any
         // formula that was left over.
         typesetMath();
+        diagrams.render();
       });
       // Replacing the body throws away every mark on it, and the ranges to
       // paint again only arrive after the sidebar has seen the new text and

@@ -47,7 +47,7 @@ PINNED  := $(WASM) $(ORG) $(BIB) $(CITES) $(TYPST) $(TYPST_SYNTAX) $(PANDOC) $(H
 # rewrites every file in web/dist, which build.rs watches -- so editing the
 # landing page recompiled the whole crate. The site builds on its own: see the
 # site target at the bottom of this file.
-WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mjs web/tests/unit/vocabulary.js
+WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/vendor-mermaid.mjs web/tools/compress-shell.mjs web/tests/unit/vocabulary.js
 WEB     := $(shell find web/src web/public web/messages web/project.inlang -type f -not -path 'web/src/site/*' -not -path 'web/src/lib/paraglide/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 

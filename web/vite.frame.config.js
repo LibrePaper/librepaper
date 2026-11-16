@@ -8,10 +8,12 @@
 import { defineConfig } from "vite";
 import { resolve } from "node:path";
 import { KATEX_PATH } from "./tools/katex-path.mjs";
+import { MERMAID_PATH } from "./tools/mermaid-path.mjs";
 
 export default defineConfig({
   define: {
     __KATEX__: JSON.stringify(KATEX_PATH),
+    __MERMAID__: JSON.stringify(MERMAID_PATH),
   },
   build: {
     outDir: resolve(import.meta.dirname, "dist"),
