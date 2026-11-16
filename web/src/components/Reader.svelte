@@ -4986,7 +4986,7 @@
       {:else if Editor && sourceBound}
         {#if formatBarInPane}
           <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
-                         onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} collapsed={compact && barHidden} />
+                         onmenuselect={() => setTimeout(() => { if (!document.activeElement?.closest?.("#composer")) editor?.focus?.(); }, 60)} collapsed={compact && barHidden} />
         {/if}
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
