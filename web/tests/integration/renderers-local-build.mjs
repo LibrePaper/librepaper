@@ -24,7 +24,7 @@ async function descriptor(bytes) {
 }
 const text = (value) => new TextEncoder().encode(value);
 
-globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
+globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test", protocol: { oldest: 3, current: "3.3.0" } } };
 client._testing.reset();
 client._testing.inject({ wait: () => Promise.resolve() });
 client.configure({ project: "paper", origin: "https://app.test" });

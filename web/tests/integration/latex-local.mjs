@@ -70,7 +70,7 @@ function bytesResponse(status, bytes) {
 
 
 function setup({ storage = fakeStorage(), now = clock(), fetchImpl } = {}) {
-  globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
+  globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test", protocol: { oldest: 3, current: "3.3.0" } } };
   local._testing.reset();
   local._testing.inject({ storage, now: now.now, fetch: fetchImpl, wait: (ms) => Promise.resolve() });
   return { storage, now };
