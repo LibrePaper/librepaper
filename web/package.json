@@ -83,6 +83,7 @@
     "harper.js": "2.13.0",
     "katex": "^0.18.7",
     "loro-crdt": "1.16.1",
+    "mermaid": "11",
     "pdfjs-dist": "5.4.149",
     "svelte": "^5.57.0",
     "tailwindcss": "4",
