@@ -1098,8 +1098,11 @@ import { morphChildren } from "./morph.js";
   // The reader's place as last measured while the frame was visible. On a
   // phone the frame is hidden by the time the reader asks for it, when there is
   // no layout to probe, so the answer comes from here.
+  // It is measured in the animation frame that flushes scroll values (see
+  // onScroll), never on a timer: a timer lags the last scroll by its delay, and
+  // a switch away from the frame inside that delay would find the answer one
+  // scroll behind.
   let lastReading = { start: null, pdf: null };
-  let readingTimer = 0;
   function measureReading() {
     if (!(innerHeight > 0 && innerWidth > 0)) return;
     lastReading = {
@@ -1107,17 +1110,12 @@ import { morphChildren } from "./morph.js";
       pdf: globalThis.librepaperViewer?.pointFromClient?.(Math.round(innerWidth / 2), readingY()) || null,
     };
   }
-  function noteReading() {
-    clearTimeout(readingTimer);
-    readingTimer = setTimeout(measureReading, 150);
-  }
 
   let scrollRAFHandle = null;
   let pendingScrollDelta = 0;
   let pendingScrollTop = 0;
   let pendingScrollBottom = Infinity;
   function onScroll(event) {
-    noteReading();
     const target = event.target;
     let top = null;
     let bottom = Infinity;
@@ -1143,6 +1141,7 @@ import { morphChildren } from "./morph.js";
     if (scrollRAFHandle === null) {
       scrollRAFHandle = requestAnimationFrame(() => {
         scrollRAFHandle = null;
+        measureReading();
         post({
           type: "scroll",
           delta: Math.round(pendingScrollDelta),
@@ -1172,7 +1171,9 @@ import { morphChildren } from "./morph.js";
     if (!force && current === published) return;
     published = current;
     post({ type: "ready", text: current });
-    noteReading();
+    // Measured a frame later, once the new layout has settled, through the same
+    // rAF path the scroll batch uses.
+    requestAnimationFrame(measureReading);
   }
 
   let pending = null;
