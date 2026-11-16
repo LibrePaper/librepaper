@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { mode, onMode, onPalette, paperMode, onPaper } from "../lib/theme.js";
   import { createFrameMessageReceiver } from "../lib/frame-messages.js";
   import { documentFonts } from "../lib/document-fonts.js";
@@ -96,6 +96,16 @@
     frame.contentWindow.postMessage({ librepaper: true, ...message }, trusted, transfer);
     return true;
   }
+
+  // The pane can return from away at the size it had, so no resize reaches the
+  // frame and WebKit may leave it unpainted. Ask it to repaint on the way back.
+  let wasAway = untrack(() => away);
+  $effect(() => {
+    const now = away;
+    const returned = wasAway && !now;
+    wasAway = now;
+    if (returned) untrack(() => tell({ type: "repaint" }));
+  });
 
   /// The theme as the frame should show it: the mode, and the paper the
   /// preview is drawn on. Sent when either changes and once the frame loads.

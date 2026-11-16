@@ -737,6 +737,7 @@ import { morphChildren } from "./morph.js";
       setSurface(message.surface);
     }
     if (message.type === "fonts") addFonts(message.faces);
+    if (message.type === "repaint") repaint();
     if (message.type === "highlight") highlight(message.ranges || []);
     // The editor's live preview. The document being previewed is not yet
     // published, so it arrives as HTML over this channel rather than as a
@@ -867,6 +868,37 @@ import { morphChildren } from "./morph.js";
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   });
+
+  // Repaint nudge. WebKit (the macOS app's WKWebView) can leave this frame
+  // unpainted after it is resized or brought back into view, and it stays
+  // blank until the DOM next changes. An opacity just under 1 invalidates the
+  // whole page without moving anything. The MutationObserver watches
+  // document.body only (childList and characterData), so this style change on
+  // documentElement does not trigger a republish. The debounce matches the
+  // stream of resizes a window drag produces.
+  let nudgeTimer = 0;
+  // The opacity to restore while a nudge is in flight, or null when none is.
+  let nudging = null;
+  function repaint() {
+    clearTimeout(nudgeTimer);
+    nudgeTimer = setTimeout(nudge, 150);
+  }
+  function nudge() {
+    nudgeTimer = 0;
+    // A nudge already in flight has invalidated the page, and it will restore
+    // the value it captured. Starting another would capture "0.999" instead.
+    if (nudging !== null) return;
+    const style = document.documentElement.style;
+    const previous = style.opacity;
+    nudging = previous;
+    style.opacity = "0.999";
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (previous === "") style.removeProperty("opacity");
+      else style.opacity = previous;
+      nudging = null;
+    }));
+  }
+  addEventListener("resize", repaint);
 
   // A document in a frame cannot be pinch-zoomed by the browser on its own, so
   // left alone a pinch magnifies the whole application around it. CSS zoom on
