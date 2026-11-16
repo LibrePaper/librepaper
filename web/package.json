@@ -6,7 +6,7 @@
     "grammar:bibtex": "node tools/bibtex-grammar.mjs",
     "grammar:latex": "node tools/latex-grammar.mjs",
     "i18n": "paraglide-js compile --project ./project.inlang --silent --no-emit-ts-declarations",
-    "build": "paraglide-js compile --project ./project.inlang --silent --no-emit-ts-declarations && node tests/unit/vocabulary.js && vite build && vite build --config vite.frame.config.js && node tools/vendor-katex.mjs && node tools/compress-shell.mjs",
+    "build": "paraglide-js compile --project ./project.inlang --silent --no-emit-ts-declarations && node tests/unit/vocabulary.js && vite build && vite build --config vite.frame.config.js && node tools/vendor-katex.mjs && node tools/vendor-mermaid.mjs && node tools/compress-shell.mjs",
     "build:site": "node tools/build-site.mjs && vite build --config vite.site.config.js",
     "serve:site": "vite preview --config vite.site.config.js",
     "dev": "paraglide-js compile --project ./project.inlang --silent --no-emit-ts-declarations && vite build --watch",
