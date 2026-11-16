@@ -1107,8 +1107,18 @@
       pending,
     };
     collaborationTab = "comments";
+    // A draft started in the source keeps the source on screen when the
+    // column opens beside it on a tight split; one started in the preview
+    // keeps the preview.
+    arrangement.focusPane(pending.source ? "source" : "document");
     if (panel !== "collaboration") void arrangement.showPanel("collaboration");
     if (compact) arrangement.showMobileView("sidebar");
+  }
+
+  // A press or a focus inside a pane makes it the one a tight split keeps.
+  function keepPane(event) {
+    if (event.target.closest?.("#reader-source")) arrangement.focusPane("source");
+    else if (event.target.closest?.("#reader-document")) arrangement.focusPane("document");
   }
 
   // A verb chosen on the bar over the selection. Highlighting is the one that
@@ -4733,7 +4743,11 @@
   <ModeSwitch mode={shown.source ? "source" : "document"} collapsed={barHidden} onchange={(view) => arrangement.showMobileView(view)} />
 {/if}
 
+<!-- The pane the reader last worked in is the one a tight split keeps. The
+     handler is on the page because the preview is a component that takes no
+     event handlers of its own. -->
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
+      onpointerdown={keepPane} onfocusin={keepPane}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:phone-tabs={tabsShown} class:bar-hidden={barHidden && !compact}
