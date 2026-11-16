@@ -80,7 +80,15 @@ try {
   await until("second repaint published", () => page.evaluate(`window.published.length > ${before}`), 5000);
   assert.equal(await page.evaluate('document.querySelector("figure.lp-mermaid svg") === window.firstSvg'), true, "an unchanged diagram keeps its SVG");
 
-  console.log("mermaid-browser: Mermaid from this origin, captioned figures, invalid blocks kept, unchanged diagrams kept, no fetch without diagrams passed");
+  // Switching the paper to dark, as the reader's theme message does, redraws
+  // every diagram in the dark palette: new SVG nodes, marked with the theme.
+  await page.evaluate('window.darkBefore = document.querySelector("figure.lp-mermaid svg")');
+  await page.evaluate(`postMessage(${JSON.stringify({ librepaper: true, type: "theme", mode: "dark", paper: "dark" })},"*")`);
+  await until("diagrams redrawn in the dark theme", () => page.evaluate('document.querySelectorAll("figure.lp-mermaid").length === 2 && [...document.querySelectorAll("figure.lp-mermaid")].every((f) => f.getAttribute("data-lp-mermaid-theme") === "dark")'), 20000);
+  assert.equal(await page.evaluate('document.querySelector("figure.lp-mermaid svg") === window.darkBefore'), false, "the dark diagram is a new SVG");
+  assert.equal(await page.evaluate('document.documentElement.classList.contains("librepaper-dark")'), true, "the page is dark");
+
+  console.log("mermaid-browser: Mermaid from this origin, captioned figures, invalid blocks kept, unchanged diagrams kept, redrawn on a paper change, no fetch without diagrams passed");
 } finally {
   await page?.close?.();
   server?.close();

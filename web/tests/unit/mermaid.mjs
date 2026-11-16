@@ -47,7 +47,10 @@ function element(tag, { cls = "", text = "", children = [] } = {}, ownerDocument
     isConnected: true,
     children: [],
     attributes: {},
-    setAttribute(name, value) { this.attributes[name] = String(value); },
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+      if (name === "class") this.className = String(value);
+    },
     getAttribute(name) { return this.attributes[name] ?? null; },
     appendChild(child) {
       child.parentElement = this;
@@ -282,4 +285,170 @@ function element(tag, { cls = "", text = "", children = [] } = {}, ownerDocument
   assert.equal(doc.body.children[0], pre, "the listing stays after a failed render");
 }
 
-console.log("mermaid: loader, diagram finding, captions, cache and renderer passed");
+const settle = () => new Promise((done) => setTimeout(done, 0));
+
+// A render still pending when the same listing is morphed to a newer source:
+// the old drawing must not replace the newer listing, and the newer source is
+// drawn by a later pass.
+{
+  const doc = fakeDocument();
+  const pre = element("pre", { children: [element("code", { cls: "language-mermaid", text: "graph TD\nOLD" })] });
+  doc.body.appendChild(pre);
+  const rendered = [];
+  const pending = [];
+  const mermaid = {
+    initialize: () => {},
+    parse: async () => true,
+    render: (id, source) => new Promise((resolve) => {
+      rendered.push(source);
+      pending.push(() => resolve({ svg: `<svg>${source}</svg>` }));
+    }),
+  };
+  const cache = createDiagramCache();
+  const renderer = createDiagramRenderer({
+    document: doc,
+    window: { mermaid },
+    load: async () => mermaid,
+    cache,
+    theme: () => "default",
+  });
+  renderer.render();
+  await settle();
+  assert.deepEqual(rendered, ["graph TD\nOLD"]);
+
+  // The same <pre> is morphed to a newer source while the old one is pending.
+  pre.children[0].textContent = "graph TD\nNEW";
+  pending[0]();
+  await settle();
+  assert.equal(doc.body.children[0], pre, "the newer listing was not replaced");
+  assert.equal(pre.isConnected, true);
+  assert.equal(cache.get("default\u0000graph TD\nOLD"), "<svg>graph TD\nOLD</svg>", "the old drawing is still cached");
+
+  // The newer source is drawn: by the pass that followed, or by a later render().
+  if (rendered.length === 1) renderer.render();
+  await settle();
+  assert.deepEqual(rendered, ["graph TD\nOLD", "graph TD\nNEW"]);
+  pending[1]();
+  await settle();
+  assert.equal(doc.body.children[0].localName, "figure");
+  assert.equal(doc.body.children[0].innerHTML, "<svg>graph TD\nNEW</svg>");
+  assert.equal(doc.body.children[0].getAttribute("data-lp-mermaid-source"), "graph TD\nNEW");
+}
+
+// A paper change turns the drawn figures back into listings and draws them in
+// the new theme; figures already in the current theme are left alone.
+{
+  const doc = fakeDocument();
+  const pre = element("pre", { children: [element("code", { cls: "language-mermaid", text: "graph TD\nA-->B" })] });
+  doc.body.appendChild(pre);
+  const init = [];
+  const mermaid = {
+    initialize: (options) => init.push(options),
+    parse: async () => true,
+    render: async () => ({ svg: `<svg>${init.at(-1).theme}</svg>` }),
+  };
+  let theme = "default";
+  const renderer = createDiagramRenderer({
+    document: doc,
+    window: { mermaid },
+    load: async () => mermaid,
+    cache: createDiagramCache(),
+    theme: () => theme,
+  });
+  renderer.render();
+  await settle();
+  const [figure] = doc.body.children;
+  assert.equal(figure.localName, "figure");
+  assert.equal(figure.getAttribute("data-lp-mermaid-source"), "graph TD\nA-->B");
+  assert.equal(figure.getAttribute("data-lp-mermaid-theme"), "default");
+  assert.equal(figure.innerHTML, "<svg>default</svg>");
+
+  // Same theme: nothing is turned back.
+  renderer.retheme();
+  await settle();
+  assert.equal(doc.body.children[0], figure, "a figure in the current theme is kept");
+
+  theme = "dark";
+  assert.equal(renderer.retheme(), false);
+  await settle();
+  const [redrawn] = doc.body.children;
+  assert.notEqual(redrawn, figure, "the figure was replaced");
+  assert.equal(figure.isConnected, false);
+  assert.equal(redrawn.localName, "figure");
+  assert.equal(redrawn.getAttribute("data-lp-mermaid-theme"), "dark");
+  assert.equal(redrawn.innerHTML, "<svg>dark</svg>");
+  assert.deepEqual(init.map((options) => options.theme), ["default", "dark"]);
+}
+
+// A paper change while a drawing is pending: the old-palette drawing is not
+// swapped in, and the listing is drawn in the new palette.
+{
+  const doc = fakeDocument();
+  const pre = element("pre", { children: [element("code", { cls: "language-mermaid", text: "graph TD\nA-->B" })] });
+  doc.body.appendChild(pre);
+  const init = [];
+  const pending = [];
+  const mermaid = {
+    initialize: (options) => init.push(options),
+    parse: async () => true,
+    render: () => {
+      const palette = init.at(-1).theme;
+      return new Promise((resolve) => pending.push(() => resolve({ svg: `<svg>${palette}</svg>` })));
+    },
+  };
+  let theme = "default";
+  const renderer = createDiagramRenderer({
+    document: doc,
+    window: { mermaid },
+    load: async () => mermaid,
+    cache: createDiagramCache(),
+    theme: () => theme,
+  });
+  renderer.render();
+  await settle();
+  assert.equal(pending.length, 1, "the first drawing is pending");
+
+  theme = "dark";
+  renderer.retheme();
+  pending[0]();
+  await settle();
+  assert.equal(doc.body.children[0], pre, "the old-palette drawing was not swapped in");
+  assert.equal(pending.length, 2, "a drawing in the new palette started");
+  pending[1]();
+  await settle();
+  const [figure] = doc.body.children;
+  assert.equal(figure.localName, "figure");
+  assert.equal(figure.getAttribute("data-lp-mermaid-theme"), "dark");
+  assert.equal(figure.innerHTML, "<svg>dark</svg>");
+}
+
+// A fence changed from mermaid to another language while its drawing is
+// pending: the code block is left as it is.
+{
+  const doc = fakeDocument();
+  const code = element("code", { cls: "language-mermaid", text: "graph TD\nA-->B" });
+  // In a real page the <pre> holds the code's text too.
+  const pre = element("pre", { text: "graph TD\nA-->B", children: [code] });
+  doc.body.appendChild(pre);
+  const pending = [];
+  const mermaid = {
+    initialize: () => {},
+    parse: async () => true,
+    render: () => new Promise((resolve) => pending.push(() => resolve({ svg: "<svg></svg>" }))),
+  };
+  const renderer = createDiagramRenderer({
+    document: doc,
+    window: { mermaid },
+    load: async () => mermaid,
+    cache: createDiagramCache(),
+    theme: () => "default",
+  });
+  renderer.render();
+  await settle();
+  code.className = "language-text";
+  pending[0]();
+  await settle();
+  assert.equal(doc.body.children[0], pre, "a block that is no longer Mermaid keeps its listing");
+}
+
+console.log("mermaid: loader, diagram finding, captions, cache, stale renders and retheme passed");
