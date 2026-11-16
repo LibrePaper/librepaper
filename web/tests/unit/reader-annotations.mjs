@@ -153,6 +153,29 @@ assert.equal(annotations.receive({ type: "attachments", attachments: [] }), fals
   });
 }
 
+// A derivation changes attachments, not the rendered text, so it asks the
+// anchor for the attachment pass only. Every other pass stays a full one.
+{
+  const passes = [];
+  let deriving = false;
+  const plain = { status: "exact", resolved_file_id: "f1", resolved_range_utf16: [4, 7], tree_digest: "" };
+  const spied = createAnnotations({
+    slug: "anchor-options",
+    anchor: (items, options) => passes.push(options),
+    repaint: () => {},
+    send: () => {},
+    attachmentOf: () => (deriving ? { ...plain, attached_by_hand: true } : undefined),
+  });
+  spied.seed(
+    [{ id: "spy", body: "Passage", replies: [], attachment: { ...plain } }],
+    { total: 1, open: 1, replies: 0, revision: "s1", complete: true },
+  );
+  passes.length = 0;
+  deriving = true;
+  spied.deriveNow();
+  assert.deepEqual(passes, [{ rendered: false }], "deriveNow skips the rendered-text search");
+}
+
 // The editor's derived attachment carries `attached_by_hand`, which server rows
 // never do. A server row that repeats the same status, file and range must not
 // keep its own unflagged copy over the browser's.
@@ -495,6 +518,21 @@ const page = (comments, { next = null, complete = !next, total, open = total, re
   assert.deepEqual(await same, { ok: false, stale: true, message: "timed out" });
   assert.equal(owned.body, "kept", "a confirmed body is never rolled back");
 }
+
+// A remark about the whole document names no passage: it is sent with the
+// document flag and no words, and the card it shows quotes nothing.
+annotations.comment({ exact: "", prefix: "", suffix: "", position: null, render_digest: "", whole: true }, {
+  motivation: "commenting", body: "About the whole document",
+}, "Local name");
+const remark = sent.at(-1);
+assert.equal(remark.type, "comment");
+assert.equal(remark.document, true);
+assert.equal(remark.exact, "");
+assert.equal("whole" in remark, false, "the draft flag is not sent");
+const whole = view.comments.at(-1);
+assert.equal(whole.body, "About the whole document");
+assert.equal(whole.presentation.rendered_exact, "");
+assert.equal(sent[0].document, false, "a passage comment is sent as one");
 
 assert.ok(paints > 0);
 console.log("reader-annotations: optimistic writes, authoritative reconciliation, bounded paging, retries and decisions passed");

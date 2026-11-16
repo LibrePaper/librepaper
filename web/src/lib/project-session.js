@@ -22,21 +22,29 @@
 // CRDT across client restarts; on reconnect the whole local state is sent and
 // merged, so changes made on either side of the gap reach the other.
 
-import { LoroDoc, LoroText, EphemeralStore, VersionVector } from "loro-crdt";
+import { Cursor, LoroDoc, LoroMap, LoroText, EphemeralStore, VersionVector } from "loro-crdt";
+import { setLoroClasses } from "./loro-classes.js";
 import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
-import { projectDirectory } from "./projection.js";
+import { projectDirectory, projectPaths } from "./projection.js";
 import { createGeneration } from "./reader/generation.js";
 import { AnchorIndex, MoveMemory } from "./anchors.js";
 import { toLf } from "./line-endings.js";
 import { m } from "./paraglide/messages.js";
+import { personSeed } from "./presence-colour.js";
 
-/** @typedef {{ name?: string, color?: string, tab?: string, file?: string }} PresenceState */
+// Anchors and track changes read the Loro classes from a registry so that the
+// reader can load them without the CRDT. Every editing path loads this module,
+// which imports Loro anyway, so it fills the registry too: whichever build of
+// Loro is in use here is the one those modules then see.
+setLoroClasses({ Cursor, LoroMap });
+
+/** @typedef {{ name?: string, color?: string, tab?: string, account?: string, file?: string, peer?: string, anchor?: Uint8Array, head?: Uint8Array }} PresenceState */
 /** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */
 /** @typedef {{ local: boolean, pending: number, localPending: number, localError: string, joined: boolean }} SessionState */
 /** @typedef {{ hydrated: () => void, writing: (count?: number) => void, persisted: () => void, failed: (error: Error) => void }} PersistenceEvents */
 /** @typedef {{ id: string, path: string, kind: "text" | "asset", sha?: string }} ProjectFile */
 /** @typedef {ProjectFile | { kind: "folder", id: string, path: string }} ProjectEntry */
-/** @typedef {{ texts: Record<string, string>, digests: Record<string, string>, files: Record<string, {kind: "text", id: string} | {kind: "asset", sha: string}> }} ProjectTree */
+/** @typedef {{ texts: Record<string, string>, retained?: Record<string, string>, digests: Record<string, string>, files: Record<string, {kind: "text", id: string} | {kind: "asset", sha: string}> }} ProjectTree */
 /** @typedef {{ text_extensions?: string[], asset_extensions?: string[], derived_extensions?: string[], max_path?: number, [key: string]: unknown }} ProjectRules */
 /** @typedef {import("loro-crdt").LoroEvent} ProjectEvent */
 
@@ -74,6 +82,11 @@ export const DIRECTORY_ORIGIN = "directory";
 // is shared and last-write-wins per key, so peers need a key each.
 export const PRESENCE_PREFIX = "user:";
 
+// The editor binding publishes each caret under `<peer id>` plus this suffix,
+// as Loro cursors (vendor/loro-codemirror/ephemeral.ts). A presence record
+// carries its peer id so the caret can be found from the person.
+const CARET_SUFFIX = "-cm-cursor";
+
 /// Whether `key` holds somebody's presence rather than, say, a caret.
 const isPresence = (key) => String(key).startsWith(PRESENCE_PREFIX);
 
@@ -81,6 +94,9 @@ const isPresence = (key) => String(key).startsWith(PRESENCE_PREFIX);
 // sending the latest state at this rate is enough for a smooth cursor while
 // avoiding one room frame per keystroke.
 const AWARENESS_THROTTLE_MS = 100;
+// The store forgets an entry 30 s after its last write, on every peer, so the
+// owner rewrites it at half that (the same pairing as Yjs awareness).
+const PRESENCE_HEARTBEAT_MS = 15_000;
 // How long to wait before resending work the server refused for want of room
 // to hold it, and how far that wait is allowed to grow. The server is under
 // pressure by definition when this fires, so the first retry is already a
@@ -98,7 +114,28 @@ const encode = (bytes) => {
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
 };
-const decode = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+const decode = (text) =>
+  typeof Uint8Array.fromBase64 === "function"
+    ? Uint8Array.fromBase64(text)
+    : Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+
+/// Splits a referenced rows blob into its batches: each is a `u32`
+/// big-endian length followed by that many bytes. A blob that does not divide
+/// exactly is refused, never partly imported.
+function unpackRows(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const batches = [];
+  let at = 0;
+  while (at < bytes.length) {
+    if (at + 4 > bytes.length) throw new Error(m.project_session_integrity());
+    const length = view.getUint32(at);
+    at += 4;
+    if (at + length > bytes.length) throw new Error(m.project_session_integrity());
+    batches.push(bytes.subarray(at, at + length));
+    at += length;
+  }
+  return batches;
+}
 
 
 // An id for a file: twelve hex characters, which is what `session.rs` mints
@@ -133,20 +170,25 @@ export function uniquePresences(states, { localClient = null, localTab = "" } = 
 /// answer to "is this browser's work safe" changes.
 ///
 /// `mayEdit` is false for a reader, who joins to receive the text and never to
-/// change it.
+/// change it. `suggestOnly` is true for a suggester, who may change the text
+/// only as tracked changes and may not change which files exist.
 /** @param {{
  * send: (message: SessionMessage) => unknown,
  * onPeers?: (count: number) => void,
  * onState?: (state: SessionState) => void,
  * name?: string,
+ * accountId?: string,
  * mayEdit?: boolean,
+ * suggestOnly?: boolean,
  * standalone?: boolean,
  * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void } | null },
  * fetchReference?: (reference: string) => Promise<Uint8Array>,
  * presenceId?: () => string,
- * presenceColour?: (name: string, taken: string[]) => string,
+ * presenceColour?: (seed: string, taken: string[]) => string,
  * setTimer?: typeof setTimeout,
  * clearTimer?: typeof clearTimeout,
+ * setRepeat?: typeof setInterval,
+ * clearRepeat?: typeof clearInterval,
  * }} options
  */
 export function createProjectSession({
@@ -154,7 +196,9 @@ export function createProjectSession({
   onPeers,
   onState,
   name,
+  accountId = "",
   mayEdit = true,
+  suggestOnly = false,
   // A standalone session has no server. It is joined once its persistence has
   // hydrated, sends nothing, and its `pending` follows the persistence adapter
   // instead of a server acknowledgement.
@@ -165,6 +209,8 @@ export function createProjectSession({
   presenceColour = () => "",
   setTimer = globalThis.setTimeout,
   clearTimer = globalThis.clearTimeout,
+  setRepeat = globalThis.setInterval,
+  clearRepeat = globalThis.clearInterval,
 }) {
   const doc = new LoroDoc();
   // The Authors view dates each run of text from the change timestamps.
@@ -182,11 +228,43 @@ export function createProjectSession({
   const assets = doc.getMap("assets");
   const meta = doc.getMap("meta");
   let projectionRules = null;
+  // The last tree() build with the document version and rules it came from;
+  // calls between changes reuse it.
+  let treeCache = null;
+  // Each text's body and UTF-8 size, keyed by file id, for tree() builds. Both
+  // are O(file size) to produce, and a build made for every edit re-read every
+  // text in the project: on a 704-note project that was ~25 ms after a
+  // one-character edit, though only one text had changed. The subscription
+  // below drops the entry of each text an event names, and clears everything
+  // for an event it cannot attribute to one file (a file added or removed).
+  // tree() builds without the cache while a transaction is pending: its
+  // uncommitted edits are in the text but emit no event until committed, so
+  // they must not be stored here.
+  const bodyCache = new Map();
   // The four maps that are the directory itself. A change to any of them is a
   // change to the file list; a change under one of them is not, because a
   // file's text sits inside `files`.
   /** @type {Set<import("loro-crdt").ContainerID>} */
   const directory = new Set([files.id, paths.id, assets.id, meta.id]);
+  // Keeps `bodyCache` correct for the life of the session. An event whose path
+  // starts at `files` with a file id names the one text that changed. Anything
+  // else under `files` (the map itself, a key without an id) and any event
+  // without a path clears the cache.
+  const unsubscribeBodies = doc.subscribe((batch) => {
+    for (const event of batch.events) {
+      const path = event.path;
+      if (event.target === files.id || !Array.isArray(path)) {
+        bodyCache.clear();
+        return;
+      }
+      if (path[0] !== "files") continue;
+      if (typeof path[1] === "string") bodyCache.delete(path[1]);
+      else {
+        bodyCache.clear();
+        return;
+      }
+    }
+  });
   /** @type {EphemeralStore<{ [key: string]: PresenceState }>} */
   const store = new EphemeralStore(30000);
   // One presence key per person, not one key everybody writes to. The store is
@@ -196,6 +274,22 @@ export function createProjectSession({
   // presence -- name, colour and all -- overwritten by somebody else's.
   const localTab = presenceId();
   const localKey = `${PRESENCE_PREFIX}${localTab}`;
+  // The last record this browser wrote under `localKey`, kept so that an entry
+  // the store has already expired (a throttled background tab, say) can be
+  // written again rather than lost.
+  let lastPresence = null;
+  // Rewrites the local record on a timer while joined, so peers never expire it.
+  let heartbeatTimer = null;
+  function setLocalPresence(value) {
+    lastPresence = value;
+    store.set(localKey, value);
+  }
+  // Who this is, as their colour sees them. A signed-in person is seeded by
+  // their account, so they are one colour everywhere the Authors tab shows
+  // them, whatever name they go by. Anybody else is seeded by their name, and
+  // by their tab until they have one.
+  let person = { name: name || "", accountId: accountId || "" };
+  const colourSeed = () => personSeed(person) || localTab;
 
   // The comment anchors of this document, resolved and kept current for the
   // whole session, whether or not an editor is open: the index follows imports
@@ -272,6 +366,35 @@ export function createProjectSession({
   function abandonQueuedJoins() {
     connection.cancel();
     joinGate = Promise.resolve();
+  }
+  // Fetches what a frame names by reference and checks it against the digest
+  // the frame carries. Resolves to nothing when the connection has gone or a
+  // vanished reference restarted the join; throws on any other failure.
+  async function fetchVerified(frame, stale) {
+    if (!fetchReference) throw new Error(m.project_session_cannot_fetch_reference());
+    let referenced;
+    try {
+      referenced = await fetchReference(frame.ref);
+    } catch (error) {
+      // A failure belongs to the socket that asked. Asking again on a
+      // connection that has gone would open a document nobody is
+      // reading, and raising on one would hand the error to whoever is
+      // now joining instead.
+      if (!speaksForThisJoin(stale)) return undefined;
+      if (error?.restartBaseline) {
+        send(openMessage());
+        return undefined;
+      }
+      throw error;
+    }
+    if (!speaksForThisJoin(stale)) return undefined;
+    const verified = Boolean(frame.digest) && await sha256Hex(referenced) === frame.digest;
+    // Hashing is a turn of its own, and a long one for a large base.
+    if (!speaksForThisJoin(stale)) return undefined;
+    if (!verified) {
+      throw new Error(m.project_session_integrity());
+    }
+    return referenced;
   }
   function sequenceJoin(step) {
     const ran = joinGate.then(step, step);
@@ -365,6 +488,8 @@ export function createProjectSession({
     type: "doc-open",
     vector: encode(doc.oplogVersion().encode()),
     protocol: "librepaper.room.v3",
+    // This browser can fetch a large `doc-rows` payload by reference.
+    rowsRef: true,
   });
   try {
     persister = persistence?.open?.(doc, {
@@ -414,13 +539,18 @@ export function createProjectSession({
   // `color` is the wire spelling every peer already reads. It is the person's
   // colour rather than this session's: it comes from the name, and `rename`
   // asks for it again if the name arrives after the join.
-  store.set(localKey, {
+  setLocalPresence({
     name: name || "Anonymous",
+    // The Loro peer id, which names this browser's caret in the store.
+    peer: doc.peerIdStr,
     // Their name, or -- for somebody who has not said who they are -- their
     // tab, which is theirs alone for as long as it is open. One shared
     // "Anonymous" would paint every reader in a file the same colour.
-    color: presenceColour(name || localTab, takenColours()),
+    color: presenceColour(colourSeed(), takenColours()),
     tab: localTab,
+    // The account, so other browsers can show one avatar for someone open in
+    // several tabs.
+    account: accountId || "",
   });
 
   // Anything this browser changes is sent on and held until it is
@@ -477,7 +607,7 @@ export function createProjectSession({
   /// moves and it moves once -- the other stays where everybody already sees
   /// it, and somebody who was alone in the file keeps the colour they had.
   function settleColour() {
-    const mine = store.get(localKey);
+    const mine = store.get(localKey) || lastPresence;
     if (!mine?.color) return;
     const taken = [];
     let giveWay = false;
@@ -487,13 +617,27 @@ export function createProjectSession({
       if (state.color === mine.color && key < localKey) giveWay = true;
     }
     if (!giveWay) return;
-    const next = presenceColour(mine.name || localTab, taken);
-    if (next && next !== mine.color) store.set(localKey, { ...mine, color: next });
+    const next = presenceColour(colourSeed(), taken);
+    if (next && next !== mine.color) setLocalPresence({ ...mine, color: next });
   }
 
   function clearPresenceTimer() {
     if (presenceTimer !== null) clearTimer(presenceTimer);
     presenceTimer = null;
+  }
+
+  function startHeartbeat() {
+    if (heartbeatTimer !== null) return;
+    heartbeatTimer = setRepeat(() => {
+      if (left || !joined || !lastPresence) return;
+      // The local subscription sends this through the usual throttle.
+      setLocalPresence({ ...lastPresence });
+    }, PRESENCE_HEARTBEAT_MS);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer !== null) clearRepeat(heartbeatTimer);
+    heartbeatTimer = null;
   }
 
   function sendPresence(bytes) {
@@ -522,6 +666,19 @@ export function createProjectSession({
       // People, not keys: a caret and a file are keys of their own, and
       // counting those said four people were here when two were.
       onPeers?.(Object.keys(store.getAllStates()).filter(isPresence).length);
+      // The server relays presence without keeping it, so somebody who has
+      // just arrived has heard from nobody already here. Each person already
+      // here answers the first record from a key they have not seen. Only
+      // `added` keys trigger this, never `updated`, so two people already
+      // known to each other do not answer each other forever.
+      if (
+        !left && joined && event.by === "import"
+        && event.added.some((key) => isPresence(key) && key !== localKey)
+      ) {
+        if (lastPresence && !store.get(localKey)) setLocalPresence({ ...lastPresence });
+        const bytes = store.encode(localKey);
+        if (bytes && bytes.byteLength) sendPresence(bytes);
+      }
       if (left || event.by !== "local") return;
 
       const changed = event.added.concat(event.updated, event.removed);
@@ -656,6 +813,7 @@ export function createProjectSession({
       return false;
     }
     joined = true;
+    if (mayEdit && !standalone) startHeartbeat();
     announcePresence();
     if (mayEdit) catchUp(vector);
     else report();
@@ -695,6 +853,8 @@ export function createProjectSession({
     /** @param {ProjectRules} rules */
     setRules(rules) {
       projectionRules = rules || {};
+      treeCache = null;
+      bodyCache.clear();
     },
 
     /* --------------------------------------------------------- the directory */
@@ -708,6 +868,7 @@ export function createProjectSession({
 
     addFolder(path, rules) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       path = checkPlacement(rules, { kind: "folder", path }, this.list(), this.folders());
       meta.set(`folder:${path}`, true);
       doc.commit({ origin: DIRECTORY_ORIGIN });
@@ -716,6 +877,7 @@ export function createProjectSession({
 
     relocate(entries, destination, rules, rename = false) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       const plan = relocation(this.list(), this.folders(), entries, destination, rules, rename);
       // Remove asset keys first, so a batch move never overwrites a source.
       for (const file of plan.files) if (file.kind === "asset") assets.delete(file.id);
@@ -732,6 +894,7 @@ export function createProjectSession({
     /** @param {ProjectEntry[]} entries */
     removeEntries(entries) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       const roots = topEntries(entries);
       const current = this.list();
       const folders = folderPaths(current, this.folders());
@@ -756,6 +919,7 @@ export function createProjectSession({
     /** @param {ProjectFile} entry @param {string} path @param {ProjectRules} rules */
     duplicateEntry(entry, path, rules) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       const file = this.list().find((file) => file.kind === entry.kind && file.id === entry.id && file.path === entry.path);
       if (!file) throw new Error(m.project_session_file_changed());
       path = checkPlacement(rules, { ...file, path }, this.list(), this.folders());
@@ -768,7 +932,7 @@ export function createProjectSession({
     /// Every file in the document: its id and its path, sorted by path.
     /** @returns {ProjectFile[]} */
     list() {
-      const projection = projectDirectory(doc, projectionRules);
+      const projection = projectPaths(doc, projectionRules);
       return [...projection.files.entries()].map(([path, file]) => ({
         id: file.source,
         path,
@@ -782,27 +946,44 @@ export function createProjectSession({
     /// fetches them.
     /** @returns {ProjectTree} */
     tree() {
-      const projection = projectDirectory(doc, projectionRules);
-      const texts = Object.create(null);
-      const entries = Object.create(null);
-      const digests = Object.create(null);
-      for (const [path, file] of projection.files) {
-        if (file.kind === "text") {
-          texts[path] = projection.texts.get(path);
-          entries[path] = { kind: "text", id: file.id };
-        } else {
-          digests[path] = file.digest;
-          entries[path] = { kind: "asset", sha: file.digest };
-        }
+      const version = doc.oplogVersion();
+      // Uncommitted operations are in the text but not yet in the version, so
+      // a cached build could be stale until the commit: build afresh then.
+      const pending = doc.getPendingTxnLength() > 0;
+      if (pending || !treeCache || treeCache.rules !== projectionRules || treeCache.version.compare(version) !== 0) {
+        const build = () => {
+          const projection = projectDirectory(doc, projectionRules, { bodyCache: pending ? undefined : bodyCache });
+          const texts = Object.create(null);
+          const entries = Object.create(null);
+          const digests = Object.create(null);
+          for (const [path, file] of projection.files) {
+            if (file.kind === "text") {
+              texts[path] = projection.texts.get(path);
+              entries[path] = { kind: "text", id: file.id };
+            } else {
+              digests[path] = file.digest;
+              entries[path] = { kind: "asset", sha: file.digest };
+            }
+          }
+          return { texts, digests, files: entries, retained: projection.retained };
+        };
+        treeCache = { version, rules: projectionRules, tree: build() };
       }
-      return { texts, digests, files: entries };
+      // Callers get their own top-level maps, so none can change the cache.
+      const { texts, digests, files, retained } = treeCache.tree;
+      return {
+        retained: { ...retained },
+        texts: Object.assign(Object.create(null), texts),
+        digests: Object.assign(Object.create(null), digests),
+        files: Object.assign(Object.create(null), files),
+      };
     },
 
     /// The text at a path, for the caller that has a path and not an id --
     /// which is what a diagnostic carries.
     /** @param {string} path */
     idOf(path) {
-      return projectDirectory(doc, projectionRules).files.get(path)?.id || "";
+      return projectPaths(doc, projectionRules).files.get(path)?.id || "";
     },
 
     /** @param {string} id */
@@ -817,6 +998,7 @@ export function createProjectSession({
     /** @param {string} path @param {string} [body] */
     addText(path, body = "") {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       body = toLf(body);
       const id = mintId();
       const text = new LoroText();
@@ -835,6 +1017,7 @@ export function createProjectSession({
     /** @param {string} id @param {string} path @param {"text" | "asset"} [kind] */
     renameFile(id, path, kind) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       const asset = assets.get(id);
       if (kind === "asset" || (kind === undefined && asset !== undefined)) {
         if (asset === undefined) return;
@@ -855,6 +1038,7 @@ export function createProjectSession({
     /** @param {string} id */
     removeFile(id) {
       if (!mayEdit) throw new Error(m.common_project_read_only());
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       files.delete(id);
       paths.delete(id);
       doc.commit({ origin: DIRECTORY_ORIGIN });
@@ -862,19 +1046,27 @@ export function createProjectSession({
 
     /** @param {string} path */
     removeAsset(path) {
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       assets.delete(path);
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
     /** @param {string} path @param {string} sha */
     putAsset(path, sha) {
+      if (suggestOnly) throw new Error(m.common_project_suggest_only());
       assets.set(path, sha);
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
     /// Called whenever the directory changes -- a file added, renamed,
     /// or removed -- so the list can be redrawn.
-    /** @param {(events: ProjectEvent[]) => void} watcher */
+    /**
+     * The watcher also gets the batch's origin as its second argument: "local"
+     * for this browser's own edits, "import" for a collaborator's, "checkout"
+     * for a checkout of an earlier version. A caller can tell a remote edit
+     * from its own.
+     * @param {(events: ProjectEvent[], by: string) => void} watcher
+     */
     onFiles(watcher) {
       // The watcher hears once per batch, not once per event. A rename moves a
       // path and a delete clears a digest in the same commit, and a file list
@@ -893,7 +1085,7 @@ export function createProjectSession({
           (event) => (typeof event.path?.[0] === "string" && roots.has(event.path[0])) || directory.has(event.target),
         );
         if (relevantEvents.length > 0) {
-          watcher(relevantEvents);
+          watcher(relevantEvents, eventBatch.by);
         }
       });
       return unsub;
@@ -918,8 +1110,8 @@ export function createProjectSession({
     /// file; this is for the list.
     /** @param {string} id */
     inFile(id) {
-      const user = store.get(localKey) || {};
-      store.set(localKey, { ...user, file: id });
+      const user = store.get(localKey) || lastPresence || {};
+      setLocalPresence({ ...user, file: id });
     },
 
     /// Who is in which file: an id to the initials of the people in it.
@@ -946,19 +1138,61 @@ export function createProjectSession({
 
     participants() {
       const states = store.getAllStates();
-      const result = [];
+      // One entry per person: a signed-in account open in several tabs or
+      // devices is listed once, and this browser's own other tabs are left out.
+      const byGroup = new Map();
       for (const [key, state] of Object.entries(states)) {
         if (!isPresence(key) || key === localKey) continue;
-        result.push({
-          key: state?.tab || key,
+        if (state?.account && state.account === person.accountId) continue;
+        const group = state?.account ? `account:${state.account}` : (state?.tab || key);
+        const entry = {
+          key: group,
           name: state?.name || "Anonymous",
           // The colour they are drawing their own caret in, so the badge in
           // the presence strip and the caret in the text are the same person
           // in the same colour.
           colour: state?.color || "",
-        });
+          // The file they said they are in, and their peer id for `caretOf`.
+          file: state?.file || "",
+          peer: state?.peer || "",
+        };
+        const seen = byGroup.get(group);
+        // Keep the tab that has a file, so jump-to-cursor has somewhere to go.
+        if (!seen || (!seen.file && entry.file)) byGroup.set(group, entry);
       }
-      return result;
+      return [...byGroup.values()];
+    },
+
+    /// Where another person's caret is: the file it is in, and the UTF-16
+    /// offsets of its anchor and head there. The caret is published as Loro
+    /// cursors, which name the text they sit in, so the file is found from the
+    /// cursor and not from the presence record. Null when they have no caret,
+    /// or it points at a file that is gone. Reads only; nothing here moves a
+    /// caret or a selection.
+    /** @param {string} peer */
+    caretOf(peer) {
+      const published = peer ? store.get(`${peer}${CARET_SUFFIX}`) : null;
+      if (!published?.anchor) return null;
+      try {
+        const anchor = Cursor.decode(published.anchor);
+        const container = anchor.containerId();
+        let file = "";
+        for (const id of files.keys()) {
+          if (/** @type {any} */ (files.get(id))?.id === container) { file = String(id); break; }
+        }
+        const text = file ? files.get(file) : null;
+        if (!(text instanceof LoroText)) return null;
+        // getCursorPos already answers in UTF-16 code units, the offsets the
+        // editor uses, so no conversion is needed (a convertPos here would be
+        // wrong after any astral character such as an emoji).
+        const offsetOf = (cursor) => doc.getCursorPos(cursor)?.offset ?? null;
+        const from = offsetOf(anchor);
+        if (from == null) return null;
+        const head = published.head ? offsetOf(Cursor.decode(published.head)) : from;
+        return { file, anchor: from, head: head ?? from };
+      } catch {
+        return null;
+      }
     },
 
     /// What to send to join, or to rejoin: what this browser already has, so
@@ -1011,29 +1245,8 @@ export function createProjectSession({
           // same-origin marker rule A turns on, and the link key a reader
           // arrived with. Without them a document too large to send inline was
           // refused, which is what the notebook examples were doing.
-          if (!fetchReference) throw new Error(m.project_session_cannot_fetch_reference());
-          let referenced;
-          try {
-            referenced = await fetchReference(state.ref);
-          } catch (error) {
-            // A failure belongs to the socket that asked. Asking again on a
-            // connection that has gone would open a document nobody is
-            // reading, and raising on one would hand the error to whoever is
-            // now joining instead.
-            if (!speaksForThisJoin(stale)) return;
-            if (error?.restartBaseline) {
-              send(openMessage());
-              return;
-            }
-            throw error;
-          }
-          if (!speaksForThisJoin(stale)) return;
-          const verified = Boolean(state.digest) && await sha256Hex(referenced) === state.digest;
-          // Hashing is a turn of its own, and a long one for a large base.
-          if (!speaksForThisJoin(stale)) return;
-          if (!verified) {
-            throw new Error(m.project_session_integrity());
-          }
+          const referenced = await fetchVerified(state, stale);
+          if (!referenced) return;
           doc.import(referenced);
         } else if (state.base) {
           doc.import(decode(state.base));
@@ -1068,7 +1281,14 @@ export function createProjectSession({
         if (frame.protocol !== "librepaper.room.v3") {
           throw new Error(m.project_session_newer_version());
         }
-        if (frame.updates?.length) doc.importBatch(frame.updates.map(decode));
+        if (frame.ref) {
+          // Same fetch, authority and checks as a referenced base, and in
+          // the same order: it is sequenced behind that base's import.
+          const referenced = await fetchVerified(frame, stale);
+          if (!referenced) return;
+          const batches = unpackRows(referenced);
+          if (batches.length) doc.importBatch(batches);
+        } else if (frame.updates?.length) doc.importBatch(frame.updates.map(decode));
         flushRemoteDuringHydration();
         finishJoin(frame.vector, frame.durableVector);
       });
@@ -1153,6 +1373,7 @@ export function createProjectSession({
     disconnected() {
       joined = false;
       announced = false;
+      stopHeartbeat();
       // Whatever the old socket's join was still waiting on -- hydration, a
       // referenced base, its digest -- is no longer anybody's answer. The next
       // join starts from an empty gate and catches up on its own.
@@ -1166,14 +1387,16 @@ export function createProjectSession({
       report();
     },
 
-    /// Says who this is, for the label on their caret.
-    /** @param {string} who */
-    rename(who) {
-      const user = store.get(localKey) || {};
-      // The colour follows the name: a reader who signs in part way through
+    /// Says who this is, for the label on their caret, and -- when they are
+    /// signed in -- which account they are, which is what the colour follows.
+    /** @param {string} who @param {string} [account] */
+    rename(who, account = "") {
+      const user = store.get(localKey) || lastPresence || {};
+      person = { name: who || "", accountId: account || "" };
+      // The colour follows the person: a reader who signs in part way through
       // stops being their tab's colour and becomes their own, which is the
       // one everybody else already knows them by.
-      store.set(localKey, { ...user, name: who, color: presenceColour(who || localTab, takenColours()) });
+      setLocalPresence({ ...user, name: who, account: account || "", color: presenceColour(colourSeed(), takenColours()) });
       settleColour();
     },
 
@@ -1184,6 +1407,9 @@ export function createProjectSession({
     },
 
     leave() {
+      stopHeartbeat();
+      unsubscribeBodies();
+      bodyCache.clear();
       clearPresenceTimer();
       clearPressureTimer();
       pendingPresence.clear();

@@ -3,7 +3,7 @@
 //! `crates/librepaper-companion/wire`.
 
 /// The full version of the helper's wire, as the page global reports it.
-pub const VERSION: &str = "3.1.0";
+pub const VERSION: &str = "3.2.0";
 /// The major version of `VERSION`. The shell asks the helper for this major.
 pub const MAJOR: u32 = 3;
 /// The oldest major the page is told this shell supports.

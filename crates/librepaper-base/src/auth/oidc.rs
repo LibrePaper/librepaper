@@ -911,7 +911,7 @@ fn truthy(value: Option<&Value>) -> bool {
 /// An address a handle can be: lowercase, one `@`, something before it, a dot
 /// in the domain, and nothing that could shift the fields of the `|`-separated
 /// session cookie or hide inside a log line.
-fn normalized_email(raw: &str) -> Option<String> {
+pub(super) fn normalized_email(raw: &str) -> Option<String> {
     let email = raw.trim().to_lowercase();
     if email.is_empty() || email.len() > EMAIL_LIMIT {
         return None;

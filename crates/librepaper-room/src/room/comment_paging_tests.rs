@@ -86,6 +86,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         registry.clone(),
     );
     let actor = Authority {
+        agent_label: String::new(),
         account_id: Some(account.id),
         principal_key: "owner".into(),
         session_generation: Some(account.session_generation),
@@ -121,6 +122,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
 impl Deployment {
     fn authority(&self) -> Authority {
         Authority {
+            agent_label: String::new(),
             principal_key: self.account_id.to_string(),
             account_id: Some(self.account_id),
             link_hash: None,
@@ -273,6 +275,7 @@ async fn every_comment_past_the_page_size_is_still_read_back() {
             None,
             comments::COMMENT_PAGE_DEFAULT,
             &deployment.author_key(),
+            true,
             true,
         )
         .await
@@ -948,7 +951,7 @@ async fn a_comment_beyond_the_first_page_is_readable_by_id() {
         .seed_comments(room.document_id, PAST_THE_PAGE)
         .await;
     let (_, first) = room
-        .comment_page(None, comments::COMMENT_PAGE_DEFAULT, "", true)
+        .comment_page(None, comments::COMMENT_PAGE_DEFAULT, "", true, true)
         .await
         .unwrap();
     let on_page: HashSet<String> = first
@@ -1089,7 +1092,7 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
     let mut after = None;
     loop {
         let window = room
-            .thread_query_page(&deployment.author_key(), true, after, 24)
+            .thread_query_page(&deployment.author_key(), true, true, after, 24)
             .await
             .unwrap();
         let last = window
@@ -1122,7 +1125,7 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
         .expect("the catalogue answers")
         .expect("by id");
     let (_, page) = room
-        .comment_page(None, 200, &deployment.author_key(), true)
+        .comment_page(None, 200, &deployment.author_key(), true, true)
         .await
         .unwrap();
     let on_page = page
@@ -1131,7 +1134,7 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
         .find(|comment| comment.id == deep)
         .expect("on the first page");
     let window = room
-        .thread_reply_window(ids[0], &deployment.author_key(), true, None, 24)
+        .thread_reply_window(ids[0], &deployment.author_key(), true, true, None, 24)
         .await
         .unwrap();
     let from_window = window.thread.expect("the thread itself");
@@ -1183,7 +1186,7 @@ async fn event_reply_cursors_continue_for_both_audiences() {
     let payload = serde_json::json!({"type": "reply", "comment_id": id.to_string()});
     let event = room.prepare_comment_event(&payload).await;
     for editor in [true, false] {
-        let view = event.view_for("", editor);
+        let view = event.view_for("", editor, editor);
         let cursor = view["comment"]["reply_cursor"].as_str().unwrap();
         let at = comments::decode_cursor(cursor, room.document_id, Some(id)).unwrap();
         let page = room.reply_page(id, Some(at), 10).await.unwrap().unwrap();
@@ -1239,7 +1242,10 @@ async fn a_reader_page_never_decodes_the_document() {
     let room = deployment.room().await;
     add_anchored_comment(&deployment, &room).await;
     room.log().drop_cache().await;
-    let (views, _) = room.comment_page(None, 50, "someone", false).await.unwrap();
+    let (views, _) = room
+        .comment_page(None, 50, "someone", false, false)
+        .await
+        .unwrap();
     assert_eq!(views.len(), 1);
     assert!(views
         .iter()
@@ -1262,7 +1268,10 @@ async fn an_editor_page_with_an_anchored_comment_decodes() {
     let room = deployment.room().await;
     add_anchored_comment(&deployment, &room).await;
     room.log().drop_cache().await;
-    let (views, _) = room.comment_page(None, 50, "someone", true).await.unwrap();
+    let (views, _) = room
+        .comment_page(None, 50, "someone", true, true)
+        .await
+        .unwrap();
     assert_eq!(views.len(), 1);
     assert!(views[0].comment.attachment.is_some());
     assert!(room.log().is_warm().await);
@@ -1280,7 +1289,10 @@ async fn an_editor_page_of_document_level_comments_never_decodes() {
     let room = deployment.room().await;
     deployment.seed_comments(room.document_id, 3).await;
     room.log().drop_cache().await;
-    let (views, _) = room.comment_page(None, 50, "someone", true).await.unwrap();
+    let (views, _) = room
+        .comment_page(None, 50, "someone", true, true)
+        .await
+        .unwrap();
     assert_eq!(views.len(), 3);
     assert!(views.iter().all(|view| view.comment.attachment.is_none()));
     assert!(

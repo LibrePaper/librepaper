@@ -12,6 +12,7 @@
  */
 @import "tailwindcss";
 @import "@skeletonlabs/skeleton";
+@import "./fonts.css";
 @import "./theme.css";
 @import "./palettes.css";
 @import "./librepaper.css";

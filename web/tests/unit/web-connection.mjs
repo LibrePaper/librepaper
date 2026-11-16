@@ -17,7 +17,7 @@ const project = "https://app.example/docs/paper";
 function routes(answers) {
   const calls = [];
   const api = {};
-  for (const name of ["connectionStatus", "connectRepository", "connectLocalRepository", "pullConnection", "pushConnection", "resolveConnection", "retryConnection", "loginConnection", "loginConnectionComplete", "disconnectConnection"]) {
+  for (const name of ["connectionStatus", "connectRepository", "connectLocalRepository", "chooseLocalRepository", "pullConnection", "pushConnection", "resolveConnection", "retryConnection", "loginConnection", "loginConnectionComplete", "disconnectConnection"]) {
     api[name] = async (...args) => {
       calls.push([name, ...args]);
       const answer = typeof answers[name] === "function" ? answers[name](...args) : answers[name];
@@ -67,9 +67,64 @@ const merging = { ...connected, merging: { side: "repository", conflicts: ["a.te
   const { api, calls } = routes({ connectLocalRepository: local });
   const web = createWebConnection({ api, project });
   await web.connectLocal();
-  assert.deepEqual(calls, [["connectLocalRepository", project]]);
+  assert.deepEqual(calls, [["connectLocalRepository", project, ""]]);
   assert.deepEqual(web.state.status, local);
   assert.equal(web.state.problem, "");
+  assert.equal(web.state.busy, "");
+}
+
+// A folder chosen in the desktop app's chooser is connected at its path, which
+// also names the remote in sign-in help.
+{
+  const local = { connected: true, local: true, signed_in: true, path: "/x", branch: "main", merging: null };
+  const { api, calls } = routes({ connectLocalRepository: local });
+  const web = createWebConnection({ api, project });
+  await web.connectLocal("/x");
+  assert.deepEqual(calls, [["connectLocalRepository", project, "/x"]]);
+  assert.deepEqual(web.state.status, local);
+  assert.equal(web.state.busy, "");
+}
+
+// Choosing a folder answers the path while the panel is busy with "choose", and
+// changes neither the status nor the refusal.
+{
+  let web;
+  let busyDuringChoice = "";
+  const { api } = routes({
+    connectionStatus: connected,
+    chooseLocalRepository: () => {
+      busyDuringChoice = web.state.busy;
+      return { path: "/home/me/My Papers" };
+    },
+  });
+  web = createWebConnection({ api, project });
+  await web.refresh();
+  const before = web.state.status;
+  assert.equal(await web.choose(), "/home/me/My Papers");
+  assert.equal(busyDuringChoice, "choose");
+  assert.equal(web.state.busy, "");
+  assert.equal(web.state.status, before);
+  assert.equal(web.state.result, null);
+  assert.equal(web.state.refusal, null);
+  assert.equal(web.state.problem, "");
+}
+
+// A cancelled chooser answers "" and leaves the panel as it was.
+{
+  const { api } = routes({ chooseLocalRepository: { cancelled: true } });
+  const web = createWebConnection({ api, project });
+  assert.equal(await web.choose(), "");
+  assert.equal(web.state.busy, "");
+  assert.equal(web.state.problem, "");
+  assert.equal(web.state.status, null);
+}
+
+// A chooser that fails says so through the panel, and answers "".
+{
+  const { api } = routes({ chooseLocalRepository: refused(500, {}, "The folder chooser could not open.") });
+  const web = createWebConnection({ api, project });
+  assert.equal(await web.choose(), "");
+  assert.equal(web.state.problem, "The folder chooser could not open.");
   assert.equal(web.state.busy, "");
 }
 
@@ -362,6 +417,115 @@ for (const [pulled, line] of [[true, "Sent to repository branch main."], [false,
   await clean.pull();
   await clean.retryTransfer();
   assert.match(clean.state.result, /nothing was left to send to the project/);
+}
+
+// The last operation, for the summary line: everything but its time.
+const summary = (/** @type {any} */ last) => {
+  assert.equal(typeof last.at, "number");
+  const { at, ...rest } = last;
+  return rest;
+};
+
+// A pull that brings files records how many, on the branch.
+{
+  const { api } = routes({ connectionStatus: connected, pullConnection: { status: connected, pushed: { files: 3 } } });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  assert.equal(web.state.last, null);
+  await web.pull();
+  assert.deepEqual(summary(web.state.last), { action: "get", ok: true, files: 3, nothing: false, branch: "main", detail: "" });
+}
+
+// A pull with nothing new records that nothing came in.
+{
+  const { api } = routes({ connectionStatus: connected, pullConnection: { status: connected, pushed: { nothing: true } } });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.pull();
+  assert.deepEqual(summary(web.state.last), { action: "get", ok: true, files: 0, nothing: true, branch: "main", detail: "" });
+}
+
+// A push records a send, and a push with nothing to send records nothing.
+{
+  const { api } = routes({ connectionStatus: connected, pushConnection: { status: connected, pushed: "pushed" } });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.push();
+  assert.deepEqual(summary(web.state.last), { action: "send", ok: true, files: 0, nothing: false, branch: "main", detail: "" });
+
+  const idle = routes({ connectionStatus: connected, pushConnection: { status: connected, pushed: "up-to-date" } });
+  const quiet = createWebConnection({ api: idle.api, project });
+  await quiet.refresh();
+  await quiet.push();
+  assert.equal(quiet.state.last.nothing, true);
+  assert.equal(quiet.state.last.ok, true);
+}
+
+// A failed push records the failure with the message the panel shows.
+{
+  const { api } = routes({ connectionStatus: connected, pushConnection: refused(500, {}, "The push failed.") });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.push();
+  assert.equal(web.state.problem, "The push failed.");
+  assert.deepEqual(summary(web.state.last), { action: "send", ok: false, files: 0, nothing: false, branch: "main", detail: "The push failed." });
+}
+
+// A push the repository is ahead of records the same refusal the panel shows.
+{
+  const { api } = routes({ connectionStatus: connected, pushConnection: refused(409, { reason: "behind" }) });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.push();
+  assert.equal(web.state.last.ok, false);
+  assert.equal(web.state.last.action, "send");
+  assert.equal(web.state.last.detail, web.state.problem);
+  assert.match(web.state.last.detail, /Get repository changes first/);
+}
+
+// A pull refused over changed files is a box, not a summary: the last operation is cleared.
+{
+  const scene = { pull: { status: connected, pushed: { files: 1 } } };
+  const { api } = routes({ connectionStatus: connected, pullConnection: () => scene.pull });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.pull();
+  assert.equal(web.state.last.ok, true);
+  scene.pull = refused(409, { reason: "changed", paths: ["intro.tex"] });
+  await web.pull();
+  assert.deepEqual(web.state.refusal, { reason: "changed", paths: ["intro.tex"] });
+  assert.equal(web.state.last, null);
+}
+
+// A busy transfer keeps the previous summary visible until its own answer comes.
+{
+  let web;
+  let seenDuringPull = null;
+  const { api } = routes({
+    connectionStatus: connected,
+    pushConnection: { status: connected, pushed: "pushed" },
+    pullConnection: () => {
+      seenDuringPull = web.state.last;
+      return { status: connected, pushed: { files: 2 } };
+    },
+  });
+  web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.push();
+  await web.pull();
+  assert.equal(seenDuringPull.action, "send");
+  assert.equal(web.state.last.action, "get");
+}
+
+// Connecting forgets the last operation, whatever repository it is.
+{
+  const { api } = routes({ connectionStatus: connected, pullConnection: { status: connected, pushed: { files: 1 } }, connectRepository: connected });
+  const web = createWebConnection({ api, project });
+  await web.refresh();
+  await web.pull();
+  assert.notEqual(web.state.last, null);
+  await web.connect("https://github.com/you/paper.git");
+  assert.equal(web.state.last, null);
 }
 
 console.log("web-connection: connect, pull, push, conflicts, refusals, interrupted sends, sign-in and disconnect");

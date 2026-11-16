@@ -888,6 +888,7 @@ async fn deployment_with_document(slug: &str) -> Option<Deployment> {
         registry.clone(),
     ));
     let actor = Authority {
+        agent_label: String::new(),
         account_id: Some(account.id),
         principal_key: "owner".into(),
         session_generation: Some(account.session_generation),
@@ -920,6 +921,7 @@ async fn deployment_with_document(slug: &str) -> Option<Deployment> {
 impl Deployment {
     fn authority(&self) -> Authority {
         Authority {
+            agent_label: String::new(),
             principal_key: self.account_id.to_string(),
             account_id: Some(self.account_id),
             link_hash: None,
@@ -2051,16 +2053,21 @@ impl Command for RetryProbe {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn a_command_that_writes_a_row_charges_the_ledger_once_and_a_replay_charges_nothing() {
-    let Some(deployment) = deployment_with_document("recovery-ledger-replay").await else {
+async fn a_command_that_writes_a_row_stores_it_once_and_a_replay_stores_nothing() {
+    let Some(deployment) = deployment_with_document("recovery-row-replay").await else {
         return;
     };
     let room = deployment
         .rooms
-        .get("recovery-ledger-replay")
+        .get("recovery-row-replay")
         .await
         .expect("the room for the document just created");
-    let before = room.log().owner_storage_bytes();
+    let owner = deployment.account_id;
+    let before = deployment
+        .catalog
+        .durable_usage_bytes(Some(owner))
+        .await
+        .unwrap();
 
     let mut first = RetryProbe {
         edit: format!("{PAPER}\nThis edit writes a row.\n"),
@@ -2071,10 +2078,14 @@ async fn a_command_that_writes_a_row_charges_the_ledger_once_and_a_replay_charge
         .await
         .expect("a well-formed source-producing command");
     assert!(!replayed, "the first call is a real commit");
-    let after_first = room.log().owner_storage_bytes();
+    let after_first = deployment
+        .catalog
+        .durable_usage_bytes(Some(owner))
+        .await
+        .unwrap();
     assert!(
         after_first > before,
-        "a command that writes a row charges the owner's ledger"
+        "a command that writes a row adds to the owner's stored bytes"
     );
 
     let mut retry = RetryProbe {
@@ -2087,9 +2098,13 @@ async fn a_command_that_writes_a_row_charges_the_ledger_once_and_a_replay_charge
         .expect("a replay answers from the retry record");
     assert!(replayed, "the retry is reported as a replay");
     assert_eq!(
-        room.log().owner_storage_bytes(),
+        deployment
+            .catalog
+            .durable_usage_bytes(Some(owner))
+            .await
+            .unwrap(),
         after_first,
-        "a replay writes no row and charges nothing"
+        "a replay writes no row and stores nothing"
     );
 
     deployment.catalog.close().await;

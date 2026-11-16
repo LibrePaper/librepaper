@@ -401,6 +401,8 @@ esac`);
       GOOGLE_LOCATION: googleLocation,
       SOPS_FAILURE_KEY: sopsFailureKey,
       SOPS_AGE_KEY_CMD: sopsAgeKeyCmd,
+      // The operator's shell may export this; a test sets it explicitly.
+      LIBREPAPER_AGE_KEY_CMD: '',
       GITHUB_CLIENT_SECRET: String(githubClientSecret),
       ADMIN_ROOT_STATUS: String(adminRootStatus),
       ADMIN_ROOT_LOCATION: adminRootLocation,
@@ -1063,6 +1065,26 @@ test('check-replica unlocks the age identity once and hands it only to sops', ()
     for (const call of events(f).filter(([kind]) => kind === 'aws' || kind === 'restic')) {
       assert.ok(!call.join('\t').includes('AGE-SECRET-KEY'), `${call[0]} saw the identity`);
     }
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('check-replica prefers LIBREPAPER_AGE_KEY_CMD over SOPS_AGE_KEY_CMD', () => {
+  const f = fixture();
+  const counter = path.join(f.root, 'unlocks');
+  const sopsSeen = path.join(f.root, 'sops-age');
+  f.env.SOPS_AGE_KEY_CMD = `printf s >> ${counter}; printf 'AGE-SECRET-KEY-1WRONG'`;
+  f.env.LIBREPAPER_AGE_KEY_CMD = `printf l >> ${counter}; printf 'AGE-SECRET-KEY-1TEST'`;
+  const sops = path.join(f.root, 'bin', 'sops');
+  writeFileSync(sops, readFileSync(sops, 'utf8').replace('#!/bin/sh\n', `#!/bin/sh\nprintf '%s|%s\\n' "\${SOPS_AGE_KEY:-}" "\${SOPS_AGE_KEY_CMD:-}" >> ${sopsSeen}\n`));
+  try {
+    const result = run(f, 'check-replica');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(read(counter), 'l', 'the wrong identity command ran');
+    const seen = read(sopsSeen).trim().split('\n');
+    assert.ok(seen.length > 1);
+    for (const line of seen) assert.equal(line, 'AGE-SECRET-KEY-1TEST|', 'sops did not get the LIBREPAPER_AGE_KEY_CMD identity alone');
   } finally {
     f.cleanup();
   }

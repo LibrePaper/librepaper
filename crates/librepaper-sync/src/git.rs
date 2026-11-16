@@ -3,11 +3,68 @@
 //! needs one would fail rather than prompt.
 
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::Command;
+use std::time::Duration;
+
+use librepaper_base::git_env;
+use librepaper_base::process::{supervise_blocking, Ending, Keep, Limits};
 
 use crate::Error;
+
+/// Commands that only touch the work tree and its repository. Sync runs no
+/// command that talks to a remote: it reads and writes the local repository,
+/// and the network side is its own HTTP client.
+const LOCAL_TIMEOUT: Duration = Duration::from_secs(60);
+/// The check that a directory is a work tree.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The most stdout one command may produce.
+const MAX_STDOUT_BYTES: usize = 64 * 1024 * 1024;
+/// The most stderr kept from one command.
+const MAX_STDERR_BYTES: usize = 256 * 1024;
+
+/// How long a command may run and how much it may write.
+#[derive(Clone, Copy, Debug)]
+struct Bounds {
+    timeout: Duration,
+    stdout: usize,
+    stderr: usize,
+}
+
+impl Bounds {
+    fn within(timeout: Duration) -> Bounds {
+        Bounds {
+            timeout,
+            stdout: MAX_STDOUT_BYTES,
+            stderr: MAX_STDERR_BYTES,
+        }
+    }
+}
+
+/// How a git command exited.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Status {
+    code: i32,
+}
+
+impl Status {
+    pub(crate) fn success(&self) -> bool {
+        self.code == 0
+    }
+
+    /// The exit code. A command killed by a signal reports -1.
+    pub(crate) fn code(&self) -> Option<i32> {
+        Some(self.code)
+    }
+}
+
+/// What a finished git command wrote and how it exited.
+#[derive(Debug)]
+pub(crate) struct Output {
+    pub(crate) status: Status,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+}
 
 /// A git work tree, addressed by its top-level directory.
 #[derive(Clone, Debug)]
@@ -27,7 +84,14 @@ impl Git {
     /// repository, a bare repository and a missing git all answer `None`.
     pub(crate) fn toplevel(dir: &Path) -> Option<Git> {
         let git = Git::at(dir);
-        let top = git.line(&["rev-parse", "--show-toplevel"]).ok()?;
+        let args = ["rev-parse", "--show-toplevel"];
+        let output = git
+            .execute(&args, None, &[], Bounds::within(PROBE_TIMEOUT))
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let same = std::fs::canonicalize(top).ok()? == std::fs::canonicalize(dir).ok()?;
         same.then_some(git)
     }
@@ -43,44 +107,24 @@ impl Git {
         stdin: Option<&[u8]>,
         env: &[(&str, &str)],
     ) -> Result<Output, Error> {
+        self.execute(args, stdin, env, Bounds::within(LOCAL_TIMEOUT))
+    }
+
+    fn execute(
+        &self,
+        args: &[&str],
+        stdin: Option<&[u8]>,
+        env: &[(&str, &str)],
+        bounds: Bounds,
+    ) -> Result<Output, Error> {
         let mut command = Command::new("git");
-        command
-            .arg("-C")
-            .arg(&self.dir)
-            .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("LC_ALL", "C")
-            .stdin(if stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        // The caller's variables come after the scrub, so they win.
+        git_env::scrub(&mut command, true);
+        command.arg("-C").arg(&self.dir).args(args);
         for (name, value) in env {
             command.env(name, value);
         }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // No console window for each command.
-            command.creation_flags(0x0800_0000);
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|error| Error::Git(format!("could not run git: {error}")))?;
-        let feed = child.stdin.take().zip(stdin);
-        std::thread::scope(|scope| {
-            // Written from its own thread, so a command that answers before
-            // it has read everything cannot leave both sides waiting.
-            if let Some((mut pipe, bytes)) = feed {
-                scope.spawn(move || {
-                    let _ = pipe.write_all(bytes);
-                });
-            }
-            child.wait_with_output()
-        })
-        .map_err(|error| Error::Git(format!("could not run git: {error}")))
+        supervised(command, args, stdin, bounds)
     }
 
     /// Runs git and hands back its output, or its complaint when it fails.
@@ -244,10 +288,70 @@ impl Git {
     }
 }
 
+/// Runs `command` under the shared supervisor and reports the result in git's
+/// terms. The command and its children are killed when the time runs out.
+fn supervised(
+    command: Command,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    bounds: Bounds,
+) -> Result<Output, Error> {
+    let run = supervise_blocking(
+        command,
+        stdin.map(<[u8]>::to_vec),
+        Limits {
+            timeout: Some(bounds.timeout),
+            cancel: None,
+            // One byte past the bound, so output over it is told from output at it.
+            keep: Keep::Head(bounds.stdout + 1),
+            stderr_keep: Some(Keep::Head(bounds.stderr)),
+            // Git's background maintenance is a helper it starts on purpose,
+            // and that helper must survive the command. A timeout still kills
+            // the whole group.
+            kill_group: false,
+        },
+    );
+    let code = match run.ending {
+        Ending::Exited(code) => code,
+        Ending::TimedOut | Ending::Canceled => {
+            return Err(Error::GitTimeout {
+                command: subcommand(args).to_string(),
+                seconds: bounds.timeout.as_secs(),
+            })
+        }
+        Ending::SpawnFailed(error) => {
+            return Err(Error::Git(format!("could not run git: {error}")))
+        }
+    };
+    if run.stdout.len() > bounds.stdout {
+        return Err(Error::GitOutput {
+            command: subcommand(args).to_string(),
+        });
+    }
+    Ok(Output {
+        status: Status { code },
+        stdout: run.stdout,
+        stderr: run.stderr,
+    })
+}
+
+/// The git subcommand in `args`, past any `-c name=value` pairs.
+fn subcommand<'a>(args: &[&'a str]) -> &'a str {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if *arg == "-c" {
+            args.next();
+        } else if !arg.starts_with('-') {
+            return arg;
+        }
+    }
+    ""
+}
+
 fn complaint(args: &[&str], output: &Output) -> String {
     let said = String::from_utf8_lossy(&output.stderr);
     let said = said.trim();
-    let name = args.iter().find(|arg| !arg.starts_with('-')).unwrap_or(&"");
+    let name = subcommand(args);
     if said.is_empty() {
         format!("{name} failed")
     } else {
@@ -257,6 +361,8 @@ fn complaint(args: &[&str], output: &Output) -> String {
 
 #[cfg(test)]
 pub(crate) mod testing {
+    use std::process::Stdio;
+
     use super::*;
 
     /// A fresh repository in a temporary directory, or `None` when git is not
@@ -316,6 +422,97 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+
+    fn bounds(timeout_ms: u64, stdout: usize) -> Bounds {
+        Bounds {
+            timeout: Duration::from_millis(timeout_ms),
+            stdout,
+            stderr: 1024,
+        }
+    }
+
+    #[cfg(unix)]
+    fn sh(script: &str) -> Command {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_past_its_time_is_killed_with_its_children() {
+        // The shell starts a child, records its number and sleeps itself.
+        let mut command = sh("sleep 30 & echo $! > \"$0\"; sleep 30");
+        let started = std::time::Instant::now();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pid");
+        command.arg(&file);
+        assert!(matches!(
+            supervised(command, &["merge"], None, bounds(500, 1024)),
+            Err(Error::GitTimeout { ref command, .. }) if command == "merge"
+        ));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let pid = std::fs::read_to_string(&file).unwrap().trim().to_string();
+        let gone = (0..50).any(|_| {
+            let alive = Command::new("/bin/sh")
+                .args(["-c", &format!("kill -0 {pid} 2>/dev/null")])
+                .status()
+                .unwrap()
+                .success();
+            if alive {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            !alive
+        });
+        assert!(gone, "the child of the timed out command survived");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_over_the_cap_is_an_error() {
+        let result = supervised(
+            sh("printf 0123456789"),
+            &["-c", "a=b", "cat-file"],
+            None,
+            bounds(10_000, 4),
+        );
+        match result {
+            Err(Error::GitOutput { command }) => assert_eq!(command, "cat-file"),
+            other => panic!("expected an output error, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_normal_command_returns_its_output_and_status() {
+        let output = supervised(
+            sh("printf out; printf err >&2; exit 2"),
+            &["status"],
+            None,
+            bounds(10_000, 1024),
+        )
+        .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!output.status.success());
+        assert_eq!(output.stdout, b"out");
+        assert_eq!(output.stderr, b"err");
+
+        let output = supervised(
+            sh("cat"),
+            &["hash-object"],
+            Some(b"in"),
+            bounds(10_000, 1024),
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"in");
+    }
+
+    #[test]
+    fn the_subcommand_skips_options_and_their_values() {
+        assert_eq!(subcommand(&["-c", "user.name=T", "commit", "-q"]), "commit");
+        assert_eq!(subcommand(&["merge", "--no-edit"]), "merge");
+    }
 
     #[test]
     fn only_the_top_level_of_a_work_tree_counts() {

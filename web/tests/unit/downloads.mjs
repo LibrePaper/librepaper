@@ -9,10 +9,12 @@ import {
   docxFile,
   entryDownload,
   inlineBlobUrls,
+  inlineFigureReferences,
   projectFiles,
 } from "../../src/lib/reader/downloads.js";
 
 const reader = englishSource(readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
+const menus = englishSource(readFileSync(new URL("../../src/components/reader/Menus.svelte", import.meta.url), "utf8"));
 const body = (start, end) => {
   const from = reader.indexOf(start);
   assert.notEqual(from, -1, `Reader function not found: ${start}`);
@@ -45,35 +47,8 @@ assert.deepEqual(
   "the render builds the file the preview shows",
 );
 
-// Read-only viewers (no session) must populate digests from asset entries
-// in the currentProject.tree.files, which uses .digest property (not .sha).
-{
-  const roContext = vm.createContext({
-    session: null,
-    currentProject: {
-      texts: { "readme.md": "content" },
-      tree: {
-        files: {
-          "image.png": { kind: "asset", digest: "abc123def456" },
-          "data.json": { kind: "text" },
-        },
-        settings: null,
-      },
-    },
-  });
-  vm.runInContext(liveTreeNow, roContext);
-  const result = JSON.parse(JSON.stringify(vm.runInContext("liveTreeNow()", roContext)));
-  assert.deepEqual(
-    result,
-    {
-      main: "",
-      texts: { "readme.md": "content" },
-      digests: { "image.png": "abc123def456" },
-      settings: null,
-    },
-    "read-only viewer populates digests from asset entries in project response",
-  );
-}
+// A read-only viewer has no session; the tree it is given comes from the
+// projection source, and `projection-source.mjs` checks it.
 
 // The archive is cut from the tree and directory the caller passed, so a
 // folder added while the assets are in flight cannot reach it. That ordering
@@ -94,6 +69,18 @@ const gathering = (assets, missing = []) => async () => ({ held: { assets }, mis
   assert(files["project/"] instanceof Uint8Array);
   assert(files["project/old-folder/"] instanceof Uint8Array);
   assert(!files["project/new-folder/"]);
+}
+
+// Retained texts (refused by the extension allow list) join the archive but
+// never replace a real file.
+{
+  const files = await projectFiles({
+    tree: { ...live, retained: { "project/old.py": "print(1)", "project/current.md": "stale" } },
+    folders: [],
+    gather: gathering({ "project/fig.png": Uint8Array.of(7) }),
+  });
+  assert.equal(files["project/old.py"], "print(1)");
+  assert.equal(files["project/current.md"], "live", "a retained text never overwrites a real file");
 }
 
 // A project archive tolerates no hole: a figure the server does not have
@@ -117,8 +104,8 @@ await assert.rejects(
 // The action is absent as well as guarded. Editors and owners are the two
 // roles for which Reader sets `mayEdit`.
 assert.match(
-  reader,
-  /\{#if mayEdit\}(?:(?!\{#if|\{\/if\})[\s\S])*<Menu\.Item value="download" class="menuitem"><span class="menuitem-label">Project<\/span><\/Menu\.Item>[\s\S]*?\{\/if\}/,
+  menus,
+  /\{#if role\.mayEdit\}(?:(?!\{#if|\{\/if\})[\s\S])*<Menu\.Item value="download" class="menuitem"><span class="menuitem-label">\{labelOf\("download"\)\}<\/span><\/Menu\.Item>[\s\S]*?\{\/if\}/,
   "the File menu only offers the project archive to editors and owners",
 );
 
@@ -182,6 +169,40 @@ await assert.rejects(
   assert.deepEqual(fetched, ["blob:https://x/one", "blob:https://x/gone"], "each object URL is fetched once, without its fragment");
   assert.equal(inlined, '<img src="data:image/png;base64,AQID"><img src="data:image/png;base64,AQID"><img src="blob:https://x/gone">');
   assert.equal(await inlineBlobUrls("<p>no figures</p>", fetcher), "<p>no figures</p>");
+}
+
+// The live preview's page names a figure by reference. A download replaces
+// each reference with the data URL its tree holds for that path, and leaves a
+// reference alone when the tree has no data URL for it.
+{
+  const tree = {
+    digests: { "fig.png": "aa", "orphan.png": "bb" },
+    urls: { "fig.png": "data:image/png;base64,AQID#librepaper-asset=aa" },
+  };
+  const page = '<img src="about:blank#librepaper-asset=aa"><img src="about:blank#librepaper-asset=bb"><img src="about:blank#librepaper-asset=cc">';
+  assert.equal(
+    inlineFigureReferences(page, tree),
+    '<img src="data:image/png;base64,AQID#librepaper-asset=aa"><img src="about:blank#librepaper-asset=bb"><img src="about:blank#librepaper-asset=cc">',
+    "a referenced figure is inlined; an unknown or unresolved one is left as it was",
+  );
+  assert.equal(inlineFigureReferences("<p>no figures</p>", tree), "<p>no figures</p>");
+}
+
+// A PDF figure is gathered as a blob URL. Its reference becomes that blob URL,
+// and the blob pass that follows embeds the bytes, so the download carries it.
+{
+  const tree = {
+    digests: { "plot.pdf": "dd" },
+    urls: { "plot.pdf": "blob:https://app/pdf-1#librepaper-asset=dd" },
+  };
+  const page = '<embed src="about:blank#librepaper-asset=dd">';
+  const referenced = inlineFigureReferences(page, tree);
+  assert.equal(referenced, '<embed src="blob:https://app/pdf-1#librepaper-asset=dd">');
+  const fetcher = async (url) => {
+    assert.equal(url, "blob:https://app/pdf-1");
+    return { ok: true, headers: { get: () => "application/pdf" }, arrayBuffer: async () => Uint8Array.of(37, 80, 68, 70).buffer };
+  };
+  assert.equal(await inlineBlobUrls(referenced, fetcher), '<embed src="data:application/pdf;base64,JVBERg==">');
 }
 
 console.log("downloads: file exports follow transient output handed to the frame");

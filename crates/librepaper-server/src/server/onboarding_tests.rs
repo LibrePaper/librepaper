@@ -8,7 +8,7 @@ use librepaper_engine::storage::store::DocumentInput;
 
 use crate::server::http_test_support::deployment;
 
-const EXPECTED: [&str; 13] = [
+const EXPECTED: [&str; 15] = [
     "librepaper.md",
     "sections/rendering.md",
     "todo.md",
@@ -20,6 +20,8 @@ const EXPECTED: [&str; 13] = [
     "sections/rendering.html",
     "librepaper.qmd",
     "sections/rendering.qmd",
+    "librepaper.org",
+    "sections/rendering.org",
     "librepaper-icon.png",
     "references.bib",
 ];
@@ -99,6 +101,17 @@ async fn a_new_account_receives_one_project_holding_every_tutorial() {
             .as_bytes()
         ),
         "Typst tutorial bytes"
+    );
+    assert_eq!(
+        bytes("librepaper.org"),
+        Some(
+            include_str!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-org/librepaper.org"
+            ))
+            .as_bytes()
+        ),
+        "Org tutorial bytes"
     );
     assert_eq!(
         bytes("librepaper-icon.png"),

@@ -143,6 +143,34 @@
       if (id === "citation" && onzoterosearch) void openZotero(generation);
     }, 0);
   }
+  // The same context handling as the bar's menu opening, for the phone's
+  // command list: the context of the last opening is released unless a dialog
+  // took it, and a fresh one is read.
+  function takeContext() {
+    if (menuContext && !(dialogOpen && captured === menuContext)) oncancel?.(menuContext);
+    menuContext = getContext?.() || null;
+  }
+  // The groups of the Insert menu as a flat list for the phone's command
+  // view: the common actions, the two palettes, then one group per sub-menu.
+  // An item that opens a dialog is marked with an ellipsis, as on the bar.
+  export function mobileGroups() {
+    takeContext();
+    const item = (id) => {
+      const state = availability(id, menuContext || {});
+      return { id, label: `${actionLabel(id)}${actionById(id)?.dialog ? "…" : ""}`, disabled: !state.enabled, reason: state.reason || undefined };
+    };
+    const common = menuTree.filter((entry) => typeof entry === "string").map(item);
+    return [
+      { items: [...common, { id: "palette:symbols", label: m.insertmenu_symbols() }, { id: "palette:math", label: m.insertmenu_math() }] },
+      ...menuTree.filter((entry) => typeof entry !== "string").map((entry) => ({ label: entry.label, items: entry.ids.map(item) })),
+    ];
+  }
+  // The phone's command view closed without a choice: nothing will use the
+  // context it read, so it is let go the way a new opening would.
+  export function releaseMobile() {
+    if (menuContext && !(dialogOpen && captured === menuContext)) oncancel?.(menuContext);
+    menuContext = null;
+  }
   /** @param {string} id */
   export function insertAction(id) {
     choose(id);
@@ -341,11 +369,7 @@
 {/snippet}
 
 <MenubarMenu id="insert" label={m.common_insert()} {disabled}
-             onopen={() => {
-               // The context from the last opening is released, unless a dialog took it.
-               if (menuContext && !(dialogOpen && captured === menuContext)) oncancel?.(menuContext);
-               menuContext = getContext?.() || null;
-             }}
+             onopen={takeContext}
              onselect={choose}>
   <div class="insert-scroll">
   {#each menuTree as entry}
@@ -414,7 +438,7 @@
   {:else if dialog === "cross-reference"}
     <label class="label">{m.insertmenu_reference()} <select class="select" bind:value={draft.target}><option value="">{m.insertmenu_reference_choose()}</option>{#each references as ref}{@const value = ref.id || ref.label}<option value={value}>{value}</option>{/each}</select></label>
   {:else if dialog === "display-math"}
-    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> {m.insertmenu_numbered()}</label>
+    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown" || captured?.format === "org"} /> {m.insertmenu_numbered()}</label>
     <label class="label">{m.common_label()} <input class="input" bind:value={draft.label} /></label>
   {:else if dialog === "code-block"}
     <label class="label">{m.insertmenu_language()} <input class="input" bind:value={draft.language} /></label>

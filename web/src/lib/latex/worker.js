@@ -29,6 +29,7 @@
 // now (`driver.js`), selected by engine kind, not by distribution name.
 
 import { createEngine } from "./driver.js";
+import { ensureDirs, stageEngine, writeFiles } from "./staging.js";
 import { fetchVerified } from "./resources.js";
 import { sha256Hex } from "../digest.js";
 import { packageNames, nearestPackage } from "./near-miss.js";
@@ -74,11 +75,6 @@ async function ensureGzip(bytes) {
 function stemOf(path) {
   const base = path.slice(path.lastIndexOf("/") + 1);
   return base.replace(/\.[^.]+$/, "");
-}
-
-function dirname(path) {
-  const at = path.lastIndexOf("/");
-  return at < 0 ? null : path.slice(0, at);
 }
 
 /// Helper engines a project engine may call on after the pass, which a stage
@@ -145,6 +141,9 @@ class Worker2 {
     }
     this.base = base;
     this.release = release;
+    // Older controllers ignore `retain` and never answer it, so it is only
+    // sent when the release says its controllers support it.
+    this.canRetain = Array.isArray(release?.capabilities) && release.capabilities.includes("retain");
     this.bundleIndexBytes = null;
     this.packageNames = null;
 
@@ -320,17 +319,15 @@ class Worker2 {
     if (engineName !== "latexml" && paths.some((path) => path.endsWith(".bib"))) {
       this.ensureEngine("bibtex").catch(() => {});
     }
-    for (const engine of engines) await engine.flushCache();
-    // Fresh /work for every engine, then the whole tree, one directory at a
-    // time -- `flushcache` above is the only way any of these controllers
-    // clears `/work`, so a file removed from the tree is genuinely absent
-    // from the next compile rather than merely overwritten.
+    // Each engine gets the tree: either swept with `retain` and only its
+    // changed files rewritten, or flushed and written whole (see staging.js).
     for (const engine of engines) {
-      await writeTree(engine, tree);
+      await stageEngine(engine, tree, { canRetain: this.canRetain, generated });
     }
     // Generated aux/bbl/ind from an earlier pass of the same snapshot: only
     // the TeX engine reads these (dvipdfm has no use for an .aux), so they
-    // go to the primary engine alone.
+    // go to the primary engine alone, after its tree, and are never recorded
+    // as staged.
     if (generated && Object.keys(generated).length) {
       await writeFiles(engines[0], generated);
     }
@@ -567,13 +564,6 @@ function resolve(base, path) {
   return new URL(path, base ?? self.location.href).href;
 }
 
-async function ensureDirs(engine, path) {
-  const dir = dirname(path);
-  // A file at the root has no directory to make, and the engine's
-  // `mkdir .` is an error it prints to the console for every file.
-  if (dir && dir !== "." && dir !== "/") await engine.mkdir(dir);
-}
-
 /// Reads `path` from the primary engine's filesystem and, if present, mirrors
 /// it into `helper`'s -- the "does the aux/bibdata name a file the primary
 /// engine actually has" check `bibtex()` needs twice: once for `\@input`ed
@@ -586,18 +576,6 @@ async function copyFromPrimary(primary, helper, path) {
   await ensureDirs(helper, path);
   await helper.writeFile(path, bytes);
   return bytes;
-}
-
-async function writeFiles(engine, files) {
-  for (const [path, contents] of Object.entries(files ?? {})) {
-    await ensureDirs(engine, path);
-    await engine.writeFile(path, contents);
-  }
-}
-
-async function writeTree(engine, tree) {
-  await writeFiles(engine, tree.texts ?? {});
-  await writeFiles(engine, tree.assets ?? {});
 }
 
 /// The nested aux paths a `\@input{...}` line in the main aux points at

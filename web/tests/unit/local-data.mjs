@@ -3,12 +3,13 @@
 // that a delete which never finishes cannot hold the sign-out up.
 import assert from "node:assert/strict";
 import {
+  ASSET_DATABASE as ASSETS,
   OFFLINE_DATABASE as OFFLINE,
   PREVIEW_DATABASE as PREVIEW,
   forgetLocalData,
   localDataForgotten,
 } from "../../src/lib/local-data.js";
-import { AGENT_SESSION_PREFIX, KEYS, LINKED, THEME, VIEWED } from "../../src/lib/storage.js";
+import { AGENT_SESSION_PREFIX, KEYS, LINKED, SHARE_INTRO, THEME, VIEWED } from "../../src/lib/storage.js";
 
 // Nothing has signed out in this module yet.
 assert.equal(localDataForgotten(), false);
@@ -34,6 +35,7 @@ function fakeIndexedDB(databases) {
   const databases = new Map([
     [OFFLINE, { projects: ["paper"] }],
     [PREVIEW, { pages: ["paper"] }],
+    [ASSETS, { assets: ["digest"] }],
     ["unrelated", { keep: true }],
   ]);
   await forgetLocalData(fakeIndexedDB(databases), 1000);
@@ -71,13 +73,14 @@ assert.equal(await forgetLocalData(null, 1000), undefined);
 // The sign-out marks this tab, so later writes refuse to reopen the databases.
 assert.equal(localDataForgotten(), true);
 
-// Link keys, the viewed and linked lists, and every agent transcript go from
-// localStorage. A habit such as the theme stays.
+// Link keys, the viewed, linked and share-intro lists, and every agent
+// transcript go from localStorage. A habit such as the theme stays.
 {
   const entries = new Map([
     [KEYS, "{}"],
     [VIEWED, "{}"],
     [LINKED, "{}"],
+    [SHARE_INTRO, "{}"],
     [`${AGENT_SESSION_PREFIX}https://app.example:one`, "[]"],
     [`${AGENT_SESSION_PREFIX}https://app.example:two`, "[]"],
     [THEME, "\"dark\""],

@@ -73,6 +73,7 @@ pub(super) async fn deployment(
         registry.clone(),
     );
     let actor = Authority {
+        agent_label: String::new(),
         account_id: Some(owner.id),
         principal_key: "owner".into(),
         session_generation: Some(owner.session_generation),

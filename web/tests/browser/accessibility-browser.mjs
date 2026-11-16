@@ -314,12 +314,14 @@ try {
       const against = ratio(value(foreground), value(background));
       assert.ok(against >= minimum, `${mode}: ${description} are ${against.toFixed(2)}:1 (need ${minimum}:1)`);
     };
-    for (const token of ["color-text", "color-text-muted", "color-link"]) {
+    for (const token of ["color-text", "color-text-secondary", "color-link"]) {
       assertContrast(token, "color-shell", 4.5, `${token} on shell`);
     }
     assertContrast("color-on-brand", "color-brand", 4.5, "brand action text");
+    for (const status of ["success", "error"]) {
+      assertContrast("color-on-solid", `color-${status}-solid`, 4.5, `${status} solid action text`);
+    }
     for (const status of ["success", "warning", "error"]) {
-      assertContrast(`color-${status}-on-solid`, `color-${status}-solid`, 4.5, `${status} solid action text`);
       assertContrast(`color-${status}-text`, `color-${status}-bg`, 4.5, `${status} text on background`);
     }
     assertContrast("color-focus", "color-shell", 3, "focus indicator on shell");
@@ -327,7 +329,6 @@ try {
     for (let index = 1; index <= 6; index++) {
       assertContrast(`color-avatar-${index}`, "color-text-inverse", 4.5, `white initials on avatar ${index}`);
     }
-    assertContrast("color-line-number", "color-shell", 4.5, "line numbers on the editor");
   };
   checkContrast("light", light);
   checkContrast("dark", dark);

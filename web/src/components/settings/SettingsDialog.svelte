@@ -15,14 +15,18 @@
   import BuildSettings from "./BuildSettings.svelte";
   import RendererSettings from "./RendererSettings.svelte";
   import DefaultPreviewSetting from "./DefaultPreviewSetting.svelte";
+  import LiveCompileSetting from "./LiveCompileSetting.svelte";
   import AccountSettings from "./AccountSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
+  import AgentSettings from "./AgentSettings.svelte";
   import ToolsSettings from "./ToolsSettings.svelte";
 
   let {
     open = $bindable(false),
     category = $bindable("general"),
+    // An entry to scroll to once the dialog shows, cleared after.
+    entry = $bindable(""),
     // The editor.
     keys = "default",
     onkeys = undefined,
@@ -30,6 +34,8 @@
     oncompletion = undefined,
     brackets = true,
     onbrackets = undefined,
+    latexAssist = true,
+    onlatexassist = undefined,
     proofing = "browser",
     onproofing = undefined,
     dialect = "american",
@@ -49,6 +55,11 @@
     account = {},
     remoteConnected = false,
     remoteNote = "",
+    // The Run directory of the open document, read while a Quarto document is
+    // open in the desktop app with its format set to this computer, and how
+    // to ask for another.
+    runDirectory = undefined,
+    onchooserundirectory = undefined,
   } = $props();
 
   const view = createMachineView();
@@ -68,12 +79,20 @@
   const entriesOf = (id) => found?.find((match) => match.category.id === id)?.entries || [];
 
   let body = $state(null);
-  async function go(id, entry = "") {
+  async function go(id, target = "") {
     category = id;
-    if (!entry) return;
+    if (!target) return;
     await tick();
-    body?.querySelector(`#${entry}`)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    body?.querySelector(`#${target}`)?.scrollIntoView({ block: "start", behavior: "smooth" });
   }
+  // A caller that names an entry before the dialog opens gets it scrolled to
+  // once the body exists, then the request is cleared.
+  $effect(() => {
+    if (!open || !entry || !body) return;
+    const target = entry;
+    entry = "";
+    void go(category, target);
+  });
 </script>
 
 <Modal bind:open title={m.common_settings()} page>
@@ -103,12 +122,13 @@
         {#if shown.id === "general"}
           <GeneralSettings />
         {:else if shown.id === "editor"}
-          <EditorSettings {keys} {onkeys} {completion} {oncompletion} {brackets} {onbrackets} {proofing} {onproofing} {dialect} {ondialect} {check} {oncheck} {visual} {onvisual} {commands} />
+          <EditorSettings {keys} {onkeys} {completion} {oncompletion} {brackets} {onbrackets} {latexAssist} {onlatexassist} {proofing} {onproofing} {dialect} {ondialect} {check} {oncheck} {visual} {onvisual} {commands} />
         {:else if shown.id === "rendering"}
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4></div>
             <p class="settings-section-note">{m.renderersettings_description({ name: "LaTeX" })}</p>
             <DefaultPreviewSetting format="latex" {userId} onpreferences={onbuildpreferences} />
+            <LiveCompileSetting {userId} />
             <BuildSettings format="latex" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="latex" {userId} onpreferences={onbuildpreferences} />
             <LatexFilesSettings />
@@ -134,6 +154,8 @@
             <DefaultPreviewSetting format="quarto" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="quarto" {userId} onpreferences={onbuildpreferences} />
           </section>
+        {:else if shown.id === "agents"}
+          <AgentSettings {view} />
         {:else if shown.id === "backups"}
           <BackupsSettings {account} />
         {:else if shown.id === "account"}
@@ -141,7 +163,7 @@
           {#if row("storage-account")}<QuotaSettings />{/if}
           {#if row("account-erase")}<AccountSettings {account} />{/if}
         {:else if shown.id === "tools"}
-          <ToolsSettings {view} />
+          <ToolsSettings {view} {runDirectory} {onchooserundirectory} />
         {/if}
       {/if}
     </div>

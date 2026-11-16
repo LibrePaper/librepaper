@@ -1,6 +1,6 @@
 # LibrePaper
 
-Create or upload an HTML, Markdown, Typst, LaTeX or Quarto project in the
+Create or upload an HTML, Markdown, Org, Typst, LaTeX or Quarto project in the
 browser, share a link to it, and collect comments and highlights in real time.
 
 - Highlight passages, suggest edits, and comment on the text
@@ -15,7 +15,7 @@ browser, share a link to it, and collect comments and highlights in real time.
 
 [Sign in](https://app.librepaper.org) with GitHub or Google and your account
 starts with one tutorial project, the same walkthrough in Markdown, Typst,
-HTML, LaTeX and Quarto side by side. Open a file and drag across a sentence: a
+HTML, LaTeX, Quarto and Org side by side. Open a file and drag across a sentence: a
 comment box opens where you released.
 
 ## Install
@@ -46,6 +46,7 @@ document.
 - [The desktop app](https://librepaper.org/desktop-app.html)
 - [Self-hosting](https://librepaper.org/host/simple.html)
 - [Privacy](https://librepaper.org/privacy.html)
+- [Terms of service](https://librepaper.org/terms.html)
 - [Building from source](https://librepaper.org/architecture/building.html)
 
 ## Credits

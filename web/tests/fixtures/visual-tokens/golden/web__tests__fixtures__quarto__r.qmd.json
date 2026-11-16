@@ -1,0 +1,170 @@
+[
+  {
+    "body": {
+      "from": 4,
+      "to": 78
+    },
+    "from": 0,
+    "kind": "container",
+    "name": "frontmatter",
+    "to": 81
+  },
+  {
+    "from": 81,
+    "kind": "text",
+    "to": 253
+  },
+  {
+    "body": {
+      "from": 294,
+      "to": 302
+    },
+    "from": 253,
+    "kind": "container",
+    "meta": {
+      "cell": "true",
+      "label": "setup",
+      "lang": "r",
+      "options": "[[\"include\",\"false\"]]"
+    },
+    "name": "codeblock",
+    "to": 306
+  },
+  {
+    "from": 306,
+    "kind": "text",
+    "to": 308
+  },
+  {
+    "body": {
+      "from": 372,
+      "to": 379
+    },
+    "from": 308,
+    "kind": "container",
+    "meta": {
+      "caption": "The original sequence.",
+      "cell": "true",
+      "label": "fig-first",
+      "lang": "r"
+    },
+    "name": "codeblock",
+    "to": 383
+  },
+  {
+    "from": 383,
+    "kind": "text",
+    "to": 515
+  },
+  {
+    "body": {
+      "from": 563,
+      "to": 575
+    },
+    "from": 515,
+    "kind": "container",
+    "meta": {
+      "cell": "true",
+      "label": "change-input",
+      "lang": "r",
+      "options": "[[\"include\",\"false\"]]"
+    },
+    "name": "codeblock",
+    "to": 579
+  },
+  {
+    "from": 579,
+    "kind": "text",
+    "to": 581
+  },
+  {
+    "body": {
+      "from": 645,
+      "to": 652
+    },
+    "from": 581,
+    "kind": "container",
+    "meta": {
+      "caption": "The squared sequence.",
+      "cell": "true",
+      "label": "fig-second",
+      "lang": "r"
+    },
+    "name": "codeblock",
+    "to": 656
+  },
+  {
+    "from": 656,
+    "kind": "text",
+    "to": 658
+  },
+  {
+    "body": {
+      "from": 749,
+      "to": 828
+    },
+    "from": 658,
+    "kind": "container",
+    "meta": {
+      "caption": "Summary of the current sequence.",
+      "cell": "true",
+      "label": "tbl-summary",
+      "lang": "r",
+      "options": "[[\"echo\",\"false\"]]"
+    },
+    "name": "codeblock",
+    "to": 832
+  },
+  {
+    "from": 832,
+    "kind": "text",
+    "to": 834
+  },
+  {
+    "body": {
+      "from": 854,
+      "to": 988
+    },
+    "children": [
+      {
+        "from": 854,
+        "kind": "text",
+        "to": 988
+      }
+    ],
+    "from": 834,
+    "kind": "container",
+    "meta": {
+      "attrs": ".callout-note",
+      "classes": "callout-note"
+    },
+    "name": "div",
+    "to": 992
+  },
+  {
+    "from": 992,
+    "kind": "text",
+    "to": 994
+  },
+  {
+    "body": {
+      "from": 1042,
+      "to": 1081
+    },
+    "from": 994,
+    "kind": "container",
+    "meta": {
+      "cell": "true",
+      "label": "documented-only",
+      "lang": "r",
+      "options": "[[\"eval\",\"false\"]]"
+    },
+    "name": "codeblock",
+    "to": 1085
+  },
+  {
+    "from": 1085,
+    "kind": "text",
+    "to": 1086
+  }
+]

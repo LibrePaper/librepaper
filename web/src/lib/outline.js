@@ -1,3 +1,5 @@
+import { latexTree, markdownTree, orgTree, typstTree } from "./source-trees.js";
+
 /*
  * Extract a small, source-oriented outline without compiling or executing the
  * document.  All offsets deliberately use JavaScript string indices: these
@@ -13,24 +15,6 @@ const LATEX_LEVELS = new Map([
   ["paragraph", 6],
   ["subparagraph", 7],
 ]);
-
-const VERBATIM_ENVIRONMENTS = new Set([
-  "verbatim", "verbatim*", "verbatiminput", "lstlisting", "minted",
-  "comment", "alltt",
-]);
-
-function documentLines(source) {
-  const lines = [];
-  let start = 0;
-  for (let i = 0; i <= source.length; i++) {
-    if (i !== source.length && source[i] !== "\n" && source[i] !== "\r") continue;
-    lines.push({ start, end: i, text: source.slice(start, i) });
-    if (i === source.length) break;
-    if (source[i] === "\r" && source[i + 1] === "\n") i++;
-    start = i + 1;
-  }
-  return lines;
-}
 
 function lineStarts(source) {
   const starts = [0];
@@ -60,10 +44,12 @@ function normalizeTitle(value) {
   return value.replace(/\s+/gu, " ").trim();
 }
 
-function addHeading(result, starts, title, level, from) {
+// `extra` holds format-specific fields (Org TODO state, priority, tags); it is
+// spread in only when given, so other formats keep their exact shape.
+function addHeading(result, starts, title, level, from, extra) {
   const clean = normalizeTitle(title);
   if (!clean || !Number.isInteger(level) || level < 1) return;
-  result.push({ title: clean, level, from, line: lineFor(starts, from) });
+  result.push({ title: clean, level, from, line: lineFor(starts, from), ...extra });
 }
 
 function markRange(mask, start, end) {
@@ -72,217 +58,71 @@ function markRange(mask, start, end) {
   mask.fill(1, from, to);
 }
 
-function markdownMask(source, lines) {
-  const mask = new Uint8Array(source.length);
-
-  // YAML front matter is only special at the start of the document.  A BOM
-  // is allowed before its opening delimiter.
-  let first = 0;
-  if (source.charCodeAt(0) === 0xfeff) first = 1;
-  if (lines.length && lines[0].start <= first && /^\s*---\s*$/.test(lines[0].text.slice(first))) {
-    let close = -1;
-    for (let i = 1; i < lines.length; i++) {
-      if (/^\s*(?:---|\.\.\.)\s*$/.test(lines[i].text)) { close = i; break; }
-    }
-    if (close >= 0) markRange(mask, lines[0].start, lines[close].end);
-  }
-
-  // HTML comments may contain arbitrary Markdown, including apparent fences.
-  for (let i = 0; i < source.length;) {
-    const open = source.indexOf("<!--", i);
-    if (open < 0) break;
-    const close = source.indexOf("-->", open + 4);
-    markRange(mask, open, close < 0 ? source.length : close + 3);
-    i = close < 0 ? source.length : close + 3;
-  }
-  // HTML raw blocks are also opaque when they occur in Markdown/Quarto.
-  const htmlMask = htmlCommentAndRawMask(source);
-  for (let i = 0; i < mask.length; i++) if (htmlMask[i]) mask[i] = 1;
-
-  let fence = null;
-  for (const line of lines) {
-    const text = visible(source, mask, line.start, line.end);
-    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(text);
-    if (fence) {
-      markRange(mask, line.start, line.end);
-      const close = new RegExp(`^ {0,3}${fence.char}{${fence.length},}[ \\t]*$`).test(text);
-      if (close) fence = null;
-      continue;
-    }
-    if (fenceMatch) {
-      fence = { char: fenceMatch[1][0], length: fenceMatch[1].length };
-      markRange(mask, line.start, line.end);
-      continue;
-    }
-    // CommonMark indented code blocks use four spaces (or a tab).  Treating
-    // every such line as code is intentionally conservative for an outline.
-    if (/^(?: {4,}|\t)/.test(text)) markRange(mask, line.start, line.end);
-  }
-  return mask;
-}
-
 function visible(source, mask, from, to) {
   let value = "";
   for (let i = from; i < to; i++) if (!mask[i]) value += source[i];
   return value;
 }
 
-function extractMarkdown(source, starts) {
-  const lines = documentLines(source);
-  const mask = markdownMask(source, lines);
-  const result = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (mask[line.start]) continue;
-    const text = visible(source, mask, line.start, line.end);
-    const atx = /^( {0,3})(#{1,6})(?:[ \t]+(.*)|[ \t]*)$/.exec(text);
-    if (atx) {
-      let title = atx[3] || "";
-      // CommonMark's optional closing sequence is only a closing sequence
-      // when separated from the title by whitespace.
-      title = title.replace(/[ \t]+#+[ \t]*$/u, "");
-      addHeading(result, starts, title, atx[2].length, line.start + atx[1].length);
-      continue;
-    }
-    if (i + 1 >= lines.length || mask[lines[i + 1].start]) continue;
-    const underline = visible(source, mask, lines[i + 1].start, lines[i + 1].end);
-    const setext = /^ {0,3}(=+|-+)[ \t]*$/.exec(underline);
-    const isBlockMarker = /^\s*(?:[-+*](?:\s+|$)|\d+[.)]\s+|(?:[-*_]\s*){3,})/u.test(text);
-    if (!setext || !text.trim() || isBlockMarker) continue;
-    addHeading(result, starts, text, setext[1][0] === "=" ? 1 : 2, line.start + (text.length - text.trimStart().length));
-    i++;
-  }
-  return result;
-}
-
-function typstMask(source, lines) {
-  const mask = new Uint8Array(source.length);
-  // Typst block comments nest.  Line comments are marked to the end of their
-  // line; a small quote state avoids treating // inside a string as a comment.
-  let blockDepth = 0;
-  let quote = false;
-  let escaped = false;
-  for (let i = 0; i < source.length; i++) {
-    if (mask[i]) continue;
-    const two = source.slice(i, i + 2);
-    if (blockDepth) {
-      markRange(mask, i, i + 1);
-      if (two === "/*") { blockDepth++; markRange(mask, i, i + 2); i++; }
-      else if (two === "*/") { blockDepth--; markRange(mask, i, i + 2); i++; }
-      continue;
-    }
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (source[i] === "\\") escaped = true;
-      else if (source[i] === '"') quote = false;
-      continue;
-    }
-    if (source[i] === '"') { quote = true; continue; }
-    if (two === "/*") { blockDepth = 1; markRange(mask, i, i + 2); i++; continue; }
-    if (two === "//") {
-      let end = source.indexOf("\n", i);
-      if (end < 0) end = source.length;
-      markRange(mask, i, end);
-      i = end - 1;
-    }
-  }
-
-  // Raw fences inside comments must not open a raw block.  Do this after
-  // comments have been masked, and count only visible fence markers.
-  let raw = false;
-  for (const line of lines) {
-    let rawMarkers = 0;
-    for (let at = line.start; at < line.end - 2; at++) {
-      if (!mask[at] && source.slice(at, at + 3) === "```") { rawMarkers++; at += 2; }
-    }
-    if (raw) {
-      markRange(mask, line.start, line.end);
-      if (rawMarkers % 2 === 1) raw = false;
-    } else if (rawMarkers) {
-      markRange(mask, line.start, line.end);
-      if (rawMarkers % 2 === 1) raw = true;
-    }
-  }
-  return mask;
-}
-
-function balanced(source, mask, open, left, right) {
-  let depth = 0;
-  let quote = false;
-  let escaped = false;
-  for (let i = open; i < source.length; i++) {
-    if (mask[i]) continue;
-    const char = source[i];
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') quote = false;
-      continue;
-    }
-    if (char === '"') { quote = true; continue; }
-    if (char === left) depth++;
-    else if (char === right && --depth === 0) return i;
-  }
-  return -1;
+// The visible text of a Typst node range, with comments dropped.
+function typstText(tree, source, from, to) {
+  let value = "";
+  let cursor = from;
+  tree.iterate({
+    from,
+    to,
+    enter(ref) {
+      if (ref.name !== "LineComment" && ref.name !== "BlockComment") return;
+      const start = Math.max(cursor, ref.from);
+      const end = Math.min(to, ref.to);
+      if (end <= start) return;
+      value += source.slice(cursor, start);
+      cursor = end;
+    },
+  });
+  return value + source.slice(cursor, to);
 }
 
 function extractTypst(source, starts) {
-  const lines = documentLines(source);
-  const mask = typstMask(source, lines);
+  const tree = typstTree(source);
+  if (!tree) return [];
   const result = [];
-  for (const line of lines) {
-    if (mask[line.start]) continue;
-    const text = visible(source, mask, line.start, line.end);
-    const markup = /^(\s*)(={1,})(?:[ \t]+(.*)|[ \t]*)$/.exec(text);
-    if (markup) addHeading(result, starts, markup[3] || "", markup[2].length, line.start + markup[1].length);
-  }
-
-  // Function-form headings are useful in generated Typst and are common in
-  // templates: #heading(level: 2)[A title] and #heading[A title].
-  for (let i = 0; i < source.length; i++) {
-    if (mask[i] || source[i] !== "#" || !source.startsWith("#heading", i) || typstLiteralAt(source, i)) continue;
-    const after = i + 8;
-    if (/[A-Za-z0-9_-]/u.test(source[after] || "")) continue;
-    let cursor = after;
-    while (/\s/u.test(source[cursor] || "")) cursor++;
-    let level = 1;
-    if (source[cursor] === "(") {
-      const close = balanced(source, mask, cursor, "(", ")");
-      if (close < 0) continue;
-      const options = visible(source, mask, cursor + 1, close);
-      const match = /(?:^|,)\s*level\s*:\s*(\d+)/u.exec(options);
-      if (match) level = Number(match[1]);
-      cursor = close + 1;
-      while (/\s/u.test(source[cursor] || "")) cursor++;
-    }
-    if (source[cursor] !== "[") continue;
-    const close = balanced(source, mask, cursor, "[", "]");
-    if (close < 0) continue;
-    addHeading(result, starts, visible(source, mask, cursor + 1, close), level, i);
-  }
+  tree.iterate({
+    enter(ref) {
+      if (ref.name === "Heading") {
+        // The level is the length of the "=" marker. The title is the markup
+        // of the heading, so a trailing label or comment is not part of it.
+        const marker = ref.node.getChild("HeadingMarker");
+        const markup = ref.node.getChild("Markup");
+        const level = marker ? marker.to - marker.from : 0;
+        addHeading(result, starts, markup ? typstText(tree, source, markup.from, markup.to) : "", level, ref.from);
+        return;
+      }
+      if (ref.name !== "FuncCall") return;
+      // Function-form headings are useful in generated Typst and are common in
+      // templates: #heading(level: 2)[A title] and #heading[A title].
+      const callee = ref.node.firstChild;
+      if (!callee || callee.name !== "Ident" || source.slice(callee.from, callee.to) !== "heading") return;
+      const args = ref.node.getChild("Args");
+      const content = args?.getChild("ContentBlock");
+      if (!content) return;
+      let level = 1;
+      for (let arg = args.firstChild; arg; arg = arg.nextSibling) {
+        if (arg.name !== "Named") continue;
+        const name = arg.firstChild;
+        const value = arg.lastChild;
+        if (name?.name === "Ident" && source.slice(name.from, name.to) === "level" && value?.name === "Int") {
+          level = Number(source.slice(value.from, value.to));
+          break;
+        }
+      }
+      const hash = ref.node.prevSibling;
+      const from = hash?.name === "Hash" ? hash.from : ref.from;
+      const markup = content.getChild("Markup");
+      addHeading(result, starts, markup ? typstText(tree, source, markup.from, markup.to) : "", level, from);
+    },
+  });
   return result.sort((a, b) => a.from - b.from);
-}
-
-function typstLiteralAt(source, offset) {
-  let lineStart = source.lastIndexOf("\n", offset - 1) + 1;
-  let string = false;
-  let raw = false;
-  let escaped = false;
-  for (let i = lineStart; i < offset; i++) {
-    if (string) {
-      if (escaped) escaped = false;
-      else if (source[i] === "\\") escaped = true;
-      else if (source[i] === '"') string = false;
-      continue;
-    }
-    if (source[i] === '"') { string = true; continue; }
-    if (source[i] === "`") {
-      if (source.slice(i, i + 3) === "```") { i += 2; continue; }
-      raw = !raw;
-    }
-  }
-  return string || raw;
 }
 
 function htmlTagEnd(source, start) {
@@ -374,89 +214,145 @@ function extractHtml(source, starts) {
   return result;
 }
 
-function latexMask(source) {
-  const mask = new Uint8Array(source.length);
-  for (let i = 0; i < source.length; i++) {
-    if (source[i] === "%") {
-      let slashes = 0;
-      for (let j = i - 1; j >= 0 && source[j] === "\\"; j--) slashes++;
-      if (slashes % 2 === 0) {
-        let end = i;
-        while (end < source.length && source[end] !== "\n" && source[end] !== "\r") end++;
-        markRange(mask, i, end);
-        i = end - 1;
+function extractMarkdown(source, starts) {
+  const { tree, body } = markdownTree(source);
+  const result = [];
+  tree.iterate({
+    enter(ref) {
+      const match = /^(ATX|Setext)Heading([1-6])$/.exec(ref.name);
+      if (!match) return;
+      const node = ref.node;
+      const level = Number(match[2]);
+      const marks = [];
+      let last = null;
+      for (let child = node.firstChild; child; child = child.nextSibling) {
+        if (child.name === "HeaderMark") marks.push(child);
+        else last = child;
       }
-    }
-  }
-
-  // Hide verbatim environments, including their contents and delimiters.
-  const begin = /\\begin\s*\{\s*([^{}]+?)\s*\}/gi;
-  let match;
-  while ((match = begin.exec(source))) {
-    if (mask[match.index]) continue;
-    const environment = match[1].trim().toLowerCase();
-    if (!VERBATIM_ENVIRONMENTS.has(environment)) continue;
-    const escapedEnvironment = environment.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
-    const endPattern = new RegExp(`\\\\end\\s*\\{\\s*${escapedEnvironment}\\s*\\}`, "i");
-    const endMatch = endPattern.exec(source.slice(match.index + match[0].length));
-    const end = endMatch ? match.index + match[0].length + endMatch.index + endMatch[0].length : source.length;
-    markRange(mask, match.index, end);
-  }
-
-  // Inline \verb and \lstinline delimiters can contain arbitrary commands.
-  const inline = /\\(?:verb|lstinline)\*?/g;
-  while ((match = inline.exec(source))) {
-    if (mask[match.index]) continue;
-    let delimiter = match.index + match[0].length;
-    while (/\s/u.test(source[delimiter] || "")) delimiter++;
-    if (delimiter >= source.length) continue;
-    const end = source.indexOf(source[delimiter], delimiter + 1);
-    markRange(mask, match.index, end < 0 ? source.length : end + 1);
-  }
-  return mask;
-}
-
-function latexBalanced(source, mask, open, left, right) {
-  let depth = 0;
-  for (let i = open; i < source.length; i++) {
-    if (mask[i]) continue;
-    if (source[i] === "\\") { i++; continue; }
-    if (source[i] === left) depth++;
-    else if (source[i] === right && --depth === 0) return i;
-  }
-  return -1;
+      let from;
+      let to;
+      if (match[1] === "ATX") {
+        // The opening mark is first; a closing sequence is a second mark.
+        from = marks.length ? marks[0].to : node.from;
+        to = marks.length > 1 ? marks[marks.length - 1].from : node.to;
+      } else {
+        // The underline is the last mark. A paragraph line above the title
+        // belongs to the heading in CommonMark, but the outline has always
+        // shown only the line just above the underline, as Pandoc reads it.
+        to = marks.length ? marks[marks.length - 1].from : node.to;
+        const text = body.slice(node.from, to).replace(/\s+$/u, "");
+        from = node.from + text.lastIndexOf("\n") + 1;
+      }
+      // A trailing attribute list ({#id .class}) is not part of the title.
+      if (last && last.name === "Attributes" && last.to <= to && !/\S/u.test(body.slice(last.to, to))) to = last.from;
+      const start = match[1] === "Setext" ? from + (body.slice(from, to).length - body.slice(from, to).trimStart().length) : node.from;
+      addHeading(result, starts, body.slice(from, Math.max(from, to)), level, start);
+      return false;
+    },
+  });
+  return result;
 }
 
 function extractLatex(source, starts) {
-  const mask = latexMask(source);
-  const skip = (at) => {
-    while (at < source.length && (mask[at] || /\s/u.test(source[at]))) at++;
-    return at;
-  };
+  const tree = latexTree(source);
   const result = [];
-  for (let i = 0; i < source.length; i++) {
-    if (mask[i] || source[i] !== "\\") continue;
-    if (i > 0 && source[i - 1] === "\\") continue;
-    let end = i + 1;
-    while (/[A-Za-z@]/u.test(source[end] || "")) end++;
-    const name = source.slice(i + 1, end).toLowerCase();
-    const level = LATEX_LEVELS.get(name);
-    if (!level) continue;
-    let cursor = skip(end);
-    if (source[cursor] === "*") cursor++;
-    cursor = skip(cursor);
-    if (source[cursor] === "[") {
-      const optional = latexBalanced(source, mask, cursor, "[", "]");
-      if (optional < 0) continue;
-      cursor = optional + 1;
-      cursor = skip(cursor);
-    }
-    if (source[cursor] !== "{") continue;
-    const close = latexBalanced(source, mask, cursor, "{", "}");
-    if (close < 0) continue;
-    addHeading(result, starts, visible(source, mask, cursor + 1, close), level, i);
-    i = close;
+  let skipUntil = 0;
+  tree.iterate({
+    enter(ref) {
+      if (ref.name !== "SectionName" || ref.from < skipUntil) return;
+      // Normally the first child of a Command; inside unclosed math it is a bare item.
+      const name = ref.node;
+      const node = name.parent?.name === "Command" ? name.parent : name;
+      const level = LATEX_LEVELS.get(source.slice(name.from + 1, name.to).replace(/\*$/u, "").toLowerCase());
+      if (!level) return false;
+      // An unfinished [short title] means the command is still being typed.
+      const optional = name.nextSibling;
+      if (optional && optional.name === "OptionalArgument" && optional.lastChild?.name !== "OptClose") return false;
+      let group = node.nextSibling;
+      while (group && (group.name === "Comment" || (group.name === "Text" && !/\S/u.test(source.slice(group.from, group.to))))) group = group.nextSibling;
+      if (!group || (group.name !== "Group" && group.name !== "MathGroup") || group.lastChild?.name !== "CloseBrace") return false;
+      // The title is the braced source with comments and \verb spans dropped.
+      let title = "";
+      let cursor = group.from + 1;
+      const end = group.lastChild.from;
+      // At any depth: a comment inside a nested group is dropped too.
+      group.cursor().iterate((child) => {
+        if (child.name !== "Comment" && child.name !== "Verb" && child.name !== "VerbatimEnvironment") return;
+        title += source.slice(cursor, child.from);
+        cursor = child.to;
+        return false;
+      });
+      title += source.slice(cursor, end);
+      addHeading(result, starts, title, level, node.from);
+      skipUntil = group.to;
+      return false;
+    },
+  });
+  return result;
+}
+
+// The keywords whose #+TODO: lines declare TODO states (as in the Org tree).
+const ORG_TODO_KEYS = new Set(["TODO", "SEQ_TODO", "TYP_TODO"]);
+
+// The states that end a sequence: DONE, and the words after `|` in each TODO
+// keyword line (the last word when a line has no bar). Same rule as the
+// visual Org markup, which colours these states.
+function orgDoneStates(tree, source) {
+  const done = new Set(["DONE"]);
+  for (let child = tree.topNode.firstChild; child; child = child.nextSibling) {
+    if (child.name !== "Keyword") continue;
+    const key = child.getChild("KeywordKey");
+    if (!key || !ORG_TODO_KEYS.has(source.slice(key.from, key.to).replace(/\[.*$/s, "").toUpperCase())) continue;
+    const value = child.getChild("KeywordValue");
+    const words = value ? source.slice(value.from, value.to).split(/\s+/).filter(Boolean) : [];
+    const bar = words.indexOf("|");
+    const ending = bar < 0 ? words.slice(-1) : words.slice(bar + 1);
+    for (const word of ending) done.add(word.replace(/\(.*\)$/, ""));
   }
+  return done;
+}
+
+// The optional fields of one Org headline. Each is present only when the
+// headline has it: `todo` and `done` for a TODO keyword, `priority` for a
+// cookie like [#A], `tags` for a non-empty tag list.
+function orgHeadlineFields(node, source, done) {
+  const fields = {};
+  const todo = node.getChild("TodoKeyword");
+  if (todo) {
+    fields.todo = source.slice(todo.from, todo.to);
+    fields.done = done.has(fields.todo);
+  }
+  const priority = node.getChild("Priority");
+  if (priority) fields.priority = source.slice(priority.from, priority.to).slice(2, -1);
+  const tags = [];
+  for (let tag = node.getChild("Tags")?.firstChild; tag; tag = tag.nextSibling) {
+    if (tag.name === "Tag") tags.push(source.slice(tag.from, tag.to));
+  }
+  if (tags.length) fields.tags = tags;
+  return fields;
+}
+
+// Headlines, as the Org tree reads them: the title is the Title node, without
+// the TODO keyword, priority cookie and tags, which are reported as their own
+// fields. A COMMENT headline is not listed.
+function extractOrg(source, starts) {
+  const tree = orgTree(source);
+  if (!tree) return [];
+  const done = orgDoneStates(tree, source);
+  const result = [];
+  tree.iterate({
+    enter(ref) {
+      if (ref.name === "Section" || ref.name === "Document") return;
+      if (ref.name !== "Headline") return false;
+      const stars = ref.node.getChild("Stars");
+      const title = ref.node.getChild("Title");
+      const text = title ? source.slice(title.from, title.to) : "";
+      if (stars && !/^COMMENT(?:[ \t]|$)/.test(text)) {
+        addHeading(result, starts, text, stars.to - stars.from, ref.from, orgHeadlineFields(ref.node, source, done));
+      }
+      return false;
+    },
+  });
   return result;
 }
 
@@ -482,6 +378,8 @@ export function extractOutline(source, format) {
     case "latex":
     case "tex":
       return extractLatex(source, starts);
+    case "org":
+      return extractOrg(source, starts);
     default:
       return [];
   }

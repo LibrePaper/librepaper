@@ -39,7 +39,7 @@ export const INSERT_ACTIONS = [
   item('page-break', m.common_page_break(), 'Layout'), item('horizontal-rule', m.insert_horizontal_rule(), 'Layout'), item('columns', m.common_columns(), 'Layout', 'columns', 'multicols'),
   item('custom-environment', m.common_environment(), 'Advanced', 'environment', 'custom newenvironment newtheorem'),
 ];
-const formats = new Set(['latex', 'typst', 'markdown', 'quarto']);
+const formats = new Set(['latex', 'typst', 'markdown', 'quarto', 'org']);
 const scholarly = new Set(['theorem','lemma','proposition','definition','proof','example','remark']);
 
 /**
@@ -136,6 +136,36 @@ const slug = value => plain(value).trim().replace(/[^\p{L}\p{N}_.:-]+/gu, '-').r
  */
 const url = value => { const s=plain(value).trim(); if (/^(?:javascript|data|vbscript):/i.test(s)) throw Error(m.insert_url_scheme_unsafe()); return s.replace(/[\s<>"()]/g,c=>encodeURIComponent(c)); };
 
+/**
+ * Text placed in Org prose. Org has no general escape, so the text goes in as
+ * written, and each line break becomes a space.
+ * @param {any} value
+ * @returns {string}
+ */
+const org = value => plain(value).replace(/\r?\n/g, ' ');
+
+/**
+ * A link or footnote description. Org ends it at the first "]", so that
+ * character is dropped.
+ * @param {any} value
+ * @returns {string}
+ */
+const orgDescription = value => org(value).replace(/]/g, '');
+
+/**
+ * A file name or target inside [[...]]. Brackets would end the link early.
+ * @param {any} value
+ * @returns {string}
+ */
+const orgTarget = value => org(value).replace(/[\[\]]/g, '');
+
+/**
+ * A URL inside [[...]], with the brackets percent-encoded.
+ * @param {any} value
+ * @returns {string}
+ */
+const orgUrl = value => url(value).replace(/[\[\]]/g, c => encodeURIComponent(c));
+
 /** @param {InsertContext} [c] @returns {NormalizedInsertContext} */
 function context(c = {}) { const text=plain(c.text); const selection=c.selection || {from:text.length,to:text.length,text:''}; const files=(c.files || []).map(file=>typeof file==='string'?{path:file,text:''}:file); return {...c, text, selection, files}; }
 /**
@@ -166,6 +196,18 @@ export function insertSyntaxContext(input) {
       const start=before.lastIndexOf('#');
       if(start>=0){const tail=before.slice(start); if(/^#[\w.-]*\([^\[\]]*$/.test(tail) && (tail.match(/\(/g)||[]).length>(tail.match(/\)/g)||[]).length)return 'code';}
     }
+  }
+  if(format==='org') {
+    // A source or example block still open at the caret is code, and a line
+    // that begins "# " is a comment.
+    let block=null;
+    for(const line of before.split('\n')){
+      const begin=/^[ \t]*#\+begin_(\w+)/i.exec(line);
+      if(begin && block===null) block=begin[1].toLowerCase();
+      else if(block!==null && /^[ \t]*#\+end_/i.test(line)) block=null;
+    }
+    if(block==='src'||block==='example')return 'code';
+    if(/^[ \t]*#(?:[ \t]|$)/.test(before.slice(before.lastIndexOf('\n')+1)))return 'comment';
   }
   if(format==='latex') {
     if(/(^|[^\\])%[^\n]*$/.test(before))return 'comment';
@@ -237,6 +279,7 @@ export function insertEnvironmentFields(name,input={}) {
  * @property {string} label
  * @property {'label'|'heading'} kind
  * @property {string} [path]
+ * @property {boolean} [custom] true for an Org heading whose id is its CUSTOM_ID
  */
 
 /**
@@ -246,13 +289,36 @@ export function insertEnvironmentFields(name,input={}) {
 export function gatherInsertTargets(input = {}) {
   const c=context(input), found=[], seen=new Set();
   const sources=[{path:c.path,text:c.text},...c.files.filter(f=>f.path!==c.path && typeof f.text==='string')];
-  function add(id,title,kind,path){if(!seen.has(id)){seen.add(id);found.push({id,label:title||id,kind,path});}}
+  function add(id,title,kind,path,custom=false){if(!seen.has(id)){seen.add(id);found.push({id,label:title||id,kind,path,custom});}}
   for(const source of sources){
-    const text=plain(source.text).replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1\s*$/gm,'');
+    // Org source and example blocks hold code, so headlines and labels in them do not count.
+    const body=plain(source.text), unblocked=c.format==='org'?body.replace(/^[ \t]*#\+begin_(src|example)\b[\s\S]*?^[ \t]*#\+end_\1\b[^\n]*$/gim,''):body;
+    const text=unblocked.replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1\s*$/gm,'');
     if(c.format==='latex'){
       for(const m of text.replace(/(?<!\\)%[^\n]*/g,'').matchAll(/\\label\s*\{([^}]+)\}/g))add(m[1],m[1],'label',source.path);
     }else if(c.format==='typst'){
       for(const m of text.matchAll(/<([\p{L}\p{N}_.:-]+)>/gu))add(m[1],m[1],'label',source.path);
+    }else if(c.format==='org'){
+      const lines=text.split('\n');
+      lines.forEach((line,i)=>{
+        const headline=/^\*+[ \t]+(.*)$/.exec(line);
+        if(headline){
+          // A property drawer directly below the headline may give a CUSTOM_ID.
+          let custom=null;
+          if(/^[ \t]*:PROPERTIES:[ \t]*$/i.test(lines[i+1]||'')){
+            for(let j=i+2;j<lines.length&&!/^[ \t]*:END:[ \t]*$/i.test(lines[j])&&!/^\*+[ \t]/.test(lines[j]);j++){
+              const property=/^[ \t]*:CUSTOM_ID:[ \t]+(\S+)/i.exec(lines[j]);
+              if(property){custom=property[1];break;}
+            }
+          }
+          // Trailing tags, such as :draft:, are not part of the title.
+          const title=headline[1].replace(/[ \t]+:[\w@#%:-]+:[ \t]*$/,'').trim();
+          if(custom||title)add(custom||title,title,'heading',source.path,Boolean(custom));
+        }
+        const name=/^[ \t]*#\+name:[ \t]*(\S+)/i.exec(line);
+        if(name)add(name[1],name[1],'label',source.path);
+      });
+      for(const m of text.matchAll(/<<([^<>\n]+)>>/g))add(m[1],m[1],'label',source.path);
     }else{
       const counts=new Map();
       for(const m of text.matchAll(/^#{1,6}\s+(.+?)(?:\s+\{([^}]+)\})?\s*$/gm)){
@@ -419,6 +485,91 @@ function buildMarkdown(id,o,c) {
   return {text,placeholder,additionalEdits,notes};
 }
 /**
+ * Org markup for each command. Org has no general escape, so text goes in
+ * through the helpers above. A command Org cannot express is not built here:
+ * insertionAvailability disables it, as it does for Markdown's unsupported cases.
+ * @param {string} id
+ * @param {InsertOptions} o
+ * @param {NormalizedInsertContext} c
+ * @returns {InsertionResult}
+ */
+function buildOrg(id,o,c) {
+  const selected=c.selection.text||'', body=selected||'Content.', notes=[], additionalEdits=[];
+  let text='',placeholder=body;
+  // The keyword lines above a figure or table: the caption, then the name.
+  const keywords=(caption,label)=>[caption?`#+CAPTION: ${org(caption)}`:'',label?`#+NAME: ${label}`:''].filter(Boolean).map(line=>line+'\n').join('');
+  if(id==='heading'){
+    placeholder=org(o.title||selected||'Heading');
+    text='*'.repeat(o.level||1)+' '+placeholder;
+    if(o.label)text+=`\n:PROPERTIES:\n:CUSTOM_ID: ${o.label}\n:END:`;
+  }else if(id==='abstract')text=`#+BEGIN_abstract\n${selected||'Abstract text.'}\n#+END_abstract`;
+  else if(id==='appendix')text='* Appendix';
+  else if(id==='toc')text='#+TOC: headlines 2';
+  else if(id==='figure'){
+    if(!o.src)throw Error(m.insert_choose_image());
+    // LaTeX takes a fraction of the line width, and HTML takes the CSS value as written.
+    const latexWidth=o.width&&/%$/.test(o.width)?`${parseFloat(o.width)/100}\\linewidth`:o.width;
+    const attributes=o.width?`#+ATTR_LATEX: :width ${latexWidth}\n#+ATTR_HTML: :width ${o.width}\n`:'';
+    text=keywords(o.caption,o.label)+attributes+`[[file:${orgTarget(o.src)}]]`;
+  }else if(id==='table'){
+    const rows=o.rows||3,cols=o.columns||3,header=o.header!==false;
+    const cells=Array.from({length:rows},(_,i)=>Array.from({length:cols},(_,j)=>i===0&&header?`Header ${j+1}`:`Cell ${i+1},${j+1}`));
+    const cookie={left:'<l>',center:'<c>',right:'<r>'}[o.alignment];
+    const line=row=>'| '+row.join(' | ')+' |';
+    const table=[];
+    // A row of alignment cookies sets each column's alignment, and Org hides it.
+    if(cookie)table.push(line(Array(cols).fill(cookie)));
+    if(header){table.push(line(cells[0]),'|'+Array(cols).fill('---').join('+')+'|');cells.slice(1).forEach(row=>table.push(line(row)));}
+    else cells.forEach(row=>table.push(line(row)));
+    text=keywords(o.caption,o.label)+table.join('\n');
+    placeholder=cells[0][0];
+  }else if(id==='citation'){
+    if(!o.keys?.length)throw Error(m.insert_select_reference());
+    const keys=o.keys.map(key=>{if(!/^[\p{L}\p{N}_:.+-]+$/u.test(key))throw Error(m.insert_citation_key_unsupported());return '@'+key;});
+    text=`[${o.style==='narrative'?'cite/t':'cite'}:${keys.join(';')}${o.locator?' '+orgDescription(o.locator):''}]`;
+    if(!/^[ \t]*#\+bibliography\s*:/im.test(c.text)){
+      const files=c.files.filter(f=>/\.(bib|json)$/i.test(f.path));
+      if(files.length===1)additionalEdits.push({from:0,to:0,insert:`#+bibliography: ${orgTarget(relativePath(files[0].path,c.path))}\n`});
+      else throw Error(m.insert_bib_first_for_citation());
+    }
+  }else if(id==='bibliography'){
+    if(!o.file)throw Error(m.insert_choose_bib_file());
+    const existing=c.text.match(/^[ \t]*#\+bibliography\s*:\s*(.+)$/im);
+    if(existing && !existing[1].includes(o.file))throw Error(m.insert_bib_already_named());
+    if(!existing)additionalEdits.push({from:0,to:0,insert:`#+bibliography: ${orgTarget(o.file)}\n`});
+    text='* References\n#+print_bibliography:';
+  }else if(id==='cross-reference'){
+    if(!o.target)throw Error(m.insert_choose_target());
+    const target=gatherInsertTargets(c).find(t=>t.id===o.target);
+    // A heading is linked by its CUSTOM_ID when it has one, and by its title otherwise.
+    const search=target?.kind==='heading'?(target.custom?`#${o.target}`:`*${orgDescription(target.label)}`):orgTarget(o.target);
+    const file=target?.path&&target.path!==c.path?`file:${orgTarget(relativePath(target.path,c.path))}::`:'';
+    text=`[[${file}${search}]]`;
+  }else if(id==='label')text=`<<${o.label}>>`;
+  else if(id==='inline-math'){placeholder=selected||'x = y';text=`\\(${placeholder}\\)`;}
+  else if(id==='display-math'){placeholder=selected||'x = y';text=`\\[\n${placeholder}\n\\]`;}
+  else if(['bulleted-list','numbered-list','description-list'].includes(id)){
+    const lines=(selected||'First item\nSecond item').split(/\r?\n/).filter(s=>s.trim()).map(line=>org(line));
+    if(id==='description-list')text=lines.map(line=>`- ${line} :: Description.`).join('\n');
+    else text=lines.map((line,i)=>(id==='bulleted-list'?'- ':`${i+1}. `)+line).join('\n');
+    placeholder=id==='description-list'?'Description.':lines[0];
+  }else if(id==='quote'||id==='quotation')text=`#+BEGIN_QUOTE\n${selected||'Quotation.'}\n#+END_QUOTE`;
+  else if(id==='code-block'){
+    const content=selected||'code';
+    text=`#+BEGIN_SRC${o.language?' '+o.language:''}\n${content}\n#+END_SRC`;placeholder=content;
+  }else if(id==='footnote'){placeholder=orgDescription(selected||'Note.');text=`[fn::${placeholder}]`;}
+  else if(id==='link'){placeholder=orgDescription(selected||o.title||'Link');text=`[[${orgUrl(o.url||'https://example.com')}][${placeholder}]]`;}
+  else if(scholarly.has(id)){
+    const title=id[0].toUpperCase()+id.slice(1);
+    text=`${o.label?`#+NAME: ${o.label}\n`:''}#+BEGIN_${id}\n*${title}${o.title?` (${org(o.title)})`:''}.* ${body}\n#+END_${id}`;
+  }else if(id==='page-break')text='@@latex:\\newpage@@ @@html:<div style="break-after: page;"></div>@@';
+  else if(id==='horizontal-rule')text='-----';
+  // Org has no multicolumn text. A multicols special block exports to LaTeX's
+  // multicols environment, and the count goes in as its option.
+  else if(id==='columns')text=`#+ATTR_LATEX: :options ${o.columns||2}\n#+BEGIN_multicols\n${body}\n#+END_multicols`;
+  return {text,placeholder,additionalEdits,notes};
+}
+/**
  * @typedef FinalInsertion
  * @type {InsertionResult & {selection: {anchor: number; head: number}}}
  */
@@ -457,7 +608,7 @@ export function buildInsertion(id, options = {}, input = {}) {
   if(o.label || id==='label' || (c.format==='quarto'&&scholarly.has(id)&&!['proof','remark'].includes(id)))o.label=uniqueLabel(o.label||id,c,c.format==='quarto'?prefixes[id]:'');
   if(id==='bibliography'){
     const whole=[c.text,c.entryText].filter(Boolean).join('\n');
-    const exists=c.format==='typst'?/#bibliography\s*\(/.test(whole):c.format==='latex'?/\\(?:printbibliography|bibliography\s*\{)/.test(whole):c.format==='quarto'?/\{#refs\}/.test(c.text):/^#{1,6}\s+References\s*$/im.test(c.text);
+    const exists=c.format==='typst'?/#bibliography\s*\(/.test(whole):c.format==='latex'?/\\(?:printbibliography|bibliography\s*\{)/.test(whole):c.format==='quarto'?/\{#refs\}/.test(c.text):c.format==='org'?/^[ \t]*#\+print_bibliography\s*:|^\*+[ \t]+References[ \t]*$/im.test(c.text):/^#{1,6}\s+References\s*$/im.test(c.text);
     if(exists)throw Error(m.insert_bib_exists());
   }
   const basePath=c.format==='latex' ? latexRoot(c) || c.path : c.path;
@@ -472,7 +623,7 @@ export function buildInsertion(id, options = {}, input = {}) {
     const setup=[c.text,c.entryText].filter(Boolean).join('\n');
     if(!(c.format==='latex'?/\\(?:bibliography|addbibresource|begin\{thebibliography\})/.test(setup):/#bibliography\s*\(/.test(setup)))throw Error(m.insert_bib_first_citation());
   }
-  let result=c.format==='latex'?buildLatex(id,o,c):c.format==='typst'?buildTypst(id,o,c):buildMarkdown(id,o,c);
+  let result=c.format==='latex'?buildLatex(id,o,c):c.format==='typst'?buildTypst(id,o,c):c.format==='org'?buildOrg(id,o,c):buildMarkdown(id,o,c);
   if(typeof result==='string')result={text:result};
   /** @type {InsertionResult} */
   const resultObj = result;

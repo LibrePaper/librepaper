@@ -77,6 +77,11 @@ pub enum SubscriberClass {
     Reader,
 }
 
+/// The `changes` count of a snapshot exported behind the head, where the
+/// change count at that version is not known without loading it. The version
+/// vector checks of `prove_coverage` still apply.
+pub const CHANGES_UNKNOWN: usize = usize::MAX;
+
 /// What snapshot a compaction exports: full history or shallow state only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotMode {
@@ -107,6 +112,11 @@ struct Subscriber {
     peer_key: String,
 }
 
+/// How much durable quota a sequencer reserves at a time. One reservation row
+/// covers many batches, so typing costs a PostgreSQL write transaction (and its
+/// storage-usage row lock) once per chunk rather than once per keystroke.
+pub const LOG_RESERVATION_CHUNK: i64 = 64 * 1024;
+
 /// One batch in the buffer: what arrived, from whom, what it covers, and the
 /// deployment-wide reservation that admitted it.
 ///
@@ -126,8 +136,11 @@ struct Pending {
     /// `Drop`, so there is no path -- error, panic, cancellation -- on which
     /// removing the batch forgets to give the bytes back.
     charge: super::pending::Reservation,
-    /// Durable quota reserved before this batch was acknowledged to peers.
+    /// Durable quota this batch consumed from the sequencer's reservation
+    /// row, taken before the batch was acknowledged to peers.
     durable_charge: i64,
+    /// Identifies the batch for duplicate detection inside the buffer. It is
+    /// not stored anywhere.
     durable_key: Uuid,
     durable_digest: [u8; 32],
 }
@@ -543,18 +556,43 @@ pub trait LogCatalog: Send + Sync {
         &'a self,
         document_id: Uuid,
         row: FlushRow<'a>,
-        reserved_keys: &'a [Uuid],
+        reservation: Uuid,
         reserved_bytes: i64,
         scratch: super::pending::Reservation,
-    ) -> BoxFuture<'a, postgres::Result<i64>>;
+    ) -> BoxFuture<'a, postgres::Result<(i64, Option<i64>)>>;
+    /// Grows this document's quota reservation row by up to `wanted` bytes
+    /// and returns the row's new total, refusing when less than `minimum`
+    /// fits. Called by ingest only when the in-memory headroom is spent, so
+    /// once per chunk of typing. The default grants everything, for a fake
+    /// that has no quota.
     fn reserve_log_bytes<'a>(
         &'a self,
         document_id: Uuid,
         reservation_key: Uuid,
-        bytes: i64,
-        digest: [u8; 32],
+        wanted: i64,
+        minimum: i64,
+    ) -> BoxFuture<'a, postgres::Result<i64>> {
+        let _ = (document_id, reservation_key, minimum);
+        Box::pin(async move { Ok(wanted) })
+    }
+    /// Deletes the reservation row, giving back what no flush consumed.
+    fn release_log_reservation<'a>(
+        &'a self,
+        document_id: Uuid,
+        reservation_key: Uuid,
     ) -> BoxFuture<'a, postgres::Result<()>> {
-        let _ = (document_id, reservation_key, bytes, digest);
+        let _ = (document_id, reservation_key);
+        Box::pin(async { Ok(()) })
+    }
+    /// Stamps the project's file count on its document row. Called after a
+    /// build, outside any flush. The default does nothing, for a fake that
+    /// keeps no document row.
+    fn stamp_file_count(
+        &self,
+        document_id: Uuid,
+        count: i32,
+    ) -> BoxFuture<'_, postgres::Result<()>> {
+        let _ = (document_id, count);
         Box::pin(async { Ok(()) })
     }
     fn persistence_connection(
@@ -574,7 +612,7 @@ pub trait LogCatalog: Send + Sync {
         tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         row: FlushRow<'a>,
-        reserved_keys: &'a [Uuid],
+        reservation: Uuid,
         reserved_bytes: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>>;
     /// The compaction base, read through the object store (§4.3). Returns a
@@ -618,27 +656,37 @@ impl LogCatalog for PostgresCatalog {
         &'a self,
         document_id: Uuid,
         row: FlushRow<'a>,
-        reserved_keys: &'a [Uuid],
+        reservation: Uuid,
         reserved_bytes: i64,
         scratch: super::pending::Reservation,
-    ) -> BoxFuture<'a, postgres::Result<i64>> {
-        Box::pin(self.flush_log_row_charged(
-            document_id,
-            row,
-            reserved_keys,
-            reserved_bytes,
-            scratch,
-        ))
+    ) -> BoxFuture<'a, postgres::Result<(i64, Option<i64>)>> {
+        Box::pin(self.flush_log_row_charged(document_id, row, reservation, reserved_bytes, scratch))
     }
 
     fn reserve_log_bytes<'a>(
         &'a self,
         document_id: Uuid,
         reservation_key: Uuid,
-        bytes: i64,
-        digest: [u8; 32],
+        wanted: i64,
+        minimum: i64,
+    ) -> BoxFuture<'a, postgres::Result<i64>> {
+        Box::pin(self.reserve_pending_log_bytes(document_id, reservation_key, wanted, minimum))
+    }
+
+    fn stamp_file_count(
+        &self,
+        document_id: Uuid,
+        count: i32,
+    ) -> BoxFuture<'_, postgres::Result<()>> {
+        Box::pin(self.stamp_file_count(document_id, count))
+    }
+
+    fn release_log_reservation<'a>(
+        &'a self,
+        document_id: Uuid,
+        reservation_key: Uuid,
     ) -> BoxFuture<'a, postgres::Result<()>> {
-        Box::pin(self.reserve_pending_log_bytes(document_id, reservation_key, bytes, digest))
+        Box::pin(self.release_pending_log_reservation(document_id, reservation_key))
     }
 
     fn persistence_connection(
@@ -672,10 +720,10 @@ impl LogCatalog for PostgresCatalog {
         tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         row: FlushRow<'a>,
-        reserved_keys: &'a [Uuid],
+        reservation: Uuid,
         reserved_bytes: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
-        Box::pin(self.insert_log_row_reserved(tx, document_id, row, reserved_keys, reserved_bytes))
+        Box::pin(self.insert_log_row_reserved(tx, document_id, row, reservation, reserved_bytes))
     }
 
     fn read_base(
@@ -708,6 +756,16 @@ struct Inner {
     /// The log vector plus the buffer. Never stored.
     head_vector: VersionVector,
     buffer: Vec<Pending>,
+    /// The id of this sequencer's quota reservation row in
+    /// `pending_log_reservations`. Fixed for the sequencer's life; the row is
+    /// created by the first growth and recreated after a release.
+    reservation_key: Uuid,
+    /// Bytes the reservation row holds, as far as this sequencer knows.
+    /// Always at least `durable_buffered`: headroom is the difference.
+    reserved: i64,
+    /// The sum of the buffered batches' `durable_charge`: what the row holds
+    /// that a flush has yet to take off it.
+    durable_buffered: i64,
     /// The payload bytes in the buffer. What the resident estimate is taken
     /// from, because framing is not part of what a decoded document costs.
     buffer_bytes: usize,
@@ -884,7 +942,34 @@ impl Inner {
         )
     }
 
-    fn retire(&mut self, take: usize, written: i64, vector: VersionVector, row_bytes: usize) {
+    fn retire(
+        &mut self,
+        take: usize,
+        written: i64,
+        vector: VersionVector,
+        row_bytes: usize,
+        reserved_bytes: i64,
+        reserved_after: Option<i64>,
+    ) {
+        // The flush took its batches' charge off the reservation row in the
+        // same transaction as the row, so the sequencer's copy follows.
+        //
+        // An ordinary flush runs without `inner`, so a reservation growth can
+        // land between its commit and this call. Whether that growth's total
+        // still included the flushed charge depends on which side of the
+        // commit it ran, and subtracting is only right for one of them: the
+        // other double-counts and drives headroom negative. So the flush
+        // hands back what the row held right after its drawdown and the copy
+        // is set to that. When a growth ran after the commit this can be
+        // lower than the row (by at most that growth), never higher; a low
+        // copy only means the next ingest asks for a little more, and the
+        // reply to that resyncs it exactly. `None` is a caller holding
+        // `inner` across the whole write (a semantic command), where
+        // subtracting is exact.
+        self.reserved = match reserved_after {
+            Some(after) => after.max(0),
+            None => self.reserved.saturating_sub(reserved_bytes),
+        };
         self.next_sequence = written + 1;
         self.log_vector = vector;
         // Draining is what releases the pending charge: each `Pending` owns
@@ -893,6 +978,11 @@ impl Inner {
         // being written stay buffered and stay charged.
         self.buffer.drain(..take);
         self.buffer_bytes = self.buffer.iter().map(|pending| pending.bytes.len()).sum();
+        self.durable_buffered = self
+            .buffer
+            .iter()
+            .map(|pending| pending.durable_charge)
+            .fold(0_i64, i64::saturating_add);
         self.charged_bytes = self.charge_of(self.buffer.len());
         self.row_bytes = self.row_bytes.saturating_add(row_bytes as u64);
         self.uncompacted_count = self.uncompacted_count.saturating_add(1);
@@ -911,8 +1001,6 @@ impl Inner {
 pub struct Sequencer {
     pub document_id: Uuid,
     pub slug: String,
-    owner_id: Uuid,
-    ledger: Arc<super::ledger::StorageLedger>,
     inner: tokio::sync::Mutex<Inner>,
     catalog: Arc<dyn LogCatalog>,
     blobs: Arc<dyn BlobStore>,
@@ -975,7 +1063,6 @@ impl Sequencer {
         budget: Arc<Budget>,
         pending: Arc<super::pending::PendingBudget>,
         deployment_peer_key: String,
-        ledger: Arc<super::ledger::StorageLedger>,
         compaction: Arc<std::sync::OnceLock<crate::storage::worker::Handle>>,
     ) -> Result<Self> {
         // Admission's own two reads, made against the concrete catalogue.
@@ -984,7 +1071,6 @@ impl Sequencer {
         // every test double had to answer and nothing else ever called.
         let head = catalog.log_head(document_id).await?;
         let base = catalog.log_base(document_id).await?;
-        ledger.refresh(&catalog, head.owner_id).await?;
         // Upcast once, here: every other method sees only the questions and
         // writes in `LogCatalog`, not the concrete catalog, which is what
         // lets `from_parts` build a sequencer without one (§14.2).
@@ -997,14 +1083,12 @@ impl Sequencer {
         Ok(Self::from_parts(
             document_id,
             slug,
-            head.owner_id,
             catalog,
             blobs,
             config,
             budget,
             pending,
             deployment_peer_key,
-            ledger,
             head.update_sequence + 1,
             log_vector,
             base.as_ref()
@@ -1026,14 +1110,12 @@ impl Sequencer {
     pub fn from_parts(
         document_id: Uuid,
         slug: String,
-        owner_id: Uuid,
         catalog: Arc<dyn LogCatalog>,
         blobs: Arc<dyn BlobStore>,
         config: Arc<Configuration>,
         budget: Arc<Budget>,
         pending: Arc<super::pending::PendingBudget>,
         deployment_peer_key: String,
-        ledger: Arc<super::ledger::StorageLedger>,
         next_sequence: i64,
         log_vector: VersionVector,
         base_bytes: u64,
@@ -1057,13 +1139,14 @@ impl Sequencer {
         Self {
             document_id,
             slug,
-            owner_id,
-            ledger,
             inner: tokio::sync::Mutex::new(Inner {
                 next_sequence,
                 head_vector: log_vector.clone(),
                 log_vector,
                 buffer: Vec::new(),
+                reservation_key: Uuid::now_v7(),
+                reserved: 0,
+                durable_buffered: 0,
                 buffer_bytes: 0,
                 charged_bytes: 0,
                 oldest_arrival: None,
@@ -1103,27 +1186,6 @@ impl Sequencer {
     pub fn set_gap_check_enforced(&self, enforced: bool) {
         self.gap_check
             .store(enforced, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Whether charging `bytes` more to this document's owner would pass a
-    /// storage quota, and which one.
-    pub fn storage_would_exceed(&self, bytes: i64) -> Option<&'static str> {
-        self.ledger.would_exceed(
-            self.owner_id,
-            bytes,
-            self.config.storage.per_owner,
-            self.config.storage.total,
-        )
-    }
-
-    /// The bytes the ledger currently holds for this document's owner.
-    pub fn owner_storage_bytes(&self) -> i64 {
-        self.ledger.owner_bytes(self.owner_id)
-    }
-
-    /// Moves the owner's and the deployment's in-memory storage figures.
-    pub fn charge_storage(&self, delta: i64) {
-        self.ledger.charge(self.owner_id, delta);
     }
 
     /// Moves the rate limiter's clock forward, so a test can spend an
@@ -1254,14 +1316,6 @@ impl Sequencer {
         // What this batch will cost the deployment if it is accepted: its
         // payload and the framing the row will spend on it.
         let charge = bytes.len().saturating_add(frame::overhead(peer_key));
-        if let Some(reason) = self.ledger.would_exceed(
-            self.owner_id,
-            charge as i64,
-            self.config.storage.per_owner,
-            self.config.storage.total,
-        ) {
-            return retryable(&inner, "this account's storage is full", reason, false);
-        }
         // The per-document ceiling, on the charge rather than the payload.
         // An empty buffer always admits one update whatever it weighs
         // (max_pending_charge), or a single maximum-size update would be
@@ -1302,26 +1356,61 @@ impl Sequencer {
                     "sync_delayed: this deployment is holding all the unsaved work it can",
                     "pending_budget",
                     true,
-                )
+                );
             }
         };
 
         let durable_charge = charge
             .bytes()
             .saturating_add(frame::ROW_HEADER_BYTES as u64) as i64;
-        if self
-            .catalog
-            .reserve_log_bytes(self.document_id, durable_key, durable_charge, digest)
-            .await
-            .is_err()
-        {
-            return retryable(
-                &inner,
-                "this account's storage is full",
-                "storage_quota",
-                false,
-            );
+        // Durable quota, reserved BEFORE the batch is accepted and relayed so
+        // that no other consumer can take the space and make the flush fail
+        // later. The reservation is one row held in chunks: a batch that fits
+        // the headroom already reserved is consumed in memory, and only a
+        // batch that outgrows it costs a PostgreSQL transaction -- one per
+        // 64 KiB of typing, not one per keystroke. The chunk is asked for in
+        // full; if the quota cannot fit it, the row grows by exactly the
+        // shortfall, so a batch is refused only when it genuinely does not
+        // fit, as it would be with a reservation per batch.
+        let headroom = inner.reserved.saturating_sub(inner.durable_buffered);
+        if headroom < durable_charge {
+            let minimum = durable_charge - headroom;
+            match self
+                .catalog
+                .reserve_log_bytes(
+                    self.document_id,
+                    inner.reservation_key,
+                    LOG_RESERVATION_CHUNK.max(minimum),
+                    minimum,
+                )
+                .await
+            {
+                Ok(total) => inner.reserved = total,
+                // The reservation could not get its locks in time, which
+                // happens while a flush elsewhere is stalled behind a slow
+                // database. Nothing was reserved or accepted; the client
+                // keeps the edit and resends it. It is back pressure from
+                // the deployment, not misbehaviour, so it is exempt from the
+                // consecutive-refusal close (`pressure`).
+                Err(postgres::Error::Busy) => {
+                    return retryable(
+                        &inner,
+                        "the server is busy saving; this edit will be sent again",
+                        "storage_busy",
+                        true,
+                    );
+                }
+                Err(_) => {
+                    return retryable(
+                        &inner,
+                        "this account's storage is full",
+                        "storage_quota",
+                        false,
+                    );
+                }
+            }
         }
+        inner.durable_buffered = inner.durable_buffered.saturating_add(durable_charge);
 
         // A warm document grows synchronously below. Extend its reservation
         // before importing; if the budget cannot cover the growth, evict
@@ -1382,6 +1471,42 @@ impl Sequencer {
         });
         self.note_source_changed(&mut inner);
         Ingested::Accepted
+    }
+
+    /// Gives back the durable quota this sequencer reserved and no flush has
+    /// consumed, by deleting its reservation row. Does nothing while batches
+    /// are buffered: they still own their share of the row. Called when the
+    /// document goes idle and at shutdown, so an idle document holds no
+    /// quota. A failure is logged and leaves the row, and the in-memory
+    /// headroom, as they were: the row is still real, and a crash or restart
+    /// clears it (`clear_stale_pending_log_reservations`).
+    /// Returns whether the sequencer now holds nothing, so a caller that
+    /// means to drop it can tell a failed release (false) from a done one.
+    pub async fn release_reservation(&self) -> bool {
+        let mut inner = self.inner.lock().await;
+        if !inner.buffer.is_empty() {
+            return false;
+        }
+        // No early return on `reserved <= 0`: after a flush whose reply was
+        // lost the copy is set to zero, an underestimate, while the row may
+        // still hold bytes. Deleting a row that is already gone is harmless.
+        match self
+            .catalog
+            .release_log_reservation(self.document_id, inner.reservation_key)
+            .await
+        {
+            Ok(()) => {
+                inner.reserved = 0;
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "could not release the log reservation of {}: {error}",
+                    self.slug
+                );
+                false
+            }
+        }
     }
 
     /// Whether a flush is due, and why. The sequencer keeps no timer of its
@@ -1467,7 +1592,7 @@ impl Sequencer {
         };
         let (
             take,
-            reserved_keys,
+            reservation_key,
             reserved_bytes,
             acknowledged,
             encoded,
@@ -1475,8 +1600,9 @@ impl Sequencer {
             vector,
             expected,
             identity,
+            file_count,
         ) = {
-            let inner = self.inner.lock().await;
+            let mut inner = self.inner.lock().await;
             // §10: once fenced, this sequencer's view of the log can never
             // be made durable again by writing more to it. Fail fast rather
             // than round-tripping to PostgreSQL only to be told the same
@@ -1512,12 +1638,12 @@ impl Sequencer {
                     return Err(SequencerError::Busy);
                 }
             };
+            // Computed on its own line: it takes `inner` mutably, which the
+            // tuple below would otherwise have to share with its borrows.
+            let file_count = self.file_count_of(&mut inner);
             (
                 take,
-                inner.buffer[..take]
-                    .iter()
-                    .map(|pending| pending.durable_key)
-                    .collect::<Vec<_>>(),
+                inner.reservation_key,
                 inner.buffer[..take]
                     .iter()
                     .map(|pending| pending.durable_charge)
@@ -1528,12 +1654,13 @@ impl Sequencer {
                 inner.vector_through(take),
                 inner.next_sequence - 1,
                 self.identity_of(&inner),
+                file_count,
             )
         };
 
         let driver_scratch =
             scratch.split(super::pending::driver_scratch_for(encoded.len() as u64));
-        let written = match self
+        let (written, remaining) = match self
             .catalog
             .flush_log_row(
                 self.document_id,
@@ -1542,8 +1669,9 @@ impl Sequencer {
                     update_bytes: &encoded,
                     vector: &vector.encode(),
                     source_format: identity.as_deref(),
+                    file_count,
                 },
-                &reserved_keys,
+                reservation_key,
                 reserved_bytes,
                 driver_scratch,
             )
@@ -1554,7 +1682,10 @@ impl Sequencer {
                 .resolve_ambiguous_flush(expected, &vector.encode(), error)
                 .await
             {
-                Ok(sequence) => sequence,
+                // The response was lost, so what the row holds now is not
+                // known. Zero is the safe underestimate: the next ingest
+                // reserves afresh and learns the real total.
+                Ok(sequence) => (sequence, None),
                 Err(SequencerError::Fenced(why)) => {
                     self.close_fenced(why.clone()).await;
                     return Err(SequencerError::Fenced(why));
@@ -1570,8 +1701,15 @@ impl Sequencer {
         drop(encoded);
         drop(scratch);
         let mut inner = self.inner.lock().await;
-        inner.retire(take, written, vector, row_bytes);
-        self.ledger.charge(self.owner_id, row_bytes as i64);
+        let reserved_after = (reserved_bytes > 0).then(|| remaining.unwrap_or(0));
+        inner.retire(
+            take,
+            written,
+            vector,
+            row_bytes,
+            reserved_bytes,
+            reserved_after,
+        );
         let compaction_due = inner.compaction_due(self.catalog.compaction_thresholds());
         acknowledge(&mut inner, &acknowledged);
         notify_durable(&mut inner);
@@ -1672,6 +1810,25 @@ impl Sequencer {
         let opening = librepaper_document::document::session::opening_path(&cache.doc)?;
         let format = librepaper_document::document::render::document_format(&opening)?;
         Some(format.to_string())
+    }
+
+    /// The count the listing shows: the placed files of the projection.
+    /// Retained texts with refused extensions are not files, so they are not
+    /// counted. A cold document yields `None` and the row is left alone, the
+    /// same as `identity_of`. The projection is cached on `inner` so a flush
+    /// does not project twice.
+    fn file_count_of(&self, inner: &mut Inner) -> Option<i32> {
+        let cache = inner.cache.as_ref()?;
+        if inner.projection.is_none() {
+            inner.projection = Some(Arc::new(
+                librepaper_document::document::projection::project(
+                    &cache.doc,
+                    &librepaper_document::document::paths::rules(&self.config),
+                ),
+            ));
+        }
+        let projection = inner.projection.as_ref()?;
+        i32::try_from(projection.projection.files.len()).ok()
     }
 
     // -- section 6: join -------------------------------------------------
@@ -1834,11 +1991,13 @@ impl Sequencer {
         skip: Option<u64>,
         payload: &serde_json::Value,
     ) {
-        let text = payload.to_string();
+        // One shared buffer for every recipient; cloning it is a reference
+        // count, not a copy of the text.
+        let frame = Outgoing::shared_text(payload.to_string());
         let mut inner = self.inner.lock().await;
         fan_out(&mut inner, false, |id, subscriber| {
             let wanted = Some(id) != skip && role.is_none_or(|wanted| wanted == subscriber.role);
-            wanted.then(|| Outgoing::shared_text(text.clone()))
+            wanted.then(|| frame.clone())
         });
     }
 
@@ -1985,6 +2144,7 @@ impl Sequencer {
             })?;
         let expected = inner.next_sequence - 1;
         let identity = self.identity_of(&inner);
+        let file_count = self.file_count_of(&mut inner);
 
         // The connection owns scratch through commit, rollback or cancellation.
         let mut connection = self.catalog.persistence_connection(scratch).await?;
@@ -2027,17 +2187,20 @@ impl Sequencer {
             )
         };
         let row_bytes = encoded.len();
+        // The buffered prefix's share of the reservation row. The row this
+        // command writes consumes it in the same transaction, exactly as an
+        // ordinary flush does.
+        let reserved_bytes = if acknowledged.is_empty() {
+            0
+        } else {
+            inner.buffer[..take]
+                .iter()
+                .map(|pending| pending.durable_charge)
+                .fold(0_i64, i64::saturating_add)
+        };
         let source_sequence = if acknowledged.is_empty() {
             expected
         } else {
-            let reserved_keys: Vec<_> = inner.buffer[..take]
-                .iter()
-                .map(|pending| pending.durable_key)
-                .collect();
-            let reserved_bytes = inner.buffer[..take]
-                .iter()
-                .map(|pending| pending.durable_charge)
-                .fold(0_i64, i64::saturating_add);
             let written = self
                 .catalog
                 .insert_log_row(
@@ -2048,8 +2211,9 @@ impl Sequencer {
                         update_bytes: &encoded,
                         vector: &vector.encode(),
                         source_format: identity.as_deref(),
+                        file_count,
                     },
-                    &reserved_keys,
+                    inner.reservation_key,
                     reserved_bytes,
                 )
                 .await?;
@@ -2067,13 +2231,20 @@ impl Sequencer {
                 (Some(hash), true) => Some(hash.as_slice()),
                 _ => None,
             };
+            // The model label is recorded only alongside an agent link hash,
+            // so only automation writes carry one.
+            let label = if link_hash.is_some() {
+                authority.agent_label.as_str()
+            } else {
+                ""
+            };
             PostgresCatalog::record_document_peers_tx(
                 &mut tx,
                 self.document_id,
                 &super::peers::peers_in_update(&command_source.batch),
                 authority.account_id,
                 link_hash,
-                "",
+                label,
             )
             .await?;
         }
@@ -2118,8 +2289,14 @@ impl Sequencer {
         // committed, for a number the first encoding knew.
         let wrote_a_row = !acknowledged.is_empty();
         if wrote_a_row {
-            inner.retire(take, source_sequence, vector, row_bytes);
-            self.ledger.charge(self.owner_id, row_bytes as i64);
+            inner.retire(
+                take,
+                source_sequence,
+                vector,
+                row_bytes,
+                reserved_bytes,
+                None,
+            );
         }
         if let Some(source) = &prepared {
             inner.head_vector.merge(&source.end);
@@ -2349,36 +2526,51 @@ impl Sequencer {
         // above are I/O and waiting on them holds nothing back.
         let _turn = super::admission::heavy().await;
         let started = Instant::now();
-        let built = tokio::task::spawn_blocking(move || -> std::result::Result<LoroDoc, String> {
-            let doc = librepaper_document::document::session::new_doc();
-            if let Some(base) = base {
-                doc.import(&base).map_err(|error| error.to_string())?;
-            }
-            // One at a time, NOT `import_batch`, which is what this used to
-            // call and what §4.2.1's framing was written for.
-            //
-            // Measured 2026-09-20 (`batched_import_cost_probe`): importing a
-            // 1 MiB document as a single batch takes 1.5 ms, and adding ONE
-            // further 100-byte update to the same `import_batch` call takes
-            // 3.8 s. The cliff is in the call shape, not the bytes: 64 more
-            // updates cost nothing beyond it, and the identical batches
-            // imported one at a time take 1.8 ms and stay flat. It also
-            // dominated memory -- the batched call peaked at 400 MB of RSS
-            // for a 1 MiB document, against a §9.2 estimate of 6 MB.
-            //
-            // The log is causally ordered, because §5 refuses a batch whose
-            // dependencies are not already in `head_vector`, so replaying in
-            // row order needs no buffering of pending imports. That is the
-            // only thing `import_batch` was giving us here.
-            for batch in &batches {
-                doc.import(batch).map_err(|error| error.to_string())?;
-            }
-            Ok(doc)
-        })
+        let config = self.config.clone();
+        let built = tokio::task::spawn_blocking(
+            move || -> std::result::Result<(LoroDoc, Option<i32>), String> {
+                let doc = librepaper_document::document::session::new_doc();
+                if let Some(base) = base {
+                    doc.import(&base).map_err(|error| error.to_string())?;
+                }
+                // One at a time, NOT `import_batch`, which is what this used to
+                // call and what §4.2.1's framing was written for.
+                //
+                // Measured 2026-09-20 (`batched_import_cost_probe`): importing a
+                // 1 MiB document as a single batch takes 1.5 ms, and adding ONE
+                // further 100-byte update to the same `import_batch` call takes
+                // 3.8 s. The cliff is in the call shape, not the bytes: 64 more
+                // updates cost nothing beyond it, and the identical batches
+                // imported one at a time take 1.8 ms and stay flat. It also
+                // dominated memory -- the batched call peaked at 400 MB of RSS
+                // for a 1 MiB document, against a §9.2 estimate of 6 MB.
+                //
+                // The log is causally ordered, because §5 refuses a batch whose
+                // dependencies are not already in `head_vector`, so replaying in
+                // row order needs no buffering of pending imports. That is the
+                // only thing `import_batch` was giving us here.
+                for batch in &batches {
+                    doc.import(batch).map_err(|error| error.to_string())?;
+                }
+                // The file count the listing shows, projected here because it is
+                // CPU work too; `build` stamps it on the row below.
+                let count = i32::try_from(
+                    librepaper_document::document::projection::project(
+                        &doc,
+                        &librepaper_document::document::paths::rules(&config),
+                    )
+                    .projection
+                    .files
+                    .len(),
+                )
+                .ok();
+                Ok((doc, count))
+            },
+        )
         .await
         .map_err(|error| SequencerError::Loro(error.to_string()))?;
-        let doc = match built {
-            Ok(doc) => doc,
+        let (doc, count) = match built {
+            Ok(built) => built,
             Err(error) => {
                 inner.unreadable = Some(error.clone());
                 self.budget.note_build_failed();
@@ -2396,6 +2588,19 @@ impl Sequencer {
             return Err(SequencerError::Unreadable(why));
         }
         self.budget.note_built(build_started.elapsed());
+        // Backfills projects written before the column existed: the first
+        // time anything opens one, its count is stamped. Fire and forget; a
+        // failure is logged and never fails the build.
+        if let Some(count) = count {
+            let catalog = self.catalog.clone();
+            let document_id = self.document_id;
+            let slug = self.slug.clone();
+            tokio::spawn(async move {
+                if let Err(error) = catalog.stamp_file_count(document_id, count).await {
+                    tracing::warn!("could not stamp the file count of {slug}: {error}");
+                }
+            });
+        }
         Ok(Cache { doc, reservation })
     }
 
@@ -2525,9 +2730,7 @@ impl Sequencer {
     ) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize, bool)>> {
         let mut inner = self.inner.lock().await;
         inner.writable()?;
-        if !inner.buffer.is_empty() {
-            return Ok(None);
-        }
+        let buffered = !inner.buffer.is_empty();
         if let Some(why) = &inner.unreadable {
             return Err(SequencerError::Unreadable(why.clone()));
         }
@@ -2538,7 +2741,25 @@ impl Sequencer {
         let through = inner.next_sequence - 1;
         let log_vector = inner.log_vector.clone();
         let cache = inner.cache.as_ref().expect("a cache was just built");
-        if cache.doc.oplog_vv() != log_vector {
+        // An edit can land between the caller's flush and this call. It is in
+        // the head and in the buffer, but in no row, so the head is ahead of
+        // the log. Refusing then starves compaction under steady typing.
+        // Instead the snapshot is exported at the log vector: exactly the
+        // rows `<= through`, which is what the caller deletes. The later edit
+        // stays in the buffer and lands as a row above `through`. Only a
+        // full snapshot of an untrimmed head with no frontier check takes
+        // this path; every other combination keeps the old refusal.
+        let head_vector = cache.doc.oplog_vv();
+        let ahead = buffered
+            && head_vector != log_vector
+            && matches!(
+                head_vector.partial_cmp(&log_vector),
+                Some(std::cmp::Ordering::Greater)
+            )
+            && mode == SnapshotMode::Full
+            && expected_frontier.is_none()
+            && !cache.doc.is_shallow();
+        if !ahead && (buffered || head_vector != log_vector) {
             return Ok(None);
         }
         // Checked under the same lock as the export. Anything that entered the
@@ -2549,7 +2770,12 @@ impl Sequencer {
                 return Ok(None);
             }
         }
-        let changes = cache.doc.len_changes();
+        let changes = if ahead {
+            CHANGES_UNKNOWN
+        } else {
+            cache.doc.len_changes()
+        };
+        let at = ahead.then(|| cache.doc.vv_to_frontiers(&log_vector));
         // §9.3 counts a compaction export against the same bound as a
         // build: it is the same uninterruptible Loro work over the same
         // decoded document, and a deployment compacting four documents at
@@ -2560,7 +2786,12 @@ impl Sequencer {
         let entry_is_shallow = doc.is_shallow();
         let _turn = super::admission::heavy().await;
         let snapshot = tokio::task::spawn_blocking(move || match mode {
-            SnapshotMode::Full => doc.export(ExportMode::Snapshot),
+            SnapshotMode::Full => match at {
+                Some(at) => doc.export(ExportMode::SnapshotAt {
+                    version: std::borrow::Cow::Owned(at),
+                }),
+                None => doc.export(ExportMode::Snapshot),
+            },
             SnapshotMode::Shallow => doc.export(ExportMode::ShallowSnapshot(
                 std::borrow::Cow::Owned(doc.oplog_frontiers()),
             )),
@@ -2616,8 +2847,6 @@ impl Sequencer {
             _transaction: transaction,
             inner,
             slug: &self.slug,
-            owner_id: self.owner_id,
-            ledger: self.ledger.clone(),
         }
     }
 
@@ -2635,8 +2864,6 @@ pub struct CompactionGate<'a> {
     _transaction: tokio::sync::MutexGuard<'a, ()>,
     inner: tokio::sync::MutexGuard<'a, Inner>,
     slug: &'a str,
-    owner_id: Uuid,
-    ledger: Arc<super::ledger::StorageLedger>,
 }
 
 impl CompactionGate<'_> {
@@ -2666,8 +2893,6 @@ impl CompactionGate<'_> {
         row_bytes: u64,
         uncompacted_count: i64,
     ) {
-        let before = self.inner.base_bytes.saturating_add(self.inner.row_bytes);
-        let after = base_bytes.saturating_add(row_bytes);
         if let Ok(vector) = decode_vector(vector) {
             self.inner.base_vector = vector;
         }
@@ -2675,8 +2900,6 @@ impl CompactionGate<'_> {
         self.inner.base_bytes = base_bytes;
         self.inner.row_bytes = row_bytes;
         self.inner.uncompacted_count = uncompacted_count;
-        self.ledger
-            .charge(self.owner_id, after as i64 - before as i64);
         tracing::debug!("{} compacted through {through}", self.slug);
     }
 
@@ -2744,24 +2967,41 @@ impl Sequencer {
     /// admitted. A separate reservation would double-count that cost rather
     /// than add a real one.
     fn emit_source_changed(&self, inner: &mut Inner) {
-        let digest: Option<String> = inner.cache.as_ref().map(|cache| {
-            librepaper_document::document::projection::project(
-                &cache.doc,
-                &librepaper_document::document::paths::rules(&self.config),
-            )
-            .projection
-            .digest()
-            .to_hex()
-        });
         // Set unconditionally: keeping this on the success path alone meant a
         // cold document never engaged the one-per-second throttle, so every
         // ingest called in and bailed.
         inner.last_source_changed = Some(Instant::now());
         inner.source_changed_owed = false;
-        let payload = json!({"type": "source-changed", "digest": digest}).to_string();
+        // The frame goes to readers only, and a reader that joins later does
+        // not get a digest from here: it fetches the projection. So with no
+        // reader there is nobody to tell, and projecting every text file just
+        // to hash it would be wasted work under the lock.
+        if !inner
+            .subscribers
+            .values()
+            .any(|subscriber| subscriber.role == SubscriberClass::Reader)
+        {
+            return;
+        }
+        // A resident projection is current whenever it is `Some` (ingest
+        // clears it before this runs), so reuse it rather than project again.
+        let digest: Option<String> = match (&inner.projection, &inner.cache) {
+            (Some(projected), Some(_)) => Some(projected.projection.digest().to_hex()),
+            (_, Some(cache)) => Some(
+                librepaper_document::document::projection::project(
+                    &cache.doc,
+                    &librepaper_document::document::paths::rules(&self.config),
+                )
+                .projection
+                .digest()
+                .to_hex(),
+            ),
+            _ => None,
+        };
+        let frame =
+            Outgoing::shared_text(json!({"type": "source-changed", "digest": digest}).to_string());
         fan_out(inner, false, |_, subscriber| {
-            (subscriber.role == SubscriberClass::Reader)
-                .then(|| Outgoing::shared_text(payload.clone()))
+            (subscriber.role == SubscriberClass::Reader).then(|| frame.clone())
         });
     }
 }
@@ -2848,14 +3088,15 @@ fn fan_out(inner: &mut Inner, durable: bool, frame: impl Fn(u64, &Subscriber) ->
 /// Copies one frame to every editor but the sender.
 fn relay(inner: &mut Inner, skip: Option<u64>, bytes: &[u8]) {
     use base64::Engine as _;
-    let payload = json!({
-        "type": "doc-update",
-        "update": base64::engine::general_purpose::STANDARD.encode(bytes),
-    })
-    .to_string();
+    let frame = Outgoing::shared_text(
+        json!({
+            "type": "doc-update",
+            "update": base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+        .to_string(),
+    );
     fan_out(inner, false, |id, subscriber| {
-        (Some(id) != skip && subscriber.role == SubscriberClass::Editor)
-            .then(|| Outgoing::shared_text(payload.clone()))
+        (Some(id) != skip && subscriber.role == SubscriberClass::Editor).then(|| frame.clone())
     });
 }
 
@@ -2914,13 +3155,15 @@ fn acknowledge(inner: &mut Inner, acknowledged: &[(String, i64)]) {
 /// rather than source-log state.
 fn notify_durable(inner: &mut Inner) {
     use base64::Engine as _;
-    let payload = json!({
-        "type": "doc-durable",
-        "vector": base64::engine::general_purpose::STANDARD.encode(inner.log_vector.encode()),
-    })
-    .to_string();
+    let frame = Outgoing::shared_text(
+        json!({
+            "type": "doc-durable",
+            "vector": base64::engine::general_purpose::STANDARD.encode(inner.log_vector.encode()),
+        })
+        .to_string(),
+    );
     fan_out(inner, true, |_, subscriber| {
-        (subscriber.role == SubscriberClass::Editor).then(|| Outgoing::shared_text(payload.clone()))
+        (subscriber.role == SubscriberClass::Editor).then(|| frame.clone())
     });
 }
 
@@ -2970,8 +3213,8 @@ fn covers(holder: &VersionVector, wanted: &VersionVector) -> bool {
 
 /// Stable across retries of the same batch. Client sequence and payload
 /// digest both participate, so the same sequence may carry distinct updates.
-/// The key is the first 16 bytes of a SHA-256 in a version 8 UUID. Keys are
-/// cleared each writer epoch, so changing the scheme cannot strand a stored key.
+/// The key is the first 16 bytes of a SHA-256 in a version 8 UUID. It only
+/// recognises a resent batch still in the buffer; it is never stored.
 fn durable_reservation_key(
     document_id: Uuid,
     peer_key: &str,

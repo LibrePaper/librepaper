@@ -4,6 +4,7 @@
   import CommentCard from "./CommentCard.svelte";
   import CommentComposer from "./CommentComposer.svelte";
   import PanelHeader from "./PanelHeader.svelte";
+  import { aboutWholeDocument } from "../lib/anchor.js";
 
   // The annotations, in document order: an annotation is about a place in the
   // text, so the column follows the page rather than the order things were
@@ -30,6 +31,7 @@
     ondeletemany = undefined,
     onreply = undefined,
     onedit = undefined,
+    onagent = undefined,
     pending = undefined,
     // Optional view filter used by the collaboration tabs. Highlight notes
     // remain in both views when they carry a discussion.
@@ -40,6 +42,9 @@
     // has to be told where the next one comes from -- so it stays put.
     hint = m.comments_hint(),
     onhistory = undefined,
+    // Starts a comment on the document as a whole. Shown only where commenting
+    // is allowed, and only by the caller that owns the draft.
+    onwholedocument = undefined,
     cardIdPrefix = "comment",
     // The id of the annotation the page has singled out, if any.
     selected = "",
@@ -54,7 +59,10 @@
     attachable = false,
   } = $props();
 
+  // A remark about the whole document has no passage, so it sorts first: it
+  // is about the top of the document, which is where every passage starts.
   function place(comment) {
+    if (aboutWholeDocument(comment)) return -1;
     return Number.isFinite(comment.start) ? comment.start : Infinity;
   }
 
@@ -64,6 +72,7 @@
   // there when it is sent.
   function placeDraft(pending) {
     if (!pending) return Infinity;
+    if (pending.whole) return -1;
     return Number.isFinite(pending.position) ? pending.position : Infinity;
   }
 
@@ -140,22 +149,25 @@
         {#if onhistory}
           <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={onhistory}>{m.comments_show_changes()}</button>
         {/if}
+        {#if canComment && onwholedocument}
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onwholedocument?.()}>{m.common_comment_whole_document()}</button>
+        {/if}
         {#if canComment && (resolvable.length || clearable.length || (canModerate && deletable.length))}
           <div class="bulk flex gap-1" role="group" aria-label={partial ? m.comments_group_loaded() : m.comments_group_all()}>
             {#if resolvable.length}
               <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                title={partial ? m.comments_resolve_loaded_title() : m.comments_resolve_all_title()}
+                data-tip={partial ? m.comments_resolve_loaded_title() : m.comments_resolve_all_title()}
                 onclick={resolveAll}>{partial ? m.comments_resolve_loaded() : m.comments_resolve_all()}</button>
             {/if}
             {#if clearable.length}
               <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                title={partial ? m.comments_clear_loaded_title() : m.comments_clear_all_title()}
+                data-tip={partial ? m.comments_clear_loaded_title() : m.comments_clear_all_title()}
                 disabled={!ondeletemany}
                 onclick={() => ondeletemany?.(clearable)}>{m.comments_clear()}</button>
             {/if}
             {#if canModerate && deletable.length}
               <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                title={partial ? m.comments_delete_loaded_title() : m.comments_delete_all_title()}
+                data-tip={partial ? m.comments_delete_loaded_title() : m.comments_delete_all_title()}
                 disabled={!ondeletemany}
                 onclick={() => ondeletemany?.(deletable)}>{partial ? m.comments_delete_loaded() : m.comments_delete_all()}</button>
             {/if}
@@ -204,6 +216,7 @@
         {ondelete}
         {onreply}
         {onedit}
+        {onagent}
         {onloadreplies}
         {onattach}
         {attachable}
@@ -247,4 +260,9 @@
   .load-more { align-self: center; margin: calc(var(--spacing) * 2) 0; }
   .page-error { padding: calc(var(--spacing) * 2); display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); align-items: flex-start; }
   .bulk { margin-left: auto; }
+  /* Phones: the panel's buttons, including Load more, are finger-sized. */
+  @media (max-width: 767px) {
+    .comments-panel .btn,
+    .load-more { min-height: 2.75rem; }
+  }
 </style>

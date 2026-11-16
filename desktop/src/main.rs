@@ -17,7 +17,7 @@ mod updater;
 mod wire;
 mod zoom;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use servers::Servers;
@@ -48,6 +48,9 @@ enum Target {
 
 // Labels for windows after the first. The first window is "main".
 static NEXT: AtomicUsize = AtomicUsize::new(2);
+
+// A web page can fire links repeatedly, so only one deep-link prompt is shown at a time.
+static ASKING: AtomicBool = AtomicBool::new(false);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // First of all: WebKit reads its environment when the first window is built.
@@ -489,12 +492,94 @@ fn deep_link(app: &AppHandle, target: Target, raw: &str) {
     }
 }
 
+// A link to a server that is not listed asks first. If the user allows it, the
+// server becomes the default and the linked document opens.
 fn open(app: &AppHandle, target: Target, raw: &str) {
-    if let Some(url) = servers::accepted(raw) {
-        let origin = url.origin().ascii_serialization();
-        if trusted(app, &origin) {
-            show(app, target, url);
+    let Some(url) = servers::accepted(raw) else {
+        return;
+    };
+    let origin = url.origin().ascii_serialization();
+    if trusted(app, &origin) {
+        show(app, target, url);
+        return;
+    }
+    shell_log::write(&format!(
+        "a link asks for {origin}, which is not a listed server"
+    ));
+    if ASKING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        shell_log::write(&format!(
+            "ignored a link to {origin}: a server prompt is already open"
+        ));
+        return;
+    }
+    let Ok(root) = Url::parse(&format!("{origin}/")) else {
+        ASKING.store(false, Ordering::SeqCst);
+        return;
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let intro = "A link asks to open a document on another server.";
+        if confirm_server(&app, &root, Some(intro)).await {
+            app.state::<Service>().switch(&root).await;
+            let main = app.clone();
+            let result = app.run_on_main_thread(move || show(&main, target, url));
+            if let Err(err) = result {
+                shell_log::write(&format!("could not open a window: {err}"));
+            }
+        } else {
+            notice::show(
+                &app,
+                &format!("{origin} is not one of your servers, so the link was not opened."),
+                8000,
+            );
         }
+        ASKING.store(false, Ordering::SeqCst);
+    });
+}
+
+// Asks before a new server is used, then makes it the default. The caller starts
+// the local service for it, since the service accepts one site.
+async fn confirm_server(app: &AppHandle, root: &Url, intro: Option<&str>) -> bool {
+    let shown = root.origin().ascii_serialization();
+    let question = format!(
+        "Use {shown} as your LibrePaper server?\n\nThe app opens {shown} now and every time it starts. That server can use this computer's tools through the app, so only choose a server you trust."
+    );
+    let message = match intro {
+        Some(intro) => format!("{intro}\n\n{question}"),
+        None => question,
+    };
+    let asked = app.clone();
+    let allowed = tauri::async_runtime::spawn_blocking(move || {
+        asked
+            .dialog()
+            .message(message)
+            .title("Use another server")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Use this server".into(),
+                "Cancel".into(),
+            ))
+            .blocking_show()
+    })
+    .await
+    .unwrap_or(false);
+    if !allowed {
+        return false;
+    }
+    remember_default(app, root);
+    true
+}
+
+// Makes the server the default and saves it, so the app opens it from now on.
+fn remember_default(app: &AppHandle, root: &Url) {
+    let shell = app.state::<Shell>();
+    let mut servers = shell.servers.lock().expect("server list lock");
+    servers.make_default(root);
+    if let Err(err) = servers.save(app) {
+        shell_log::write(&format!("could not save desktop.json: {err}"));
     }
 }
 
@@ -849,6 +934,26 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         return;
     }
 
+    // The servers the switch dialog lists, with the one the app opens first.
+    if request.method() == Method::GET && request.uri().path() == "/shell/servers" {
+        let body = {
+            let shell = app.state::<Shell>();
+            let servers = shell.servers.lock().expect("server list lock");
+            let current = servers
+                .first()
+                .map(|url| url.origin().ascii_serialization());
+            serde_json::json!({ "current": current, "servers": servers.listed() })
+                .to_string()
+                .into_bytes()
+        };
+        let res = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .expect("the servers response is valid");
+        return responder.respond(with_origin(res, &origin));
+    }
+
     // Switches the app to another server, after a native confirmation.
     if request.method() == Method::POST && request.uri().path() == "/shell/server" {
         let Ok(choice) = serde_json::from_slice::<ServerChoice>(request.body()) else {
@@ -866,36 +971,12 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         };
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            let shown = url.origin().ascii_serialization();
-            let message = format!(
-                "Use {shown} as your LibrePaper server?\n\nThe app opens {shown} now and every time it starts. That server can use this computer's tools through the app, so only choose a server you trust."
-            );
-            let asked = app.clone();
-            let allowed = tauri::async_runtime::spawn_blocking(move || {
-                asked
-                    .dialog()
-                    .message(message)
-                    .title("Use another server")
-                    .kind(MessageDialogKind::Warning)
-                    .buttons(MessageDialogButtons::OkCancelCustom(
-                        "Use this server".into(),
-                        "Cancel".into(),
-                    ))
-                    .blocking_show()
-            })
-            .await
-            .unwrap_or(false);
-            if !allowed {
+            if trusted(&app, &url.origin().ascii_serialization()) {
+                // A listed server was already trusted, so it is not asked about again.
+                remember_default(&app, &url);
+            } else if !confirm_server(&app, &url, None).await {
                 let res = json_error(StatusCode::FORBIDDEN, "The server was not changed.");
                 return responder.respond(with_origin(res, &origin));
-            }
-            {
-                let shell = app.state::<Shell>();
-                let mut servers = shell.servers.lock().expect("server list lock");
-                servers.make_default(&url);
-                if let Err(err) = servers.save(&app) {
-                    shell_log::write(&format!("could not save desktop.json: {err}"));
-                }
             }
             responder.respond(with_origin(no_content(), &origin));
             // The service accepts one site, so it is started for the new server.
@@ -1189,32 +1270,77 @@ async fn copy_diagnostics(app: &AppHandle) -> Result<(), String> {
         .map_err(|err| err.to_string())
 }
 
-// The standard macOS menu, with Settings in the app menu and LibrePaper's
-// own entries in Help. Windows and Linux windows keep no menu bar: the same
-// actions are in Settings and on the keyboard.
+// The macOS menu bar holds only the app menu, Edit and Window. Edit stays
+// because macOS needs its items for the clipboard and undo shortcuts to reach
+// the page. Everything else is in the page's own menu bar, so the two bars do
+// not repeat each other. Windows and Linux windows keep no menu bar: the same
+// actions are in the page and on the keyboard.
 #[cfg(target_os = "macos")]
 fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, HELP_SUBMENU_ID};
-    let menu = Menu::default(app)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
-    if let Some(first) = menu
-        .items()?
-        .first()
-        .and_then(|item| item.as_submenu().cloned())
-    {
-        first.insert_items(&[&PredefinedMenuItem::separator(app)?, &settings], 1)?;
-    }
-    if let Some(help) = menu
-        .get(HELP_SUBMENU_ID)
-        .and_then(|item| item.as_submenu().cloned())
-    {
-        help.append_items(&[
-            &MenuItem::with_id(app, "diagnostics", "Copy Diagnostics", true, None::<&str>)?,
-            &MenuItem::with_id(app, "report", "Report a Problem…", true, None::<&str>)?,
+    use tauri::menu::{
+        AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, WINDOW_SUBMENU_ID,
+    };
+    let pkg_info = app.package_info();
+    let config = app.config();
+    let about_metadata = AboutMetadata {
+        name: Some(pkg_info.name.clone()),
+        version: Some(pkg_info.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config.bundle.publisher.clone().map(|p| vec![p]),
+        ..Default::default()
+    };
+
+    let app_menu = Submenu::with_items(
+        app,
+        pkg_info.name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
             &MenuItem::with_id(app, "updates", "Check for Updates…", true, None::<&str>)?,
-        ])?;
-    }
-    Ok(menu)
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+
+    // The id makes macOS treat this as the Window menu.
+    let window_menu = Submenu::with_id_and_items(
+        app,
+        WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::fullscreen(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+
+    Menu::with_items(app, &[&app_menu, &edit_menu, &window_menu])
 }
 
 #[cfg(target_os = "macos")]
@@ -1224,27 +1350,6 @@ fn menu_event(app: &AppHandle, id: &str) {
             if let Some(window) = focused_window(app) {
                 let _ = window
                     .eval("window.dispatchEvent(new CustomEvent(\"librepaper:open-settings\"))");
-            }
-        }
-        "diagnostics" => {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                match copy_diagnostics(&app).await {
-                    Ok(()) => crate::notice::show(
-                        &app,
-                        "Diagnostics copied. Paste them into a bug report.",
-                        4000,
-                    ),
-                    Err(err) => crate::notice::show(&app, &err, 6000),
-                }
-            });
-        }
-        "report" => {
-            if let Err(err) = app.opener().open_url(
-                "https://github.com/LibrePaper/librepaper/issues",
-                None::<&str>,
-            ) {
-                shell_log::write(&format!("could not open the browser: {err}"));
             }
         }
         "updates" => crate::updater::check_now(app.clone()),

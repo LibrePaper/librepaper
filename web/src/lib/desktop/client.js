@@ -20,7 +20,7 @@ import { m } from "../paraglide/messages.js";
 import { isLegacy, outcome, rangeOf, sinceMet } from "./negotiate.js";
 
 /** @typedef {{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, replaceHash: (hash: string) => void }} DesktopDeps */
-/** @typedef {{ generation?: number, deadlineSeconds?: number, snapshot?: string }} DesktopJob */
+/** @typedef {{ generation?: number, deadlineSeconds?: number, snapshot?: string, wanted?: string[] }} DesktopJob */
 /** @typedef {{ main: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array | ArrayBuffer | string>, digests?: Record<string, string>, files?: Record<string, unknown> }} DesktopTree */
 /** @typedef {{ path: string, sha256: string, size: number }} ManifestFile */
 /** @typedef {{ signal?: AbortSignal, onProgress?: (progress: { done: number, total: number, scope?: string }) => void }} BuildCallbacks */
@@ -132,6 +132,41 @@ export async function desktopReport() {
   let message = "";
   try { message = (await response.json())?.error || ""; } catch { /* no body */ }
   throw new Error(message || m.client_action_failed({ status: response.status }));
+}
+
+// The LibrePaper server the desktop app opens by default. It is always offered,
+// so nobody has to remember its address.
+export const DEFAULT_SERVER = "https://app.librepaper.org";
+
+function uniqueServers(list) {
+  return [...new Set(list.filter((server) => typeof server === "string" && server))];
+}
+
+// The servers the desktop app can switch its window to, and the one it is on.
+// An older desktop app has no such route, so any failure answers with this
+// page's own origin and DEFAULT_SERVER.
+export async function listServers() {
+  const shell = desktop();
+  if (!shell) throw named("DesktopOnly", DESKTOP_ONLY_MESSAGE);
+  const origin = deps.location()?.origin || "";
+  let answer = null;
+  try {
+    const response = await fetch(`${shell.base}shell/servers`);
+    if (response.ok) answer = await response.json();
+  } catch { /* an older desktop app, or no answer: fall back below */ }
+  if (!Array.isArray(answer?.servers)) {
+    return { current: origin, servers: uniqueServers([origin, DEFAULT_SERVER]) };
+  }
+  return {
+    current: typeof answer.current === "string" ? answer.current : null,
+    servers: uniqueServers([...answer.servers, DEFAULT_SERVER]),
+  };
+}
+
+// Points the desktop app's window at another server. The shell confirms with the
+// person and then navigates the window itself, so there is nothing more to do here.
+export async function switchServer(url) {
+  await shellAction("server", { url });
 }
 
 // Asks the shell how the person can update it. "updater" means the shell's own
@@ -420,6 +455,8 @@ async function pollJob(id, signal) {
 }
 
 async function submitAndAwait(form, signal) {
+  // A Stop that landed while the form was being made must not start a job.
+  if (signal?.aborted) throw named("Canceled", "Canceled");
   const submitted = await send("POST", "jobs", { formBody: form }).then((r) => r.json());
   let status;
   try {
@@ -464,7 +501,7 @@ async function fetchVerifiedOutput(id, name, status) {
 /** The outputs each format has a command for on this computer. */
 export const LOCAL_OUTPUTS = Object.freeze({
   latex: Object.freeze(["pdf"]),
-  typst: Object.freeze(["pdf"]),
+  typst: Object.freeze(["pdf", "html"]),
   markdown: Object.freeze(["html", "pdf", "docx"]),
   quarto: Object.freeze(["html", "pdf", "docx"]),
 });
@@ -474,12 +511,15 @@ export const rendererKey = (format, output) => `${format}.${output}`;
 
 /** Render one document with the command the desktop app holds for its
  * format and output. The page sends a job and never a command. Resolves with
- * the result file, the SyncTeX file when the tool wrote one, and the log.
+ * the result file, the SyncTeX file when the tool wrote one, the files a
+ * Calepin run stored when there are any, and the log.
  * @param {{ job?: DesktopJob, tree: DesktopTree, format: string, output: string, entrypoint?: string }} input
  * @param {BuildCallbacks} [callbacks] */
 export async function runRender({ job = {}, tree, format, output, entrypoint = "" }, { signal, onProgress } = {}) {
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
+  // Stop pressed while the files were hashed: nothing has been sent yet.
+  if (signal?.aborted) throw named("Canceled", "Canceled");
   const request = {
     protocol: 3,
     project: current.project,
@@ -494,6 +534,9 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
     options: {
       deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
     },
+    // Figures the document references that are not project files: the app
+    // reads them from the Run directory after the run.
+    ...(Array.isArray(job.wanted) && job.wanted.length ? { wanted: job.wanted.map(String) } : {}),
   };
   const scope = `local ${format}`;
   onProgress?.({ done: 0, total: 1, scope });
@@ -501,18 +544,55 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
   const { id, status } = finished;
   const artifact = await fetchVerifiedOutput(id, "artifact", status);
   const synctex = await fetchVerifiedOutput(id, "synctex", status);
+  const results = await fetchVerifiedOutput(id, "results", status);
   const log = await fetchVerifiedOutput(id, "log", status);
   onProgress?.({ done: 1, total: 1, scope });
   return {
     ok: status.status === "done" && status.exit === 0 && artifact != null,
     artifact,
     synctex,
+    results,
     log: log ? new TextDecoder().decode(log) : "",
     exit: status.exit,
     error: status.error,
+    notices: Array.isArray(status.notices) ? status.notices : [],
     provenance: { backend: "local", format, output },
   };
 }
+
+/* -------------------------------------------- Run directory */
+
+// The folder a Quarto document's code runs in, kept by the desktop app for
+// each project on this computer and never uploaded. Each call answers with
+// `{ project, path, exists, suggested }`; `path` is null until one is chosen.
+const RUN_DIRECTORY_SINCE = "3.2.0";
+
+/** @param {string} method @param {string} path @param {string} project */
+async function runDirectoryCall(method, path, project) {
+  const slug = String(project || "");
+  const response = method === "GET"
+    ? await send("GET", `${path}?${new URLSearchParams({ project: slug })}`, { since: RUN_DIRECTORY_SINCE })
+    : await send("POST", path, { jsonBody: { project: slug }, since: RUN_DIRECTORY_SINCE });
+  return response.json();
+}
+
+/** Where this project's code runs on this computer. @param {string} project */
+export const runDirectory = (project) => runDirectoryCall("GET", "run-directory", project);
+
+/** Which of `paths` the project's Run directory holds as usable figures; no
+ * bytes come back. @param {string} project @param {string[]} paths
+ * @returns {Promise<string[]>} */
+export async function runDirectoryHas(project, paths) {
+  const response = await send("POST", "run-directory/has", { jsonBody: { project: String(project || ""), paths: paths.map(String) }, since: RUN_DIRECTORY_SINCE });
+  const body = await response.json();
+  return Array.isArray(body?.present) ? body.present.filter((path) => typeof path === "string") : [];
+}
+
+/** Ask the desktop app to open its native folder chooser. @param {string} project */
+export const chooseRunDirectory = (project) => runDirectoryCall("POST", "run-directory/choose", project);
+
+/** Use the folder the desktop app suggests, creating it. @param {string} project */
+export const useDefaultRunDirectory = (project) => runDirectoryCall("POST", "run-directory/default", project);
 
 /** Change the command that renders one output. The desktop app shows the
  * whole command in its own dialog and refuses with 403 when the person
@@ -578,3 +658,57 @@ export async function runBackups(accountId) {
   });
   return response.json();
 }
+
+/* --------------------------------------------------- Connecting an agent */
+
+/** One call to the desktop app's assistant surface, JSON in and
+ * out. `agents`, `startAssistant`, `assistantStatus` and `stopAssistant` are
+ * all this same shape; only the method, path and body differ. */
+async function assistantCall(method, path, jsonBody) {
+  const response = await send(method, path, jsonBody ? { jsonBody } : {});
+  return response.json();
+}
+
+/** Which coding agents this computer has, and which documents are already
+ * connected. The browser cannot read a PATH, so this is the only way the
+ * sidebar can offer a real choice instead of setup instructions. */
+export async function agents() {
+  return assistantCall("GET", "agents");
+}
+
+/** Start the sidebar assistant, driving the chosen installed agent directly
+ * against the document link. The link crosses loopback once, here, without
+ * its key: the agent token carries the access, and no connection name, config
+ * file, command line or transcript holds the key. */
+export async function startAssistant({ link = "", conversation = "", chatToken = "", agentToken = "", agent = "", access = "" } = {}) {
+  return assistantCall("POST", "assistant", {
+    link: String(link || ""), conversation: String(conversation || ""),
+    chat_token: String(chatToken || ""), agent_token: String(agentToken || ""), agent: String(agent || ""),
+    access: String(access || ""),
+  });
+}
+
+/** Replace the active runner's short-lived document grant. The browser calls
+ * this while its own session remains active; the desktop app never receives a
+ * browser cookie and the runner reads the current grant on reconnect. */
+export async function renewAssistant({ link = "", conversation = "", agentToken = "" } = {}) {
+  return assistantCall("POST", "assistant/renew", {
+    link: String(link || ""), conversation: String(conversation || ""),
+    agent_token: String(agentToken || ""),
+  });
+}
+
+/** Whether the sidebar assistant is attached to this conversation. Not
+ * running is an answer, not an error: it is the ordinary state before the
+ * first start. Which agent and access level that is does not come back
+ * here; the browser already remembers its own choice. */
+export async function assistantStatus({ link = "", conversation = "" } = {}) {
+  return assistantCall("POST", "assistant/status", { link: String(link || ""), conversation: String(conversation || "") });
+}
+
+/** Detach the sidebar assistant. Document changes already made are not
+ * undone by stopping; only the attachment ends. */
+export async function stopAssistant({ link = "", conversation = "" } = {}) {
+  return assistantCall("POST", "assistant/stop", { link: String(link || ""), conversation: String(conversation || "") });
+}
+

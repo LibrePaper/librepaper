@@ -2654,7 +2654,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper"
-version = "0.0.66"
+version = "0.0.79"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2693,7 +2693,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-base"
-version = "0.0.66"
+version = "0.0.79"
 dependencies = [
  "async-trait",
  "axum",
@@ -2728,7 +2728,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-companion"
-version = "0.0.66"
+version = "0.0.79"
 dependencies = [
  "agent-client-protocol",
  "ashpd",
@@ -2770,7 +2770,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-document"
-version = "0.0.66"
+version = "0.0.79"
 dependencies = [
  "hex",
  "html-escape",
@@ -2780,11 +2780,12 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "similar",
 ]
 
 [[package]]
 name = "librepaper-engine"
-version = "0.0.66"
+version = "0.0.79"
 dependencies = [
  "async-trait",
  "axum",
@@ -2793,6 +2794,7 @@ dependencies = [
  "futures-util",
  "governor",
  "hex",
+ "hmac",
  "librepaper-base",
  "librepaper-document",
  "log",
@@ -2816,7 +2818,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-room"
-version = "0.0.66"
+version = "0.0.79"
 dependencies = [
  "base64 0.22.1",
  "comrak",
@@ -2843,7 +2845,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-server"
-version = "0.0.66"
+version = "0.0.79"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2882,7 +2884,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-shell"
-version = "0.0.66"
+version = "0.0.79"
 dependencies = [
  "axum",
  "include_dir",
@@ -2892,7 +2894,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-sync"
-version = "0.0.66"
+version = "0.0.79"
 dependencies = [
  "hex",
  "ignore",
@@ -2902,7 +2904,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "similar",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

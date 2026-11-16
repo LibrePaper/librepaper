@@ -211,6 +211,13 @@ export function markdownLabels(texts = {}) {
   return labels;
 }
 
+/**
+ * Where the Markdown source can answer: an image or link destination
+ * (`](`), a reference id (`][`) or a footnote id (`[^`) is open before the cursor.
+ * @param {string} before the line's text up to the cursor
+ */
+export const markdownTrigger = (before) => before.includes("](") || before.includes("][") || before.includes("[^");
+
 /** Completion source for Markdown and Quarto. Returns null outside those formats. */
 export function markdownCompletion(project) {
   return (context) => {

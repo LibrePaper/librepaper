@@ -135,11 +135,10 @@ const KINDS: &[Kind] = &[
         acp: &["pi-acp"],
         acp_fetch: Some(&["npx", "-y", "pi-acp"]),
         // pi-acp stores the ACP client's MCP servers and never hands them to
-        // Pi. The document tools reach Pi only through the pi-mcp-adapter
-        // extension, which reads the global ~/.config/mcp/mcp.json.
-        acp_note: Some(
-            "Pi needs the pi-mcp-adapter extension and a librepaper entry in ~/.config/mcp/mcp.json",
-        ),
+        // Pi. The assistant writes `.pi/mcp.json` in its own session directory
+        // and starts Pi with `--approve` instead (see `assistant/acp.rs`,
+        // `prepare_pi`), which needs a Pi with built-in MCP support.
+        acp_note: None,
         npm: Some("pi-acp"),
         docs: "pi",
         executable_env: None,
@@ -582,14 +581,12 @@ mod tests {
     }
 
     #[test]
-    fn a_known_adapter_limitation_travels_with_the_agent() {
-        // pi-acp never hands the client's MCP servers to Pi. The document
-        // tools are this session's only route to the document, so a silent
-        // assistant is the failure mode that warning exists to prevent.
+    fn pi_has_no_note_because_the_assistant_hands_it_the_document_tools() {
+        // pi-acp drops the client's MCP servers, but the assistant configures
+        // Pi's own MCP support in its session directory instead, so Pi needs
+        // no caveat in the sidebar.
         let pi = KINDS.iter().find(|kind| kind.id == "pi").expect("pi");
-        assert!(pi
-            .acp_note
-            .is_some_and(|note| note.contains("pi-mcp-adapter")));
+        assert!(pi.acp_note.is_none());
         // opencode speaks ACP natively and takes MCP servers from the client,
         // so it needs no adapter, no fetch and no caveat.
         let opencode = KINDS

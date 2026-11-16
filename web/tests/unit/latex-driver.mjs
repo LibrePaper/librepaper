@@ -1,6 +1,9 @@
 // The driver against a faked Worker: bundle-capable engines load a stored
 // working set after the bundle index and export a changed one after a compile.
 import assert from "node:assert/strict";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+await loadOrgSyntaxForTests();
 
 const stores = new Map();
 globalThis.caches = {

@@ -25,6 +25,25 @@ and migrates at startup, so a blue/green switch would need a lock handover,
 backward-compatible migrations and a drain of unflushed edits. One short
 restart is the design.
 
+## Objects bucket CORS
+
+Browsers fetch project files straight from the objects bucket through signed
+links, which needs a CORS rule allowing `GET` from `https://app.librepaper.org`.
+Set it once, from `tools/deploy/policies/objects-cors.json`. Take `BUCKET` and
+`ENDPOINT` from `LIBREPAPER_OBJECTS_S3_BUCKET` and `LIBREPAPER_OBJECTS_S3_ENDPOINT`
+in `tools/deploy/keys.yaml` (SOPS). Do not paste the values anywhere.
+
+```sh
+aws s3api put-bucket-cors --bucket "$BUCKET" --endpoint-url "$ENDPOINT" \
+  --cors-configuration file://tools/deploy/policies/objects-cors.json
+aws s3api get-bucket-cors --bucket "$BUCKET" --endpoint-url "$ENDPOINT"
+```
+
+- The objects policy in `policies/objects.json` does not grant
+  `s3:PutBucketCORS`, so run this with a key that has it.
+- Without the rule, browsers fall back to the server-relayed route. It is a
+  speed-up, not a requirement.
+
 ## Operating system updates
 
 Security updates install nightly through `unattended-upgrades`.

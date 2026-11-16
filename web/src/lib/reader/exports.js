@@ -1,24 +1,30 @@
 // What a document can be exported as, and how each file is made.
 //
 // Every source format offers a PDF, an HTML page and a Word file, produced in
-// this browser. LaTeX and Typst compile to PDF and render to HTML; Markdown
-// and Quarto render to HTML and reach a PDF through Pandoc and Typst; authored
-// HTML is its own page and reaches a PDF the same way. A Word file is Pandoc's
-// reading of the HTML page. Nothing here touches the DOM, and nothing is
-// fetched or uploaded: the Reader supplies the tree it already holds.
+// this browser. LaTeX and Typst compile to PDF and render to HTML; Markdown,
+// Quarto and authored HTML render to HTML and reach a PDF through Pandoc and
+// Typst. Org renders to HTML and reaches a PDF through Pandoc and LaTeX, or
+// through Pandoc and Typst where there is no LaTeX compiler; the Org text is
+// first rewritten by pandoc/org.js. A Word file is Pandoc's reading of the HTML
+// page. Nothing here touches the DOM, and nothing is fetched or uploaded: the
+// Reader supplies the tree it already holds.
 //
-// An export follows the Run code switch, as the preview does: with it on in
-// the desktop app and the format set to this computer, a file the format has a
-// command for comes from that command, even where this browser has no renderer
-// for it, and otherwise it takes the browser route, which does not run code
-// cells.
+// A Quarto export runs on this computer whenever the desktop app has a Run
+// directory set, since an export is itself an explicit request. Other formats
+// follow the Run code switch, as the preview does: with it on in the desktop
+// app and the format set to this computer, a file the format has a command for
+// comes from that command, even where this browser has no renderer for it, and
+// otherwise it takes the browser route, which does not run code cells.
 
 import { pandocAvailable } from "../pandoc/client.js";
 import { dirOf, pandocPath, typstTree } from "../pandoc/typst.js";
+import { orgLatexTree } from "../pandoc/latex.js";
 import { compilerAvailable } from "../renderers.js";
 import { LOCAL_OUTPUTS } from "../desktop/client.js";
 import { parseQuarto } from "../engines/quarto.js";
-import { docxFile, inlineBlobUrls } from "./downloads.js";
+import { docxFile, inlineBlobUrls, inlineFigureReferences } from "./downloads.js";
+import { figureSyntaxReady, referencedFigures } from "../figure-references.js";
+import { fillFigures, placeholderUrl } from "../missing-figures.js";
 import { m } from "../paraglide/messages.js";
 
 export const EXPORT_TARGETS = ["pdf", "html", "docx"];
@@ -36,8 +42,8 @@ export function unrunCells(format, tree) {
 }
 
 /// Whether the command on this computer makes `target` for `format`. `local`
-/// says the desktop app builds this document there, which is the Reader's
-/// answer to the Run code switch and the format's backend; `outputs` is the
+/// says the desktop app builds this document there. For other formats the Run
+/// code switch decides that; for Quarto, a Run directory does. `outputs` is the
 /// table of what each format has a command for. The menu and the export both
 /// ask this, so a file the menu offers is the file the export makes.
 export function madeLocally(format, target, local, outputs = LOCAL_OUTPUTS) {
@@ -57,7 +63,7 @@ export function exportAvailability(format, target, deps = {}) {
   const hasPandoc = deps.pandoc ?? pandocAvailable();
   const compiler = deps.compiler ?? compilerAvailable;
   if (!EXPORT_TARGETS.includes(target)) return { ok: false, reason: m.exports_kind_not_exportable() };
-  if (!["latex", "typst", "markdown", "quarto", "html"].includes(format)) {
+  if (!["latex", "typst", "markdown", "quarto", "org", "html"].includes(format)) {
     return { ok: false, reason: m.exports_formats_only() };
   }
   if (madeLocally(format, target, deps.local, deps.outputs)) return { ok: true };
@@ -66,7 +72,16 @@ export function exportAvailability(format, target, deps = {}) {
     return { ok: true };
   };
   const pandocNeed = [hasPandoc, m.exports_no_pandoc()];
-  const noRenderer = (name) => [compiler(name), m.exports_no_renderer({ name: name === "latex" ? "LaTeX" : name === "typst" ? "Typst" : "Markdown" })];
+  const noRenderer = (name) => [compiler(name), m.exports_no_renderer({ name: name === "latex" ? "LaTeX" : name === "typst" ? "Typst" : name === "org" ? "Org" : "Markdown" })];
+  // Org renders to one HTML page. Its PDF is Pandoc's LaTeX for the Org text,
+  // compiled by the LaTeX renderer, or Pandoc's Typst compiled by the Typst
+  // renderer where there is no LaTeX compiler. Its Word file is Pandoc's reading
+  // of that HTML page, as for Markdown.
+  if (format === "org") {
+    if (target === "html") return needs(noRenderer("org"));
+    if (target === "pdf") return needs(pandocNeed, [compiler("latex") || compiler("typst"), m.exports_no_renderer({ name: "LaTeX" })]);
+    return needs(noRenderer("org"), pandocNeed);
+  }
   if (format === "html") {
     if (target === "html") return { ok: true };
     return target === "pdf" ? needs(noRenderer("typst"), pandocNeed) : needs(pandocNeed);
@@ -100,6 +115,28 @@ export function pandocMath(html) {
   );
 }
 
+/// The tree an export is built from: figures of the last run and placeholders
+/// filled in on a copy, so the export always proceeds. `missing` lists the
+/// references that are in neither the project nor the run, for one warning.
+/// `references` defaults to what the tree refers to; `resultsFiles` is the
+/// `files` of the last run's results, or null.
+export function figuresForExport(tree, { references = referencedFigures(tree), resultsFiles = null } = {}) {
+  const copy = { ...tree, assets: { ...tree.assets }, urls: { ...tree.urls } };
+  const { missing, placeholders } = fillFigures(copy, { references, resultsFiles });
+  return { tree: copy, missing, placeholders };
+}
+
+/// An authored HTML page is exported as written, so each src naming a missing
+/// figure, or a project figure that could not be fetched, is replaced by the
+/// placeholder picture.
+function placeholderSources(html, placeholders) {
+  let out = html;
+  for (const { name, path } of placeholders) {
+    for (const quote of ['"', "'"]) out = out.split(`src=${quote}${name}${quote}`).join(`src=${quote}${placeholderUrl(path)}${quote}`);
+  }
+  return out;
+}
+
 /// Produce the file to save, from what this tab holds and nothing else.
 ///
 /// - `tree`: the full render tree, assets and urls already gathered.
@@ -108,17 +145,35 @@ export function pandocMath(html) {
 ///   wanted and `previewCurrent` says it is of the source on screen.
 /// - `project`: the document's slug, which a local build is scoped to.
 /// - `render`: `renderers.render`. `run`: Pandoc.
+/// - `compiler`: whether a format has a renderer on this deployment; an Org PDF
+///   uses LaTeX when it does, and Typst otherwise.
 /// - `local`: whether the desktop app builds the file with the command for
 ///   its format, false for the browser route.
 ///
-/// Resolves `{ blob, name }`; rejects with an Error whose message is a plain
-/// sentence.
-export async function exportFile({ target, format, tree, title, slug, project = "", preview, previewCurrent, render: renderIn, run, local = false }) {
+/// - `resultsFiles`: the `files` of the last run's results (null when none).
+///   Figures from them, and placeholders for any that are missing, are put in
+///   the tree first, so the export is never refused for a missing figure.
+///
+/// Resolves `{ blob, name, missing }`, `missing` being the figure references
+/// that are in neither the project nor the run; rejects with an Error whose
+/// message is a plain sentence.
+export async function exportFile({ tree: given, resultsFiles = null, ...options }) {
+  await figureSyntaxReady(given);
+  // A local build reads the Run directory itself; filling the tree would
+  // upload stale figures and placeholders over the fresh ones.
+  // A target that falls back to the browser (Typst DOCX, say) still needs the fill.
+  const { tree, missing, placeholders } = madeLocally(options.format, options.target, options.local) ? { tree: given, missing: [], placeholders: [] } : figuresForExport(given, { resultsFiles });
+  const file = await exportFilled({ ...options, tree, missing, placeholders });
+  return { ...file, missing };
+}
+
+/** @param {any} args */
+async function exportFilled({ target, format, tree, missing = [], placeholders = missing, title, slug, project = "", preview, previewCurrent, render: renderIn, run, local = false, compiler = compilerAvailable }) {
   const reused = previewCurrent && preview?.kind === target ? preview : null;
   const render = (source, name, options) => renderIn(source, name, options);
 
   // The desktop app builds the target itself, with no Pandoc step. The frame
-  // is not reused: its page may predate Run code and lack the cells' results.
+  // is not reused: its page may predate the last run and lack the cells' results.
   async function localBuild() {
     const result = await render(tree, title, {
       format: target,
@@ -136,8 +191,9 @@ export async function exportFile({ target, format, tree, title, slug, project = 
       return { blob: new Blob([result.pdf], { type: "application/pdf" }), name: `${slug}.pdf` };
     }
     if (target === "html") {
-      if (typeof result?.html !== "string") throw failure(result, target);
-      return { blob: new Blob([await inlineBlobUrls(result.html)], { type: "text/html" }), name: `${slug}.html` };
+      const page = result?.exportHtml ?? result?.html;
+      if (typeof page !== "string") throw failure(result, target);
+      return { blob: new Blob([await inlineBlobUrls(page)], { type: "text/html" }), name: `${slug}.html` };
     }
     if (result?.artifactKind !== "docx" || !result.artifact) throw failure(result, target);
     return docxFile(result.artifact, slug);
@@ -148,6 +204,11 @@ export async function exportFile({ target, format, tree, title, slug, project = 
     let result;
     if (format === "html") {
       result = await render(await typstTree(tree, { from: "html", run }), title, { format: "pdf", project });
+    } else if (format === "org") {
+      // LaTeX when this deployment has its compiler, else the Typst route.
+      result = compiler("latex")
+        ? await render(await orgLatexTree(tree, { run }), title, { format: "pdf", project })
+        : await render(await typstTree(tree, { from: "org", run }), title, { format: "pdf", project });
     } else if (format === "markdown" || format === "quarto") {
       result = await render(tree, title, { format: "pdf", project, buildPreferences: MARKDOWN_PDF });
     } else {
@@ -161,9 +222,14 @@ export async function exportFile({ target, format, tree, title, slug, project = 
     if (format === "html") {
       const source = tree.texts?.[tree.main];
       if (typeof source !== "string") throw new Error(m.exports_html_unreadable());
-      return source;
+      return placeholderSources(source, placeholders);
     }
-    if (previewCurrent && preview?.kind === "html") return inlineBlobUrls(preview.html);
+    // The live preview names its figures by reference, which the download
+    // cannot use, so those become the data URLs the tree was gathered with.
+    // A reference the tree cannot give back (a figure of the last run, which
+    // the page names by reference) sends the export to a fresh render instead.
+    const inlined = previewCurrent && preview?.kind === "html" ? inlineFigureReferences(preview.html, tree) : null;
+    if (inlined !== null && !inlined.includes("about:blank#librepaper-asset=")) return inlineBlobUrls(inlined);
     const markdown = format === "markdown" || format === "quarto";
     const result = await render(tree, title, markdown
       ? { format: "html", project, buildPreferences: MARKDOWN_HTML }

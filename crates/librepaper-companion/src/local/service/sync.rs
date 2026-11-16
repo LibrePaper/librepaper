@@ -75,7 +75,11 @@ pub(super) fn failed(error: &Error) -> Failure {
             refuse(400, &error.to_string())
         }
         Error::Network(_) | Error::Http { .. } | Error::Trimmed => refuse(502, &error.to_string()),
-        Error::Io { .. } | Error::Git(_) | Error::State(_) => refuse(500, &error.to_string()),
+        Error::Io { .. }
+        | Error::Git(_)
+        | Error::GitTimeout { .. }
+        | Error::GitOutput { .. }
+        | Error::State(_) => refuse(500, &error.to_string()),
     }
 }
 

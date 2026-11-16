@@ -7,6 +7,7 @@ pub mod auth;
 pub mod canonical_json;
 pub mod config;
 pub mod digest;
+pub mod git_env;
 pub mod http;
 pub mod ids;
 pub mod lines;

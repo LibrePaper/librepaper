@@ -7,6 +7,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use librepaper_base::http::{
+    read_bounded, CLIENT_HEADER, CLIENT_MARKER, MAX_FILE_BYTES, MAX_PROJECT_BYTES,
+    MAX_RESPONSE_BYTES as BACKUP_RESPONSE_MAX_BYTES,
+};
 use librepaper_base::pages::{walk, ListingCursor, Page, WalkError, LISTING_MAX_PAGES};
 use librepaper_base::paths::RelPath;
 use librepaper_document::document::projection::HeadSnapshot as Snapshot;
@@ -20,9 +24,6 @@ const NAMESPACE_FILE: &str = ".librepaper-backup-namespace.json";
 const OWNER_TAG: &str = "librepaper-backup-v1";
 const MAX_PROJECTS: usize = 20_000;
 const MAX_FILES_PER_PROJECT: usize = 20_000;
-const MAX_FILE_BYTES: usize = 128 * 1024 * 1024;
-const MAX_PROJECT_BYTES: usize = 512 * 1024 * 1024;
-const BACKUP_RESPONSE_MAX_BYTES: usize = 160 * 1024 * 1024;
 
 #[cfg(test)]
 struct BackupWriterPause {
@@ -91,15 +92,11 @@ pub(crate) async fn run_backup(
     let manifest_path = root.join(MANIFEST_FILE);
     let mut manifest = load_manifest(&manifest_path, &normalized_server, account_id)?;
 
-    // These requests carry a bearer token, so redirects must never forward it
-    // to a different host. Response and per-project limits bound disk and RAM.
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|error| format!("could not create backup HTTP client: {error}"))?;
-    let documents = list_documents(&client, &normalized_server, token).await?;
+    // The shared credentialed client never follows a redirect (these requests
+    // carry a bearer token), connects within 5 s, and sends the same user agent
+    // as the other clients. Each request sets its own 60 s timeout below.
+    let client = librepaper_base::http::credentialed_client();
+    let documents = list_documents(client, &normalized_server, token).await?;
     let mut updated = 0;
     let mut failures = Vec::new();
 
@@ -137,7 +134,7 @@ pub(crate) async fn run_backup(
             }
 
             let fetched = fetch_snapshot(
-                &client,
+                client,
                 &normalized_server,
                 token,
                 slug,
@@ -172,7 +169,7 @@ pub(crate) async fn run_backup(
                         return Ok(false);
                     }
                     // Archive is missing/damaged, fetch again without if-none-match.
-                    match fetch_snapshot(&client, &normalized_server, token, slug, None).await? {
+                    match fetch_snapshot(client, &normalized_server, token, slug, None).await? {
                         Fetched::Snapshot(s) => s,
                         Fetched::NotModified => {
                             return Err("unexpected 304 response without if-none-match".into())
@@ -264,7 +261,7 @@ pub(crate) async fn run_backup(
                 None => BTreeMap::new(),
             };
             let entries = materialize_snapshot(
-                &client,
+                client,
                 &normalized_server,
                 token,
                 slug,
@@ -450,6 +447,7 @@ async fn list_documents(
                 let response = client
                     .get(target)
                     .bearer_auth(token)
+                    .header(CLIENT_HEADER, CLIENT_MARKER)
                     .timeout(Duration::from_secs(60))
                     .send()
                     .await
@@ -513,7 +511,10 @@ async fn fetch_snapshot(
     if_none_match: Option<&str>,
 ) -> Result<Fetched, String> {
     let target = document_url(server, slug, "project")?;
-    let mut request = client.get(target).bearer_auth(token);
+    let mut request = client
+        .get(target)
+        .bearer_auth(token)
+        .header(CLIENT_HEADER, CLIENT_MARKER);
     if let Some(digest) = if_none_match {
         request = request.header("if-none-match", format!("\"{digest}\""));
     }
@@ -624,6 +625,7 @@ async fn fetch_asset(
     let response = client
         .get(target)
         .bearer_auth(token)
+        .header(CLIENT_HEADER, CLIENT_MARKER)
         .timeout(Duration::from_secs(60))
         .send()
         .await
@@ -648,28 +650,13 @@ async fn response_json(
 }
 
 async fn response_bytes(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     limit: usize,
     label: &str,
 ) -> Result<Vec<u8>, String> {
-    if response
-        .content_length()
-        .is_some_and(|size| size > limit as u64)
-    {
-        return Err(format!("{label} response exceeds the size limit"));
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
+    read_bounded(response, limit)
         .await
-        .map_err(|error| format!("could not read {label} response: {error}"))?
-    {
-        if bytes.len().saturating_add(chunk.len()) > limit {
-            return Err(format!("{label} response exceeds the size limit"));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
+        .map_err(|error| format!("{label} response: {error}"))
 }
 
 fn write_archive(
@@ -1176,12 +1163,26 @@ mod tests {
         snapshot_hits: AtomicUsize,
         not_modified_hits: AtomicUsize,
         ignore_if_none_match: AtomicBool,
+        /// The user agent and client marker of every request that came in.
+        identities: Mutex<Vec<(Option<String>, Option<String>)>>,
     }
 
     async fn list_page(
         State(state): State<Arc<Fixture>>,
         Query(query): Query<BTreeMap<String, String>>,
+        headers: axum::http::HeaderMap,
     ) -> Json<Value> {
+        let seen = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+        };
+        state
+            .identities
+            .lock()
+            .unwrap()
+            .push((seen("user-agent"), seen("x-librepaper-client")));
         let revision = state.revision.load(Ordering::SeqCst);
         let epoch = state.listing_epoch.load(Ordering::SeqCst);
         if query.contains_key("after_slug") {
@@ -1386,6 +1387,25 @@ mod tests {
             })
             .unwrap();
         assert_eq!(archive_files(&shared)["images/plot.bin"], b"\x00\x01\xff");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn requests_carry_the_shared_user_agent_and_client_marker() {
+        let (server, state, task) = start_fixture().await;
+        let output = tempfile::tempdir().unwrap();
+        run_backup(&server, "token", "account-one", output.path())
+            .await
+            .unwrap();
+        let identities = state.identities.lock().unwrap().clone();
+        assert!(!identities.is_empty());
+        for (agent, marker) in identities {
+            assert_eq!(agent.as_deref(), Some(librepaper_base::http::USER_AGENT));
+            assert_eq!(
+                marker.as_deref(),
+                Some(librepaper_base::http::CLIENT_MARKER)
+            );
+        }
         task.abort();
     }
 

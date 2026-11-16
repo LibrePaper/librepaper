@@ -115,6 +115,11 @@ pub struct JobRequest {
     /// Always `hosted`, the workspace the service owns for the document.
     pub binding_id: String,
     pub manifest: Vec<ManifestEntry>,
+    /// Project-relative paths of figures the document refers to that are not
+    /// project files, to read from the Run directory after a Quarto or Typst
+    /// run. Older pages send none.
+    #[serde(default)]
+    pub wanted: Vec<String>,
     #[serde(default)]
     pub options: JobOptions,
 }
@@ -230,11 +235,25 @@ pub struct JobStatus {
     pub generation: u64,
     #[serde(default)]
     pub log_tail: String,
-    /// `artifact`, `synctex` when found, and `log`.
+    /// `artifact`, `synctex` when found, `results` for a Typst run through
+    /// Calepin, and `log`.
     #[serde(default)]
     pub outputs: BTreeMap<String, OutputEntry>,
     #[serde(default)]
     pub provenance: Provenance,
+    /// Things the user should know about the Run directory overlay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<Notice>,
+}
+
+/// One thing worth telling the user about a render. `kind` is `clash` (the
+/// path is both a project file and in the Run directory; the project's copy
+/// is used) or `not-linked` (a Run directory entry could not be made
+/// available). `path` is workspace-relative with forward slashes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Notice {
+    pub kind: String,
+    pub path: String,
 }
 
 /// What the pipeline hands back to the service for one job: the status
@@ -243,7 +262,7 @@ pub struct JobStatus {
 #[derive(Clone, Debug, Default)]
 pub struct JobOutcome {
     pub status: JobStatus,
-    /// `artifact`, `synctex`, `log` as raw bytes.
+    /// `artifact`, `synctex`, `results`, `log` as raw bytes.
     pub files: BTreeMap<String, Vec<u8>>,
 }
 

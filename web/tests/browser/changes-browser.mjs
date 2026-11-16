@@ -2,7 +2,7 @@
 //
 // What is pinned here is what a reviewer can actually do: see the words a
 // change takes out beside the ones it puts in, narrow the queue to one author,
-// file or run, walk it from the keyboard, answer the change they are
+// file, run or task, walk it from the keyboard, answer the change they are
 // looking at, and answer for several at once. A reader without the right to
 // review sees the rows and no verbs. At phone width the controls stay on one
 // line each and line up with the rows beneath them.
@@ -71,8 +71,8 @@ window.rows = () => [...document.querySelectorAll('.change-row')].map((row) => (
   removed: row.querySelector('.deletion .change-text')?.textContent?.trim() || '',
   added: row.querySelector('.insertion .change-text')?.textContent?.trim() || '',
   meta: row.querySelector('.row-meta')?.textContent?.trim() || '',
-  active: row.classList.contains('active'),
-  picked: row.classList.contains('picked'),
+  active: row.getAttribute('aria-current') === 'true',
+  picked: !!row.querySelector('.row-pick')?.checked,
 }));
 window.count = () => document.querySelector('.changes-toolbar .changes-count')?.textContent?.trim() || '';
 window.scope = () => document.querySelector('.changes-toolbar .scope-label')?.textContent?.trim() || '';
@@ -102,9 +102,10 @@ window.key = (key) => {
 // Only the menu actually on show counts. Closed menus keep their items in the
 // page, so the open one is the only list that is read.
 const openItems = () => [...document.querySelectorAll('[data-part="content"][data-state="open"] [data-part="item"]')];
-window.select = async () => {
+// The toolbar's Select all ticks every answerable row in view.
+window.selectAll = async () => {
   const button = document.querySelector('.changes-toolbar .select-start');
-  if (!button) throw new Error('selection is unavailable');
+  if (!button) throw new Error('select all is unavailable');
   button.click();
   await settle();
 };
@@ -129,9 +130,14 @@ window.filter = async (label) => {
   press(item);
   await settle();
 };
-window.pick = (id) => {
-  mainOf(id).closest('.change-row').querySelector('.row-pick').click();
+// A Shift-click on the row's main part ticks it, which is how a desktop reader
+// starts a selection while the boxes are hidden.
+window.shiftClick = (id) => {
+  mainOf(id).dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, shiftKey: true }));
 };
+// The checkboxes a reader can see. On a desktop that is none until a selection
+// starts.
+window.visiblePicks = () => [...document.querySelectorAll('.row-pick')].filter((node) => node.getClientRects().length > 0).length;
 window.barButton = (word) => [...document.querySelectorAll('.select-bar button')]
   .find((node) => node.textContent.trim().startsWith(word)) || null;
 window.confirmButton = () => document.querySelector('.confirm-bar .bar-action.confirm');
@@ -224,7 +230,29 @@ try {
   await ev("window.show({ changes: window.rowsData.map((row) => ({ ...row, run: '' })) })");
   assert.deepEqual(await ev("window.filterItems()"), ["All changes", "Ada", "Grace (you)", "paper.md", "notes.md"],
     "no run, no run scope");
+  // The ids handed in by the reader open the panel narrowed to exactly those
+  // rows, even when they belong to different runs. The scope menu widens it
+  // again.
+  await ev("window.show({ ids: ['c2', 'c3'] })");
+  await waitFor("opened on ids", "window.rows().length === 2");
+  assert.deepEqual((await ev("window.rows()")).map((row) => row.id).sort(), ["c2", "c3"], "a task scope shows exactly those rows");
+  assert.equal(await ev("window.scope()"), "This task", "the task scope is named");
+  assert.equal(await ev("window.count()"), "2 pending");
+  assert.equal(await ev("!!document.querySelector('.ids-bar')"), false, "there is no ids bar");
+  assert.equal(await ev("!!document.querySelector('.show-all')"), false, "and no show all button");
+  await ev('window.filter("All changes")');
+  await waitFor("task scope cleared", "window.rows().length === 3");
 
+  // A scope that hides every change says so. The scope menu is the way back.
+  await ev("window.show({ ids: ['zz'] })");
+  await waitFor("nothing in this task", "document.querySelector('.changes-empty-title')?.textContent?.includes('No pending changes in this task')");
+  assert.equal(await ev("document.querySelectorAll('.change-row').length"), 0, "no rows are shown");
+  assert.equal(await ev("window.empty()"), "No pending changes in this task");
+  assert.equal(await ev("window.emptyNote()"), "3 pending in all changes.");
+  assert.equal(await ev("!!document.querySelector('.clear-filters')"), false, "there is no clear button");
+  assert.equal(await ev("!!document.querySelector('.scope-trigger')"), true, "the scope menu is still there");
+  await ev('window.filter("All changes")');
+  await waitFor("filters restored", "window.rows().length === 3");
   await ev("window.show()");
 
   // Answering a change calls back with the row, and the queue moves on to the
@@ -263,23 +291,33 @@ try {
   await ev("document.querySelector('.tracking-toggle').click()");
   await waitFor("tracking asked", "window.tracked.length > 0");
 
-  // Ticking rows, and the verbs that go with it, are a mode entered from the
-  // toolbar. An ordinary review is a queue of changes rather than a queue of
-  // changes wearing checkboxes, and there is no bulk menu to open.
+  // Every answerable row carries a checkbox in the page, so ticking needs no
+  // mode to enter. On a desktop the boxes stay hidden until a selection starts:
+  // a Shift-click ticks a row and shows them all, and the x key ticks the
+  // active row the same way. The selection bar of verbs appears once a box is
+  // ticked.
   await ev("window.show()");
-  assert.equal(await ev("window.canSelect()"), true, "with changes pending the select control is offered");
-  assert.equal(await ev("window.picks()"), 0, "no checkboxes until selection is asked for");
-  assert.equal(await ev("!!document.querySelector('.select-bar')"), false, "and no selection bar standing above the queue");
-  await ev("window.select()");
-  await waitFor("selecting", "window.picks() === 3");
-  assert.equal(await ev("!!document.querySelector('.select-start')"), false, "the select control gives way to the selection bar");
-  assert.equal(await ev("!!document.querySelector('.scope-trigger')"), false, "and the scope is not offered while ticking");
-  assert.equal(await ev("window.selectedCount()"), "0 selected");
-  assert.equal(await ev("window.barButton('Accept').disabled"), true, "with nothing ticked there is nothing to answer for");
-  await ev('window.pick("c1")');
-  await ev('window.pick("c2")');
+  assert.equal(await ev("window.canSelect()"), true, "with changes pending the select all control is offered");
+  assert.equal(await ev("window.picks()"), 3, "every answerable row has a checkbox in the page");
+  assert.equal(await ev("window.visiblePicks()"), 0, "but on a desktop no box shows before a selection starts");
+  assert.equal(await ev("!!document.querySelector('.select-bar')"), false, "no selection bar while nothing is ticked");
+  assert.equal(await ev("!!document.querySelector('.scope-trigger')"), true, "and the scope menu is still offered");
+  await ev('window.shiftClick("c1")');
+  await waitFor("one ticked by shift", 'window.selectedCount() === "1 selected"');
+  assert.equal(await ev("window.visiblePicks()"), 3, "a selection shows every box");
+  assert.deepEqual((await ev("window.rows()")).filter((row) => row.picked).map((row) => row.id), ["c1"], "the shift-clicked row is ticked");
+  // The x key toggles the active row, which is the first row here.
+  await ev('window.key("x")');
+  await waitFor("x unticks the active row", "window.rows().filter((row) => row.picked).length === 0");
+  assert.equal(await ev("window.visiblePicks()"), 0, "with nothing ticked the boxes hide again");
+  await ev('window.key("x")');
+  await waitFor("x ticks the active row", 'window.selectedCount() === "1 selected"');
+  await ev('window.shiftClick("c2")');
   await waitFor("two ticked", 'window.selectedCount() === "2 selected"');
+  assert.equal(await ev("!!document.querySelector('.select-start')"), false, "the select all control gives way to the selection bar");
+  assert.equal(await ev("!!document.querySelector('.scope-trigger')"), false, "and the scope is not offered while ticking");
   assert.deepEqual((await ev("window.rows()")).filter((row) => row.picked).map((row) => row.id).sort(), ["c1", "c2"], "the ticked rows are marked");
+  assert.equal(await ev("window.actionCount()"), 6, "ticked rows keep their own Accept and Reject buttons");
   await ev("window.barButton('Reject').click()");
   assert.match(await ev("window.confirmText()"), /Reject 2 selected changes\?/, "two ticks are confirmed before they are answered");
   assert.equal(await ev("window.rejected.length"), 0, "nothing is rejected until the confirmation is given");
@@ -288,12 +326,12 @@ try {
   assert.deepEqual((await ev("window.rejected")).sort(), ["c1", "c2"]);
   assert.deepEqual((await ev("window.rejectManyCalls")).map((ids) => [...ids].sort()), [["c1", "c2"]], "one call carries both ids");
   assert.match(await ev("window.feedback()"), /2 changes rejected/);
-  assert.equal(await ev("window.picks()"), 0, "the ticks are spent and the mode closes behind them");
+  assert.equal(await ev("!!document.querySelector('.select-bar')"), false, "the ticks are spent and the bar closes behind them");
+  assert.equal(await ev("window.rows().filter((row) => row.picked).length"), 0, "and no box stays ticked");
 
   // A single ticked row is answered at once, with no confirmation in the way.
   await ev("window.show()");
-  await ev("window.select()");
-  await ev('window.pick("c3")');
+  await ev('window.shiftClick("c3")');
   await waitFor("one ticked", 'window.selectedCount() === "1 selected"');
   await ev("window.barButton('Accept').click()");
   await waitFor("single accepted", "window.accepted.length === 1");
@@ -304,8 +342,7 @@ try {
   // scope the verb is plain Accept, because it cannot reach the whole project.
   await ev("window.show()");
   await ev('window.filter("paper.md")');
-  await ev("window.select()");
-  await ev("window.barButton('Select all').click()");
+  await ev("window.selectAll()");
   await waitFor("selected all in view", 'window.selectedCount() === "2 selected"');
   assert.equal(await ev("window.barButton('Select all').disabled"), true, "and offers nothing more to tick");
   assert.equal(await ev("window.barButton('Accept').textContent.trim()"), "Accept", "one file in scope, so the verb is Accept and not Accept all");
@@ -313,9 +350,8 @@ try {
   // Accept all and Reject all come from ticking every change in the project.
   // Each asks once more before it answers anything.
   await ev("window.show()");
-  await ev("window.select()");
-  await ev("window.barButton('Select all').click()");
-  await waitFor("all three ticked", 'window.selectedCount() === "3 selected"');
+  await ev("window.selectAll()");
+  await waitFor("all three ticked",'window.selectedCount() === "3 selected"');
   assert.equal(await ev("window.barButton('Accept').textContent.trim()"), "Accept all", "with every change ticked the verb names the project");
   await ev("window.barButton('Accept').click()");
   await waitFor("asked to confirm", "/Accept all 3 pending changes in this project\\?/.test(document.querySelector('.confirm-bar .confirm-text')?.textContent || '')");
@@ -326,9 +362,8 @@ try {
   assert.match(await ev("window.feedback()"), /3 changes accepted/);
 
   await ev("window.show()");
-  await ev("window.select()");
-  await ev("window.barButton('Select all').click()");
-  await waitFor("all ticked for reject", 'window.selectedCount() === "3 selected"');
+  await ev("window.selectAll()");
+  await waitFor("all ticked for reject",'window.selectedCount() === "3 selected"');
   assert.equal(await ev("window.barButton('Reject').textContent.trim()"), "Reject all", "with every change ticked the reject verb names the project");
   await ev("window.barButton('Reject all').click()");
   await waitFor("reject asked", "!!document.querySelector('.confirm-bar')");
@@ -337,10 +372,9 @@ try {
   assert.deepEqual((await ev("window.rejectManyCalls")).map((ids) => [...ids].sort()), [["c1", "c2", "c3"]], "reject all is one call with every id");
 
   // Escape closes the confirmation without answering anything, and a second
-  // Escape leaves selection mode.
+  // Escape clears the ticks, which takes the selection bar with them.
   await ev("window.show()");
-  await ev("window.select()");
-  await ev("window.barButton('Select all').click()");
+  await ev("window.selectAll()");
   await waitFor("all ticked for escape", 'window.selectedCount() === "3 selected"');
   await ev("window.barButton('Reject all').click()");
   await waitFor("confirmation open", "!!document.querySelector('.confirm-bar')");
@@ -349,7 +383,9 @@ try {
   assert.deepEqual(await ev("window.rejected"), []);
   assert.equal(await ev("!!document.querySelector('.select-bar')"), true, "the first Escape leaves the selection in place");
   await ev('window.key("Escape")');
-  await waitFor("selection closed", "!document.querySelector('.select-bar')");
+  await waitFor("selection cleared", "!document.querySelector('.select-bar')");
+  assert.equal(await ev("window.rows().filter((row) => row.picked).length"), 0, "the second Escape unticks every row");
+  assert.equal(await ev("window.picks()"), 3, "and the checkboxes stay for the next pass");
   assert.deepEqual(await ev("window.rejected"), [], "and still nothing is rejected");
 
   // A refused decision is reported and leaves the row where it was.
@@ -367,7 +403,7 @@ try {
   assert.equal(await ev("!!document.querySelector('.row-diff.clamped')"), false, "and the whole change is shown");
 
   // Without the right to review the queue is readable and inert: no verbs, no
-  // selection mode, no select control.
+  // checkboxes, no select control.
   await ev("window.show({ canReview: false })");
   assert.equal((await ev("window.rows()")).length, 3, "a reader still sees every change");
   assert.equal(await ev("window.actionCount()"), 0, "and is offered no button to answer one");
@@ -389,8 +425,8 @@ try {
   // At phone width the panel does not scroll sideways, each header control
   // stays on one line, and the left and right edges line up with the rows.
   await ev("document.body.style.width = '240px'");
-  await ev("window.show()");
-  await waitFor("narrow rows", "window.rows().length === 3");
+  await ev("window.show({ ids: ['c2', 'c3'] })");
+  await waitFor("narrow rows", "window.rows().length === 2");
   await ev("new Promise((resolve) => setTimeout(resolve, 60))");
   const narrow = await ev(`(() => {
     const panel = document.querySelector('.changes-panel');
@@ -398,24 +434,21 @@ try {
     return {
       scrollWidth: panel.scrollWidth,
       clientWidth: panel.clientWidth,
-      titleHeight: box('.changes-title-row').height,
+      titleHeight: box('.changes-panel .panel-tabs-row').height,
       toolbarHeight: box('.changes-toolbar').height,
-      titleLeft: box('.panel-section-title').left,
-      scopeLeft: box('.scope-trigger').left,
-      rowLeft: box('.change-row .row-main').left,
-      toggleRight: box('.tracking-toggle').right,
-      endRight: box('.toolbar-end').right,
+      scopeLeft: box('.scope-label').left,
+      rowLeft: box('.change-row > :first-child').left,
+      trackingInTabRow: !!document.querySelector('.panel-tabs-row .tracking-toggle'),
     };
   })()`);
   await ev("document.body.style.width = ''");
   assert.ok(narrow.scrollWidth <= narrow.clientWidth, `the panel does not scroll sideways (${narrow.scrollWidth} against ${narrow.clientWidth})`);
-  assert.ok(narrow.titleHeight < 48, `the title row is one line (${narrow.titleHeight}px)`);
+  assert.ok(narrow.titleHeight < 48, `the tab row, with the tracking switch in it, is one line (${narrow.titleHeight}px)`);
+  assert.equal(narrow.trackingInTabRow, true, "the tracking switch sits in the tab row");
   assert.ok(narrow.toolbarHeight < 48, `the toolbar is one line (${narrow.toolbarHeight}px)`);
-  assert.ok(Math.abs(narrow.titleLeft - narrow.scopeLeft) <= 1, "the title and the scope trigger share a left edge");
-  assert.ok(Math.abs(narrow.scopeLeft - narrow.rowLeft) <= 1, "the scope trigger and the rows share a left edge");
-  assert.ok(Math.abs(narrow.toggleRight - narrow.endRight) <= 1, "the tracking switch and the count end on one right edge");
+  assert.ok(Math.abs(narrow.scopeLeft - narrow.rowLeft) <= 1, "the scope name and the rows share a left edge");
 
-  console.log("changes-browser: rows with kinds, authors and locations, the scope menu, keyboard, selection with Accept all and Reject all, Escape, long changes, read-only readers, the empty queue and the phone-width layout passed");
+  console.log("changes-browser: rows with kinds, authors and locations, the scope menu, task and empty scopes, keyboard, selection with Accept all and Reject all, Escape, long changes, read-only readers, the empty queue and the phone-width layout passed");
 } finally {
   await page?.close();
   server?.close();

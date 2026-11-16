@@ -36,12 +36,14 @@ async function request(path) {
 
 const sourceText = async (slug) => {
   const snapshot = await request(`/api/documents/${slug}/snapshot`);
-  return snapshot.texts?.[snapshot.main] ?? snapshot.source;
+  // A project has no main file any more; a Markdown source is published as
+  // document.md.
+  return snapshot.texts?.["document.md"];
 };
 
 const openChanges = async (page = editor) => {
   const changesTab = `([...document.querySelectorAll('button, a')]
-    .find((button) => [button.getAttribute('aria-label'), button.title, button.textContent.trim()]
+    .find((button) => [button.getAttribute('aria-label'), button.getAttribute("data-tip"), button.textContent.trim()]
       .includes('Changes')))`;
   await until("Changes tab", () => page.evaluate(`Boolean(${changesTab})`));
   await page.evaluate(`${changesTab}.click()`);

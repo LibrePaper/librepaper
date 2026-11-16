@@ -11,7 +11,7 @@ fn assistant_capabilities(role: Role) -> Value {
         "can_delete": caps.comment,
         "can_resolve": caps.comment,
         "can_label": caps.edit,
-        "can_suggest": caps.edit,
+        "can_suggest": caps.suggest,
         "can_reply": caps.comment,
     })
 }
@@ -67,7 +67,12 @@ impl Server {
             Ok(auth) => (auth.entry, auth.viewer),
             Err(refusal) => return access::deny(&refusal),
         };
-        let link_hash = self.link_hash(headers, None);
+        // The link is the one the access check resolved: the key this request
+        // carried, or, for a signed-in guest, the live link they were pinned to
+        // on their first visit. Reading only the request header would miss the
+        // pinned link and report "not found" for a guest opening the document
+        // from the project list.
+        let link_hash = who.link.clone();
         let Some(role) = assistant_link_role(
             &entry,
             &who,
@@ -86,10 +91,11 @@ mod capability_tests {
     use super::*;
 
     #[test]
-    fn suggesting_requires_editor_permission_while_comments_allow_commenters() {
+    fn suggesting_requires_suggester_permission_while_comments_allow_commenters() {
         for (role, can_suggest, can_edit, can_comment) in [
             (Role::Reader, false, false, false),
             (Role::Commenter, false, false, true),
+            (Role::Suggester, true, false, true),
             (Role::Editor, true, true, true),
             (Role::Owner, true, true, true),
         ] {
@@ -132,6 +138,7 @@ mod capability_tests {
             bearer: false,
             auth_failed: false,
             token: None,
+            anonymous_ok: false,
         };
         let ceiling = librepaper_base::role::Ceiling {
             comment: true,

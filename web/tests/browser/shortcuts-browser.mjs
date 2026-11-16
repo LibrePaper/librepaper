@@ -111,7 +111,7 @@ try {
 
   await focusBody();
   await key("?", { code: "Slash", modifiers: ["shift"], virtual: 191 });
-  assert.equal(await dialog(), "Settings", "? on the page opens the settings");
+  await until("? on the page opens the settings", async () => (await dialog()) === "Settings", 4000);
 
   // The table is the registry drawn: keycaps, grouped, with the commands the
   // workspace is currently offering named. It lives on the Editor page of the
@@ -229,7 +229,7 @@ try {
   // same table, literally, and this is what says so.
   await focusBody();
   await key(",", { code: "Comma", modifiers: ["ctrl"], virtual: 188 });
-  assert.equal(await dialog(), "Settings", "Ctrl+, opens the settings");
+  await until("Ctrl+, opens the settings", async () => (await dialog()) === "Settings", 4000);
   // Settings opens on General. The table is on the Editor page.
   await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((node) => node.textContent.trim() === "Editor").click()`);
   await until("the editor page", () => b.evaluate(`Boolean(document.getElementById("editor-shortcuts"))`), 4000);

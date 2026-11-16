@@ -171,18 +171,19 @@ pub(super) fn deny(refusal: &Refusal) -> Reply {
 }
 
 /// Whether a comment must carry the render digest of the page it was written
-/// against. An editor annotates the live document, and everybody else
-/// annotates the exact projection that produced their page.
+/// against. A suggester or editor reads the live source and annotates it
+/// directly; everybody else annotates the exact projection that produced
+/// their page.
 pub(super) fn needs_render_digest(who: &Viewer, incoming: &RoomMessage) -> bool {
     incoming.kind() == "comment"
-        && !who.at_least(Role::Editor)
+        && !who.at_least(Role::Suggester)
         && incoming.render_digest().is_empty()
 }
 
-/// Whether a comment names a range of the source. Only an editor can read the
-/// source, so a commenter may not anchor to one.
+/// Whether a comment names a range of the source. Only a suggester or editor
+/// can read the source, so a commenter may not anchor to one.
 pub(super) fn source_comment_forbidden(who: &Viewer, incoming: &RoomMessage) -> bool {
-    incoming.kind() == "comment" && incoming.source().is_some() && !who.at_least(Role::Editor)
+    incoming.kind() == "comment" && incoming.source().is_some() && !who.at_least(Role::Suggester)
 }
 
 fn not_found() -> Refusal {

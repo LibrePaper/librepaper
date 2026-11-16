@@ -9,7 +9,7 @@ assert.deepEqual(note("main.tex", { path: "main.tex", reason: "alone" }), [], "a
 
 // --- no notes when the preview is locked elsewhere -------------------------
 
-assert.deepEqual(note("notes.dat", { path: "book.tex", reason: "locked" }), [], "the lock chip speaks for a locked preview");
+assert.deepEqual(note("notes.dat", { path: "book.tex", reason: "locked" }), [], "the eye in Files speaks for a locked preview");
 
 // --- a file with nothing to draw --------------------------------------------
 

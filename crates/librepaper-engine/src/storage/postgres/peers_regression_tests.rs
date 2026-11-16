@@ -129,3 +129,63 @@ async fn a_peer_written_through_a_share_link_reads_as_its_agent() {
     assert!(!human_peer.agent);
     assert_eq!(human_peer.name, "Owner name");
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_model_label_names_an_agent_peer_before_its_token() {
+    let catalog = catalog().await;
+    let _writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog, "Owner name").await;
+    let document = catalog
+        .create_document(NewDocument {
+            slug: format!("peers-{}", Uuid::now_v7()),
+            owner_id: owner.id,
+            owner_session_generation: Some(owner.session_generation),
+            ownership_mode: "owned".into(),
+            title: "Model label test".into(),
+            source_format: "markdown".into(),
+        })
+        .await
+        .unwrap();
+
+    // token_hash is globally unique, so the hash is unique per run.
+    let mut hash = [0u8; 32];
+    hash[..16].copy_from_slice(Uuid::now_v7().as_bytes());
+    hash[16..].copy_from_slice(Uuid::now_v7().as_bytes());
+    catalog
+        .create_share_link(document.id, Role::Editor, hash, "Agent".into(), None, None)
+        .await
+        .unwrap();
+
+    // One automation write reported a model label, the other reported none.
+    let mut tx = catalog.pool.begin().await.unwrap();
+    PostgresCatalog::record_document_peers_tx(
+        &mut tx,
+        document.id,
+        &[30],
+        Some(owner.id),
+        Some(&hash),
+        "Opus 5.5",
+    )
+    .await
+    .unwrap();
+    PostgresCatalog::record_document_peers_tx(
+        &mut tx,
+        document.id,
+        &[31],
+        Some(owner.id),
+        Some(&hash),
+        "",
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let authors = catalog.document_peer_authors(document.id).await.unwrap();
+    let labelled = authors.iter().find(|author| author.peer == 30).unwrap();
+    assert!(labelled.agent);
+    assert_eq!(labelled.name, "Opus 5.5");
+    let unlabelled = authors.iter().find(|author| author.peer == 31).unwrap();
+    assert!(unlabelled.agent);
+    assert_eq!(unlabelled.name, "Agent");
+}

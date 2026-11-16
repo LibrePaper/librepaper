@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::cli::{resolve_identifier, server_or_die};
-use librepaper_base::http::{detail_of, get_as, send, Credentials};
+use librepaper_base::http::{detail_of, get_as, send_bounded, Credentials, MAX_FILE_BYTES};
 use librepaper_base::paths::RelPath;
 use librepaper_base::util::die;
 use librepaper_engine::storage::source_archive::{self, ArchiveLimits, SourceFile};
@@ -162,6 +162,17 @@ async fn fetch_live_project(
         }
         files.push((relative, bytes));
     }
+    // Texts the allow list would refuse today still belong to the project.
+    // They carry no digest to check; one whose path cannot be written locally
+    // is skipped rather than failing the whole export.
+    for (path, body) in &snapshot.retained {
+        if snapshot.tree.files.contains_key(path) {
+            continue;
+        }
+        if let Ok(relative) = output_path(path) {
+            files.push((relative, body.as_bytes().to_vec()));
+        }
+    }
     Ok(files)
 }
 
@@ -173,12 +184,13 @@ async fn fetch_asset(
 ) -> Result<Vec<u8>, String> {
     let owned = who.headers();
     let headers: Vec<(&str, &str)> = owned.iter().map(|(n, v)| (*n, v.as_str())).collect();
-    let (status, bytes) = send(
+    let (status, bytes) = send_bounded(
         reqwest::Method::GET,
         &format!("{server}/api/documents/{slug}/assets/{digest}"),
         &headers,
         None,
         Duration::from_secs(60),
+        MAX_FILE_BYTES,
     )
     .await?;
     if status != 200 {
@@ -243,12 +255,15 @@ async fn fetch_labelled_project(
 
     let owned = who.headers();
     let headers: Vec<(&str, &str)> = owned.iter().map(|(n, v)| (*n, v.as_str())).collect();
-    let (status, bytes) = send(
+    // The decoder refuses an archive past its own limit, so a longer download
+    // is refused before it is buffered.
+    let (status, bytes) = send_bounded(
         reqwest::Method::GET,
         &format!("{server}/api/documents/{slug}/history/{label_id}/archive"),
         &headers,
         None,
         Duration::from_secs(60),
+        ArchiveLimits::default().archive_bytes,
     )
     .await?;
     if status != 200 {

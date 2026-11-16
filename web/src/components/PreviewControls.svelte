@@ -6,8 +6,9 @@
   // system's own button colours, which made the paged preview look like a
   // different application from the flowing one an inch to its left. They are
   // ordinary controls in a slim band across the top of the preview pane now,
-  // above the frame rather than over it, so they never cover a page. A format
-  // with no controls renders nothing here and the band costs it no height.
+  // above the frame rather than over it, so they never cover a page. The band
+  // always offers the save buttons, so a flowing (HTML) preview has one too;
+  // a band with nothing in it renders nothing and costs the format no height.
   //
   // Nothing is decided here: the frame owns the page it is on, the scale it
   // actually drew at and every other fact in `view`, and says so over the
@@ -17,15 +18,19 @@
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import MenuIconButton from "./MenuIconButton.svelte";
   import IconButton from "./IconButton.svelte";
+  import ToolBand from "./ToolBand.svelte";
   import { m } from "../lib/paraglide/messages.js";
 
-  // `view` is the whole validated viewer-state. `send` puts a message on the
-  // channel to the frame. `ondownload` is null when there is nothing to save
-  // yet, which hides the item rather than greying it: the band has no room to
-  // explain why. `findAsk` counts the times the frame asked for the search
-  // row (Ctrl or Cmd+F pressed inside it), so a second press focuses the field
-  // again even though the row is already open.
-  let { view, tool = "select", busy = false, dark = false, findAsk = 0, send, onmode, ontool, ondownload = null, onpresent } = $props();
+  // `view` is the whole validated viewer-state, or null when the format has no
+  // paged viewer (the PDF controls are then left out). `send` puts a message on
+  // the channel to the frame. `downloads` lists the formats that can be saved
+  // now, as `{ format, label }`; one entry is a plain button, several a menu.
+  // `ondownload(format)` saves one of them. `findAsk` counts the times the frame
+  // asked for the search row (Ctrl or Cmd+F pressed inside it), so a second
+  // press focuses the field again even though the row is already open.
+  // `collapsed` slides the band out of view while the phone's scroll hides the
+  // bars; the find row below it is not part of the band and stays as it is.
+  let { view = null, tool = "select", busy = false, dark = false, findAsk = 0, send, onmode, ontool, downloads = [], ondownload, onpresent, collapsed = false } = $props();
 
   // pdf.js's own steps, and its own ceiling and floor. A zoom button moves by
   // a tenth of the *drawn* scale rather than by a step of this list: the list
@@ -38,8 +43,8 @@
   // The scale the frame reports is in PDF points; the percentages a reader
   // reads are CSS pixels, and 100% is 96/72 of a point. `viewerScale` does the
   // same conversion on the way in.
-  const percent = $derived(view.scale ? Math.round(view.scale * 100) : null);
-  const at = $derived(view.scale ?? 1);
+  const percent = $derived(view?.scale ? Math.round(view.scale * 100) : null);
+  const at = $derived(view?.scale ?? 1);
   const step = (factor) =>
     onmode(String(Math.max(MIN, Math.min(MAX, Number((at * factor).toFixed(2))))));
 
@@ -49,7 +54,7 @@
   let pageText = $state("");
   let editingPage = false;
   $effect(() => {
-    const page = view.page;
+    const page = view?.page;
     if (!editingPage) pageText = page ? String(page) : "";
   });
   function jump(event) {
@@ -115,84 +120,95 @@
     }
   }
   const found = $derived(
-    !query ? "" : view.find && view.find.total > 0 ? m.previewcontrols_find_count({ current: view.find.current, total: view.find.total }) : view.find ? m.previewcontrols_find_none() : "",
+    !query ? "" : view?.find && view.find.total > 0 ? m.previewcontrols_find_count({ current: view.find.current, total: view.find.total }) : view?.find ? m.previewcontrols_find_none() : "",
   );
 
-  function chosen(item) {
-    if (item.value === "spread") send({ type: "viewer-spread", spread: !view.spread });
-    else if (item.value === "invert") send({ type: "viewer-invert", invert: !view.invert });
-    else if (item.value === "present") onpresent?.();
-    else if (item.value === "download") ondownload?.();
-  }
+  // The band's items, left to right. They move into the "..." menu from the
+  // right, so the view toggles go first and the page controls last. The page
+  // box and the zoom select are not buttons and never move.
+  const items = $derived.by(() => {
+    if (!view) return [];
+    const tools = [
+      { id: "select", group: "pointer", icon: "text-cursor", label: m.previewcontrols_select_text(), pressed: tool !== "hand", onselect: () => ontool("select") },
+      { id: "hand", group: "pointer", icon: "hand", label: m.previewcontrols_move_page(), pressed: tool === "hand", onselect: () => ontool("hand") },
+    ];
+    const views = [
+      { id: "spread", group: "view", icon: "book-open", label: m.previewcontrols_spread(), pressed: Boolean(view.spread), onselect: () => send({ type: "viewer-spread", spread: !view.spread }) },
+      ...(dark ? [{ id: "invert", group: "view", icon: "contrast", label: m.previewcontrols_invert(), pressed: Boolean(view.invert), onselect: () => send({ type: "viewer-invert", invert: !view.invert }) }] : []),
+      { id: "present", group: "view", icon: "presentation", label: m.previewcontrols_present(), pressed: null, onselect: () => onpresent?.() },
+    ];
+    return [
+      { id: "pages", group: "page", label: m.common_pages(), pressed: Boolean(view.sidebar), onselect: () => send({ type: "viewer-sidebar", open: !view.sidebar }) },
+      { id: "search", group: "page", label: m.previewcontrols_search(), pressed: searching, onselect: () => (searching ? closeSearch() : void reveal()) },
+      { id: "page", group: "page", pinned: true },
+      { id: "zoom-out", group: "page", icon: "zoom-out", label: m.previewcontrols_zoom_out(), pressed: null, disabled: at <= MIN, onselect: () => step(1 / 1.1) },
+      { id: "zoom", group: "page", pinned: true },
+      { id: "zoom-in", group: "page", icon: "zoom-in", label: m.previewcontrols_zoom_in(), pressed: null, disabled: at >= MAX, onselect: () => step(1.1) },
+      ...tools,
+      ...views,
+    ];
+  });
 </script>
 
+{#if view || downloads.length}
 <div class="preview-band">
-  <div class="preview-controls" role="group" aria-label={m.previewcontrols_page_view()}>
-    <IconButton icon="panel-left" label={m.common_pages()} tone="plain" size="btn-icon-sm"
-                pressed={view.sidebar} onclick={() => send({ type: "viewer-sidebar", open: !view.sidebar })} />
-    <IconButton icon="search" label={m.previewcontrols_search()} tone="plain" size="btn-icon-sm"
-                pressed={searching} onclick={() => (searching ? closeSearch() : void reveal())} />
-    <span class="preview-page">
-      <input class="preview-page-input" inputmode="numeric" aria-label={m.previewcontrols_page()} autocomplete="off"
-             bind:value={pageText} onkeydown={jump}
-             onfocus={() => (editingPage = true)}
-             onblur={() => { editingPage = false; pageText = view.page ? String(view.page) : ""; }} />
-      <span class="preview-page-total">/ {view.pages}</span>
-    </span>
-    <IconButton icon="zoom-out" label={m.previewcontrols_zoom_out()} tone="plain" size="btn-icon-sm"
-                disabled={at <= MIN} onclick={() => step(1 / 1.1)} />
-    <select class="preview-zoom" aria-label={m.previewcontrols_zoom()} value={view.mode}
-            onchange={(event) => onmode(event.currentTarget.value)}>
-      <option value="auto">{m.common_automatic()}</option>
-      <option value="page-actual">{m.previewcontrols_zoom_actual()}</option>
-      <option value="page-fit">{m.previewcontrols_zoom_fit_page()}</option>
-      <option value="page-width">{m.previewcontrols_zoom_fit_width()}</option>
-      <!-- Where a reader lands after pressing a zoom button: a percentage that
-           is not one of the steps, shown rather than left as an empty box. -->
-      {#if percent !== null && !STEPS.includes(percent) && !["auto", "page-actual", "page-fit", "page-width"].includes(view.mode)}
-        <option value={view.mode}>{percent}%</option>
+  <ToolBand {items} label={m.previewcontrols_page_view()} {collapsed}>
+    {#snippet item(entry)}
+      {#if entry.id === "pages"}
+        <IconButton icon="panel-left" label={m.common_pages()} tone="plain" size="btn-icon-sm"
+                    pressed={view.sidebar} onclick={entry.onselect} />
+      {:else if entry.id === "search"}
+        <IconButton icon="search" label={m.previewcontrols_search()} tone="plain" size="btn-icon-sm"
+                    pressed={searching} onclick={entry.onselect} />
+      {:else if entry.id === "page"}
+        <span class="preview-page">
+          <input class="preview-page-input" inputmode="numeric" aria-label={m.previewcontrols_page()} autocomplete="off"
+                 bind:value={pageText} onkeydown={jump}
+                 onfocus={() => (editingPage = true)}
+                 onblur={() => { editingPage = false; pageText = view.page ? String(view.page) : ""; }} />
+          <span class="preview-page-total">/ {view.pages}</span>
+        </span>
+      {:else if entry.id === "zoom"}
+        <select class="preview-zoom" aria-label={m.previewcontrols_zoom()} value={view.mode}
+                onchange={(event) => onmode(event.currentTarget.value)}>
+          <option value="auto">{m.common_automatic()}</option>
+          <option value="page-actual">{m.previewcontrols_zoom_actual()}</option>
+          <option value="page-fit">{m.previewcontrols_zoom_fit_page()}</option>
+          <option value="page-width">{m.previewcontrols_zoom_fit_width()}</option>
+          <!-- Where a reader lands after pressing a zoom button: a percentage that
+               is not one of the steps, shown rather than left as an empty box. -->
+          {#if percent !== null && !STEPS.includes(percent) && !["auto", "page-actual", "page-fit", "page-width"].includes(view.mode)}
+            <option value={view.mode}>{percent}%</option>
+          {/if}
+          {#each STEPS as number}
+            <option value={String(number / 100)}>{number}%</option>
+          {/each}
+        </select>
+      {:else}
+        <IconButton icon={entry.icon} label={entry.label} tone={entry.pressed === null ? "plain" : null} size="btn-icon-sm"
+                    pressed={entry.pressed} disabled={entry.disabled} onclick={entry.onselect} />
       {/if}
-      {#each STEPS as number}
-        <option value={String(number / 100)}>{number}%</option>
-      {/each}
-    </select>
-    <IconButton icon="zoom-in" label={m.previewcontrols_zoom_in()} tone="plain" size="btn-icon-sm"
-                disabled={at >= MAX} onclick={() => step(1.1)} />
-    <div class="preview-tools">
-      <IconButton icon="text-cursor" label={m.previewcontrols_select_text()} size="btn-icon-sm"
-                  pressed={tool !== "hand"} onclick={() => ontool("select")} />
-      <IconButton icon="hand" label={m.previewcontrols_move_page()} size="btn-icon-sm"
-                  pressed={tool === "hand"} onclick={() => ontool("hand")} />
-    </div>
-    <span class="preview-spacer"></span>
-    {#if busy}<span class="preview-busy" role="status" aria-label={m.common_compiling()}><span class="spinner"></span></span>{/if}
-    <Menu onSelect={chosen} positioning={{ placement: "bottom-end" }}>
-      <MenuIconButton icon="more-horizontal" label={m.previewcontrols_more()} size="1rem" />
-      <ExplorerMenu>
-        <Menu.Item value="spread" class="menuitem">
-          <span class="menuitem-check" aria-hidden="true">{view.spread ? "✓" : ""}</span>
-          <span class="menuitem-label">{m.previewcontrols_spread()}</span>
-        </Menu.Item>
-        {#if dark}
-          <Menu.Item value="invert" class="menuitem">
-            <span class="menuitem-check" aria-hidden="true">{view.invert ? "✓" : ""}</span>
-            <span class="menuitem-label">{m.previewcontrols_invert()}</span>
-          </Menu.Item>
-        {/if}
-        <Menu.Item value="present" class="menuitem">
-          <span class="menuitem-check" aria-hidden="true"></span>
-          <span class="menuitem-label">{m.previewcontrols_present()}</span>
-        </Menu.Item>
-        {#if ondownload}
-          <hr class="hr my-1" />
-          <Menu.Item value="download" class="menuitem">
-            <span class="menuitem-check" aria-hidden="true"></span>
-            <span class="menuitem-label">{m.common_download_pdf()}</span>
-          </Menu.Item>
-        {/if}
-      </ExplorerMenu>
-    </Menu>
-  </div>
+    {/snippet}
+    {#snippet end()}
+      {#if busy}<span class="preview-busy" role="status" aria-label={m.common_compiling()}><span class="spinner"></span></span>{/if}
+      {#if downloads.length === 1}
+        <IconButton icon="download" label={downloads[0].label} tone="plain" size="btn-icon-sm"
+                    onclick={() => ondownload(downloads[0].format)} />
+      {:else if downloads.length > 1}
+        <Menu onSelect={(item) => ondownload(item.value)} positioning={{ placement: "bottom-end" }}>
+          <MenuIconButton icon="download" label={m.common_download()} size="1rem" />
+          <ExplorerMenu>
+            {#each downloads as d (d.format)}
+              <Menu.Item value={d.format} class="menuitem">
+                <span class="menuitem-check" aria-hidden="true"></span>
+                <span class="menuitem-label">{d.label}</span>
+              </Menu.Item>
+            {/each}
+          </ExplorerMenu>
+        </Menu>
+      {/if}
+    {/snippet}
+  </ToolBand>
   {#if searching}
     <div class="preview-find" role="search" aria-label={m.previewcontrols_search_document()}>
       <input class="preview-find-input" type="text" placeholder={m.previewcontrols_search()} aria-label={m.previewcontrols_search_document()}
@@ -207,3 +223,4 @@
     </div>
   {/if}
 </div>
+{/if}

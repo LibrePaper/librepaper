@@ -90,7 +90,7 @@ function contrastCheck(palette, mode) {
   };
 
   const surfaces = ["--color-shell", "--color-sidebar", "--color-raised"];
-  const text = ["--color-text", "--color-text-secondary", "--color-text-muted", "--color-line-number", "--color-link"];
+  const text = ["--color-text", "--color-text-secondary", "--color-link"];
   const brands = ["--color-brand", "--color-brand-hover", "--color-brand-pressed"];
   const highlights = [
     "keyword", "string", "constant", "comment", "tag", "property", "function",

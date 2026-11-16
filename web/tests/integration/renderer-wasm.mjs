@@ -62,7 +62,12 @@ try {
   }
   assert.equal(rebuilt, after);
   assert.ok(edits.some((edit) => edit.insert.includes("blue")));
-  console.log("renderer-wasm: built word_diff export and UTF-16 reconstruction passed");
+  // A module built without math_dollars leaves `$…$` as literal text.
+  const page = call(real, "compile", "a $x^2$ b and $$y$$\n\nIt costs $5 today and $10 tomorrow.\n", "math").text;
+  assert.match(page, /<span data-math-style="inline">x\^2<\/span>/);
+  assert.match(page, /<span data-math-style="display">y<\/span>/);
+  assert.match(page, /\$5 today and \$10/);
+  console.log("renderer-wasm: built word_diff export, UTF-16 reconstruction and dollar math passed");
 } catch (error) {
   if (error.code !== "ENOENT") throw error;
 }

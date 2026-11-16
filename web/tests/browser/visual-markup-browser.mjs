@@ -28,6 +28,10 @@ const root = dirname(dirname(dirname(here)));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-visual-markup-check-"));
 const output = join(temporary, "build");
 const profile = join(temporary, "chrome");
+// The Typst visual layer draws from typst-syntax.wasm's tree, so the page is offered the module.
+const syntaxWasm = process.env.LIBREPAPER_TYPST_SYNTAX_WASM || join(root, "web/wasm/typst-syntax.wasm");
+// The Org layer draws from org.wasm's tree in the same way.
+const orgWasm = process.env.LIBREPAPER_ORG_WASM || join(root, "web/wasm/org.wasm");
 const entry = join(temporary, "entry.js");
 const katexDist = join(root, "web/node_modules/katex/dist");
 const port = 19000 + Math.floor(Math.random() * 1000);
@@ -39,75 +43,6 @@ const texSample = [
   "\\begin{itemize}",
   "\\item first",
   "\\end{itemize}",
-].join("\n");
-const typstSample = "= Heading\nSome *bold* and $x^2 + y^2$ here.";
-const markdownSample = "# Readme\n\nSome *emphasis* and $x$ here.";
-// A Quarto paper: front matter, numbered sections, inline and block markup, a
-// code cell with a label, an image figure, a captioned table, display and inline
-// math, a callout, a theorem, citations, cross-references, a footnote and a
-// shortcode. The caret stays on the "Caret here." line.
-const paperSample = [
-  "---",
-  "title: \"Quarto Paper\"",
-  "author:",
-  "  - Ada Lovelace",
-  "  - Bob Smith",
-  "date: \"2026-01-02\"",
-  "number-sections: true",
-  "---",
-  "",
-  "# Introduction {#sec-intro}",
-  "",
-  "Some **bold**, *italic*, ~~strike~~ and `inline code` text with a [link](https://example.org) and <https://example.com>.",
-  "",
-  "- [ ] open task",
-  "- [x] done task",
-  "",
-  "1. first step",
-  "2. second step",
-  "",
-  "> A quoted line.",
-  "",
-  "```python",
-  "print(\"hi\")",
-  "```",
-  "",
-  "```{r}",
-  "#| label: fig-plot",
-  "#| fig-cap: \"A plot\"",
-  "plot(1:10)",
-  "```",
-  "",
-  "![A chart](chart.png){#fig-chart}",
-  "",
-  "| Name | Score |",
-  "|:-----|------:|",
-  "| A    |     1 |",
-  "| B    |     2 |",
-  "",
-  ": Results {#tbl-res}",
-  "",
-  "$$ E = mc^2 $$ {#eq-energy}",
-  "",
-  "Inline $x^2$ math and a citation [@knuth] and @knuth wrote.",
-  "",
-  "::: {.callout-note}",
-  "A note with text.",
-  ":::",
-  "",
-  "::: {#thm-main}",
-  "Every bounded monotone sequence converges.",
-  ":::",
-  "",
-  "Cross references: @fig-chart, @tbl-res, @eq-energy, @sec-intro and @fig-plot.",
-  "",
-  "A note[^1] in text.",
-  "",
-  "{{< pagebreak >}}",
-  "",
-  "[^1]: The footnote text.",
-  "",
-  "Caret here.",
 ].join("\n");
 // A whole LaTeX paper: a preamble, math environments, labels and a bibliography.
 const fullSample = [
@@ -244,42 +179,6 @@ const titleSample = [
   "\\maketitle",
   "\\title{After}",
   "Text.",
-].join("\n");
-// A Typst kitchen-sink document. The setup lines at the top (page, text, heading
-// numbering, show, import and a definition) fold into one chip, and the body
-// holds the markup, link, figure, layout and unknown-call cases. The caret stays
-// on the "Caret here." line in the body.
-const typstSinkSample = [
-  '#set page(paper: "a5", margin: 2cm)',
-  '#set text(font: "Libertinus Serif", size: 11pt, lang: "en")',
-  '#set heading(numbering: "1.")',
-  "#show heading: it => it.body",
-  '#import "@preview/x:0.1.0": *',
-  "#let f(x) = x",
-  "= Sink",
-  "== Level two",
-  "*strong* and _emph_ words with `code` inline.",
-  "",
-  "```rust",
-  "fn main() {}",
-  "```",
-  "",
-  "- item",
-  "",
-  "+ item",
-  "",
-  "/ Term: def",
-  "",
-  'Colour: #text(fill: red)[warm], #rgb("#ff0000") swatch, #underline[u], #strike[s], #highlight[h], #smallcaps[sc], #super[2].',
-  'Links: #link("https://example.org")[site], https://typst.app, a note#footnote[note] and #quote[said].',
-  "Symbols: #sym.dash.em, #sym.arrow.r, #emoji.rocket, -- and --- and ... and ~ here.",
-  '#figure(image("a.png"), caption: [A plot]) <fig-a>',
-  "As @fig-a shows, #lorem(5)",
-  "#pagebreak()",
-  "#outline()",
-  '#bibliography("refs.bib")',
-  "#my-func(1)[x]",
-  "Caret here.",
 ].join("\n");
 
 // A LaTeX file with a display equation on its own lines, between two text lines.
@@ -500,51 +399,6 @@ async function visualCheck() {
     .some((text) => /mc\^?3/.test(text));
   collab.editedHead = view().state.selection.main.head;
 
-  // Check 5: Typst is drawn.
-  component.$set({ file: ids.typ, format: "typst" });
-  await settle();
-  const typst = {
-    katex: await poll(mathKatexCount),
-    text: visibleText(),
-    marks: markCount(),
-  };
-
-  // Check 6: Markdown is drawn. The caret goes to the end of the file, on the
-  // plain text after the emphasis, so the emphasis markers stay hidden.
-  component.$set({ file: ids.md, format: "markdown" });
-  await settle();
-  // The caret sits on the heading, so the line with the emphasis is drawn.
-  view().dispatch({ selection: { anchor: 0 } });
-  await settle();
-  const markdown = { marks: markCount(), text: visibleText() };
-
-  // Check 6a: a Quarto paper. The front matter folds into a title block with the
-  // caret on a plain line, and the markup, cells, figures, tables, math, callouts,
-  // theorems, citations and cross-references are drawn. A click on the front
-  // matter shows its YAML.
-  component.$set({ visual: true, file: ids.paper, format: "markdown" });
-  await settle();
-  await wait(800);
-  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Caret here.") + 3 } });
-  await settle();
-  const paperKatexShown = await poll(katexCount);
-  const frontmatter = document.querySelector(".cm-editor [class*='frontmatter']");
-  const quarto = {
-    katexShown: paperKatexShown,
-    katex: katexCount(),
-    katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
-    tables: document.querySelectorAll(".cm-editor table").length,
-    tableBoxes: texts(".cm-lp-table-box"),
-    verbs: document.querySelectorAll(".cm-editor .cm-lp-verb").length,
-    links: document.querySelectorAll(".cm-editor .cm-lp-link").length,
-    frontmatterShown: Boolean(frontmatter),
-    text: visibleText(),
-  };
-  quarto.headnums = texts(".cm-lp-headnum");
-  frontmatter?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-  await settle();
-  quarto.frontmatterClick = visibleText();
-
   // Check 6b: a LaTeX paper. The preamble folds into one block while the caret
   // is in the body, labels and the bibliography are hidden, math environments
   // are typeset, and a caret in the preamble shows the source again.
@@ -556,13 +410,13 @@ async function visualCheck() {
   const parked = {
     editor: document.querySelector(".cm-editor")?.classList.contains("cm-lv-parked") ?? false,
     cursor: getComputedStyle(document.querySelector(".cm-editor .cm-cursorLayer")).visibility,
-    preambles: document.querySelectorAll(".cm-editor .cm-lp-preamble").length,
+    preambles: document.querySelectorAll(".cm-editor .cm-lp-fold-preamble").length,
     documentclass: visibleText().includes("\\documentclass"),
   };
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\section{Results}") + 2 } });
   await settle();
   parked.afterMove = document.querySelector(".cm-editor")?.classList.contains("cm-lv-parked") ?? false;
-  const fullPreambles = document.querySelectorAll(".cm-editor .cm-lp-preamble");
+  const fullPreambles = document.querySelectorAll(".cm-editor .cm-lp-fold-preamble");
   const fullBody = {
     parked,
     katexShown: fullKatexShown,
@@ -576,18 +430,18 @@ async function visualCheck() {
     text: visibleText(),
   };
   // A click on the folded preamble shows its source, with the caret still in the body.
-  const preambleBlock = document.querySelector(".cm-editor .cm-lp-preamble");
+  const preambleBlock = document.querySelector(".cm-editor .cm-lp-fold-preamble");
   preambleBlock?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
   await settle();
   const fullPreambleClick = {
     found: Boolean(preambleBlock),
-    preambleCount: document.querySelectorAll(".cm-editor .cm-lp-preamble").length,
+    preambleCount: document.querySelectorAll(".cm-editor .cm-lp-fold-preamble").length,
     text: visibleText(),
   };
   view().dispatch({ selection: { anchor: 5 } });
   await settle();
   const fullPreamble = {
-    preambleCount: document.querySelectorAll(".cm-editor .cm-lp-preamble").length,
+    preambleCount: document.querySelectorAll(".cm-editor .cm-lp-fold-preamble").length,
     text: visibleText(),
   };
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\end{document}") + 2 } });
@@ -623,7 +477,7 @@ async function visualCheck() {
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Method") + 2 } });
   await settle();
   const textOf = (selector) => document.querySelector(`.cm-editor ${selector}`)?.textContent.trim() ?? null;
-  const include = document.querySelector(".cm-editor .cm-lp-include");
+  const include = document.querySelector(".cm-editor .cm-lp-fold-include");
   const refsCheck = {
     title: {
       main: textOf(".cm-lp-title-main"),
@@ -632,7 +486,7 @@ async function visualCheck() {
     },
     include: {
       text: include?.textContent ?? null,
-      open: Boolean(include?.querySelector(".cm-lp-include-open")),
+      open: Boolean(include?.querySelector(".cm-lp-fold-open")),
     },
     refTexts: Array.from(document.querySelectorAll(".cm-editor .cm-lp-ref"), (node) => node.textContent.trim()),
     katexTexts: Array.from(document.querySelectorAll(".cm-editor .katex"), (node) => node.textContent),
@@ -652,7 +506,7 @@ async function visualCheck() {
   const titleClick = {
     head: view().state.selection.main.head,
     text: visibleText(),
-    chips: texts(".cm-lp-preamble"),
+    chips: texts(".cm-lp-fold-preamble"),
     main: textOf(".cm-lp-title-main"),
   };
   const titleEnd = refsSource.indexOf("A Study") + "A Study".length;
@@ -668,7 +522,7 @@ async function visualCheck() {
   const dateClick = { head: view().state.selection.main.head };
   view().dispatch({ selection: { anchor: 5 } });
   await settle();
-  const preambleAt5 = { chips: texts(".cm-lp-preamble"), text: visibleText() };
+  const preambleAt5 = { chips: texts(".cm-lp-fold-preamble"), text: visibleText() };
   view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("\\maketitle") + 2 } });
   await settle();
   const maketitleText = visibleText();
@@ -688,7 +542,7 @@ async function visualCheck() {
     affils: texts(".cm-lp-title-affil"),
   };
   await partClick(".cm-lp-title-main");
-  sample.click = { head: view().state.selection.main.head, preambles: texts(".cm-lp-preamble").length };
+  sample.click = { head: view().state.selection.main.head, preambles: texts(".cm-lp-fold-preamble").length };
 
   const titleBlock = { titleClick, liveTitle, restored, authorClick, dateClick, preambleAt5, maketitleText, sample };
 
@@ -764,37 +618,6 @@ async function visualCheck() {
   await settle();
   const offset = { misses: offsetMisses, inBlock: visibleText(), envheads: document.querySelectorAll(".cm-editor .cm-lp-envhead-theorem").length };
 
-  // Check 6f: the Typst kitchen-sink document. The caret sits on "Caret here.", so
-  // the setup lines fold into one chip and each construct in the body is drawn.
-  // A click on the setup chip shows its source.
-  component.$set({ visual: true, file: ids.sinkTyp, format: "typst" });
-  await settle();
-  await wait(800);
-  view().dispatch({ selection: { anchor: view().state.doc.toString().indexOf("Caret here.") + 6 } });
-  await settle();
-  const setupChip = Array.from(document.querySelectorAll(".cm-editor .cm-lp-hidden"))
-    .find((node) => node.textContent.trim().startsWith("Setup:"));
-  // The innermost element whose whole text is "warm" carries the colour style.
-  const warmStyle = Array.from(document.querySelectorAll(".cm-editor [style]"))
-    .filter((node) => node.textContent.trim() === "warm")
-    .pop()?.getAttribute("style") ?? null;
-  const typstSink = {
-    text: visibleText(),
-    hidden: texts(".cm-lp-hidden"),
-    setupChip: Boolean(setupChip),
-    warmStyle,
-    footnotes: document.querySelectorAll(".cm-editor .cm-lp-footnote").length,
-    links: document.querySelectorAll(".cm-editor .cm-lp-link").length,
-    swatches: document.querySelectorAll(".cm-editor .cm-lp-swatch").length,
-    katexErrors: document.querySelectorAll(".cm-editor .katex-error").length,
-  };
-  // The caret is still on "Caret here.", so the code fence is out of the way: its
-  // fence markers must not show, its code must, and the heading numbers are read here.
-  const typstFence = { text: visibleText(), headnums: texts(".cm-lp-headnum") };
-  setupChip?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-  await settle();
-  typstSink.clicked = visibleText();
-
   // Check 7: timing, reported and not asserted. Each typing run makes 50
   // single character insertions at the middle of the file, one dispatch at a
   // time. The caret run makes 50 selection-only dispatches, each moving the
@@ -844,17 +667,12 @@ async function visualCheck() {
     off,
     back,
     sameView,
-    typst,
-    markdown,
-    quarto,
     full: { body: fullBody, preambleClick: fullPreambleClick, preamble: fullPreamble, end: fullEnd, display: fullDisplay, headings: fullHeadings },
     refs: refsCheck,
     titleBlock,
     figure,
     sink,
     offset,
-    typstSink,
-    typstFence,
     timing:{ lines: timingOn.lines, on: { median: timingOn.median, max: timingOn.max }, off: { median: timingOff.median, max: timingOff.max } },
     caret,
     hugeTiming: { lines: hugeOn.lines, on: { median: hugeOn.median, max: hugeOn.max }, off: { median: hugeOff.median, max: hugeOff.max } },
@@ -869,7 +687,8 @@ const source = [
   `import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};`,
   `import { LoroDoc } from "loro-crdt";`,
   `import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};`,
-  `const samples = ${JSON.stringify({ tex: texSample, typst: typstSample, markdown: markdownSample, paper: paperSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, offset: offsetSample, title: titleSample, typstSink: typstSinkSample, vim: vimSample })};`,
+  `const samples = ${JSON.stringify({ tex: texSample, full: fullSample, long: longSample, huge: hugeSample, refs: refsSample, intro: introSample, figure: figureSample, sink: sinkSample, offset: offsetSample, title: titleSample, vim: vimSample })};`,
+  `globalThis.LIBREPAPER_MODULES = { "typst-syntax": "/typst-syntax.wasm", org: "/org.wasm" };`,
   `document.documentElement.dataset.theme = "librepaper";`,
   `document.documentElement.dataset.palette = "librepaper";`,
   `document.documentElement.dataset.mode = "light";`,
@@ -879,9 +698,6 @@ const source = [
   `const session = joinSession({ send: () => {}, mayEdit: true });`,
   `const ids = {`,
   `  tex: session.addText("paper.tex", samples.tex),`,
-  `  typ: session.addText("notes.typ", samples.typst),`,
-  `  md: session.addText("readme.md", samples.markdown),`,
-  `  paper: session.addText("paper.qmd", samples.paper),`,
   `  full: session.addText("full.tex", samples.full),`,
   `  big: session.addText("big.tex", samples.long),`,
   `  bigOff: session.addText("big-off.tex", samples.long),`,
@@ -890,7 +706,6 @@ const source = [
   `  refs: session.addText("refs.tex", samples.refs),`,
   `  figure: session.addText("figure.tex", samples.figure),`,
   `  sink: session.addText("sink.tex", samples.sink),`,
-  `  sinkTyp: session.addText("sink.typ", samples.typstSink),`,
   `  offset: session.addText("offset.tex", samples.offset),`,
   `  title: session.addText("title.tex", samples.title),`,
   `  intro: session.addText("sections/intro.tex", samples.intro),`,
@@ -935,6 +750,11 @@ try {
   // `/katex/katex.min.css`, and the stylesheet's fonts/ paths resolve below it.
   server = createServer((request, response) => {
     const path = decodeURIComponent(request.url.split("?")[0]);
+    if (path === "/typst-syntax.wasm" || path === "/org.wasm") {
+      response.setHeader("Content-Type", "application/wasm");
+      response.end(readFileSync(path === "/org.wasm" ? orgWasm : syntaxWasm));
+      return;
+    }
     if (path.startsWith("/katex/")) {
       const file = join(katexDist, path.slice("/katex/".length));
       if (file.startsWith(katexDist + sep) && existsSync(file)) {
@@ -1103,49 +923,12 @@ try {
   assert.equal(result.collab.editedHead, 3, "the caret offset changed when a peer edited a formula's source");
   console.log("visual-markup-browser: a peer's inserted formula is drawn, and a peer's edit inside a formula is drawn, with the caret unmoved");
 
-  // Check 5: Typst is drawn.
-  assert.equal(result.typst.katex, true, "a Typst formula was not drawn as KaTeX inside .cm-lv-math");
-  console.log("visual-markup-browser: a Typst formula is drawn");
-
-  // Check 6: Markdown is drawn. Its emphasis markers are hidden, and its math is typeset.
-  assert.ok(result.markdown.marks > 0, "no visual markup decorations were drawn for readme.md");
-  assert.ok(result.markdown.text.includes("emphasis"), "the emphasis text was not visible in readme.md");
-  assert.equal(result.markdown.text.includes("*emphasis*"), false, "the emphasis markers are still visible in readme.md");
-  console.log("visual-markup-browser: Markdown is drawn and its emphasis markers are hidden");
-
-  // Check 6a: a Quarto paper is drawn. Its front matter is a title block that shows
-  // its YAML after a click, and the source of each construct is hidden with the
-  // caret on the last line.
-  assert.equal(result.quarto.katexShown, true, "KaTeX did not typeset the formulas in paper.qmd within five seconds");
-  for (const drawn of ["Quarto Paper", "Ada Lovelace", "Bob Smith", "Introduction", "Figure", "Table", "Equation", "Section 1", "Note", "Theorem 1"]) {
-    assert.ok(result.quarto.text.includes(drawn), `paper.qmd does not draw '${drawn}'; visible text: ${result.quarto.text}`);
-  }
-  for (const source of ["**", "~~", "{#", ":::", "{{<", "](", "$$"]) {
-    assert.equal(result.quarto.text.includes(source), false, `${source} is still visible in paper.qmd with the caret on its last line`);
-  }
-  // The footnote definition line is shown as source, so it is taken out before the
-  // check; what must not show is the reference [^1] in the paragraph.
-  const quartoBody = result.quarto.text.replace(/\[\^1\]:[^\n]*/g, "");
-  assert.equal(quartoBody.includes("[^1]"), false, "the footnote reference [^1] is still visible in paper.qmd");
-  assert.ok(result.quarto.katex >= 2, `expected at least 2 KaTeX formulas in paper.qmd, found ${result.quarto.katex}`);
-  assert.equal(result.quarto.katexErrors, 0, "paper.qmd has KaTeX parse errors (.katex-error inside .cm-editor)");
-  assert.equal(result.quarto.tables, 0, "the pipe table was laid out as a <table> inside the editor");
-  assert.deepEqual(result.quarto.tableBoxes, ["Table: Results"], "the pipe table was not drawn as a box with its caption and no cells");
-  assert.ok(result.quarto.verbs > 0, "the inline code was not drawn as .cm-lp-verb");
-  assert.ok(result.quarto.links > 0, "the link was not drawn as .cm-lp-link");
-  assert.equal(result.quarto.frontmatterShown, true, "no front matter title block was drawn for paper.qmd");
-  assert.equal(result.quarto.text.includes("title:"), false, "the front matter YAML showed before a click on the title block");
-  assert.ok(result.quarto.frontmatterClick.includes("title:"), "a click on the front matter title block did not reveal title:");
-  console.log("visual-markup-browser: paper.qmd draws its front matter, markup, cells, figures, tables, math, callouts, theorems and references");
-  // Heading numbers: number-sections is true, so the first section reads 1.
-  assert.ok(result.quarto.headnums.includes("1"), `paper.qmd has no .cm-lp-headnum reading 1 with number-sections: true; headnums: ${JSON.stringify(result.quarto.headnums)}`);
-
   // Check 6b: a LaTeX preamble folds, labels show as small tags, the bibliography
   // and page break fold into chips, math environments are typeset, and the
   // preamble source shows with the caret in it.
   assert.equal(result.full.body.katexShown, true, "KaTeX did not typeset the math environments in full.tex within five seconds");
-  assert.equal(result.full.body.preambleCount, 1, "the LaTeX preamble did not fold into exactly one .cm-lp-preamble block with the caret in the body");
-  assert.match(result.full.body.preambleText, /Preamble: article, 4 packages/, "the preamble block did not read as 'Preamble: article, 4 packages'");
+  assert.equal(result.full.body.preambleCount, 1, "the LaTeX preamble did not fold into exactly one .cm-lp-fold-preamble block with the caret in the body");
+  assert.match(result.full.body.preambleText, /Preamble\s*article · 4 packages/, "the preamble disclosure did not read as 'Preamble' then 'article · 4 packages'");
   // The label keys show as tags now, so only the command names are hidden here.
   // The bibliography chip names its style and database, so "references" is not
   // checked as absent.
@@ -1178,7 +961,7 @@ try {
   assert.equal(result.full.preamble.preambleCount, 0, "the preamble block stayed when the caret moved into the preamble");
   assert.ok(result.full.preamble.text.includes("\\documentclass"), "the preamble source did not show with the caret in the preamble");
   assert.ok(result.full.end.text.includes("\\end{document}"), "\\end{document} did not show with the caret on that line");
-  assert.equal(result.full.preambleClick.found, true, "no .cm-lp-preamble block to click with the caret in the body");
+  assert.equal(result.full.preambleClick.found, true, "no .cm-lp-fold-preamble block to click with the caret in the body");
   assert.ok(result.full.preambleClick.text.includes("\\documentclass"), "a click on the preamble block did not show its source");
   assert.equal(result.full.preambleClick.preambleCount, 0, "the preamble block stayed after a click on it");
   assert.equal(result.full.display.shown, true, "no .cm-lv-math-display was drawn in full.tex");
@@ -1194,8 +977,8 @@ try {
   assert.equal(result.refs.title.main, "A Study", "the \\title text was not drawn in .cm-lp-title-main");
   assert.ok(result.refs.title.author.includes("Ada") && result.refs.title.author.includes("Bob"), "the \\author names were not drawn in .cm-lp-title-author");
   assert.equal(result.refs.title.date, "2020", "the \\date text was not drawn in .cm-lp-title-date");
-  assert.ok(result.refs.include.text.includes("sections/intro"), "the \\input name was not drawn in .cm-lp-include");
-  assert.equal(result.refs.include.open, true, "the \\input widget has no .cm-lp-include-open button");
+  assert.ok(result.refs.include.text.includes("sections/intro"), "the \\input name was not drawn in .cm-lp-fold-include");
+  assert.equal(result.refs.include.open, true, "the \\input widget has no .cm-lp-fold-open button");
   assert.ok(result.refs.refTexts.includes("(1)"), `the \\eqref did not show (1); .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
   assert.ok(result.refs.refTexts.includes("2"), `the \\ref to Method did not show 2; .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
   assert.ok(result.refs.refTexts.includes("??"), `the \\ref to a missing label did not show ??; .cm-lp-ref texts: ${JSON.stringify(result.refs.refTexts)}`);
@@ -1209,25 +992,20 @@ try {
   console.log(`visual-markup-browser: refs.tex draws its title, include, references ${JSON.stringify(result.refs.refTexts)} and equation number`);
 
   // Check 6c2: the parts of the title block open their source lines in refs.tex.
-  // The expected preamble summary is computed from the sample's own preamble.
-  const refsPreamble = refsSample.slice(0, refsSample.indexOf("\\begin{document}"));
-  const refsClass = refsPreamble.match(/\\documentclass(?:\[[^\]]*\])?\{([^}]*)\}/)[1];
-  const refsPackages = [...refsPreamble.matchAll(/\\usepackage(?:\[[^\]]*\])?\{([^}]*)\}/g)]
-    .reduce((count, match) => count + match[1].split(",").length, 0);
-  const refsSummary = `Preamble: ${refsClass}, ${refsPackages} ${refsPackages === 1 ? "package" : "packages"}`;
   const tb = result.titleBlock;
   assert.equal(tb.titleClick.head, refsSample.indexOf("\\title{") + 7, "a click on the title did not put the caret at the start of the \\title argument");
   assert.ok(tb.titleClick.text.includes("\\title{A Study}"), "a click on the title did not show \\title{A Study}");
-  for (const source of ["\\documentclass", "\\author", "\\maketitle"]) {
-    assert.equal(tb.titleClick.text.includes(source), false, `${source} is still visible after a click on the title`);
+  // A caret in the preamble reveals all of it, as in every format.
+  for (const source of ["\\documentclass", "\\author"]) {
+    assert.ok(tb.titleClick.text.includes(source), `${source} is not visible after a click on the title`);
   }
-  assert.deepEqual(tb.titleClick.chips, [refsSummary, "More preamble"], `the preamble chips after a click on the title were ${JSON.stringify(tb.titleClick.chips)}`);
+  assert.equal(tb.titleClick.text.includes("\\maketitle"), false, "\\maketitle is visible after a click on the title");
+  assert.deepEqual(tb.titleClick.chips, [], `the preamble stayed folded after a click on the title: ${JSON.stringify(tb.titleClick.chips)}`);
   assert.equal(tb.titleClick.main, "A Study", "the title block changed after a click on the title");
   assert.equal(tb.liveTitle, "A Study II", "an edit to the title did not draw in the title block within 300 ms");
   assert.equal(tb.restored, true, "the title edit was not taken out of refs.tex");
   assert.equal(tb.authorClick.head, refsSample.indexOf("Bob"), "a click on the second author did not put the caret at Bob");
   assert.ok(tb.authorClick.text.includes("\\author{Ada \\and Bob}"), "a click on the second author did not show \\author{Ada \\and Bob}");
-  assert.equal(tb.authorClick.text.includes("\\title{"), false, "\\title{ is still visible after a click on the author");
   assert.equal(tb.dateClick.head, refsSample.indexOf("\\date{") + 6, "a click on the date did not put the caret at the start of the \\date argument");
   assert.deepEqual(tb.preambleAt5.chips, [], "the preamble fold stayed with the caret at offset 5");
   assert.ok(tb.preambleAt5.text.includes("\\date{2020}"), "\\date{2020} was not visible with the caret in the preamble");
@@ -1239,7 +1017,7 @@ try {
   assert.ok(tb.sample.affils.some((text) => text.includes("Uni A")), `the \\affil was not drawn in .cm-lp-title-affil; got ${JSON.stringify(tb.sample.affils)}`);
   assert.equal(tb.sample.click.head, titleSample.indexOf("\\title{New}") + 7, "a click on the body title did not put the caret at the start of its argument");
   assert.equal(tb.sample.click.preambles, 1, "the preamble did not stay folded after a click on the body title");
-  console.log(`visual-markup-browser: the title block's parts open their source lines, the preamble splits around them, and the title draws its edits (${tb.titleClick.chips.join(" | ")})`);
+  console.log(`visual-markup-browser: the title block's parts open their source lines, the preamble shows whole, and the title draws its edits`);
 
   // Check 6d: a figure folds into an image with the caret outside it, shows its
   // source with the caret inside it, and shows its source after a click on the image.
@@ -1284,33 +1062,6 @@ try {
   }
   assert.equal(result.offset.envheads, 0, "with the caret inside the theorem, its header is still drawn");
   console.log("visual-markup-browser: a caret inside an environment shows the whole environment as source");
-
-  // Check 6f: sink.typ draws its markup, links, footnote, swatch and references,
-  // folds its setup lines into one chip, hides its source, and shows the setup
-  // source after a click on the chip.
-  const typstBody = result.typstSink.text.replace(/\s+/g, " ");
-  for (const drawn of ["strong and emph", "warm", "—", "→", "🚀", "–", "…", "site", "Figure 1", "Table of contents", "Page break", "Bibliography", "Placeholder text", "#my-func"]) {
-    assert.ok(typstBody.includes(drawn), `sink.typ does not draw '${drawn}'; visible text: ${typstBody}`);
-  }
-  for (const source of ["*strong*", "_emph_", "#underline", "#text(", "#link(", "#footnote", "#sym.", "#emoji.", "#set page", "#lorem", "#pagebreak"]) {
-    assert.equal(typstBody.includes(source), false, `${source} is still visible in sink.typ with the caret on its last body line`);
-  }
-  assert.equal(result.typstSink.hidden.filter((text) => text.startsWith("Setup:")).length, 1, `expected one hidden chip starting with 'Setup:'; chips: ${JSON.stringify(result.typstSink.hidden)}`);
-  assert.equal(result.typstSink.setupChip, true, "no .cm-lp-hidden chip starts with 'Setup:'");
-  assert.ok(result.typstSink.footnotes > 0, "the #footnote did not draw as a .cm-lp-footnote");
-  assert.ok(result.typstSink.links > 0, "the #link did not draw as a .cm-lp-link");
-  assert.ok(result.typstSink.swatches > 0, "the #rgb did not draw as a .cm-lp-swatch");
-  assert.equal(result.typstSink.katexErrors, 0, "sink.typ has KaTeX parse errors (.katex-error inside .cm-editor)");
-  assert.ok(result.typstSink.warmStyle !== null && /color/.test(result.typstSink.warmStyle), `the #text(fill: red) text has no inline colour style; style: ${JSON.stringify(result.typstSink.warmStyle)}`);
-  assert.ok(result.typstSink.clicked.includes("#set page"), "a click on the Setup chip did not show #set page");
-  console.log("visual-markup-browser: sink.typ draws its markup, links, footnote, swatch and references, folds its setup lines, and a click on the setup chip shows its source");
-
-  // Check 6g: Typst code fences. With the caret away from the block, the fence
-  // markers are hidden and the code shows; sink.typ numbers its headings.
-  assert.equal(result.typstFence.text.includes("```"), false, "the ``` fence markers are still visible in sink.typ with the caret away from the block");
-  assert.ok(result.typstFence.text.includes("fn main() {}"), `the code of the fence is not visible in sink.typ; visible text: ${result.typstFence.text}`);
-  assert.ok(result.typstFence.headnums.length >= 1, `sink.typ has no .cm-lp-headnum with #set heading(numbering: "1."); headnums: ${JSON.stringify(result.typstFence.headnums)}`);
-  console.log("visual-markup-browser: sink.typ hides its code fence markers, shows its code, and numbers its headings");
 
   // Check 6h: the Vim and plain-key runs. Each starts with the caret on the text
   // line above the display equation, and the equation is drawn there.

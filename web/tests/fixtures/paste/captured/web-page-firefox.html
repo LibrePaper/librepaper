@@ -1,0 +1,100 @@
+<meta http-equiv="content-type" content="text/html; charset=utf-8">
+<header id="title-block-header">
+<h1 class="title">Tidewater grant application</h1>
+</header>
+<p>Tidewater grant application</p>
+<p>Lead investigator: Gérard Côté<br>
+Tidewater Lab, 12 Quay Road<br>
+Port Mersey, Nova Scotia</p>
+<h1 id="what-are-you-working-on">What are you working on?</h1>
+<p><em>Describe the problem in two or three sentences. Plain language is
+fine.</em></p>
+<p>Tidewater is a tool that maps river sediment. It turns core samples,
+depth readings and historical surveys into a map of where silt, sand and
+clay have moved over the last fifty years. The project began as a pilot
+in 2025 — small as it was, the pilot showed that the method works on a
+real estuary.</p>
+<p>Our <strong>main claim</strong> is simple: sediment maps can be
+cheap. Most <em>existing</em> surveys cost <strong><em>far
+more</em></strong> than a town can afford, and the data often sits
+unused in <code>csv</code> files or in filing cabinets. We use
+<code>tw_map()</code> to turn raw depth logs into a layered map that a
+council engineer can read.</p>
+<p>Read more about <a href="https://example.org/pilot">the pilot</a>.
+The full data policy is at <a href="https://example.org" class="uri">https://example.org</a>.</p>
+<p>The budget request is $150,000 over two years. Field costs run about
+~5m per site, and roughly ~40% of the budget goes to laboratory work.
+Software licences are offered at 50 % off for public bodies.</p>
+<p>Column names use snake_case throughout. Templates use {braces} for
+placeholders, and on Windows the data lives under C:\path\tidewater. The
+model is quadratic in depth, so the fit includes an x^2 term. See @ref
+for the sampling protocol, and wrap values in &lt;tag&gt; when exporting
+HTML.</p>
+<p>Our R&amp;D partners will review the design. Their comments are
+welcome — the more critical, the better — and we have built them into
+the schedule.</p>
+<p>The plan is in our own words, not “borrowed” from a funder’s
+template, and the team’s plan has been checked by two outside
+readers.</p>
+<ol type="1">
+<li>Collect cores from three sites.</li>
+<li>Label each sample by depth and date.</li>
+<li>Run the mapping pipeline.
+<ul>
+<li>Check the depth readings against the survey.</li>
+<li>Flag any core older than ten years.</li>
+</ul></li>
+<li>Publish the maps under an open licence.</li>
+<li>Train two council staff to run the tool.</li>
+</ol>
+<p>Items 1-3 are the technical core, and items 4 and 5 are outreach. If
+#1 slips, the rest of the schedule slips with it.</p>
+<h2 id="what-would-you-do-with-funding">What would you do with
+funding?</h2>
+<p><em>Be specific about what the money buys.</em></p>
+<p>Funding pays for three kinds of work. Each one maps onto a line of
+the budget.</p>
+<ul>
+<li>Field work
+<ol type="1">
+<li>Collect cores at each site
+<ol type="1">
+<li>Label samples on site</li>
+</ol></li>
+<li>Survey the channel by boat</li>
+</ol></li>
+<li>Lab work</li>
+<li>Software</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Site</th>
+<th>Depth (m)</th>
+<th>Sample</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Lower Tidewater</td>
+<td>4.5</td>
+<td>Silt</td>
+</tr>
+<tr>
+<td>Mill Creek</td>
+<td>2.0</td>
+<td>Sand</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>Sediment records where the river has been. Tidewater shows where it
+is going.</p>
+</blockquote>
+<p>A sample analysis script looks like this:</p>
+<pre class="r"><code>library(tidewater)
+cores &lt;- read_cores("data/cores.csv")
+map &lt;- tw_map(cores, layer = "silt")</code></pre>
+<p>Thank you for reading. We look forward to hearing from you.</p>
+
+

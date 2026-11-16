@@ -4,11 +4,13 @@ import { createProjectSession } from "../../src/lib/project-session.js";
 import { PRESENCE_COLOURS, presenceColour } from "../../src/lib/presence-colour.js";
 
 /// Three browsers in one file, each relaying its presence to the other two.
+/// An entry may name an account as its third item, passed as `accountId`.
 function room(names, colourFor) {
   const peers = [];
-  for (const [name, tab] of names) {
+  for (const [name, tab, accountId] of names) {
     const session = createProjectSession({
       name,
+      accountId,
       presenceId: () => tab,
       presenceColour: colourFor,
       send: (message) => {
@@ -71,6 +73,59 @@ test("two people who choose the same colour do not stay that way", async () => {
     }
   } finally {
     for (const peer of peers) peer.session.leave();
+  }
+});
+
+test("one signed-in account open in two tabs is one avatar to everyone else", async () => {
+  // Ada has the file open in two tabs under one account. Grace sees her once;
+  // Ada's first tab does not list her own second tab.
+  const peers = room([["Ada", "tab-a", "u1"], ["Ada", "tab-b", "u1"], ["Grace", "tab-c", "u2"]], presenceColour);
+  try {
+    for (const peer of peers) await peer.session.start({ protocol: "librepaper.room.v3", vector: "", durableVector: "", updates: [] });
+    await settle();
+    const grace = peers[2].session.participants().map(({ name }) => name);
+    assert.deepEqual(grace, ["Ada"], "Grace sees one Ada");
+    const ada = peers[0].session.participants().map(({ name }) => name);
+    assert.deepEqual(ada, ["Grace"], "Ada's other tab is not listed");
+  } finally {
+    for (const peer of peers) peer.session.leave();
+  }
+});
+
+test("a signed-in person is coloured by their account, as the Authors tab colours them", () => {
+  // Two spellings of one account's name are one colour: the caret follows the
+  // account, the same seed the Authors tab draws the person's row from.
+  const session = createProjectSession({
+    name: "Ada",
+    accountId: "acc-1",
+    presenceId: () => "tab-a",
+    presenceColour,
+    send: () => {},
+    onState: () => {},
+  });
+  try {
+    assert.equal(session.localPresence().color, presenceColour("account:acc-1"));
+    session.rename("Ada Lovelace", "acc-1");
+    assert.equal(session.localPresence().color, presenceColour("account:acc-1"));
+    // Signing out of the account falls back to the name, as an anonymous reader's.
+    session.rename("Ada Lovelace", "");
+    assert.equal(session.localPresence().color, presenceColour("name:Ada Lovelace"));
+  } finally {
+    session.leave();
+  }
+});
+
+test("an anonymous reader with no name still wears their tab's colour", () => {
+  const session = createProjectSession({
+    presenceId: () => "tab-z",
+    presenceColour,
+    send: () => {},
+    onState: () => {},
+  });
+  try {
+    assert.equal(session.localPresence().color, presenceColour("tab-z"));
+  } finally {
+    session.leave();
   }
 });
 

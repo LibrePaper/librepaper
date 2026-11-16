@@ -1,0 +1,22 @@
+{
+  "name": "google-docs-chrome",
+  "app": "Google Docs",
+  "browser": "Chrome 155.0.8059.84 ",
+  "note": null,
+  "platform": "linux",
+  "session": "wayland",
+  "types": [
+    "text/html",
+    "text/plain",
+    "UTF8_STRING",
+    "COMPOUND_TEXT",
+    "TEXT",
+    "STRING",
+    "application/x-moz-custom-clipdata",
+    "text/x-moz-url-priv",
+    "SAVE_TARGETS"
+  ],
+  "capturedAt": "2026-11-12",
+  "htmlBytes": 30396,
+  "textBytes": 2606
+}

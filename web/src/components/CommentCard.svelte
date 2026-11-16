@@ -5,7 +5,8 @@
   import Avatar from "./Avatar.svelte";
   import Row from "./layout/Row.svelte";
   import { threadRuns } from "../lib/thread.js";
-  import { shownSelector } from "../lib/anchor.js";
+  import { isSendKey } from "../lib/send-key.js";
+  import { aboutWholeDocument, shownSelector } from "../lib/anchor.js";
   import { moment } from "../lib/dates.js";
 
   // One annotation, and everything said about it.
@@ -24,6 +25,8 @@
     // Saves a new body for this comment, or for one of its replies (reply is
     // null for the comment itself).
     onedit,
+    // Asks the agent to act on this comment. Absent where no agent is offered.
+    onagent,
     cardIdPrefix = "comment",
     // The card the sidebar has singled out: its passage is ringed in the
     // document, and the card wears the same ring so the two read as one.
@@ -51,6 +54,9 @@
   // is what the card shows and what the highlight was drawn from, never what
   // the comment is about.
   const shown = $derived(shownSelector(comment));
+  // A remark about the document as a whole. It names no passage, so it has no
+  // place in the page to show or to take the reader to; its card says so.
+  const whole = $derived(aboutWholeDocument(comment));
 
   // A highlight is the one kind of card with nothing of its own to say: no
   // body, just a badge. Without the passage it marks, the card
@@ -111,7 +117,7 @@
   // about it.
   const summary = $derived(
     [
-      shown.exact.trim(),
+      whole ? m.common_whole_document() : shown.exact.trim(),
       (comment.body || "").trim(),
     ]
       .filter(Boolean)
@@ -144,7 +150,7 @@
       open();
       return;
     }
-    if (!comment.orphaned) onreveal?.(comment);
+    if (!comment.orphaned && !whole) onreveal?.(comment);
   }
 
   async function reply() {
@@ -162,7 +168,7 @@
       replying = false;
       return;
     }
-    if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.isComposing || event.keyCode === 229) return;
+    if (!isSendKey(event)) return;
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
   }
@@ -204,15 +210,15 @@
     editError = "";
   }
 
-  // Enter makes a new line here, as it is in a note; Ctrl or Cmd with Enter
-  // saves, and Escape lets the words go.
+  // Enter saves, Shift+Enter makes a new line, and Escape lets the words go.
+  // The same send key as the reply box.
   function editKeys(event) {
     if (event.key === "Escape") {
       event.preventDefault();
       stopEdit();
       return;
     }
-    if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey) || event.isComposing) return;
+    if (!isSendKey(event)) return;
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
   }
@@ -254,7 +260,7 @@
     ? 'lp-control-tonal-brand opacity-70'
     : 'lp-control-tonal-brand'}"
   class:collapsed
-  class:selected
+  class:lp-selected={selected}
   bind:this={card}
   tabindex="-1"
   onfocus={() => (expanded = true)}
@@ -265,10 +271,13 @@
             onclick={open}>{summary}</button>
   {:else}
     <div class="flex flex-col gap-2">
-      {#if unpainted || comment.inSourceOnly || (comment.motivation && comment.motivation !== "commenting")}
+      {#if unpainted || whole || comment.inSourceOnly || (comment.motivation && comment.motivation !== "commenting")}
       <Row gap={1} wrap>
         {#if unpainted}
           <span class="badge {badgeTone}">{badge}</span>
+        {/if}
+        {#if whole}
+          <span class="badge lp-tone-neutral">{m.common_whole_document()}</span>
         {/if}
         {#if comment.inSourceOnly}
           <!-- The rendering lost the words, but the source -- the text that
@@ -323,7 +332,7 @@
                 </form>
               {:else if post.body}
                 <div class="post-row">
-                  <p class="post" title={stamp(post.created)}>{post.body}</p>
+                  <p class="post" data-tip-wait="long" data-tip={stamp(post.created)}>{post.body}</p>
                   {#if canEditPost(post)}
                     <IconButton
                       icon="pencil"
@@ -338,7 +347,7 @@
                   {/if}
                 </div>
                 {#if post.edited}
-                  <p class="panel-meta edited" title={m.commentcard_edited_title({ when: stamp(post.edited) })}>{m.commentcard_edited({ when: moment(post.edited) })}</p>
+                  <p class="panel-meta edited" data-tip-wait="long" data-tip={m.commentcard_edited_title({ when: stamp(post.edited) })}>{m.commentcard_edited({ when: moment(post.edited) })}</p>
                 {/if}
               {/if}
             {/each}
@@ -362,7 +371,7 @@
         <Row gap={2} wrap>
           <button type="button" class="btn btn-sm lp-control-tonal-brand"
             disabled={!attachable}
-            title={attachable ? m.commentcard_attach_title() : m.commentcard_attach_title_disabled()}
+            data-tip={attachable ? m.commentcard_attach_title() : m.commentcard_attach_title_disabled()}
             onclick={(e) => {
               e.stopPropagation();
               onattach?.(comment);
@@ -383,13 +392,24 @@
        now, and it is still the confirmed one: what it opens is the dialog,
        not the deletion. -->
   <div class="actions">
-    {#if onreveal && !comment.orphaned}
+    {#if onreveal && !comment.orphaned && !whole}
       <IconButton
         icon="eye"
         label={m.commentcard_show_in_document()}
         onclick={(e) => {
           e.stopPropagation();
           onreveal?.(comment);
+        }}
+      />
+    {/if}
+    {#if onagent && !comment.resolved}
+      <IconButton
+        icon="bot"
+        label={m.commentcard_agent()}
+        disabled={!canComment}
+        onclick={(e) => {
+          e.stopPropagation();
+          onagent?.(comment);
         }}
       />
     {/if}
@@ -458,11 +478,10 @@
 </article>
 
 <style>
-  .card.comment-card { box-sizing: border-box; min-width: 0; padding: 10px 13px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-raised); }
-  .card.comment-card.selected { border-color: color-mix(in oklab, var(--color-brand) 45%, var(--color-border)); border-left: 3px solid var(--color-brand); padding-left: 11px; background: color-mix(in oklab, var(--color-brand) 5%, var(--color-raised)); }
-  @media (forced-colors: active) {
-    .card.comment-card.selected { border: 1px solid Highlight; border-left-width: 3px; }
-  }
+  .card.comment-card { box-sizing: border-box; min-width: 0; padding: 10px 13px; border: 1px solid var(--color-border); border-radius: 9px; }
+  /* The selected card takes the shared selected ground (librepaper.css), so the
+     raised ground goes only to the cards that are not selected. */
+  .card.comment-card:not(.lp-selected) { background: var(--color-raised); }
 
   /* The conversation: runs of one author separated by a little air, the lines
      within a run tight enough to read as one person still talking. No rail
@@ -488,4 +507,13 @@
   .actions :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
   .actions :global(.icon-control svg) { width: 16px; height: 16px; }
 
+  /* Phones: the comment actions wrap rather than squeeze, each is a finger's
+     size with its icon unchanged, and the reply box keeps 16px. */
+  @media (max-width: 767px) {
+    .actions { flex-wrap: wrap; }
+    .actions :global(.icon-control),
+    .post-row :global(.icon-control) { width: 2.75rem; height: 2.75rem; min-width: 2.75rem; min-height: 2.75rem; }
+    .comment-card .btn { min-height: 2.75rem; }
+    .comment-card textarea { font-size: 1rem; }
+  }
 </style>

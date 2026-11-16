@@ -115,5 +115,17 @@ const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: 
     anchorOne("a replacement paragraph", oldBundle) === null);
 }
 
+{
+  // Many occurrences of a short quote, each with its own context. The one
+  // whose prefix and suffix match the recorded context wins, wherever it sits
+  // among the others. This pins the placement once the prefix is reversed
+  // only once for all candidates.
+  const others = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"];
+  const text = `${others.map((word) => `${word} passage tail`).join("; ")}; target passage end`;
+  const selector = { exact: "passage", prefix: "target ", suffix: " end", position: null };
+  check("many occurrences of a short quote: context picks the one that matches",
+    anchorOne(text, selector)?.start === text.indexOf("target passage") + "target ".length);
+}
+
 if (failures) process.exit(1);
 console.log("anchor: rendered quotations are matched, source ranges are taken as given");

@@ -1,0 +1,165 @@
+[
+  {
+    "args": [
+      {
+        "from": 15,
+        "to": 22
+      }
+    ],
+    "body": {
+      "from": 15,
+      "to": 22
+    },
+    "children": [
+      {
+        "from": 15,
+        "kind": "text",
+        "to": 22
+      }
+    ],
+    "from": 0,
+    "kind": "command",
+    "name": "documentclass",
+    "to": 23
+  },
+  {
+    "from": 23,
+    "kind": "text",
+    "to": 24
+  },
+  {
+    "args": [
+      {
+        "from": 31,
+        "to": 40
+      }
+    ],
+    "body": {
+      "from": 31,
+      "to": 40
+    },
+    "children": [
+      {
+        "body": {
+          "from": 32,
+          "to": 39
+        },
+        "children": [
+          {
+            "body": {
+              "from": 33,
+              "to": 38
+            },
+            "children": [
+              {
+                "from": 33,
+                "kind": "text",
+                "to": 38
+              }
+            ],
+            "from": 32,
+            "kind": "group",
+            "to": 39
+          }
+        ],
+        "from": 31,
+        "kind": "group",
+        "to": 40
+      }
+    ],
+    "from": 24,
+    "kind": "command",
+    "name": "title",
+    "to": 41
+  },
+  {
+    "from": 41,
+    "kind": "text",
+    "to": 42
+  },
+  {
+    "args": [
+      {
+        "from": 50,
+        "to": 60
+      }
+    ],
+    "body": {
+      "from": 50,
+      "to": 60
+    },
+    "children": [
+      {
+        "body": {
+          "from": 51,
+          "to": 59
+        },
+        "children": [
+          {
+            "body": {
+              "from": 52,
+              "to": 58
+            },
+            "children": [
+              {
+                "from": 52,
+                "kind": "text",
+                "to": 58
+              }
+            ],
+            "from": 51,
+            "kind": "group",
+            "to": 59
+          }
+        ],
+        "from": 50,
+        "kind": "group",
+        "to": 60
+      }
+    ],
+    "from": 42,
+    "kind": "command",
+    "name": "author",
+    "to": 61
+  },
+  {
+    "from": 61,
+    "kind": "text",
+    "to": 63
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 79,
+      "to": 112
+    },
+    "children": [
+      {
+        "from": 79,
+        "kind": "text",
+        "to": 80
+      },
+      {
+        "args": [],
+        "from": 80,
+        "kind": "command",
+        "name": "maketitle",
+        "to": 90
+      },
+      {
+        "from": 90,
+        "kind": "text",
+        "to": 112
+      }
+    ],
+    "from": 63,
+    "kind": "container",
+    "name": "document",
+    "to": 126
+  },
+  {
+    "from": 126,
+    "kind": "text",
+    "to": 127
+  }
+]

@@ -2,6 +2,9 @@
 // spellchecker must skip, and which words it still reads as prose.
 import assert from "node:assert/strict";
 
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 const { typstSkips } = await import("../../src/lib/spellcheck/typst.js");
 
 // The words the spellchecker still sees: the text with every skipped range
@@ -64,9 +67,9 @@ function words(text) {
   assert.deepEqual(words("Let $ alpha\n + beta $ hold."), ["Let", "hold"]);
 }
 
-// Unclosed math ends at its line end, so the next line is prose.
+// Unclosed math runs to the end of the text, as Typst reads it.
 {
-  assert.deepEqual(words("Unclosed $x\nmore"), ["Unclosed", "more"]);
+  assert.deepEqual(words("Unclosed $x\nmore"), ["Unclosed"]);
 }
 
 // A backslash-escaped dollar is a literal dollar, not an opening of math.
@@ -101,9 +104,9 @@ function words(text) {
   assert.deepEqual(words("```python\nprint(x)\n```\nAfter"), ["After"]);
 }
 
-// Unclosed inline raw ends at its line end.
+// Unclosed inline raw runs to the end of the text, as Typst reads it.
 {
-  assert.deepEqual(words("a `unclosed\nnext"), ["a", "next"]);
+  assert.deepEqual(words("a `unclosed\nnext"), ["a"]);
 }
 
 // Unclosed fenced raw runs to the end of the text.
@@ -136,9 +139,9 @@ function words(text) {
   assert.deepEqual(words("#let note = [Inside here]\nNext"), ["Inside", "here", "Next"]);
 }
 
-// An unbalanced call does not throw, and the prose after it is still read.
+// An unbalanced call does not throw; what follows is its arguments, which are code.
 {
-  assert.deepEqual(words("#f(\nHello\nWorld"), ["Hello", "World"]);
+  assert.deepEqual(words("#f(\nHello\nWorld"), []);
 }
 
 // A multi-line call that closes is skipped as a whole.
@@ -215,9 +218,9 @@ function words(text) {
   assert.deepEqual(words('#f("a\\"b)") x'), ["x"]);
 }
 
-// A string that is never closed ends at its line, and the next line is prose.
+// A string that is never closed runs to the end of the text, as Typst reads it.
 {
-  assert.deepEqual(words('#f("abc\nnext'), ["next"]);
+  assert.deepEqual(words('#f("abc\nnext'), []);
 }
 
 // Empty input has nothing to skip.
@@ -238,6 +241,24 @@ function words(text) {
 // A long line of completed inline raw spans is scanned in linear time, and its last word is kept.
 {
   assert.deepEqual(words("`x` ".repeat(20000) + "word"), ["word"]);
+}
+
+// Markup inside a figure's caption argument is prose, and its strong text too.
+{
+  assert.deepEqual(
+    words('#figure(image("a.png"), caption: [Results of *the* run]) <fig:r>'),
+    ["Results", "of", "the", "run"],
+  );
+}
+
+// The supplement of a reference is a content block, so its words are prose.
+{
+  assert.deepEqual(words("See @smith2020[p. 3 of the text]."), ["See", "p", "of", "the", "text"]);
+}
+
+// A content block inside a code block after `#` is prose, and the code around it is not.
+{
+  assert.deepEqual(words("#{ let t = [Inside block] }\nAfter"), ["Inside", "block", "After"]);
 }
 
 console.log("spellcheck-typst: markup ranges the spellchecker skips");

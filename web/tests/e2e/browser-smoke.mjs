@@ -175,9 +175,21 @@ class Tab {
   /// for the whole browser, and several documents are open at once here.
   async evalInFrame(expression, slug, prefix = "raw") {
     const { targetInfos } = await this.send("Target.getTargets");
-    const frame = targetInfos.find(
+    const matching = targetInfos.filter(
       (one) => one.type === "iframe" && one.url.includes(`/${prefix}/` + slug + "/"),
     );
+    // Target.getTargets lists the frames of every tab, and two tabs on the same
+    // document have frames at the same address. A cross-origin frame's target
+    // names the frame that holds it (`parentFrameId`), and this tab's frame
+    // tree, which leaves such frames out, holds that frame: so it says which
+    // target is ours.
+    const own = new Set();
+    try {
+      const { frameTree } = await this.send("Page.getFrameTree");
+      const walk = (node) => { own.add(node.frame.id); for (const child of node.childFrames || []) walk(child); };
+      walk(frameTree);
+    } catch { /* fall back to the first match below */ }
+    const frame = matching.find((one) => own.has(one.parentFrameId)) || matching[0];
     if (!frame) return null;
     const { sessionId } = await this.send("Target.attachToTarget", {
       targetId: frame.targetId,
@@ -350,6 +362,7 @@ async function vimKeys(tab, sequence) {
 /* ----------------------------------------------------------------- the run */
 
 const MARKDOWN = "# A Paper\n\nThe first paragraph.\n";
+const ORG = "#+TITLE: An Org Paper\n\n* TODO Methods\n\nThe org paragraph with *bold* and $x^2$.\n";
 
 async function run() {
   await requiredUntil("the server", async () => (await fetch(`${BASE}/api/config`)).ok);
@@ -420,6 +433,46 @@ async function run() {
   }
   check("the preview advances during continuous typing", liveWhileTyping);
 
+  /* --- 1b. Org: the same loop for an Org document --- */
+
+  // Org is rendered to HTML in the browser by a WebAssembly module, the same
+  // way Markdown is, so the same loop must hold for it.
+  const orgDoc = await deployment.publish({
+    title: "An Org Paper",
+    source: ORG,
+    source_format: "org",
+  });
+  const orgSlug = orgDoc.slug;
+  const orgEditor = await openTab(`${BASE}/docs/${orgSlug}`, [
+    SESSION,
+  ], { ownProfile: true });
+  const orgPainted = await until("the Org frame is painted", async () =>
+    (await orgEditor.evalInFrame("return document.body.innerText", orgSlug))?.includes("The org paragraph with bold"),
+  );
+  check(
+    "an Org document is rendered into the frame",
+    orgPainted,
+    orgPainted ? "" : `console: ${orgEditor.console.slice(-3).join(" | ")}`,
+  );
+
+  const orgTodo = await orgEditor.evalInFrame(`return document.querySelector("span.todo")?.textContent`, orgSlug);
+  check("an Org headline shows its TODO keyword", orgTodo === "TODO", String(orgTodo));
+
+  const orgMath = await until("the Org math is typeset", () =>
+    orgEditor.evalInFrame(`return Boolean(document.querySelector(".katex"))`, orgSlug),
+    10000,
+  );
+  check("Org math is typeset in the frame", Boolean(orgMath));
+
+  await appendText(orgEditor, "\n\nAn org sentence typed in the browser.\n");
+  const orgTyped = await until("typing reaches the Org frame", async () =>
+    (await orgEditor.evalInFrame("return document.body.innerText", orgSlug))?.includes("typed in the browser"),
+  );
+  check("what is typed in an Org document is rendered into the frame", orgTyped);
+
+  // The tab stays open: the existing sections never close a tab; the browser
+  // itself is closed at the end of the run.
+
   /* --- 2. read-only live updates ------------------------------------------ */
 
   // A document owned by somebody, so a second browser is a reader rather than
@@ -479,6 +532,10 @@ async function run() {
   await requiredUntil("the second tab", async () =>
     (await secondNotebook.evalInFrame("return document.body.innerText", notebook.slug))?.includes("original figure"),
   );
+  // The reader is the tab being looked at. A hidden tab skips its renders until
+  // it is shown, and headless Chromium shows only one tab of a window, so the
+  // reader is brought to the front the way a person would look at it.
+  await secondNotebook.send("Page.bringToFront");
   await setText(notebookTab, page.replace("The original figure.", "The revised figure."));
   const notebookLive = await until(
     "the html reader sees the edit",
@@ -515,7 +572,7 @@ async function run() {
   // visited -- an editor's default panel is Files -- so open it before the
   // comment is queued, or the queued draft is never in the DOM to find.
   await editor.eval(`
-    const tab = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.title, b.textContent.trim()].includes("Collaboration"));
+    const tab = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.getAttribute("data-tip"), b.textContent.trim()].includes("Collaboration"));
     if (!tab) throw new Error("no Collaboration tab");
     tab.click();
     return true;
@@ -887,9 +944,9 @@ async function run() {
 
   // Import it from the document's first file, document.typ. Choosing a name
   // in the list is what opens it, exactly as a person would.
-  await requiredUntil("the document.typ row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[title="document.typ"]'))`));
+  await requiredUntil("the document.typ row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[data-tip="document.typ"]'))`));
   await author.eval(`
-    document.querySelector('.explorer-row[title="document.typ"]').click();
+    document.querySelector('.explorer-row[data-tip="document.typ"]').click();
     return true;
   `);
   await wait(300);
@@ -904,9 +961,9 @@ async function run() {
 
   // An error in the imported file is an error in *that* file, and choosing it
   // opens the file it is in rather than pointing at a line of document.typ.
-  await requiredUntil("the imported file row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[title="lib.typ"]'))`));
+  await requiredUntil("the imported file row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[data-tip="lib.typ"]'))`));
   await author.eval(`
-    document.querySelector('.explorer-row[title="lib.typ"]').click();
+    document.querySelector('.explorer-row[data-tip="lib.typ"]').click();
     return true;
   `);
   await wait(300);
@@ -933,14 +990,14 @@ async function run() {
   );
   await author.eval(`document.querySelector('button[aria-label="Files"]')?.click(); return true;`);
   await requiredUntil("the Files panel after diagnostics", () =>
-    author.eval(`return Boolean(document.querySelector('.explorer-row[title="lib.typ"]'))`),
+    author.eval(`return Boolean(document.querySelector('.explorer-row[data-tip="lib.typ"]'))`),
   );
 
   // Renaming keeps the words: the name moves and the text stays where it is.
   // A double-click on the row starts the rename, the way a person does it --
   // there is no per-row button any more, only a context menu and this.
   await author.eval(`
-    const row = document.querySelector('.explorer-row[title="lib.typ"]');
+    const row = document.querySelector('.explorer-row[data-tip="lib.typ"]');
     if (!row) throw new Error("no lib.typ row to rename");
     row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     return true;
@@ -1025,20 +1082,25 @@ async function run() {
   );
   check("a figure chosen from a disk joins the directory", Boolean(inTheList), JSON.stringify(inTheList));
 
-  // It reaches the page as a data URL in this browser, never as the route it
-  // came from: a rendered page must not carry a credential. A page drawn before
-  // the upload landed still names the figure by path, so the check waits for
-  // the render that has it.
+  // It reaches the page as a URL made in this browser, never as the route it
+  // came from: a rendered page must not carry a credential. A raster figure is
+  // sent to the preview frame once as bytes, and the frame shows it from a blob
+  // URL of its own, marked with the figure's digest. A page drawn before the
+  // upload landed still names the figure by path, so the check waits for the
+  // render that has it.
   let lastDrawn = null;
   const drawn = await until("the figure reaches the rendered page", async () => {
     lastDrawn = await illustrator.evalInFrame(
       `const img = document.querySelector("img"); return img ? img.src : null`,
       illustrated.slug,
     );
-    return typeof lastDrawn === "string" && lastDrawn.startsWith("data:") ? lastDrawn : null;
+    const local = typeof lastDrawn === "string"
+      && (lastDrawn.startsWith("data:") || (lastDrawn.startsWith("blob:") && lastDrawn.includes("#librepaper-asset=")))
+      && !lastDrawn.includes("/api/documents/");
+    return local ? lastDrawn : null;
   }, 20000);
   check(
-    "a markdown figure is rewritten to a data URL in this browser",
+    "a markdown figure is shown from a URL made in this browser",
     Boolean(drawn),
     String(drawn || lastDrawn).slice(0, 60),
   );
@@ -1049,8 +1111,10 @@ async function run() {
   // a path containing "/assets/", and matching the loose one made this check
   // pass against a JavaScript chunk.
   const figureRoute = `/api/documents/${illustrated.slug}/assets/`;
+  // The page first asks the same route for a direct link (`<digest>/link`),
+  // which is JSON, so the request wanted is the one that ends at the digest.
   const asked = await requiredUntil("the figure is fetched", async () =>
-    illustrator.requests.find((url) => url.includes(figureRoute)),
+    illustrator.requests.find((url) => url.includes(figureRoute) && /\/assets\/[0-9a-f]{64}$/.test(url)),
   );
   const stored = await fetch(asked, {
     headers: { "x-librepaper-client": "1", cookie: deployment.cookie },

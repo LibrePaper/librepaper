@@ -30,6 +30,10 @@ Before adding complexity for a speculative or vanishingly unlikely race or secur
 
 Subagents must not run tests, builds, linters, type checkers, formatters that rewrite other files, or any other verification command. They write code and report what they changed. Say so explicitly in every subagent brief. All verification belongs to the main agent after review.
 
+## Keep the skill version honest
+
+`SKILL_VERSION` in `skills/librepaper/scripts/lp` and `MIN_SKILL_VERSION` in `crates/librepaper-server/src/server/mcp.rs` tell people when an installed skill has gone stale. When a change to `scripts/lp` or to the tool contract would make an older copy of the skill misbehave, raise both to the same new number. Do not raise them for documentation edits or for changes older copies keep working with.
+
 ## Run only the checks your change needs
 
 The Rust code is a workspace of internal sub-crates under `crates/`.
@@ -39,7 +43,7 @@ Between phases and before handing back, run only the tests and checks that match
 - One Rust crate under `crates/`: run `cargo check -p <crate>`, `cargo nextest run -p <crate>`, and `cargo clippy -p <crate> --all-targets -- -D warnings`. When the crate's public API changed, run the same commands for each crate that depends on it.
 - Several crates, or `Cargo.toml` or `Cargo.lock`: run `make test-rust`.
 - Code under `web/src` or `web/tests`: run the affected test files with `node --test <file>` from `web/`. Unit and integration files need `--experimental-transform-types`. When `.svelte` or `.js` types changed, also run `cd web && bun run check:types`. `make test-web` covers all of it.
-- A browser behavior change: run the relevant `web/tests/browser/*.mjs` file. No `make` target runs these.
+- A browser behavior change: run the relevant `web/tests/browser/*.mjs` file. `make test` does not run these. `make check` does, with the deployment scenarios under `web/tests/e2e`.
 - A script under `tools/` or `web/tools/`: run its own `*.test.mjs` with `node --test <file>`.
 - Documentation or prose only: run nothing.
 

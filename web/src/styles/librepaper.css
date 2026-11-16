@@ -24,7 +24,7 @@ body > nav {
   z-index: 10;
   height: var(--librepaper-bar);
   padding-inline: --spacing(4);
-  border-bottom: 1px solid var(--color-pane-edge);
+  border-bottom: 1px solid var(--color-border-strong);
   background: color-mix(in srgb, var(--color-shell) 94%, transparent);
   backdrop-filter: blur(12px);
 }
@@ -91,7 +91,7 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
      editor past the pane. */
   grid-template-rows: minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr);
-  border-right: 1px solid var(--color-pane-edge);
+  border-right: 1px solid var(--color-border-strong);
 }
 
 /* ------------------------------------------------------------- the files */
@@ -137,8 +137,6 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
 }
 .explorer-row { padding-left: calc(--spacing(2) + (var(--depth, 1) - 1) * --spacing(4)); }
 .explorer-row:hover, .explorer-open { background: var(--color-row-hover); }
-.explorer-row[data-selected] { background: var(--color-row-selected); box-shadow: inset 2px 0 var(--color-brand); }
-.explorer [data-part="branch"][data-selected] > [data-part="context-trigger"] .explorer-row { background: var(--color-row-selected); box-shadow: inset 2px 0 var(--color-brand); }
 .explorer-row:focus-visible, .explorer [data-part="branch"]:focus-visible > [data-part="context-trigger"] .explorer-row {
   outline: 2px solid var(--color-focus);
   outline-offset: -2px;
@@ -203,9 +201,10 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
    over the page: a floating group covered the corner of the document it was
    there to help read. The pane is a flex column, so the band takes its height
    and the frame the rest, and the controls ride the split rather than the
-   window. The bar never wraps or scrolls; a narrow pane drops the zoom select
-   first and then the tool pair, which the container query below decides by
-   the bar's own width rather than the window's.
+   window. The bar never wraps or scrolls; ToolBand moves what does not fit
+   into a "..." menu, and a narrow pane drops the zoom select, which the
+   container query below decides by the bar's own width rather than the
+   window's.
 
    These were drawn inside the PDF frame in the operating system's button
    colours, which is why the paged preview and the flowing one looked like two
@@ -215,19 +214,8 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
 .preview-band {
   flex: 0 0 auto;
   min-width: 0;
-  border-bottom: 1px solid var(--color-divider);
   background: var(--color-shell);
 }
-.preview-controls {
-  container-type: inline-size;
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: --spacing(1);
-  padding: --spacing(1) --spacing(2);
-  overflow: hidden;
-}
-.preview-spacer { flex: 1 1 auto; min-width: 0; }
 /* The page box: a number a reader can type over, with the count after it. */
 .preview-page {
   display: flex;
@@ -259,7 +247,7 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
   align-items: center;
   gap: --spacing(1);
   padding: --spacing(1) --spacing(2);
-  border-top: 1px solid var(--color-divider);
+  border-bottom: 1px solid var(--color-divider);
 }
 .preview-find-input {
   flex: 1 1 auto;
@@ -280,16 +268,6 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-/* The rail between "how large" and "what the pointer does": two groups of
-   controls, one row, and a line rather than a gap to say they are two. */
-.preview-controls .preview-tools {
-  display: flex;
-  align-items: center;
-  gap: --spacing(1);
-  margin-inline-start: --spacing(1);
-  padding-inline-start: --spacing(2);
-  border-inline-start: 1px solid var(--color-divider);
 }
 /* The spinner rides in the controls the page already gives up room for, so a
    compile never covers text. */
@@ -325,9 +303,6 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
 @container (max-width: 30rem) {
   .preview-zoom { display: none; }
 }
-@container (max-width: 22rem) {
-  .preview-controls .preview-tools { display: none; }
-}
 /* The column, at the left of the window: the tabs, then whichever panel they
    chose. The panel is what scrolls, so the tabs stay where they are, and a
    sticky row inside a panel has the panel to stick to.
@@ -344,7 +319,7 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--color-pane-edge);
+  border-right: 1px solid var(--color-border-strong);
 }
 .panel {
   flex: 1 1 auto;
@@ -367,6 +342,10 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
 
 .panel-status { margin-bottom: --spacing(3); }
 .panel-actions { display: flex; align-items: center; flex-wrap: wrap; gap: --spacing(1); margin-bottom: --spacing(4); }
+/* A narrow column wraps a long label ("Comment on the whole document") inside
+   its button rather than letting the row run past the panel's edge. */
+.panel-actions > *, .panel-actions :where(button, a) { max-width: 100%; min-width: 0; }
+.panel-actions :where(button, a) { white-space: normal; height: auto; text-align: center; }
 .panel-intro { margin-bottom: var(--panel-section-gap); }
 .panel-intro:empty { display: none; }
 .panel-section-title { font: inherit; font-weight: var(--panel-title-weight); }
@@ -467,18 +446,41 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 
 /* ---------------------------------------------------------------- timeline */
 
-/* The history, in the column the comments otherwise have. Its list of days
-   lives in its own file. What is left here is the one thing every selectable
-   moment in it shares: which one is being looked at. */
-/* The moment being looked at. A tinted ground and nothing else: the row was
-   also carrying a left stripe, which is a second way of saying the one thing
-   the background already says, and in a list of revisions two devices for
-   "this one" is one too many. */
-.timeline-here,
-.timeline-here:hover {
+/* ------------------------------------------------ selected and pressed */
+
+/* The one look for "this is the chosen one" in a list, a tree, a table or a
+   set of cards: the selected-row ground and the text colour, and nothing else.
+   No stripe and no border, so the same selection reads the same in the file
+   tree, the changes, the comments, the outline, the history and the projects
+   table. Mark the state with ARIA where the element has a role for it
+   (aria-selected, aria-current), with the tree's data-selected, or with
+   `.lp-selected` where it has none. Focus is a separate ring, below, so a
+   selected row that also has focus shows both. Tabs keep their own underline
+   (see `.panel-tabs`). */
+.lp-selected,
+.explorer-row[data-selected],
+.explorer [data-part="branch"][data-selected] > [data-part="context-trigger"] .explorer-row,
+[aria-selected="true"]:not([role="tab"], [role="treeitem"]),
+[aria-current="true"],
+[aria-current="location"] {
   background: var(--color-row-selected);
-  border-radius: 4px;
+  color: var(--color-text);
 }
+:is(.lp-selected, .explorer-row[data-selected], [aria-selected="true"]:not([role="tab"], [role="treeitem"]), [aria-current="true"], [aria-current="location"]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+/* The one look for a toggle that is on (`aria-pressed="true"`): the same
+   selected ground, so a pressed control reads as chosen. Swatches are the
+   exception: their fill is the colour they stand for. A class from a
+   component can still set its own fill, which is deliberate. */
+button[aria-pressed="true"]:not(.tag-swatch) {
+  background: var(--color-row-selected);
+  color: var(--color-text);
+}
+button[aria-pressed="true"]:not(.tag-swatch):hover:not(:disabled) { background: var(--color-tonal-hover); }
+button[aria-pressed="true"]:not(.tag-swatch):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 
 /* Whatever is left when the document is not showing takes the room it would
    have had: the source if it is there, the comments otherwise. */
@@ -488,12 +490,16 @@ main.reader.no-preview:not(.editing) .sidebar {
 }
 .viewport.away {
   /* Keep the frame's viewport intact while it is out of the layout. Giving
-     an iframe zero dimensions can reset its document scroll position. */
+     an iframe zero dimensions can reset its document scroll position.
+     It is held off the screen as well as hidden: at the top left it lay over
+     the bar, and a frame painted before the hiding applied flashed its
+     controls there on a narrow window's switch to the source. */
   position: fixed;
   visibility: hidden;
   pointer-events: none;
   top: 0;
   left: 0;
+  translate: -100% 0;
   width: var(--held-width);
   height: var(--held-height);
 }
@@ -602,7 +608,7 @@ main.reader.source-right .viewport {
 main.reader.source-right .editorpane {
   order: 3;
   border-right: 0;
-  border-left: 1px solid var(--color-pane-edge);
+  border-left: 1px solid var(--color-border-strong);
 }
 
 /* ------------------------------------------------------------------- grips */
@@ -707,7 +713,7 @@ main.reader.source-right .editorpane {
   background: var(--color-shell);
   border: 0;
   padding-left: --spacing(3);
-  color: var(--color-line-number);
+  color: var(--color-text-secondary);
 }
 .cm-editor .cm-lineNumbers .cm-gutterElement {
   padding-inline: --spacing(2);
@@ -741,7 +747,12 @@ main.reader.source-right .editorpane {
 [data-mode="dark"] .cm-editor .cm-searchMatch {
   background: color-mix(in srgb, var(--color-editor-tint) 28%, transparent);
 }
+/* CodeMirror raises its panels to z-index 300 against nothing that contains
+ * it, so the Vim status line and the search bar were drawn over the settings
+ * page and every other dialog. They only have to clear the scroller beside
+ * them, which stacks at 0. */
 .cm-editor .cm-panels {
+  z-index: 1;
   background: var(--color-subtle);
   color: var(--color-text);
   border-color: var(--color-border);
@@ -897,6 +908,23 @@ main.reader.source-right .editorpane {
 .user-color-af4d00 { --presence: #af4d00; }
 .user-color-007a59 { --presence: #007a59; }
 .user-color-975a7c { --presence: #975a7c; }
+
+/* The flash over a collaborator's place after a click on their avatar
+ * (lib/presence-flash.js). It is a tint in their colour that fades. With
+ * reduced motion there is no fade: the tint stays for the same time and is
+ * then removed by the editor. */
+.cm-line.peer-jump-flash {
+  background-color: color-mix(in srgb, var(--presence, var(--color-text-secondary)) 22%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cm-line.peer-jump-flash {
+    animation: peer-jump-fade 1.4s ease-out forwards;
+  }
+}
+@keyframes peer-jump-fade {
+  from { background-color: color-mix(in srgb, var(--presence, var(--color-text-secondary)) 30%, transparent); }
+  to { background-color: transparent; }
+}
 .user-color-926500 { --presence: #926500; }
 .user-color-377395 { --presence: #377395; }
 
@@ -993,31 +1021,36 @@ button.summary {
 /* ------------------------------------------------------------- the phone */
 
 /* At compact widths, all panes fit in the viewport since the face switch
-   and panel menu are in the top bar instead of a separate bottom bar. */
+   and panel menu are in the top bar. */
 main.reader .sidebar, main.reader .editorpane, main.reader .viewport, main.reader .latexpane {
   min-height: 0;
   overscroll-behavior: contain;
 }
 main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 
-@media (max-width: 760px) {
-  /* Keep the workspace inside the viewport. The bottom navigation chooses
+@media (max-width: 767px) {
+  /* Keep the workspace inside the viewport. The bottom tab bar chooses
      which full-height pane is active; the page itself never becomes a stack
      of independently scrolling documents. */
   main.reader {
     position: relative;
-    height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px));
+    height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - var(--librepaper-phone-chrome, 0px));
     overflow: hidden;
     transition: margin-top 200ms ease, height 200ms ease;
   }
-  /* The bar steps aside while a pane scrolls down and comes back on the way
-     up, as phone apps do. The workspace rises into the space it leaves and
-     grows by its height, so no pane is ever drawn under it. */
-  main.reader.bar-hidden {
-    --librepaper-bar-visible: 0px;
-    margin-top: calc(-1 * var(--librepaper-bar));
-  }
-  /* The project list does the same: it rises into the space the bar leaves. */
+  /* The reader's phone header (Back and a title, over the views that are not
+     tabs) is a slimmer bar than the landing page's. The tab bar, the mode switch
+     and the keyboard bar are taken off the workspace's height inline
+     (--librepaper-phone-chrome, set by the Reader), which is why `main.reader`
+     subtracts it above. */
+  :root:has(main.reader.adapted) { --librepaper-bar: calc(3.25rem + env(safe-area-inset-top)); }
+  /* On a tab screen the header is not drawn at all. */
+  :root:has(main.reader.adapted.phone-tabs) { --librepaper-bar: 0px; }
+  /* Toasts clear the bottom tab bar. */
+  :root:has(main.reader.adapted.phone-tabs) .toast-group { bottom: calc(4rem + env(safe-area-inset-bottom)); }
+  /* Rows are thumb targets here, and nothing a row offers waits for a hover. */
+  main.reader.adapted .explorer-row { min-height: 2.75rem; }
+  /* The project list's bar steps aside on scroll, and the list rises into the space it leaves. */
   main.workspace { transition: margin-top 200ms ease, height 200ms ease; }
   main.workspace.bar-hidden { margin-top: calc(-1 * var(--librepaper-bar)); height: 100dvh; }
   body > nav {
@@ -1068,6 +1101,12 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   }
   /* On a phone the gutter and the margins are narrower, so the text keeps the width. */
   .cm-editor .cm-content { padding: --spacing(3) --spacing(2) --spacing(3) --spacing(1); }
+  /* The keyboard covers the lower half of the screen, and the last lines of a
+     file have nothing below them to scroll up with. Blank room under the text
+     lets them rise above it. Only the source editor gets it: a read-only view
+     raises no keyboard, and the merge view does not scroll on its own. It is
+     svh so that the browser's bars coming and going do not resize the document. */
+  .editorhost .cm-content[contenteditable="true"] { padding-bottom: 75svh; }
   .cm-editor .cm-gutters { padding-left: --spacing(1); }
   .cm-editor .cm-lineNumbers .cm-gutterElement { padding-inline: --spacing(1) 2px; }
   .cm-editor .cm-gutter-lint { width: 0.9em; }
@@ -1192,7 +1231,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .icon-standard { --btn-size: 1.0625rem; }
 /* A finger needs more than a pointer: on a phone the icons are 22px in 42px
    buttons, near the 24px icon and 44-48px target both platforms ask for. */
-@media (max-width: 760px) {
+@media (max-width: 767px) {
   .icon-standard { --btn-size: 1.375rem; }
 }
 .icon-plain:hover:not(:disabled) { background: var(--color-row-hover); }
@@ -1292,7 +1331,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .settings-body > * { max-width: 900px; }
 .settings-body { min-height: 0; overflow-y: auto; padding-right: --spacing(2); overscroll-behavior: contain; }
 .settings :is(button.switch, input, select, textarea):disabled {
-  background: var(--color-disabled-bg);
+  background: var(--color-subtle);
   color: var(--color-disabled-text);
   border-color: var(--color-border);
   cursor: not-allowed;
@@ -1374,10 +1413,13 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
    forced colours it said nothing at all. A border is the one thing that
    survives, so that is what these become. */
 @media (forced-colors: active) {
+  .lp-selected,
   .explorer-row[data-selected],
-  .timeline-here,
+  [aria-selected="true"]:not([role="tab"], [role="treeitem"]),
+  [aria-current="true"],
+  [aria-current="location"],
   .panel-tabs > [role="tab"][aria-selected="true"],
-  .icon-control[aria-pressed="true"] {
+  button[aria-pressed="true"] {
     outline: 2px solid;
     outline-offset: -2px;
   }
@@ -1447,13 +1489,75 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   border-radius: var(--radius-base);
 }
 
+/* The one tooltip (lib/tip.js). It is a popover so it sits in the top layer
+   above any open dialog, and the browser's popover defaults (centred, inset,
+   clipped) are reset here because the script places it by hand. The border,
+   background and colour come from the card and lp-control-neutral classes it
+   carries. It never takes the pointer, so the hover rule of lp-control-neutral
+   cannot fire and the tip cannot get between a person and what is beneath it. */
+.lp-tip {
+  position: fixed;
+  inset: auto;
+  top: 0;
+  left: 0;
+  margin: 0;
+  overflow: visible;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: calc(100vw - 16px);
+}
+.lp-tip[hidden] { display: none; }
+/* A long path is cut with an ellipsis rather than leaving the screen. */
+.lp-tip .tip-text {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+.lp-tip .tip-key {
+  margin-left: calc(var(--spacing) * 2);
+  padding: 0 calc(var(--spacing) * 1);
+  border: 1px solid var(--color-border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-base);
+  background: var(--color-raised);
+  color: inherit;
+  font-family: inherit;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.lp-tip .tip-key[hidden] { display: none; }
+
+/* The cards the editor shows over a citation, a label, a formula or a flagged
+   word sit in CodeMirror's own tooltip frame, which is a grey bordered box in
+   the editor's typeface. The frame takes the look of the tooltip above
+   instead, so every small overlay is the same card. The text cards take its
+   type size too; a formula keeps the size it was typeset at. */
+.cm-editor .cm-tooltip.cm-tooltip-hover,
+.cm-editor .cm-tooltip:has(> .cm-harper-card) {
+  border: 0;
+  border-radius: var(--radius-container);
+  background: var(--color-subtle);
+  color: var(--color-text);
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  font-family: var(--typo-base--font-family);
+}
+.cm-editor .cm-tooltip-hover .cm-tooltip-section:not(:first-child) { border-top-color: var(--color-border); }
+.cm-editor :is(.cm-citation-card, .cm-harper-card, .cm-index-hover) { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
+.cm-editor .cm-index-hover { padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2); }
+/* The formula's own frame would be a box inside the card. */
+.cm-editor .cm-lv-math-tooltip { border: 0; background: none; }
+
 /* Shared control and status classes used by application components. */
 .lp-control-brand { background: var(--color-brand); color: var(--color-on-brand); border-color: var(--color-brand); }
 .lp-control-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-brand-hover); }
 .lp-control-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-brand-pressed); }
-.lp-control-danger { background: var(--color-error-solid); color: var(--color-error-on-solid); border-color: var(--color-error-solid); }
+.lp-control-danger { background: var(--color-error-solid); color: var(--color-on-solid); border-color: var(--color-error-solid); }
 .lp-control-danger:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { filter: brightness(.94); }
-.lp-control-success { background: var(--color-success-solid); color: var(--color-success-on-solid); border-color: var(--color-success-solid); }
+.lp-control-success { background: var(--color-success-solid); color: var(--color-on-solid); border-color: var(--color-success-solid); }
 .lp-control-success:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { filter: brightness(.94); }
 .lp-control-neutral { background: var(--color-subtle); color: var(--color-text); border-color: var(--color-border); }
 .lp-control-neutral:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
@@ -1474,7 +1578,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 [data-quiet-focus]:focus-visible { outline: none; }
 :where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand):disabled,
 :where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand)[aria-disabled="true"] {
-  background: var(--color-disabled-bg);
+  background: var(--color-subtle);
   color: var(--color-disabled-text);
   border-color: var(--color-border);
   cursor: not-allowed;
@@ -1484,7 +1588,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-tone-error { color: var(--color-error-text); background: var(--color-error-bg); border: 1px solid var(--color-error-border); }
 .lp-tone-neutral { color: var(--color-text-secondary); background: var(--color-subtle); border: 1px solid var(--color-border); }
 .lp-text-secondary { color: var(--color-text-secondary); }
-.lp-text-muted { color: var(--color-text-muted); }
+.lp-text-muted { color: var(--color-text-secondary); }
 .lp-text-error { color: var(--color-error-text); }
 .lp-text-warning { color: var(--color-warning-text); }
 .lp-hover-brand:hover { color: var(--color-link); }

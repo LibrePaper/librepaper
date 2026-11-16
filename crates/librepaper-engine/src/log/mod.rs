@@ -24,7 +24,6 @@
 pub mod admission;
 pub mod budget;
 pub mod frame;
-pub mod ledger;
 pub mod peers;
 pub mod pending;
 pub mod pool;
@@ -81,7 +80,6 @@ pub struct Registry {
     /// a sequencer admitted during startup -- before the worker is wired --
     /// still reaches it afterwards.
     compaction: Arc<std::sync::OnceLock<crate::storage::worker::Handle>>,
-    ledger: Arc<ledger::StorageLedger>,
     resident: tokio::sync::Mutex<HashMap<Uuid, Arc<Sequencer>>>,
     /// One slot per document currently being admitted, so a slow head read
     /// stalls only callers of the same document.
@@ -102,7 +100,6 @@ impl Registry {
     ) -> Arc<Self> {
         let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
         let pending = PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);
-        let ledger = ledger::StorageLedger::new();
         let registry = Arc::new(Self {
             catalog,
             blobs,
@@ -111,7 +108,6 @@ impl Registry {
             pending,
             deployment_peer_key,
             compaction: Arc::new(std::sync::OnceLock::new()),
-            ledger,
             resident: tokio::sync::Mutex::new(HashMap::new()),
             admitting: tokio::sync::Mutex::new(HashMap::new()),
         });
@@ -126,10 +122,6 @@ impl Registry {
 
     pub fn budget(&self) -> &Arc<Budget> {
         &self.budget
-    }
-
-    pub fn ledger(&self) -> &Arc<ledger::StorageLedger> {
-        &self.ledger
     }
 
     pub fn pending(&self) -> &Arc<PendingBudget> {
@@ -189,7 +181,6 @@ impl Registry {
                 self.budget.clone(),
                 self.pending.clone(),
                 self.deployment_peer_key.clone(),
-                self.ledger.clone(),
                 self.compaction.clone(),
             )
             .await;
@@ -229,7 +220,7 @@ impl Registry {
 
     /// The encoded head vector of this document, without admitting it. A
     /// quiet poll asks this, and opening a sequencer for it would cost a
-    /// ledger refresh and a resident slot to learn what the log head row
+    /// resident slot to learn what the log head row
     /// already says.
     ///
     /// A resident sequencer answers from memory, buffer included. Otherwise
@@ -364,7 +355,13 @@ impl Registry {
         for sequencer in self.all().await {
             let state = sequencer.log_state().await;
             if state.subscribers == 0 && state.buffered == 0 {
-                idle.push(sequencer.document_id);
+                // An idle document must not keep holding quota in PostgreSQL.
+                // A failed release keeps the sequencer resident, so the next
+                // sweep tries again instead of orphaning the row's quota
+                // until a restart.
+                if sequencer.release_reservation().await {
+                    idle.push(sequencer.document_id);
+                }
             }
         }
         if idle.is_empty() {
@@ -391,6 +388,7 @@ impl Registry {
             if let Err(error) = sequencer.flush(FlushReason::Shutdown).await {
                 tracing::warn!("could not flush {} at shutdown: {error}", sequencer.slug);
             }
+            sequencer.release_reservation().await;
         }
         self.resident.lock().await.clear();
     }

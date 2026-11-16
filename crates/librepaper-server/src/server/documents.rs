@@ -31,6 +31,7 @@ fn default_path(format: &str) -> &'static str {
         "typst" => "document.typ",
         "markdown" => "document.md",
         "quarto" => "document.qmd",
+        "org" => "document.org",
         "html" => "document.html",
         "latex" => "document.tex",
         _ => "document.txt",
@@ -99,14 +100,26 @@ fn reader_changes(
 /// a reject, which only deletes a record, would otherwise never reach a
 /// reader, and a rename would answer 304 with the old title. `project_digest`
 /// itself stays the projection digest, because the render and the
-/// stale-selection check are keyed on text alone.
-fn reader_identity(project_digest: &str, title: &str, format: &str, changes: &[Value]) -> String {
+/// stale-selection check are keyed on text alone. The retained texts are in
+/// the response but not in the projection digest, so when there are any their
+/// digest is mixed in; with none the etag is what it always was.
+fn reader_identity(
+    project_digest: &str,
+    title: &str,
+    format: &str,
+    changes: &[Value],
+    retained: Option<librepaper_base::digest::Digest>,
+) -> String {
     let mut hash = Sha256::new();
     for part in [project_digest, title, format] {
         hash.update(part.as_bytes());
         hash.update(b"\n");
     }
     hash.update(Value::Array(changes.to_vec()).to_string().as_bytes());
+    if let Some(retained) = retained {
+        hash.update(b"\nretained\n");
+        hash.update(retained.as_bytes());
+    }
     hex::encode(hash.finalize())
 }
 
@@ -180,7 +193,8 @@ impl Server {
         room: &Arc<librepaper_room::room::Room>,
         query: Option<&str>,
         author: &str,
-        may_edit: bool,
+        sees_source: bool,
+        moderates: bool,
     ) -> Reply {
         let values: HashMap<String, String> = query
             .map(|raw| {
@@ -209,7 +223,10 @@ impl Server {
             Ok(state) => state,
             Err(error) => return refused("read comment state", &error),
         };
-        match room.comment_page(after, limit, author, may_edit).await {
+        match room
+            .comment_page(after, limit, author, sees_source, moderates)
+            .await
+        {
             Ok((views, page)) => write_json(
                 200,
                 &json!({
@@ -391,11 +408,12 @@ impl Server {
             Err(error) => return refused("open the room", &error),
         };
         let author = self.comment_author(&headers, arrival, &auth.viewer.id);
-        let may_edit = auth.viewer.at_least(Role::Editor);
+        let sees_source = auth.viewer.at_least(Role::Suggester);
+        let moderates = auth.viewer.at_least(Role::Editor);
 
         match *request.method() {
             Method::GET => {
-                self.comment_page_reply(&room, query.as_deref(), &author, may_edit)
+                self.comment_page_reply(&room, query.as_deref(), &author, sees_source, moderates)
                     .await
             }
             Method::POST => {
@@ -427,12 +445,12 @@ impl Server {
                         if access::needs_render_digest(&current_who, &incoming) {
                             return None;
                         }
-                        // Only an editor can see the source, so only an editor
-                        // can name a range in it. Checked against the fresh
+                        // Only a suggester or editor can see the source, so only
+                        // they can name a range in it. Checked against the fresh
                         // viewer, as the rest of the write is.
                         if access::source_comment_forbidden(&current_who, &incoming) {
                             return Some((
-                                json!({"status": 403, "error": "only editors can comment on the source"}),
+                                json!({"status": 403, "error": "only suggesters and editors can comment on the source"}),
                                 false,
                             ));
                         }
@@ -465,7 +483,7 @@ impl Server {
                     // itself.
                     let event = room.prepare_comment_event(&result).await;
                     room.broadcast_prepared(None, &event).await;
-                    return write_json(200, &event.view_for(&author, may_edit));
+                    return write_json(200, &event.view_for(&author, sees_source, moderates));
                 }
                 // The status is the refusal table's, put there by
                 // `command_refusal_value`. Only the shapes that carry no
@@ -868,6 +886,7 @@ impl Server {
                             "latex" => {
                                 librepaper_document::document::render::title_from_latex(&text)
                             }
+                            "org" => librepaper_document::document::render::title_from_org(&text),
                             // An HTML document's source is its own bytes,
                             // through the identity renderer, so it opens in
                             // the editor like the others.
@@ -1190,7 +1209,13 @@ impl Server {
         let identity = projected.projection.digest().to_hex();
         let etag = format!(
             "\"{}{}\"",
-            reader_identity(&identity, &entry.title, &format, &changes),
+            reader_identity(
+                &identity,
+                &entry.title,
+                &format,
+                &changes,
+                librepaper_document::document::projection::retained_digest(&projected.retained)
+            ),
             if unsuggested { "-u" } else { "" }
         );
         if header_of(headers, "if-none-match").is_some_and(|value| {
@@ -1205,13 +1230,7 @@ impl Server {
             privacy_headers(&mut response);
             return response;
         }
-        let mut body =
-            serde_json::to_value(librepaper_document::document::projection::HeadSnapshot {
-                project_digest: identity,
-                tree: projected.projection,
-                texts: projected.texts,
-            })
-            .expect("a snapshot serializes");
+        let mut body = head_snapshot_wire(identity, projected);
         body["schema"] = json!(1);
         body["slug"] = json!(entry.slug);
         body["title"] = json!(entry.title);
@@ -1245,7 +1264,8 @@ impl Server {
             return write_json(403, &cross_site_refusal());
         }
         let author = self.comment_author(headers, arrival, &who.id);
-        let may_edit = who.at_least(Role::Editor);
+        let sees_source = who.at_least(Role::Suggester);
+        let moderates = who.at_least(Role::Editor);
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
@@ -1272,7 +1292,8 @@ impl Server {
                 None,
                 librepaper_room::room::comments::COMMENT_PAGE_DEFAULT,
                 &author,
-                may_edit,
+                sees_source,
+                moderates,
             )
             .await
         {
@@ -1290,6 +1311,7 @@ impl Server {
             sha: tree_sha,
             tree: projected.projection.clone(),
             texts: projected.texts.clone(),
+            retained: projected.retained.clone(),
         };
         let response = SnapshotResponse {
             version: 1,
@@ -1305,6 +1327,7 @@ impl Server {
             capabilities: json!({
                 "read": true,
                 "comment": who.at_least(Role::Commenter),
+                "suggest": who.at_least(Role::Suggester),
                 "edit": who.at_least(Role::Editor),
             }),
         };
@@ -2114,6 +2137,50 @@ impl Server {
         }
     }
 
+    /// Remove the caller's own access to a project shared with them. The
+    /// share link stays live, so opening it again makes them a guest again.
+    pub(super) async fn handle_leave_project(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Reply {
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
+        };
+        let who = self.viewer(&entry, headers, arrival, None).await;
+        if self.needs_sign_in(&entry, &who) {
+            return sign_in_to_read();
+        }
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        if !who.id.is_signed_in() {
+            return write_json(401, &json!({"error": "sign in first"}));
+        }
+        if entry.owned_by(&who.id.id) {
+            return write_json(
+                403,
+                &json!({"error": "the owner cannot leave their own project"}),
+            );
+        }
+        match self.store.leave_document(slug, &who.id.id).await {
+            Ok(left) => write_json(200, &json!({"slug": slug, "left": left})),
+            Err(error) => {
+                tracing::warn!("could not leave {slug}: {error:?}");
+                write_json(500, &json!({"error": "could not leave that project"}))
+            }
+        }
+    }
+
     /// Note that this account has just opened a document. Sent by the reader
     /// on open, and the only thing behind the Recent destination.
     pub(super) async fn handle_opened(
@@ -2239,6 +2306,7 @@ mod reader_changes_tests {
             "Paper",
             "markdown",
             &changes,
+            None,
         );
         assert_ne!(
             before,
@@ -2246,7 +2314,8 @@ mod reader_changes_tests {
                 &projected.projection.digest().to_hex(),
                 "Renamed",
                 "markdown",
-                &changes
+                &changes,
+                None
             ),
             "a rename must not answer 304 with the old title"
         );
@@ -2260,7 +2329,75 @@ mod reader_changes_tests {
             "Paper",
             "markdown",
             &changes,
+            None,
         );
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn a_retained_text_moves_the_reader_etag() {
+        use librepaper_document::document::projection::retained_digest;
+        let digest = "abc";
+        let retained = |body: &str| {
+            retained_digest(&std::collections::BTreeMap::from([(
+                "a.R".to_string(),
+                body.to_string(),
+            )]))
+        };
+        let plain = reader_identity(digest, "Paper", "markdown", &[], None);
+        let one = reader_identity(digest, "Paper", "markdown", &[], retained("x"));
+        assert_ne!(plain, one);
+        assert_ne!(
+            one,
+            reader_identity(digest, "Paper", "markdown", &[], retained("y"))
+        );
+        assert_eq!(
+            one,
+            reader_identity(digest, "Paper", "markdown", &[], retained("x"))
+        );
+    }
+}
+
+/// The files part of the `/project` response: the digest, tree and texts,
+/// plus the retained texts when there are any.
+fn head_snapshot_wire(
+    project_digest: String,
+    projected: librepaper_document::document::projection::Projected,
+) -> serde_json::Value {
+    serde_json::to_value(librepaper_document::document::projection::HeadSnapshot {
+        project_digest,
+        tree: projected.projection,
+        texts: projected.texts,
+        retained: projected.retained,
+    })
+    .expect("a snapshot serializes")
+}
+
+#[cfg(test)]
+mod head_snapshot_wire_tests {
+    use super::*;
+
+    fn projected(
+        retained: &[(&str, &str)],
+    ) -> librepaper_document::document::projection::Projected {
+        librepaper_document::document::projection::Projected {
+            retained: retained
+                .iter()
+                .map(|(path, body)| (path.to_string(), body.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_project_response_carries_retained_texts() {
+        let body = head_snapshot_wire("d".into(), projected(&[("analysis.R", "x <- 1")]));
+        assert_eq!(body["retained"]["analysis.R"], "x <- 1");
+    }
+
+    #[test]
+    fn the_project_response_omits_retained_when_there_are_none() {
+        let body = head_snapshot_wire("d".into(), projected(&[]));
+        assert!(body.get("retained").is_none());
     }
 }

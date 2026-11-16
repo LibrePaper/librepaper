@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { extractOutline } from "../../src/lib/outline.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 const headings = (source, format) => extractOutline(source, format).map(({ title, level, from, line }) => ({ title, level, from, line }));
 
@@ -71,6 +74,7 @@ const reviewCases = [
  ['typst', '#let x = "#heading[Fake]"\n= Real', ['Real']],
  ['typst', '/* ``` */\n= Real', ['Real']],
  ['typst', '#heading(level: 2, numbering: none)[Real]', ['Real']],
+ ['typst', '````\n= Fake\n```\n= Still\n````\n= Real', ['Real']],
  ['latex', String.raw`\section% hi
 {Real}`, ['Real']],
  ['latex', String.raw`\begin{verbatim*}
@@ -85,3 +89,15 @@ for (const [format, source, expected] of reviewCases) {
 assert.doesNotThrow(() => extractOutline('<h1>&#9999999999; heading</h1>', 'html'));
 
 console.log("outline: markdown/quarto, typst, html, and latex extraction passed");
+
+// A comment nested in a group of a LaTeX title is dropped, as at the top level.
+{
+  const titles = extractOutline("\\section{A {b % note\nc} d}\n", "latex").map((h) => h.title);
+  assert.deepEqual(titles, ["A {b c} d"]);
+}
+
+// A heading after an unclosed formula is still listed.
+{
+  const titles = extractOutline("See $$ here.\n\n\\section{Next}\n$x\n\\section{B}\n", "latex").map((h) => h.title);
+  assert.deepEqual(titles, ["Next", "B"]);
+}

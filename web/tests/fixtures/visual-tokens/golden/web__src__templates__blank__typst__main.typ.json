@@ -1,0 +1,64 @@
+[
+  {
+    "body": {
+      "from": 13,
+      "to": 24
+    },
+    "from": 0,
+    "kind": "command",
+    "meta": {
+      "name": "title",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 24
+  },
+  {
+    "from": 24,
+    "kind": "text",
+    "to": 26
+  },
+  {
+    "from": 26,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "document"
+    },
+    "name": "set",
+    "to": 53
+  },
+  {
+    "from": 53,
+    "kind": "text",
+    "to": 55
+  },
+  {
+    "body": {
+      "from": 57,
+      "to": 63
+    },
+    "children": [
+      {
+        "args": [],
+        "from": 57,
+        "kind": "command",
+        "meta": {
+          "raw": "true"
+        },
+        "name": "title",
+        "to": 63
+      }
+    ],
+    "from": 55,
+    "kind": "heading",
+    "level": 1,
+    "to": 63
+  },
+  {
+    "from": 63,
+    "kind": "text",
+    "to": 64
+  }
+]

@@ -10,6 +10,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { call, handOver, validateExports } from "../../src/lib/renderer-wasm.js";
+import * as quarto from "../../src/lib/engines/quarto.js";
 
 function load(name) {
   const path = new URL(`../../wasm/${name}.wasm`, import.meta.url);
@@ -94,6 +95,30 @@ export const renderCitations = render("citations");
 /// HTML's renderer is the identity, so what a reader sees is the source's own
 /// visible text and no module is needed to work it out.
 export const renderHtml = (source) => visibleText(source);
+
+/// A Quarto document as `renderers.js` renders one with a bibliography: the
+/// markdown module drafts the .qmd (with its outputs sidecar), and the
+/// citations module renders that draft, with the .qmd replaced by a .md file.
+/// Async because the sidecar is built by the engine's fingerprinting.
+export async function renderQuarto(source, file) {
+  const drafter = load("markdown");
+  const citations = load("citations");
+  if (!drafter || !citations) return null;
+  const tree = treeOf(source, file);
+  const sidecar = await quarto.quartoSidecar(tree.texts[tree.main] ?? "", { path: tree.main, results: null, files: tree.texts, strings: {} });
+  const withSidecar = { ...tree, texts: { ...tree.texts, [quarto.QUARTO_SIDECAR]: JSON.stringify(sidecar) } };
+  handOver(drafter, withSidecar);
+  const drafted = call(drafter, "draft", withSidecar.texts[tree.main] ?? "", 0);
+  const parsed = JSON.parse(new TextDecoder().decode(drafted.bytes) || "{}");
+  const main = tree.main.replace(/\.qmd$/i, ".md");
+  const texts = { ...tree.texts, [main]: parsed.markdown ?? "" };
+  delete texts[tree.main];
+  const draftedTree = { ...tree, main, texts };
+  handOver(citations, draftedTree);
+  const result = call(citations, "compile", draftedTree.texts[main], main);
+  if (!result.ok) throw new Error(`${main}: ${result.text}`);
+  return result.kind === "pdf" ? pdfText(result.bytes, main) : visibleText(result.text);
+}
 
 /// What the compiler said about a tree, rather than what it produced. The
 /// second result channel, read the way `renderers.js` reads it, so a check can

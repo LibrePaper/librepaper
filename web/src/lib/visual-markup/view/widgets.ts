@@ -7,6 +7,8 @@ import { typst2tex } from 'tex2typst';
 import { loadKatex } from '../../katex.js';
 import { registerWidget, replaceRange, WidgetContext } from './widget-registry';
 import { m } from "../../paraglide/messages.js";
+import { iconElement } from '../../icons.js';
+import { placeholderUrl } from '../../missing-figures.js';
 
 export class MathWidget extends WidgetType {
   private text: string;
@@ -86,7 +88,8 @@ export class ImageWidget extends WidgetType {
   private resolver: ImageResolver | null;
 
   eq(other: WidgetType): boolean {
-    return other instanceof ImageWidget && other.src === this.src && other.style === this.style;
+    // A new resolver (a new run's figures) redraws the image.
+    return other instanceof ImageWidget && other.src === this.src && other.style === this.style && other.resolver === this.resolver;
   }
 
   toDOM(view: EditorView): HTMLElement {
@@ -98,12 +101,30 @@ export class ImageWidget extends WidgetType {
     image.decoding = 'async';
     image.loading = 'lazy';
     image.alt = this.alt;
-    image.title = this.src;
+    image.setAttribute('data-tip', this.src);
+    image.setAttribute('data-tip-wait', 'long');
     if (this.style) image.setAttribute('style', this.style);
     container.appendChild(image);
 
-    if (!this.src) {
+    // A picture that cannot be found is one muted line naming the file, never a
+    // broken image with its alt text wrapped around it.
+    const missing = () => {
+      if (this.destroyed || container.classList.contains('cm-lv-image-missing')) return;
       container.classList.add('cm-lv-image-missing');
+      const note = document.createElement('span');
+      note.className = 'cm-lv-image-note';
+      note.setAttribute('data-tip', this.src);
+      note.setAttribute('data-tip-wait', 'long');
+      note.append(iconElement('image-off'));
+      note.append(m.widgets_image_missing({ name: this.alt || this.src }));
+      container.replaceChildren(note);
+      view.requestMeasure();
+    };
+    image.addEventListener('load', () => view.requestMeasure());
+    image.addEventListener('error', missing);
+
+    if (!this.src) {
+      missing();
       return container;
     }
 
@@ -117,7 +138,7 @@ export class ImageWidget extends WidgetType {
     Promise.resolve(this.resolver.resolve(path, this.src)).then(url => {
       if (this.destroyed) return;
       if (url) image.src = url;
-      else container.classList.add('cm-lv-image-missing');
+      else missing();
     });
 
     return container;
@@ -149,7 +170,7 @@ export class FigureWidget extends WidgetType {
   }
 
   eq(other: WidgetType): boolean {
-    return other instanceof FigureWidget && other.key === this.key;
+    return other instanceof FigureWidget && other.key === this.key && other.resolver === this.resolver;
   }
 
   toDOM(view: EditorView): HTMLElement {
@@ -209,7 +230,8 @@ export class FigureWidget extends WidgetType {
     image.decoding = 'async';
     image.loading = 'lazy';
     image.alt = alt;
-    image.title = src;
+    image.setAttribute('data-tip', src);
+    image.setAttribute('data-tip-wait', 'long');
     image.addEventListener('load', () => view.requestMeasure());
     image.addEventListener('error', () => view.requestMeasure());
     if (style) image.setAttribute('style', style);
@@ -223,7 +245,11 @@ export class FigureWidget extends WidgetType {
     const path = resolveImagePath(this.resolver.currentPath(), src);
     Promise.resolve(this.resolver.resolve(path, src)).then(url => {
       if (!this.destroyed && url) image.src = url;
-      else if (!url) image.classList.add('cm-lv-image-missing');
+      else if (!this.destroyed) {
+        // A figure that is not there is drawn as a labelled box, not a broken image.
+        image.classList.add('cm-lv-image-missing');
+        image.src = placeholderUrl(path);
+      }
     });
     return image;
   }
@@ -265,7 +291,8 @@ function figureCaption(
 
   if (!editable) {
     caption.classList.add('cm-lv-caption-source');
-    caption.title = m.widgets_click_edit_caption_source();
+    caption.setAttribute('data-tip', m.widgets_click_edit_caption_source());
+    caption.setAttribute('data-tip-wait', 'long');
     caption.addEventListener('mousedown', event => {
       event.preventDefault();
       event.stopPropagation();
@@ -394,7 +421,8 @@ export class PillWidget extends WidgetType {
     gap.className = 'cm-lp-pill-gap';
     const box = document.createElement('div');
     box.className = this.kind ? `cm-lp-pill ${this.kind}` : 'cm-lp-pill';
-    box.title = this.title;
+    box.setAttribute('data-tip', this.title);
+    box.setAttribute('data-tip-wait', 'long');
     box.textContent = this.text;
     gap.append(box);
     revealOnMousedown(view, gap);

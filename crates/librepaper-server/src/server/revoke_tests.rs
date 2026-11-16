@@ -230,6 +230,13 @@ async fn downgrade<R: Rung>(deployment: &Deployment, caller: &Caller) {
         Role::Editor => {
             deployment
                 .catalog
+                .set_grant(document, caller.account, Role::Suggester)
+                .await
+                .unwrap();
+        }
+        Role::Suggester => {
+            deployment
+                .catalog
                 .set_grant(document, caller.account, Role::Commenter)
                 .await
                 .unwrap();

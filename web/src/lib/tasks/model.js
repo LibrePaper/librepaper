@@ -1,7 +1,7 @@
 // The tasks of a Markdown source, read through the same tokenizer the editor
 // draws from, so the visual layer and the edits agree on what a task is.
 
-import { Tokenizer } from "../visual-markup/core/tokenizer.ts";
+import { tokenizeOrEmpty } from "../visual-markup/core/tokenize.ts";
 import { markdown } from "../visual-markup/languages/markdown/index.ts";
 
 /**
@@ -24,7 +24,7 @@ import { markdown } from "../visual-markup/languages/markdown/index.ts";
 
 /** Every task in a Markdown source, in document order. */
 export function readTasks(source) {
-  const tokens = flatten(new Tokenizer(markdown).tokenize(source));
+  const tokens = flatten(tokenizeOrEmpty(markdown, source));
   const starts = lineStarts(source);
   /** @type {Task[]} */
   const tasks = [];

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { loadStorageStatus, storageBytes, trimHistory } from "../../src/lib/quota-preferences.js";
+import { deleteSharedResults, loadStorageStatus, storageBytes, trimHistory } from "../../src/lib/quota-preferences.js";
 
 const calls = [];
 const originalFetch = globalThis.fetch;
@@ -24,6 +24,20 @@ try {
   assert.equal(calls[0].headers["content-type"], "application/json");
   assert.equal(calls[0].body, "{}");
   assert.deepEqual(trimResult, { ok: true });
+  calls.length = 0;
+  const deleteResult = await deleteSharedResults("test-slug");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, "/api/documents/test-slug/results");
+  assert.equal(calls[0].method, "DELETE");
+  assert.equal(calls[0].headers["X-LibrePaper-Client"], "shell");
+  assert.deepEqual(deleteResult, { ok: true });
+
+  for (const status of [404, 500]) {
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: "No shared results." }), { status });
+    await assert.rejects(deleteSharedResults("test-slug"), { message: "No shared results." });
+  }
+  globalThis.fetch = async () => new Response("", { status: 500 });
+  await assert.rejects(deleteSharedResults("test-slug"), { message: "500" });
 } finally {
   globalThis.fetch = originalFetch;
 }

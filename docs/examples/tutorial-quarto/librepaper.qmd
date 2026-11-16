@@ -32,8 +32,6 @@ A formula is a rule a machine can be made to follow, the point Ada Lovelace made
 The icon in @fig-librepaper is a relative project asset. Change the values in the cell below, render locally, and make a label for the new result.
 
 ```{r}
-#| label: tbl-summary
-#| tbl-cap: "A small summary computed by Quarto."
 values <- c(2, 4, 6, 8)
 data.frame(statistic = c("Mean", "Sample size"),
            value = c(mean(values), length(values)))
@@ -45,7 +43,7 @@ Quarto combines Markdown prose with executable R or Python cells, captions, and 
 
 ## Working with other clients
 
-Bind the desktop app to a project folder when private inputs must remain on your computer; readers of the shared project can read its projected source and assets. A project export creates an independent copy of shared source and assets. Uploading a finished HTML file creates an HTML document that readers can open without R, Python, or Quarto.
+Private inputs stay in your Run directory on your computer; readers of the shared project can read its projected source and assets. A project export creates an independent copy of shared source and assets. Uploading a finished HTML file creates an HTML document that readers can open without R, Python, or Quarto.
 
 ## References
 

@@ -8,7 +8,7 @@
   // actions at the right. A link with a URL offers a copy of the URL. A token
   // offers a copy of its connection instructions only when the server sent its
   // full text, which it does for tokens it still holds; older tokens have no
-  // copy icon. Trash revokes.
+  // copy icon. A link-off icon revokes.
   let { kind, item, busy = false, copied = "", oncopy, onrevoke } = $props();
   const name = $derived(displayName(kind, item));
   const full = $derived(item.url ? new URL(item.url, location.origin).href : "");
@@ -17,7 +17,7 @@
 
 <li class="share-row">
   <span class="share-kind" aria-hidden="true"><Icon name={kind === "link" ? "link" : "bot"} size={15} /></span>
-  <span class="share-name" title={name}>{name}</span>
+  <span class="share-name" data-tip-wait="long" data-tip={name}>{name}</span>
   <span class="share-meta">{metaOf(kind, item)}</span>
   <div class="share-actions">
     {#if full}
@@ -29,7 +29,7 @@
                   disabled={busy} onclick={() => oncopy(value)} />
     {/if}
     <span class="share-revoke">
-      <IconButton icon="trash" label={m.sharerow_revoke_label({ name })} title={kind === "link" ? m.common_revoke_link() : m.common_revoke_token()} tone="plain" size="btn-icon-sm"
+      <IconButton icon="link-off" label={m.sharerow_revoke_label({ name })} title={kind === "link" ? m.common_revoke_link() : m.common_revoke_token()} tone="plain" size="btn-icon-sm"
                   disabled={busy} onclick={onrevoke} />
     </span>
   </div>
@@ -53,4 +53,10 @@
   .share-actions { grid-area: actions; display: flex; flex-wrap: nowrap; align-items: center; gap: calc(var(--spacing) * .5); }
   .share-revoke { display: contents; }
   .share-revoke :global(button:hover:not(:disabled)), .share-revoke :global(button:focus-visible) { color: var(--color-error-text); }
+  /* Phones: each row is a finger's height, and the copy and revoke buttons are
+     finger-sized without making the icons larger. */
+  @media (max-width: 767px) {
+    .share-row { min-height: 2.75rem; padding-block: 0; }
+    .share-actions :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+  }
 </style>

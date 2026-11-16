@@ -7,6 +7,8 @@
 // fetched from the document's own origin the first time a document with math
 // arrives, and never for one without.
 //
+import { numberDisplays, parseReference } from "./math-numbering.js";
+
 // Written against a `document` and a `window` passed in rather than the
 // globals, so the checks can drive it with a stand-in for either.
 
@@ -39,21 +41,128 @@ export function prepareQuartoMath(root) {
   return prepared;
 }
 
-/// Renders every span in place. `throwOnError: false` because a formula with
-/// a typo in it is the author's to see, in red, rather than a reason to show
-/// nothing; `output: "html"` because the alternative writes MathML beside the
-/// HTML, and the text of a passage is what comments are anchored into -- a
-/// formula that appears twice in that text would be a passage that reads
-/// differently from how it looks.
-export function typeset(katex, spans) {
+/// The options every formula is rendered with. `throwOnError: false` because a
+/// formula with a typo in it is the author's to see, in red, rather than a
+/// reason to show nothing; `output: "html"` because the alternative writes
+/// MathML beside the HTML, and the text of a passage is what comments are
+/// anchored into -- a formula that appears twice in that text would be a
+/// passage that reads differently from how it looks.
+function katexOptions(display) {
+  return { displayMode: display, throwOnError: false, output: "html" };
+}
+
+/// Renders every span in place. With a `cache` from `createKatexCache`, the
+/// HTML comes from it and is set as the span's content, so a formula seen
+/// before costs a lookup.
+export function typeset(katex, spans, numbering, cache) {
   for (const span of spans) {
-    span.setAttribute?.("data-equation-source", span.textContent);
-    katex.render(span.textContent, span, {
-      displayMode: span.dataset.mathStyle === "display",
-      throwOnError: false,
-      output: "html",
-    });
+    const source = span.textContent;
+    span.setAttribute?.("data-equation-source", source);
+    const display = span.dataset.mathStyle === "display";
+    if (!display && numbering && linkReference(span, source, numbering)) continue;
+    const tex = display ? (numbering?.tex.get(span) ?? source) : source;
+    if (cache) {
+      span.innerHTML = cache.html(katex, tex, display);
+    } else {
+      katex.render(tex, span, katexOptions(display));
+    }
   }
+}
+
+/// Memoizes KaTeX's HTML by formula, so a repaint that changes one formula
+/// typesets that one and looks up the rest. The key carries the display flag,
+/// since the same TeX sets differently inline and displayed. The Map keeps
+/// insertion order, which here doubles as recency: a hit moves its key to the
+/// end, and past `limit` entries the one at the front, the least recently
+/// used, is dropped.
+export function createKatexCache(limit = 5000) {
+  const entries = new Map();
+  return {
+    html(katex, tex, display) {
+      const key = (display ? "D" : "I") + tex;
+      const hit = entries.get(key);
+      if (hit !== undefined) {
+        entries.delete(key);
+        entries.set(key, hit);
+        return hit;
+      }
+      const html = katex.renderToString(tex, katexOptions(display));
+      entries.set(key, html);
+      if (entries.size > limit) entries.delete(entries.keys().next().value);
+      return html;
+    },
+  };
+}
+
+/// Typesets a parsed document that is not in the page yet, so that it can be
+/// swapped in already rendered rather than showing raw TeX for a moment.
+/// Returns whether there was anything to typeset.
+export function typesetDetached(katex, root, document, cache) {
+  prepareQuartoMath(root);
+  const spans = untypeset(root);
+  if (spans.length === 0) return false;
+  typeset(katex, spans, numberDocument(root, document), cache);
+  return true;
+}
+
+// An inline \ref{k} or \eqref{k} of a known label becomes a link to the
+// equation. The child element keeps `untypeset` from taking the span again.
+function linkReference(span, source, { labels, document }) {
+  const reference = parseReference(source);
+  const number = reference && labels.get(reference.key);
+  if (!number) return false;
+  const link = document.createElement("a");
+  link.setAttribute("href", `#${reference.key}`);
+  link.textContent = reference.kind === "eqref" ? `(${number})` : String(number);
+  span.textContent = "";
+  span.appendChild(link);
+  return true;
+}
+
+/// The TeX of every display formula in order, typeset or not: a rendered one
+/// keeps its TeX in `data-equation-source`, so numbers stay put on a repeat.
+function displaySpans(root) {
+  return [...root.querySelectorAll("span[data-math-style]")].filter(
+    (span) => span.dataset.mathStyle === "display",
+  );
+}
+
+/// The TeX of every display formula under `root`, in order: what numbering
+/// is computed from.
+export function displaySources(root) {
+  return displaySpans(root).map(
+    (span) => (span.firstElementChild && span.getAttribute?.("data-equation-source")) || span.textContent,
+  );
+}
+
+/// Gives the display formulas under `root` their numbers. `tex[i]` and `keys[i]`
+/// belong to the i-th display span, as `numberDisplays(displaySources(root))`
+/// gives them; `labels` is the document-wide map from key to number. Each
+/// labelled formula gets an id to link to (unless something else has it), and
+/// `<a href="key">` links, as Org emits for [[key]], point at them. With
+/// `ids: false` no id is set: the editor's paper blocks follow no links, and a
+/// block drawn again would find its own outgoing copy holding the id. Returns
+/// what `typeset` takes.
+export function applyNumbering(root, document, { tex, keys, labels }, { ids = true } = {}) {
+  const spans = displaySpans(root);
+  if (ids) spans.forEach((span, i) => {
+    const key = keys[i]?.[0];
+    if (!key || !span.setAttribute) return;
+    const holder = document.getElementById?.(key);
+    if (!holder) span.setAttribute("id", key);
+  });
+  for (const link of root.querySelectorAll("a[href]")) {
+    const href = link.getAttribute("href");
+    if (!labels.has(href)) continue;
+    link.setAttribute("href", `#${href}`);
+    if (link.textContent === href) link.textContent = String(labels.get(href));
+  }
+  return { tex: new Map(spans.map((span, i) => [span, tex[i]])), labels, document };
+}
+
+/// Numbers the document's display formulas and applies the numbers to `root`.
+export function numberDocument(root, document) {
+  return applyNumbering(root, document, numberDisplays(displaySources(root)));
 }
 
 /**
@@ -99,21 +208,19 @@ export function createKatexLoader({ base, document, window }) {
  * rendering lands once the script has loaded, which is a mutation the
  * agent's observer republishes like any other.
  */
-export function createMathTypesetter({ base, document, window }) {
-  const load = createKatexLoader({ base, document, window });
-
+export function createMathTypesetter({ base, document, window, load = createKatexLoader({ base, document, window }), cache }) {
   return function typesetMath() {
     prepareQuartoMath(document.body);
     const spans = untypeset(document.body);
     if (spans.length === 0) return false;
     if (window.katex) {
-      typeset(window.katex, spans);
+      typeset(window.katex, spans, numberDocument(document.body, document), cache);
       return true;
     }
     // The spans may have been replaced by the time the script arrives, so
     // they are found again rather than kept.
     load().then(
-      (katex) => typeset(katex, untypeset(document.body)),
+      (katex) => typeset(katex, untypeset(document.body), numberDocument(document.body, document), cache),
       () => {},
     );
     return false;

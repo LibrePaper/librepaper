@@ -1,0 +1,77 @@
+Tidewater grant application
+
+Lead investigator: Gérard Côté\\
+Tidewater Lab, 12 Quay Road\\
+Port Mersey, Nova Scotia
+
+\section{What are you working on?}
+
+\emph{Describe the problem in two or three sentences. Plain language is fine.}
+
+Tidewater is a tool that maps river sediment. It turns core samples, depth readings and historical surveys into a map of where silt, sand and clay have moved over the last fifty years. The project began as a pilot in 2025 — small as it was, the pilot showed that the method works on a real estuary.
+
+Our \textbf{main claim} is simple: sediment maps can be cheap. Most \emph{existing} surveys cost \textbf{\emph{far more}} than a town can afford, and the data often sits unused in \texttt{csv} files or in filing cabinets. We use \texttt{tw\_map()} to turn raw depth logs into a layered map that a council engineer can read.
+
+Read more about \href{https://example.org/pilot}{the pilot}. The full data policy is at \url{https://example.org/}.
+
+The budget request is \$150,000 over two years. Field costs run about \textasciitilde{}5m per site, and roughly \textasciitilde{}40\% of the budget goes to laboratory work. Software licences are offered at 50 \% off for public bodies.
+
+Column names use snake\_case throughout. Templates use \{braces\} for placeholders, and on Windows the data lives under C:\textbackslash{}path\textbackslash{}tidewater. The model is quadratic in depth, so the fit includes an x\textasciicircum{}2 term. See @ref for the sampling protocol, and wrap values in <tag> when exporting HTML.
+
+Our R\&D partners will review the design. Their comments are welcome — the more critical, the better — and we have built them into the schedule.
+
+The plan is in our own words, not “borrowed” from a funder’s template, and the team’s plan has been checked by two outside readers.
+
+\begin{enumerate}
+  \item Collect cores from three sites.
+  \item Label each sample by depth and date.
+  \item Run the mapping pipeline.
+  \begin{itemize}
+    \item Check the depth readings against the survey.
+    \item Flag any core older than ten years.
+  \end{itemize}
+  \item Publish the maps under an open licence.
+  \item Train two council staff to run the tool.
+\end{enumerate}
+
+Items 1-3 are the technical core, and items 4 and 5 are outreach. If \#1 slips, the rest of the schedule slips with it.
+
+\subsection{What would you do with funding?}
+
+\emph{Be specific about what the money buys.}
+
+Funding pays for three kinds of work. Each one maps onto a line of the budget.
+
+\begin{itemize}
+  \item Field work
+  \begin{enumerate}
+    \item Collect cores at each site
+    \begin{enumerate}
+      \item Label samples on site
+    \end{enumerate}
+    \item Survey the channel by boat
+  \end{enumerate}
+  \item Lab work
+  \item Software
+\end{itemize}
+
+\begin{tabular}{l l l}
+Site & Depth (m) & Sample \\
+\hline
+Lower Tidewater & 4.5 & Silt \\
+Mill Creek & 2.0 & Sand \\
+\end{tabular}
+
+\begin{quote}
+Sediment records where the river has been. Tidewater shows where it is going.
+\end{quote}
+
+A sample analysis script looks like this:
+
+\begin{verbatim}
+library(tidewater)
+cores <- read_cores("data/cores.csv")
+map <- tw_map(cores, layer = "silt")
+\end{verbatim}
+
+Thank you for reading. We look forward to hearing from you.

@@ -2,7 +2,7 @@
 title: "Contact"
 ---
 
-- **Bugs and feature requests:** Open an issue on [GitHub](https://github.com/LibrePaper/librepaper/issues).
+- **Bugs and feature requests:** Open an issue on [GitHub](https://github.com/LibrePaper/librepaper/issues). For a bug, paste the diagnostics report from Settings (**Copy diagnostics**). Nothing is sent automatically. The build log option includes your document's text.
 - **Questions and ideas:** Start a thread in [GitHub Discussions](https://github.com/LibrePaper/librepaper/discussions).
 - **Abuse and moderation on librepaper.org:** Email [admin@librepaper.org](mailto:admin@librepaper.org). Include the link to the document you are reporting.
 - **Privacy on librepaper.org:** Email [admin@librepaper.org](mailto:admin@librepaper.org).

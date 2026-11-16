@@ -8,7 +8,7 @@ import { m } from "./paraglide/messages.js";
 const extension = (path) => path.slice(path.lastIndexOf(".")).toLowerCase();
 const basename = (path) => path.slice(path.lastIndexOf("/") + 1);
 const stem = (path) => path.slice(0, path.lastIndexOf("."));
-const editorial = new Set([".qmd", ".md", ".bib", ".csl", ".yml", ".yaml", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".pdf", ".r", ".py", ".jl", ".lua"]);
+const editorial = new Set([".qmd", ".md", ".bib", ".csl", ".yml", ".yaml", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".pdf", ".lua"]);
 const generatedFolders = new Set(["_freeze", "_site", "_book", "site_libs", "node_modules", "renv", "venv", "env"]);
 const hidden = (path) => path.split("/").some((part) => part.startsWith(".") || part === "__MACOSX");
 const renderable = (config, path) => (config.extensions || []).some((ext) => path.toLowerCase().endsWith(ext.toLowerCase()));

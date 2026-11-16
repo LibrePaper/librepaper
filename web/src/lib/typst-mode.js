@@ -73,5 +73,6 @@ export const typstLanguage = {
 
   languageData: {
     commentTokens: { line: "//", block: { open: "/*", close: "*/" } },
+    closeBrackets: { brackets: ["(", "[", "{", "\"", "$"] },
   },
 };

@@ -1,15 +1,13 @@
 // Citation keys in a source file, and the keys that have no bibliography entry.
 // Pure text helpers, so the editor and the check scripts share them.
+import { orgTree, typstTree } from "./source-trees.js";
+
 const WORD = /[-\p{L}\p{N}_:.+]/u;
 const LATEX_CITE = /\\(?:(?:no|paren|text|auto|foot|smart|super|Paren|Text|Auto|Foot|Smart|Super)?[Cc]ite(?:p|t|author|year)?\*?)\s*(?:\[[^\]]*\]\s*)*\{([^}]*)\}/g;
 const MARKDOWN_AT = /@[-\p{L}\p{N}_:.+]+/gu;
-const TYPST_AT = /@[-\p{L}\p{N}_:.]+/gu;
-const TYPST_CITE = /#cite\(\s*<([-\p{L}\p{N}_:.]+)>/gu;
 // A label declaration, not a label used as an argument such as #cite(<key>).
-const LABEL = /(?<![(,]\s*)<([\p{L}\p{N}_\-:.]+)>/gu;
+export const LABEL = /(?<![(,]\s*)<([\p{L}\p{N}_\-:.]+)>/gu;
 const INLINE_CODE = /(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g;
-const TYPST_FENCED = /(`{3,})[\s\S]*?\1/g;
-const TYPST_COMMENT = /(?<!:)\/\/[^\n]*/g;
 const CROSS_REF = /^(fig|tbl|sec|eq|lst|thm|lem|cor|prp|cnj|def|exm|exr|sol|rem|tip|nte|wrn|imp|cau)[-:]/;
 
 // Replaces everything but line breaks, so offsets and line numbers stay valid.
@@ -44,7 +42,7 @@ function splitKeys(body, start) {
 }
 
 // Matches of the at-pattern that are not part of a word, an address or a path.
-function atKeys(text, pattern) {
+export function atKeys(text, pattern) {
   const found = [];
   for (const match of text.matchAll(pattern)) {
     const previous = text[match.index - 1] || "";
@@ -74,16 +72,94 @@ function markdownMasked(text) {
   }).join("\n");
 }
 
-// The typst source with raw blocks, raw spans and line comments blanked. It runs
-// on the whole text so that multiline raw blocks are masked too.
-function typstMasked(text) {
-  return text.replace(TYPST_FENCED, blank).replace(INLINE_CODE, blank).replace(TYPST_COMMENT, blank);
+// The Org node types whose text is not citations: block begin and end lines,
+// the bodies of src, example, export and comment blocks, comment lines,
+// =verbatim=, ~code~ and inline source. Quote, center and verse bodies are prose.
+const ORG_MASKED_NODES = new Set(["BlockBegin", "BlockEnd", "VerbatimBody", "CommentBody", "Comment", "Verbatim", "Code", "InlineSrc"]);
+
+/**
+ * The Org source with the regions that are not citations blanked: the blocks,
+ * comment lines, =verbatim= and ~code~ spans and inline source that the Org
+ * tree finds. Blanking keeps every offset and line break.
+ * @param {string} text
+ * @returns {string}
+ */
+export function orgMasked(text) {
+  text = String(text ?? "");
+  const ranges = [];
+  orgTree(text)?.iterate({
+    enter(ref) {
+      if (!ORG_MASKED_NODES.has(ref.name)) return;
+      ranges.push([ref.from, ref.to]);
+      // The text inside a masked node is masked with it.
+      return false;
+    },
+  });
+  let out = "";
+  let at = 0;
+  for (const [from, to] of ranges) {
+    out += text.slice(at, from) + blank(text.slice(from, to));
+    at = to;
+  }
+  return out + text.slice(at);
+}
+
+// The keys of the citations of an Org tree: code, comments and verbatim text
+// are not parsed as citations.
+function orgKeys(text) {
+  const found = [];
+  orgTree(text)?.iterate({
+    enter(ref) {
+      if (ref.name === "CitationKey") found.push({ key: text.slice(ref.from, ref.to), from: ref.from, to: ref.to });
+    },
+  });
+  return found;
+}
+
+/**
+ * Whether the typst reference whose `@` is at `at` follows a letter or digit,
+ * as in an e-mail address. Typst reads `me@example.org` as a reference; the
+ * index and the citation checks leave it alone, as they always have.
+ * @param {string} text
+ * @param {number} at
+ */
+export function typstRefInWord(text, at) {
+  return at > 0 && /[\p{L}\p{N}]/u.test(text[at - 1]);
+}
+
+// The citation keys of a typst tree: @key references that name no label in
+// the project, and the labels of #cite(<key>) calls. Comments, raw text and
+// strings are not parsed as references, so they cannot yield keys.
+function typstKeys(text, labels) {
+  const tree = typstTree(text);
+  if (!tree) return [];
+  const found = [];
+  tree.iterate({
+    enter(ref) {
+      if (ref.name === "Ref") {
+        const marker = ref.node.getChild("RefMarker");
+        if (!marker || typstRefInWord(text, marker.from)) return;
+        // An @ may name a label as well as a bibliography key.
+        const key = text.slice(marker.from + 1, marker.to);
+        if (key && !labels.has(key)) found.push({ key, from: marker.from + 1, to: marker.to });
+        return;
+      }
+      if (ref.name !== "FuncCall") return;
+      const callee = ref.node.firstChild;
+      if (!callee || callee.name !== "Ident" || text.slice(callee.from, callee.to) !== "cite") return;
+      for (let arg = ref.node.getChild("Args")?.firstChild; arg; arg = arg.nextSibling) {
+        if (arg.name !== "Label" || arg.to - arg.from < 3) continue;
+        found.push({ key: text.slice(arg.from + 1, arg.to - 1), from: arg.from + 1, to: arg.to - 1 });
+      }
+    },
+  });
+  return found;
 }
 
 /**
  * The citation keys in a source file, with the UTF-16 offsets of each key.
  * @param {string} text
- * @param {string} format "latex", "tex", "typst", "markdown" or "quarto"
+ * @param {string} format "latex", "tex", "typst", "markdown", "quarto" or "org"
  * @param {{ labels?: Set<string> }} [options] typst labels, which are cross references
  * @returns {Array<{ key: string, from: number, to: number }>}
  */
@@ -93,32 +169,15 @@ export function citedKeys(text, format, { labels = new Set() } = {}) {
   if (format === "latex" || format === "tex") {
     found = latexKeys(text);
   } else if (format === "typst") {
-    const masked = typstMasked(text);
-    // An @ may name a label as well as a bibliography key; #cite(<key>) names a key.
-    found = [...atKeys(masked, TYPST_AT).filter((cite) => !labels.has(cite.key)), ...[...masked.matchAll(TYPST_CITE)].map((match) => {
-      const from = match.index + match[0].indexOf("<") + 1;
-      return { key: match[1], from, to: from + match[1].length };
-    })];
+    found = typstKeys(text, labels);
   } else if (format === "markdown" || format === "quarto") {
     found = atKeys(markdownMasked(text), MARKDOWN_AT).filter((cite) => !CROSS_REF.test(cite.key));
+  } else if (format === "org") {
+    found = orgKeys(text);
   } else {
     return [];
   }
   return found.sort((a, b) => a.from - b.from);
-}
-
-/**
- * The labels defined in typst sources, which a typst @key may refer to.
- * @param {Record<string, string>} texts path -> source
- * @returns {Set<string>}
- */
-export function typstLabels(texts) {
-  const labels = new Set();
-  for (const [path, source] of Object.entries(texts || {})) {
-    if (!/\.typ$/i.test(path)) continue;
-    for (const match of typstMasked(String(source ?? "")).matchAll(LABEL)) labels.add(match[1]);
-  }
-  return labels;
 }
 
 /**

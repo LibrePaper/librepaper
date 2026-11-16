@@ -24,10 +24,16 @@ export type WidgetKind =
   | 'typref' | 'typlabel' | 'typinclude' | 'typtitle' | 'swatch' | 'typchip'
   // The number of a numbered heading, drawn before its text.
   | 'headnum'
+  // "Figure 3." before a figure's caption text.
+  | 'captionnum'
   // A table drawn as a box naming it.
   | 'tablebox'
   // A task's checkbox, and its metadata chips: a field and a tag.
-  | 'taskbox' | 'taskfield' | 'tasktag';
+  | 'taskbox' | 'taskfield' | 'tasktag'
+  // Org: document header, keyword chip, TODO state, priority, tags, timestamp, drawer,
+  // link target, macro call and internal link.
+  | 'orgheader' | 'orgkeyword' | 'orgtodo' | 'orgpriority' | 'orgtags' | 'orgstamp' | 'orgdrawer'
+  | 'orgtarget' | 'orgmacro' | 'orgref';
 
 export interface TokenStyle {
   class?: string;
@@ -119,12 +125,14 @@ export interface FigureAdapter {
 export interface Language {
   id: string;
   name: string;
-  rules: Rule[];
   style(token: Token): TokenStyle | null;
   commands: LanguageCommands;
   table?: TableAdapter;
   figure?: FigureAdapter;
   colorCommands?: string[];
+  // Builds the tokens from the shared syntax tree. Null when the tree is not available yet
+  // (Typst before typst-syntax.wasm loads); the caller then draws no tokens.
+  tokenize(source: string): Token[] | null;
   imageSrc?(source: string, token: Token): string | null;
   imageStyle?(source: string, token: Token): string | null;
   // Summarises a run of fully hidden source lines. Returns a short chip label, or null

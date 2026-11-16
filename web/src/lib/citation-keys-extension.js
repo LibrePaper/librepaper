@@ -41,8 +41,12 @@ export function citationKeysExtension({ entries, format, labels }) {
     update(update) {
       if (update.docChanged) {
         // Ranges follow the edit now, and the rescan corrects them after a pause.
+        // An underline whose key the edit touched is dropped, not stretched:
+        // accepting a completion replaces the key, and the mapped range would
+        // cover the new key, known or not, until the rescan.
         const changes = update.changes;
         this.ranges = this.ranges.flatMap(([from, to]) => {
+          if (changes.touchesRange(from, to)) return [];
           const start = changes.mapPos(from, 1);
           const end = changes.mapPos(to, -1);
           return end > start ? [/** @type {[number, number]} */ ([start, end])] : [];

@@ -69,4 +69,9 @@
   .git-link-button { padding: .15rem .35rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; cursor: pointer; }
   .git-link-button:hover { background: var(--color-row-hover); }
   .git-more { color: var(--color-link); }
+  /* Phones: the link button and the copy button are finger-sized. */
+  @media (max-width: 767px) {
+    .git-link-button { display: inline-flex; align-items: center; min-height: 2.75rem; }
+    .git-command :global(button) { min-width: 2.75rem; min-height: 2.75rem; }
+  }
 </style>

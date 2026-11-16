@@ -2,15 +2,17 @@
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import Logo from "./Logo.svelte";
+  import LegalNotice from "./LegalNotice.svelte";
+  import SwitchServerDialog from "./SwitchServerDialog.svelte";
   import { me as whoami } from "../lib/api.js";
-  import { INSTALL_URL, desktop, shellAction } from "../lib/desktop/client.js";
+  import { INSTALL_URL, desktop } from "../lib/desktop/client.js";
   import { BACKUPS_URL } from "../lib/site-links.js";
   import { m } from "../lib/paraglide/messages.js";
 
   // The page the server shows when there is more than one way in. It is served
   // for /auth/login, so the choice is made here and every other page can link
   // to the one address without knowing what this deployment configured.
-  /** @type {{providers?: {id: string, kind: string, label: string}[]}} */
+  /** @type {{providers?: {id: string, kind: string, label: string}[], legal?: {terms_url?: string | null, privacy_url?: string | null} | null}} */
   let me = $state({});
   $effect(() => {
     whoami().then((who) => (me = who ?? {}));
@@ -25,17 +27,6 @@
   // Only the desktop app can switch the server it opens, so only it offers the choice.
   const inDesktop = Boolean(desktop());
   let changing = $state(false);
-  let serverUrl = $state("");
-  let serverError = $state("");
-  let choosing = $state(false);
-  async function chooseServer(event) {
-    event.preventDefault();
-    serverError = "";
-    choosing = true;
-    try { await shellAction("server", { url: serverUrl.trim() }); }
-    catch (error) { serverError = error?.message || m.signin_server_unchanged(); }
-    finally { choosing = false; }
-  }
 </script>
 
 <Nav {me} signIn={false} />
@@ -72,25 +63,17 @@
         </a>
       {/each}
     </div>
+    {#if me.legal?.terms_url || me.legal?.privacy_url}
+      <p class="signin-legal"><LegalNotice legal={me.legal} /></p>
+    {/if}
   </section>
   {#if inDesktop}
-    <!-- The desktop app confirms the switch in its own native dialog, so the page asks nothing more. -->
+    <!-- The Change button opens the same dialog the account menu uses, so the switch is made the same way everywhere. -->
     <footer class="signin-server">
-      {#if changing}
-        <form class="signin-server-form" onsubmit={chooseServer}>
-          <label for="signin-server-url">{m.signin_server_prompt({ host: location.host })}</label>
-          <div class="signin-server-row">
-            <input id="signin-server-url" class="input input-sm" type="url" required placeholder="https://paper.example.org" bind:value={serverUrl} disabled={choosing} />
-            <button class="btn btn-sm lp-control-brand" type="submit" disabled={choosing}>{choosing ? m.signin_waiting() : m.signin_use_server()}</button>
-          </div>
-          <button class="signin-server-link" type="button" onclick={() => { changing = false; serverError = ""; }}>{m.common_cancel()}</button>
-          {#if serverError}<p class="signin-server-error" role="alert">{serverError}</p>{/if}
-        </form>
-      {:else}
-        <span class="signin-server-host">{location.host}</span>
-        <button class="signin-server-link signin-server-change" type="button" onclick={() => (changing = true)}>{m.signin_change_server()}</button>
-      {/if}
+      <span class="signin-server-host">{location.host}</span>
+      <button class="signin-server-link signin-server-change" type="button" onclick={() => (changing = true)}>{m.signin_change_server()}</button>
     </footer>
+    <SwitchServerDialog bind:open={changing} />
   {/if}
 </main>
 
@@ -185,6 +168,10 @@
     height: 20px;
   }
 
+  .signin-legal {
+    margin: 0;
+  }
+
   .signin-warning {
     padding: 0.875rem 1rem;
     border: 1px solid var(--color-warning-border);
@@ -222,23 +209,6 @@
     color: var(--color-text-secondary);
   }
 
-  .signin-server-form {
-    display: grid;
-    gap: 0.5rem;
-    width: min(100%, 26rem);
-    margin-inline: auto;
-  }
-
-  .signin-server-row {
-    display: flex;
-    gap: 0.5rem;
-  }
-
-  .signin-server-row input {
-    flex: 1;
-    min-width: 0;
-  }
-
   .signin-server-link {
     justify-self: start;
     padding: 0;
@@ -253,11 +223,6 @@
   .signin-server-link:focus-visible {
     outline: 2px solid var(--color-focus);
     outline-offset: 2px;
-  }
-
-  .signin-server-error {
-    margin: 0;
-    color: var(--color-error-text);
   }
 
   @media (max-width: 36rem) {

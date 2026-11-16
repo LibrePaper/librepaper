@@ -1,5 +1,6 @@
 //! Immutable deployment bytes backed by `object_store`.
 
+use super::sigv4;
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt};
 use object_store::{
@@ -111,12 +112,32 @@ pub trait BlobStore: Send + Sync {
     async fn capacity_snapshot(&self) -> Option<serde_json::Value> {
         None
     }
+    /// A link anyone can `GET` this object through until `ttl` has passed, with
+    /// the response forced to `application/octet-stream` and `attachment`.
+    /// `None` when this store cannot sign links (a directory on disk).
+    async fn signed_get(&self, key: &str, ttl: std::time::Duration) -> BlobResult<Option<String>> {
+        let _ = (key, ttl);
+        Ok(None)
+    }
+}
+
+/// What `signed_get` needs to sign a link. Holds the secret, so it has no `Debug`.
+struct S3Signing {
+    base: String,
+    /// The endpoint's path without a trailing slash; empty for a bare host.
+    path_prefix: String,
+    region: String,
+    bucket: String,
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: Option<String>,
 }
 
 pub struct ObjectBlobStore {
     inner: Arc<dyn ObjectStore>,
     description: String,
     local_root: Option<PathBuf>,
+    signer: Option<S3Signing>,
 }
 impl ObjectBlobStore {
     pub fn filesystem(root: impl Into<PathBuf>, durable: bool) -> Result<Self, String> {
@@ -131,6 +152,7 @@ impl ObjectBlobStore {
             inner: Arc::new(store),
             description: root.display().to_string(),
             local_root: Some(root),
+            signer: None,
         })
     }
     pub fn s3(
@@ -162,10 +184,20 @@ impl ObjectBlobStore {
         if let Some(endpoint) = endpoint.filter(|value| !value.is_empty()) {
             builder = builder.with_endpoint(endpoint);
         }
+        let (base, path_prefix) = s3_endpoint(endpoint, region, allow_http)?;
         Ok(Self {
             inner: Arc::new(builder.build().map_err(|error| error.to_string())?),
             description: format!("s3://{bucket}"),
             local_root: None,
+            signer: Some(S3Signing {
+                base,
+                path_prefix,
+                region: region.to_owned(),
+                bucket: bucket.to_owned(),
+                access_key_id: access_key_id.expect("checked above").to_owned(),
+                secret_access_key: secret_access_key.expect("checked above").to_owned(),
+                session_token: session_token.map(str::to_owned),
+            }),
         })
     }
     fn path(key: &str) -> BlobResult<ObjectPath> {
@@ -173,6 +205,37 @@ impl ObjectBlobStore {
         ObjectPath::parse(key).map_err(|error| BlobError::Other(error.to_string()))
     }
 }
+/// The scheme, host and port that signed links are built on, and the path the
+/// endpoint sits under (empty for a bare host). The builder is path-style, so
+/// the bucket follows that path, not the host.
+fn s3_endpoint(
+    endpoint: Option<&str>,
+    region: &str,
+    allow_http: bool,
+) -> Result<(String, String), String> {
+    let Some(endpoint) = endpoint.filter(|value| !value.is_empty()) else {
+        return Ok((format!("https://s3.{region}.amazonaws.com"), String::new()));
+    };
+    let raw = if endpoint.contains("://") {
+        endpoint.to_owned()
+    } else if allow_http {
+        format!("http://{endpoint}")
+    } else {
+        format!("https://{endpoint}")
+    };
+    let url = url::Url::parse(&raw)
+        .map_err(|error| format!("storage.s3.endpoint is not a valid URL: {error}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "storage.s3.endpoint has no host".to_owned())?;
+    let base = match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    };
+    // `url` keeps the path percent-encoded, which is the form the request is sent in.
+    Ok((base, url.path().trim_end_matches('/').to_owned()))
+}
+
 fn map_error(error: object_store::Error) -> BlobError {
     match error {
         object_store::Error::NotFound { .. } => BlobError::NotFound,
@@ -324,6 +387,39 @@ impl BlobStore for ObjectBlobStore {
     fn is_local(&self) -> bool {
         self.local_root.is_some()
     }
+    async fn signed_get(&self, key: &str, ttl: std::time::Duration) -> BlobResult<Option<String>> {
+        let Some(signer) = self.signer.as_ref() else {
+            return Ok(None);
+        };
+        let object = Self::path(key)?;
+        let mut path = format!(
+            "{}/{}",
+            signer.path_prefix,
+            sigv4::encode_path_segment(&signer.bucket)
+        );
+        for segment in object.as_ref().split('/') {
+            path.push('/');
+            path.push_str(&sigv4::encode_path_segment(segment));
+        }
+        let credentials = sigv4::Credentials {
+            access_key_id: &signer.access_key_id,
+            secret_access_key: &signer.secret_access_key,
+            session_token: signer.session_token.as_deref(),
+        };
+        Ok(Some(sigv4::presign(
+            "GET",
+            &signer.base,
+            &path,
+            &signer.region,
+            &credentials,
+            time::OffsetDateTime::now_utc(),
+            ttl.as_secs(),
+            &[
+                ("response-content-type", "application/octet-stream"),
+                ("response-content-disposition", "attachment"),
+            ],
+        )))
+    }
     async fn capacity_snapshot(&self) -> Option<serde_json::Value> {
         let root = self.local_root.clone()?;
         tokio::task::spawn_blocking(move || { let (total, available) = librepaper_base::util::disk_space(&root).ok()?;
@@ -393,6 +489,9 @@ impl BlobStore for FsStore {
     async fn capacity_snapshot(&self) -> Option<serde_json::Value> {
         self.0.capacity_snapshot().await
     }
+    async fn signed_get(&self, key: &str, ttl: std::time::Duration) -> BlobResult<Option<String>> {
+        self.0.signed_get(key, ttl).await
+    }
 }
 
 #[cfg(test)]
@@ -422,6 +521,60 @@ mod tests {
             .await
             .expect("page");
         assert_eq!(keys(rest), ["documents/c"]);
+    }
+
+    #[tokio::test]
+    async fn s3_signed_get_links_the_object_with_download_overrides() {
+        let store = ObjectBlobStore::s3(
+            Some("https://s3.bhs.io.cloud.ovh.net"),
+            "bhs",
+            "my-bucket",
+            false,
+            Some("AK"),
+            Some("SK"),
+            None,
+        )
+        .expect("s3 store");
+        let url = store
+            .signed_get("ab/cd", std::time::Duration::from_secs(300))
+            .await
+            .expect("link")
+            .expect("s3 stores sign links");
+        assert!(url.starts_with("https://s3.bhs.io.cloud.ovh.net/my-bucket/ab/cd?"));
+        assert!(url.contains("X-Amz-Expires=300"));
+        assert!(url.contains("response-content-disposition=attachment"));
+        assert!(url.contains("response-content-type=application%2Foctet-stream"));
+    }
+
+    #[tokio::test]
+    async fn s3_signed_get_keeps_an_endpoint_path_prefix() {
+        let store = ObjectBlobStore::s3(
+            Some("https://minio.example:9000/s3"),
+            "us-east-1",
+            "my-bucket",
+            false,
+            Some("AK"),
+            Some("SK"),
+            None,
+        )
+        .expect("s3 store");
+        let url = store
+            .signed_get("ab/cd", std::time::Duration::from_secs(300))
+            .await
+            .expect("link")
+            .expect("s3 stores sign links");
+        assert!(url.starts_with("https://minio.example:9000/s3/my-bucket/ab/cd?"));
+    }
+
+    #[tokio::test]
+    async fn filesystem_store_cannot_sign_links() {
+        let root = tempfile::tempdir().expect("temporary object directory");
+        let store = FsStore::new(root.path(), false);
+        let link = store
+            .signed_get("documents/one", std::time::Duration::from_secs(300))
+            .await
+            .expect("signed_get");
+        assert!(link.is_none());
     }
 
     #[tokio::test]

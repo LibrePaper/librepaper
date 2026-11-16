@@ -2,6 +2,9 @@
 // lints, and the paragraph windows it is asked to re-check.
 import assert from "node:assert/strict";
 import { proseText, keepLint, paragraphs } from "../../src/lib/harper/prose.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 // The masked text has the input's length, so offsets carry over unchanged.
 {

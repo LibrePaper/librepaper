@@ -53,12 +53,13 @@ const capability = (document_) => JSON.stringify([
  * slug: string, key?: string, fetcher?: typeof fetch,
  * openRoom?: typeof defaultOpenRoom,
  * collab?: CollaborationModule | null,
- * getIdentity?: () => string, getCanEdit?: () => boolean,
+ * getIdentity?: () => string, getAccountId?: () => string, getCanEdit?: () => boolean,
+ * getSuggestOnly?: () => boolean,
  * onMessage?: (message: RoomMessage) => void, onConnected?: (up: boolean) => void,
  * onPeers?: (count: number) => void, onState?: (state: CollaborationState) => void,
  * onSession?: (session: ReaderSession) => void,
  * onDocumentChanged?: (reason: string) => void,
- * onFiles?: (events: DirectoryEvents, session: ReaderSession) => void,
+ * onFiles?: (events: DirectoryEvents, session: ReaderSession, by?: string) => void,
  * onAwareness?: (session: ReaderSession) => void,
  * sourceSync?: boolean, standalone?: boolean, retryMs?: number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout,
  * }} options
@@ -70,7 +71,9 @@ export function createReaderCollaboration({
   openRoom = defaultOpenRoom,
   collab,
   getIdentity = () => "",
+  getAccountId = () => "",
   getCanEdit = () => false,
+  getSuggestOnly = () => false,
   onMessage = () => {},
   onConnected = () => {},
   onPeers = () => {},
@@ -90,6 +93,12 @@ export function createReaderCollaboration({
   let session = null;
   let document_ = null;
   let disposed = false;
+  // The document was fetched moments ago by the boot that started this
+  // collaboration, so the first time the socket comes up there is nothing to
+  // re-check. A document restored from the offline copy gets no shortcut (it
+  // may have been replaced meanwhile), and any drop clears it: later opens
+  // are genuine reconnects.
+  let firstOpen = true;
   const reconnects = createGeneration();
   // Which session is the current one. A session that has been replaced or
   // left can still have work in flight -- a persistence write completing, a
@@ -144,16 +153,20 @@ export function createReaderCollaboration({
       // and a literal here would make every unnamed reader the same person
       // as far as the colour is concerned.
       name: getIdentity() || nextDocument.commenting_as || "",
+      // The account a signed-in person's colour is drawn from; empty otherwise.
+      accountId: getAccountId(),
       slug,
       documentId: nextDocument.document_id,
       createdAt: nextDocument.created_at,
       key,
       mayEdit: canEdit,
+      // A suggester's session takes the text as tracked changes only.
+      suggestOnly: canEdit && Boolean(getSuggestOnly()),
       // Only a standalone session opts out of IndexedDB; `undefined` keeps the default.
       ...(standalone ? { standalone: true, persistence: null } : {}),
     });
     const active = session;
-    filesCleanup = active.onFiles((events) => { if (live()) onFiles(events, active); });
+    filesCleanup = active.onFiles((events, by) => { if (live()) onFiles(events, active, by); });
     presenceCleanup = active.ephemeral.subscribe(() => { if (live()) onAwareness(active); });
     onSession(active);
     // Reader/commenter sessions use this socket only for rendered
@@ -175,6 +188,7 @@ export function createReaderCollaboration({
     const stale = reconnects.begin();
     clearRetry();
     if (!up) {
+      firstOpen = false;
       session?.disconnected();
       onConnected(false);
       return;
@@ -182,6 +196,12 @@ export function createReaderCollaboration({
     const active = session;
     if ((sourceSync && !active) || disposed) return;
     active?.disconnected();
+    if (firstOpen) {
+      firstOpen = false;
+      if (sourceSync) room?.send(active.open());
+      onConnected(true);
+      return;
+    }
     try {
       const response = await fetcher(`/api/documents/${slug}`, { headers: keyHeaders(key) });
       if (disposed || stale() || session !== active) return;
@@ -219,6 +239,7 @@ export function createReaderCollaboration({
     if (disposed) return null;
     if (session) return session;
     document_ = nextDocument;
+    firstOpen = !nextDocument.local_copy;
     return join(nextDocument);
   }
 
@@ -230,7 +251,8 @@ export function createReaderCollaboration({
       onConnected: reconnect,
       key,
     });
-    if (sourceSync) room.send(session.open());
+    // The first `doc-open` goes out from the socket's open handler
+    // (`reconnect`): the room drops `doc-*` messages while it is connecting.
     return session;
   }
 

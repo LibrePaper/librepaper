@@ -151,6 +151,8 @@ try {
   // Menus stay mounted while closed, so wait for an on-screen box, not for existence.
   const visible = (label, finder) => until(label, () => where(finder), 8000);
   const item = (text) => `() => [...document.querySelectorAll('[role="menuitem"]')].find(n => n.textContent.trim().startsWith(${JSON.stringify(text)}) && n.getBoundingClientRect().width > 1)`;
+  // The submenu trigger is "Download"; the entries are "Download HTML" and so on, so match it exactly.
+  const exactItem = (text) => `() => [...document.querySelectorAll('[role="menuitem"]')].find(n => (n.querySelector('.menuitem-label') ?? n).textContent.trim() === ${JSON.stringify(text)} && n.getBoundingClientRect().width > 1)`;
   const trigger = (id) => `() => document.querySelector('[data-menubar="${id}"]')`;
 
   const openMenu = async (id, finder) => {
@@ -161,10 +163,10 @@ try {
     return target;
   };
   const openDownload = async () => {
-    await openMenu("file", item("Download"));
-    const sub = await where(item("Download"));
+    await openMenu("file", exactItem("Download"));
+    const sub = await where(exactItem("Download"));
     await mouse(sub.x, sub.y, ["mouseMoved"]);
-    await visible("the Download submenu", item("HTML"));
+    await visible("the Download submenu", item("Download HTML"));
     await pause(500);
   };
   const choose = async (text) => {
@@ -180,7 +182,7 @@ try {
   // 1. The submenu: its entries, in order, none disabled.
   await openDownload();
   const entries = await tab.evaluate(`(() => {
-    const labels = ["Project", "HTML", "PDF", "DOCX", "Comments", "Source"];
+    const labels = ["Download project", "Download HTML", "Download PDF", "Download DOCX", "Download comments", "Download source file"];
     const found = [...document.querySelectorAll('[role="menuitem"]')]
       .filter(n => n.getBoundingClientRect().width > 1 && labels.includes(n.querySelector('.menuitem-label')?.textContent.trim()));
     return found.map(n => ({
@@ -189,9 +191,9 @@ try {
     }));
   })()`);
   entries.sort((a, b) => a.top - b.top);
-  assert.deepEqual(entries.map((e) => e.label), ["Project", "HTML", "PDF", "DOCX", "Comments", "Source"], "the Download submenu lists the six downloads in order");
+  assert.deepEqual(entries.map((e) => e.label), ["Download project", "Download HTML", "Download PDF", "Download DOCX", "Download comments", "Download source file"], "the Download submenu lists the six downloads in order");
   assert.deepEqual(entries.filter((e) => e.disabled), [], "no download is disabled");
-  console.log("reader-download: the Download submenu lists Project, HTML, PDF, DOCX, Comments and Source, all enabled");
+  console.log("reader-download: the Download submenu lists Download project, Download HTML, Download PDF, Download DOCX, Download comments and Download source file, all enabled");
 
   const taken = async (count) => {
     await until(`download ${count}`, () => tab.evaluate(`window.downloads.length >= ${count}`), 120000);
@@ -199,7 +201,7 @@ try {
   };
 
   // 3. HTML.
-  await choose("HTML");
+  await choose("Download HTML");
   const html = await taken(1);
   assert.equal(html.name, `${SLUG}.html`);
   assert.ok(html.text.includes("Download check"), "the HTML holds the heading");
@@ -208,7 +210,7 @@ try {
   // 4. DOCX, the first Pandoc load.
   await closeMenus(); await pause(300);
   await openDownload();
-  await choose("DOCX");
+  await choose("Download DOCX");
   const docx = await taken(2);
   assert.equal(docx.name, `${SLUG}.docx`);
   assert.equal(docx.head.slice(0, 2), "PK", "the DOCX is a zip");
@@ -217,7 +219,7 @@ try {
   // 5. PDF.
   await closeMenus(); await pause(300);
   await openDownload();
-  await choose("PDF");
+  await choose("Download PDF");
   const pdf = await taken(3);
   assert.equal(pdf.name, `${SLUG}.pdf`);
   assert.equal(pdf.head, "%PDF", "the PDF starts with %PDF");
@@ -226,7 +228,7 @@ try {
   // 5b. Source: the file open in the editor, as written.
   await closeMenus(); await pause(300);
   await openDownload();
-  await choose("Source");
+  await choose("Download source file");
   const sourceFile = await taken(4);
   assert.equal(sourceFile.name, "main.md");
   assert.ok(sourceFile.text.includes("Download check"), "the source holds the heading");
@@ -235,7 +237,7 @@ try {
   // 5c. Comments: every thread, as Markdown.
   await closeMenus(); await pause(300);
   await openDownload();
-  await choose("Comments");
+  await choose("Download comments");
   const commentsFile = await taken(5);
   assert.equal(commentsFile.name, `${SLUG}-comments.md`);
   assert.ok(commentsFile.text.includes("Please justify the claim."), "the export holds the comment");

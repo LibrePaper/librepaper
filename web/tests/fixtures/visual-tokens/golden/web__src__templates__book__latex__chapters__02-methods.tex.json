@@ -1,0 +1,429 @@
+[
+  {
+    "body": {
+      "from": 9,
+      "to": 16
+    },
+    "children": [
+      {
+        "from": 9,
+        "kind": "text",
+        "to": 16
+      }
+    ],
+    "from": 0,
+    "kind": "heading",
+    "level": 1,
+    "name": "chapter",
+    "to": 17
+  },
+  {
+    "args": [
+      {
+        "from": 24,
+        "to": 36
+      }
+    ],
+    "body": {
+      "from": 24,
+      "to": 36
+    },
+    "children": [
+      {
+        "from": 24,
+        "kind": "text",
+        "to": 36
+      }
+    ],
+    "from": 17,
+    "kind": "command",
+    "name": "label",
+    "to": 37
+  },
+  {
+    "from": 37,
+    "kind": "text",
+    "to": 160
+  },
+  {
+    "body": {
+      "from": 169,
+      "to": 179
+    },
+    "children": [
+      {
+        "from": 169,
+        "kind": "text",
+        "to": 179
+      }
+    ],
+    "from": 160,
+    "kind": "heading",
+    "level": 1,
+    "name": "section",
+    "to": 180
+  },
+  {
+    "args": [
+      {
+        "from": 187,
+        "to": 201
+      }
+    ],
+    "body": {
+      "from": 187,
+      "to": 201
+    },
+    "children": [
+      {
+        "from": 187,
+        "kind": "text",
+        "to": 201
+      }
+    ],
+    "from": 180,
+    "kind": "command",
+    "name": "label",
+    "to": 202
+  },
+  {
+    "from": 202,
+    "kind": "text",
+    "to": 309
+  },
+  {
+    "args": [
+      {
+        "from": 316,
+        "to": 325
+      }
+    ],
+    "body": {
+      "from": 316,
+      "to": 325
+    },
+    "children": [
+      {
+        "from": 316,
+        "kind": "text",
+        "to": 325
+      }
+    ],
+    "from": 309,
+    "kind": "command",
+    "name": "citep",
+    "to": 326
+  },
+  {
+    "from": 326,
+    "kind": "text",
+    "to": 344
+  },
+  {
+    "body": {
+      "from": 345,
+      "to": 355
+    },
+    "display": false,
+    "from": 344,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 356
+  },
+  {
+    "from": 356,
+    "kind": "text",
+    "to": 369
+  },
+  {
+    "body": {
+      "from": 370,
+      "to": 371
+    },
+    "display": false,
+    "from": 369,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 372
+  },
+  {
+    "from": 372,
+    "kind": "text",
+    "to": 432
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 448,
+      "to": 662
+    },
+    "display": true,
+    "from": 432,
+    "kind": "math",
+    "name": "equation",
+    "to": 676
+  },
+  {
+    "from": 676,
+    "kind": "text",
+    "to": 677
+  },
+  {
+    "args": [
+      {
+        "from": 683,
+        "to": 698
+      }
+    ],
+    "body": {
+      "from": 683,
+      "to": 698
+    },
+    "children": [
+      {
+        "from": 683,
+        "kind": "text",
+        "to": 698
+      }
+    ],
+    "from": 677,
+    "kind": "command",
+    "name": "cref",
+    "to": 699
+  },
+  {
+    "from": 699,
+    "kind": "text",
+    "to": 788
+  },
+  {
+    "body": {
+      "from": 797,
+      "to": 808
+    },
+    "children": [
+      {
+        "from": 797,
+        "kind": "text",
+        "to": 808
+      }
+    ],
+    "from": 788,
+    "kind": "heading",
+    "level": 1,
+    "name": "section",
+    "to": 809
+  },
+  {
+    "args": [
+      {
+        "from": 816,
+        "to": 831
+      }
+    ],
+    "body": {
+      "from": 816,
+      "to": 831
+    },
+    "children": [
+      {
+        "from": 816,
+        "kind": "text",
+        "to": 831
+      }
+    ],
+    "from": 809,
+    "kind": "command",
+    "name": "label",
+    "to": 832
+  },
+  {
+    "from": 832,
+    "kind": "text",
+    "to": 966
+  },
+  {
+    "args": [
+      {
+        "from": 972,
+        "to": 990
+      }
+    ],
+    "body": {
+      "from": 972,
+      "to": 990
+    },
+    "children": [
+      {
+        "from": 972,
+        "kind": "text",
+        "to": 990
+      }
+    ],
+    "from": 966,
+    "kind": "command",
+    "name": "cref",
+    "to": 991
+  },
+  {
+    "from": 991,
+    "kind": "text",
+    "to": 1064
+  },
+  {
+    "args": [
+      {
+        "from": 1070,
+        "to": 1087
+      }
+    ],
+    "body": {
+      "from": 1070,
+      "to": 1087
+    },
+    "children": [
+      {
+        "from": 1070,
+        "kind": "text",
+        "to": 1087
+      }
+    ],
+    "from": 1064,
+    "kind": "command",
+    "name": "cref",
+    "to": 1088
+  },
+  {
+    "from": 1088,
+    "kind": "text",
+    "to": 1133
+  },
+  {
+    "body": {
+      "from": 1142,
+      "to": 1156
+    },
+    "children": [
+      {
+        "from": 1142,
+        "kind": "text",
+        "to": 1156
+      }
+    ],
+    "from": 1133,
+    "kind": "heading",
+    "level": 1,
+    "name": "section",
+    "to": 1157
+  },
+  {
+    "args": [
+      {
+        "from": 1164,
+        "to": 1182
+      }
+    ],
+    "body": {
+      "from": 1164,
+      "to": 1182
+    },
+    "children": [
+      {
+        "from": 1164,
+        "kind": "text",
+        "to": 1182
+      }
+    ],
+    "from": 1157,
+    "kind": "command",
+    "name": "label",
+    "to": 1183
+  },
+  {
+    "from": 1183,
+    "kind": "text",
+    "to": 1189
+  },
+  {
+    "body": {
+      "from": 1190,
+      "to": 1193
+    },
+    "display": false,
+    "from": 1189,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1194
+  },
+  {
+    "from": 1194,
+    "kind": "text",
+    "to": 1214
+  },
+  {
+    "body": {
+      "from": 1215,
+      "to": 1230
+    },
+    "display": false,
+    "from": 1214,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1231
+  },
+  {
+    "from": 1231,
+    "kind": "text",
+    "to": 1255
+  },
+  {
+    "body": {
+      "from": 1256,
+      "to": 1257
+    },
+    "display": false,
+    "from": 1255,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1258
+  },
+  {
+    "from": 1258,
+    "kind": "text",
+    "to": 1372
+  },
+  {
+    "body": {
+      "from": 1373,
+      "to": 1380
+    },
+    "display": false,
+    "from": 1372,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1381
+  },
+  {
+    "from": 1381,
+    "kind": "text",
+    "to": 1383
+  }
+]

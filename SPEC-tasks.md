@@ -65,6 +65,22 @@ Tags are `#` followed by a letter, then letters, digits, `_`, `-` and `/`.
   for typing, like every other construct in visual mode.
 - Drawing changes no text.
 
+## Rendered pages
+
+The preview, the exported page and visual mode's drawn blocks all come from
+the renderer, which marks each task item: `<li class="task task-todo">`,
+`task-doing`, `task-done` or `task-cancelled`, with a disabled checkbox
+input first. The house stylesheet (`web/src/styles/document.css`) draws the
+box from the class.
+
+Every box is the same outlined square, with one mark inside: none for to do,
+a dot for in progress, a check for done, a cross for cancelled. Done and
+cancelled items are muted.
+
+Org lists use the same boxes: `[ ]`, `[X]` (or `[x]`), and `[-]` or `[/]`
+for in progress. Org's `[-]` keeps its Org meaning (partly done), so Org has
+no cancelled state.
+
 ## Completion
 
 On a task's first line the source editor completes field names, priorities,

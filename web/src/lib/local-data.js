@@ -3,12 +3,13 @@
 // signing out deletes both databases, and the secrets and chat transcripts
 // kept in localStorage. Habits such as the theme and keymap stay.
 import { localDataForgotten, markSignedOut } from "./signed-out.js";
-import { AGENT_SESSION_PREFIX, KEYS, LINKED, VIEWED } from "./storage.js";
+import { AGENT_SESSION_PREFIX, KEYS, LINKED, SHARE_INTRO, VIEWED } from "./storage.js";
 
 export const OFFLINE_DATABASE = "librepaper-offline-v2";
 export const PREVIEW_DATABASE = "librepaper-preview-v1";
+export const ASSET_DATABASE = "librepaper-assets-v1";
 
-const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE];
+const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE, ASSET_DATABASE];
 // Reading localStorage can itself throw when storage is blocked.
 function safeLocalStorage() {
   try {
@@ -24,7 +25,7 @@ const CHANNEL = "librepaper-local-data";
 // pending write cannot recreate the previous account's data after the delete.
 export { localDataForgotten };
 
-const SECRET_KEYS = [KEYS, VIEWED, LINKED];
+const SECRET_KEYS = [KEYS, VIEWED, LINKED, SHARE_INTRO];
 
 // Storage can be switched off or throw, and a sign-out must still finish.
 function forgetStorage(storage) {

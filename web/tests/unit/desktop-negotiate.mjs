@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { compareVersions, isLegacy, LEGACY_RANGE, major, outcome, PAGE, rangeOf, sinceMet } from "../../src/lib/desktop/negotiate.js";
 
-test("the page speaks 3.1.0 and an app without protocol is taken as 3.0.0", () => {
-  assert.equal(PAGE, "3.1.0");
+test("the page speaks 3.2.0 and an app without protocol is taken as 3.0.0", () => {
+  assert.equal(PAGE, "3.2.0");
   assert.deepEqual(LEGACY_RANGE, { oldest: 3, current: "3.0.0" });
   assert.equal(major("3.1.0"), 3);
   assert.equal(compareVersions("3.10.0", "3.9.0"), 1);

@@ -3,10 +3,15 @@
   import DesktopOnly from "../DesktopOnly.svelte";
   import { forgetCapabilities } from "../../lib/desktop/client.js";
   import { toolItems } from "../../lib/desktop/tools.js";
+  import { leaf } from "../../lib/reader/run-directory.js";
   import { m } from "../../lib/paraglide/messages.js";
 
   // The page does not own the machine view; the dialog creates and starts it.
-  let { view } = $props();
+  // The Run directory is the reader's; it is read whenever a Quarto document is
+  // open in the desktop app with its format set to this computer.
+  let { view, runDirectory = undefined, onchooserundirectory = undefined } = $props();
+  const runStatus = $derived(runDirectory?.loaded ? runDirectory.status : null);
+  const runUsable = $derived(Boolean(runDirectory?.usable));
   const active = (status) => !["done", "complete", "completed", "succeeded", "failed", "error", "cancelled", "canceled", "stopped", "interrupted", "expired", "denied"].includes(String(status || "").toLowerCase());
 
   const DESCRIPTIONS = {
@@ -41,7 +46,8 @@
   }
 
   const jobs = $derived(view.list(view.state?.jobs));
-  const running = $derived(jobs.length > 0);
+  const sessions = $derived(view.list(view.state?.sessions));
+  const running = $derived(jobs.length + sessions.length > 0);
 
   // Elapsed time when the desktop app says when the work started.
   function elapsed(item) {
@@ -73,6 +79,24 @@
     {/each}
   </section>
 
+  {#if runStatus}
+    <section id="tools-run-directory" class="settings-subsection" aria-labelledby="tools-run-directory-heading">
+      <div class="settings-section-title">
+        <h4 class="settings-subhead" id="tools-run-directory-heading">{m.rundirectorycontrol_label()}</h4>
+      </div>
+      <ToolRow
+        id="tools-run-directory-row"
+        title={runStatus.path ? leaf(runStatus.path) : m.rundirectorycontrol_label()}
+        description={runStatus.path ? (runUsable ? runStatus.path : m.rundirectorycontrol_missing({ path: runStatus.path })) : m.toolssettings_run_directory_none()}
+        status={{ label: "", tone: "neutral" }}
+      >
+        {#snippet actions()}
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" aria-label={m.rundirectorycontrol_change_aria()} onclick={() => onchooserundirectory?.()}>{runStatus.path ? m.toolssettings_run_directory_change() : m.rundirectorycontrol_choose_chip()}</button>
+        {/snippet}
+      </ToolRow>
+    </section>
+  {/if}
+
   {#if running}
     <section id="tools-activity" class="settings-subsection">
       <div class="settings-section-title">
@@ -87,6 +111,15 @@
               <td>{elapsed(job)}</td>
               <td>{job.status || m.toolssettings_running()}{job.error ? ` · ${job.error}` : ""}</td>
               <td class="desktop-action">{#if active(job.status)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, m.toolssettings_cancel_requested(), `/jobs/${view.id(job.id)}/cancel`, { method: "POST" })}>{m.common_cancel()}</button>{/if}</td>
+            </tr>
+          {/each}
+          {#each sessions as session (session.id)}
+            {@const sessionStatus = session.status || session.state || "active"}
+            <tr>
+              <th scope="row">{session.name || session.agent || session.id || m.toolssettings_agent_session()}</th>
+              <td>{elapsed(session)}</td>
+              <td>{sessionStatus}</td>
+              <td class="desktop-action">{#if active(sessionStatus)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`session-${session.id}`, m.toolssettings_stop_requested(), `/agents/sessions/${view.id(session.id)}/cancel`, { method: "POST" })}>{m.common_stop()}</button>{/if}</td>
             </tr>
           {/each}
         </tbody>

@@ -99,7 +99,7 @@ function words(text) {
 // Div markers and the class name after them are markup; the div body is prose.
 {
   assert.deepEqual(
-    words("::: {.callout-note}\nNote text\n:::\n::: callout-tip\nTip text"),
+    words("::: {.callout-note}\nNote text\n:::\n::: callout-tip\nTip text\n:::"),
     ["Note", "text", "Tip", "text"],
   );
 }
@@ -276,4 +276,24 @@ function words(text) {
 // Many unmatched link openers keep the word after them.
 {
   assert.deepEqual(words("[".repeat(20000) + " word"), ["word"]);
+}
+
+// A task list marker is markup, so its x is not a word.
+{
+  assert.deepEqual(words("- [x] done"), ["done"]);
+}
+
+// An entity is markup, so its name is not a word.
+{
+  assert.deepEqual(words("AT&amp;T"), ["AT", "T"]);
+}
+
+// Inline code may continue on the next line.
+{
+  assert.deepEqual(words("a `b\nc` d"), ["a", "d"]);
+}
+
+// Raw LaTeX that Pandoc passes through: the command names are markup.
+{
+  assert.deepEqual(words("See \\index{models} the \\textbf{bold} word."), ["See", "models", "the", "bold", "word"]);
 }

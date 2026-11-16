@@ -1,6 +1,6 @@
-// End to end: several documents, a stalled write path, the
-// deployment-wide pending-source bound reached, and every edit eventually
-// durable without anybody typing again.
+// End to end: several documents, a stalled write path, the server refusing
+// edits it cannot yet make safe, and every refused edit eventually durable
+// without anybody typing again.
 //
 // Requires Chromium, a built librepaper binary and LIBREPAPER_TEST_POSTGRES_URL.
 // Only absent optional server/database configuration is skipped; setup errors
@@ -21,6 +21,15 @@
 // that a real browser, holding a real refused edit, gets that edit saved
 // without another keystroke -- the half of the contract that lives in
 // `project-session.js` and in the protocol between them.
+//
+// **Which bound is reached.** In this stall the first refusal is normally
+// `storage_busy`, not `pending_budget`. A stalled flush holds the document
+// and storage-accounting row locks while its INSERT waits, so a new quota
+// reservation cannot get them and is refused after a bounded wait instead of
+// queueing behind the database. The deployment's pending pool may also fill
+// and refuse with `pending_budget`; either refusal is retryable and either
+// is accepted here. What must hold is that reserved bytes never exceed the
+// pool's limit.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { spawn } from "node:child_process";
@@ -262,12 +271,14 @@ try {
   });
   noise("the write path is stalled");
 
-  // 2. Everyone types until the shared pool refuses somebody. Each document
-  //    stays well inside its own 4 MiB allowance, so a refusal here can only
-  //    be the deployment's.
+  // 2. Everyone types until the server refuses somebody. Each document
+  //    stays well inside its own 4 MiB allowance, so the refusal is the
+  //    deployment's: `storage_busy` (the quota reservation could not get the
+  //    accounting lock a stalled flush holds, within its bounded wait) or
+  //    `pending_budget` (the shared pool filled first).
   const typed = new Map(editors.map((one) => [one.name, ""]));
   let refusedBy = null;
-  await until("the deployment pending pool to refuse an update", async () => {
+  await until("the server to refuse an update while writes are stalled", async () => {
     for (const one of editors) {
       const chunk = filler(CHUNK);
       typed.set(one.name, typed.get(one.name) + chunk);
@@ -282,15 +293,14 @@ try {
   }, 120000);
 
   const pressed = (await status()).pending_budget;
-  assert.ok(pressed.refused_retained > 0, "the accounting never reached its admission boundary");
   assert.ok(pressed.retained_reserved_bytes <= pressed.retained_limit_bytes,
     `${pressed.retained_reserved_bytes} bytes reserved against a limit of ${pressed.retained_limit_bytes}`);
   const refusals = (await refusedBy.snapshot()).refusals;
-  assert.ok(refusals.includes("pending_budget"),
-    `the refusal should name the deployment bound, not ${JSON.stringify(refusals)}`);
+  assert.ok(refusals.some((reason) => reason === "storage_busy" || reason === "pending_budget"),
+    `the refusal should be storage_busy or pending_budget, not ${JSON.stringify(refusals)}`);
   noise(`refused after ${pressed.retained_reserved_bytes} unsaved bytes across ${DOCUMENTS} documents`);
 
-  // 3. Every client keeps its work and reads as unsaved.
+  // 3. Every client keeps its refused work and reads as unsaved and joined.
   for (const one of editors) {
     const snapshot = await one.snapshot();
     assert.equal(snapshot.pending, 1, `${one.name} should still be waiting on durability`);
@@ -304,7 +314,8 @@ try {
   await stall.release();
   stall = null;
 
-  // 5. Everything converges and becomes durable.
+  // 5. Everything converges and becomes durable: each client resends its
+  //    refused edit on its own timer, and the pool and scratch drain to zero.
   await until("every editor's work to become durable with nobody typing", async () => {
     const waiting = [];
     for (const one of editors) {

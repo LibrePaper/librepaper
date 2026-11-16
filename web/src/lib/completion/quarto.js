@@ -5,17 +5,13 @@
 // are built once at load. Cross-references read other project files only
 // after the trigger matches, so a keystroke elsewhere costs nothing.
 import schema from "./quarto-schema.json" with { type: "json" };
+import { indexTexts, labelList } from "../document-index/labels.js";
+import { explicitlyAsked } from "./asked.js";
+import { KINDS, LABEL_PARTIAL, fenceStates } from "../quarto-labels.js";
 
-/** @typedef {{ id: string, kind: string, path: string, line: number }} QuartoLabel */
+/** @typedef {{ path: string, texts: Record<string, string>, labels?: (options: { first?: string, formats?: Set<string> }) => Array<{ id: string, path: string, line: number, title?: string }> }} ReferenceProject */
 
-const KINDS = ["fig", "tbl", "sec", "eq", "lst", "thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr"];
-const KIND_ALTERNATION = KINDS.join("|");
-const LABEL = new RegExp(`^(?:${KIND_ALTERNATION})-[\\w-]+$`);
-const LABEL_PARTIAL = new RegExp(`^(?:${KIND_ALTERNATION})-[\\w-]*$`);
-const ATTRIBUTE_ID = new RegExp(`\\{#((?:${KIND_ALTERNATION})-[\\w-]+)(?=[\\s}])`, "g");
-const CELL_LABEL = /^#\|\s*label:\s*["']?([^\s"']+)/;
-const HEADER_LABEL = /[\s,]label\s*=\s*["']?([^\s"',}]+)/;
-const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+export { quartoLabels } from "../quarto-labels.js";
 
 const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 const option = (entry, type) => ({
@@ -32,31 +28,6 @@ const CELL_KEYS = schema.cell.map((entry) => option(entry, "property")).sort(byN
 const DOCUMENT_VALUES = new Map(schema.document.filter((entry) => entry.values.length).map((entry) => [entry.name, valueOptions(entry.values)]));
 const CELL_VALUES = new Map(schema.cell.filter((entry) => entry.values.length).map((entry) => [entry.name, valueOptions(entry.values)]));
 
-/**
- * Fence state for every line: the open fence while the line sits inside a
- * code block (the opening and closing lines included), else null.
- * @param {string[]} lines
- * @returns {Array<{ marker: string, length: number, info: string } | null>}
- */
-function fenceStates(lines) {
-  const states = new Array(lines.length).fill(null);
-  let fence = null;
-  lines.forEach((line, index) => {
-    const match = line.match(FENCE);
-    if (!fence) {
-      // A backtick fence cannot have a backtick in its info string.
-      if (match && !(match[1][0] === "`" && match[2].includes("`"))) {
-        fence = { marker: match[1][0], length: match[1].length, info: match[2].trim() };
-        states[index] = fence;
-      }
-      return;
-    }
-    states[index] = fence;
-    if (match && match[1][0] === fence.marker && match[1].length >= fence.length && !match[2].trim()) fence = null;
-  });
-  return states;
-}
-
 /** True when the line sits between the leading `---` lines of the document. */
 function inFrontMatter(lines, index) {
   if (index === 0 || !/^---\s*$/.test(lines[0] || "")) return false;
@@ -66,70 +37,54 @@ function inFrontMatter(lines, index) {
   return false;
 }
 
-/**
- * Labels in one Quarto source: cell labels inside executable cells and
- * attribute ids outside code.
- * @param {string} text
- * @param {string} path
- * @returns {QuartoLabel[]}
- */
-function labelsIn(text, path) {
-  const lines = text.split(/\r?\n/);
-  const states = fenceStates(lines);
-  const found = [];
-  const add = (id, index) => found.push({ id, kind: id.slice(0, id.indexOf("-")), path, line: index + 1 });
-  // One label per executable cell. A "#| label:" line overrides a label in
-  // the header ({r, label="fig-x"}), as Quarto reads them.
-  const cells = new Map();
-  lines.forEach((line, index) => {
-    const fence = states[index];
-    if (fence) {
-      if (!fence.info.startsWith("{")) return;
-      const cell = cells.get(fence) || {};
-      cells.set(fence, cell);
-      if (states[index - 1] !== fence) {
-        const header = fence.info.match(HEADER_LABEL);
-        if (header && LABEL.test(header[1])) cell.header = { id: header[1], index };
-        return;
-      }
-      const match = line.match(CELL_LABEL);
-      if (match && LABEL.test(match[1]) && !cell.option) cell.option = { id: match[1], index };
-      return;
-    }
-    for (const match of line.replace(/`[^`]*`/g, "").matchAll(ATTRIBUTE_ID)) add(match[1], index);
-  });
-  for (const cell of cells.values()) {
-    const label = cell.option || cell.header;
-    if (label) add(label.id, label.index);
+/** True when line `number` (1-based) of the document sits between the leading `---` lines. */
+function inFrontMatterAt(doc, number) {
+  if (number === 1 || !/^---\s*$/.test(doc.line(1).text)) return false;
+  for (let i = 2; i <= doc.lines; i++) {
+    if (/^(?:---|\.\.\.)\s*$/.test(doc.line(i).text)) return number < i;
   }
-  return found.sort((a, b) => a.line - b.line);
+  return false;
+}
+
+// What the front matter source reads before the cursor: a key being typed, or a value after "key:".
+const FRONT_KEY = /^[A-Za-z0-9_-]*$/;
+const FRONT_VALUE = /^[A-Za-z][\w-]*:[ \t]+\S*$/;
+
+/**
+ * Where the Quarto source can answer: a cross-reference after "@", a code cell
+ * option line ("#| "), or a front matter key or value. The front matter is
+ * looked up only when the line could be one.
+ * @param {string} before the line's text up to the cursor
+ * @param {import("@codemirror/state").EditorState} state
+ * @param {number} pos
+ */
+export function quartoTrigger(before, state, pos) {
+  if (before.includes("@") || before.startsWith("#| ")) return true;
+  if (!FRONT_KEY.test(before) && !FRONT_VALUE.test(before)) return false;
+  return inFrontMatterAt(state.doc, state.doc.lineAt(pos).number);
 }
 
 /**
- * Cross-reference targets in the project's Quarto files.
- * @param {Record<string, string>} texts
- * @returns {QuartoLabel[]}
+ * Cross-reference options: the edited document first, then other files, one per id.
+ * @param {ReferenceProject} project
+ * @param {string} documentText the live text of the edited document
+ * @param {string} documentPath
+ * @returns {Array<{ label: string, type: string, detail: string, info?: string }>}
  */
-export function quartoLabels(texts) {
-  const found = [];
-  for (const [path, text] of Object.entries(texts || {})) {
-    if (!/\.qmd$/i.test(path)) continue;
-    found.push(...labelsIn(text, path));
-  }
-  return found;
-}
-
-/** Cross-reference options: the edited document first, then other files, one per id. */
 function referenceOptions(project, documentText, documentPath) {
-  const seen = new Set();
-  const options = [];
-  const all = [...labelsIn(documentText, documentPath), ...quartoLabels(project.texts).filter((label) => label.path !== documentPath)];
-  for (const label of all) {
-    if (seen.has(label.id)) continue;
-    seen.add(label.id);
-    options.push({ label: label.id, type: "variable", detail: `${label.path}:${label.line}` });
-  }
-  return options;
+  const formats = new Set(["quarto"]);
+  const texts = { ...project.texts, [documentPath]: documentText };
+  // The editor's live index already holds the edited document: it refreshes
+  // before answering.
+  const labels = project.labels
+    ? project.labels({ first: documentPath, formats })
+    : labelList(indexTexts(texts), texts, { first: documentPath, formats });
+  return labels.map((label) => ({
+    label: label.id,
+    type: "variable",
+    detail: `${label.path}:${label.line}`,
+    ...(label.title ? { info: label.title } : {}),
+  }));
 }
 
 /**
@@ -181,7 +136,7 @@ export function quartoCompletion(project) {
     if (!reference) return null;
     const partial = reference[1];
     const typed = LABEL_PARTIAL.test(partial) || (partial && !partial.includes("-") && KINDS.some((kind) => kind.startsWith(partial)));
-    if (!typed && !(partial === "" && context.explicit)) return null;
+    if (!typed && !(partial === "" && explicitlyAsked(context))) return null;
 
     const options = referenceOptions(current, text, current.path);
     if (!options.length) return null;

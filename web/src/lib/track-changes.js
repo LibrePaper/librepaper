@@ -16,9 +16,15 @@
 //
 // Offsets are UTF-16 everywhere, the same as CodeMirror and loro-crdt in JS.
 
-import { Cursor, LoroMap } from "loro-crdt";
+import { loroClasses } from "./loro-classes.js";
+import { cursorAt } from "./loro-cursor.js";
 
 export const CHANGES = "changes";
+
+// The origin an idle prune commits under. Its writes tidy records nobody typed,
+// so the editor's undo manager leaves them out, and the view does not take the
+// commit for a write from outside it.
+export const PRUNE_ORIGIN = "track-changes-prune";
 
 // How long a record rests before prune drops it when empty, or re-anchors its
 // stale cursors, so that its author's other session has time to sync.
@@ -29,16 +35,16 @@ const SETTLE_MS = 60_000;
 /**
  * @typedef {{ who: string, author: string }} Me
  * @typedef {{ from: number, to: number, insert: string }} Edit
- * @typedef {{ id?: string, change: string, text: string, rank?: number }} Fragment
+ * @typedef {{ id?: string, change: string, text: string, rank?: number, stale?: boolean }} Fragment
  * @typedef {{ id: string, change: string, text: string, rank: number, stale: boolean }} ResolvedFragment
  * @typedef {{ id: string, who: string, author: string, run: string | null, at: number, from: number, to: number }} Change
- * @typedef {Change & { stale: boolean, hasCursor: boolean, legacy?: boolean, orphan?: boolean }} ResolvedChange
+ * @typedef {Change & { stale: boolean, staleStart?: boolean, staleEnd?: boolean, hasCursor: boolean, legacy?: boolean, orphan?: boolean }} ResolvedChange
  * @typedef {{ id: string, at: number, fragments: Fragment[] }} Gap
- * @typedef {{ id: string, at: number, fragments: ResolvedFragment[], stale: boolean }} ResolvedGap
+ * @typedef {{ id: string, at: number, fragments: ResolvedFragment[], stale: boolean, relocated?: boolean }} ResolvedGap
  * @typedef {{ id: string, change: string, text: string, rank: number, at: number, stale: boolean, who: any, author: any, run: any, when: any }} OrphanFragment
  * @typedef {{ changes: Change[], gaps: Gap[] }} FileState
  * @typedef {Change & { deleted: string }} Row
- * @typedef {Change & { state: "kept" | "set" | "removed", emptied?: boolean, orphan?: boolean }} PlannedChange
+ * @typedef {Change & { state: "kept" | "set" | "removed", emptied?: boolean, orphan?: boolean, legacy?: boolean, stale?: boolean, staleStart?: boolean, staleEnd?: boolean, hasCursor?: boolean }} PlannedChange
  * @typedef {Gap & { state: "kept" | "set" | "removed" }} PlannedGap
  * @typedef {{ changes: PlannedChange[], gaps: PlannedGap[] }} PlannedState
  */
@@ -78,8 +84,10 @@ export function planEdits(before, state, edits, me, { run = null, now, mintId, u
     const insert = edit.insert;
     if (ef === et && insert.length === 0) continue;
     const step = planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untracked);
-    for (const c of changes) if (!step.changes.some((x) => x.id === c.id) && originalChanges.has(c.id)) removedChanges.set(c.id, { ...c, state: "removed" });
-    for (const g of gaps) if (!step.gaps.some((x) => x.id === g.id) && originalGaps.has(g.id)) removedGaps.set(g.id, { ...g, state: "removed" });
+    const stepChanges = new Set(step.changes.map((x) => x.id));
+    const stepGaps = new Set(step.gaps.map((x) => x.id));
+    for (const c of changes) if (!stepChanges.has(c.id) && originalChanges.has(c.id)) removedChanges.set(c.id, { ...c, state: "removed" });
+    for (const g of gaps) if (!stepGaps.has(g.id) && originalGaps.has(g.id)) removedGaps.set(g.id, { ...g, state: "removed" });
     changes = step.changes;
     gaps = step.gaps;
     cur = cur.slice(0, ef) + insert + cur.slice(et);
@@ -103,6 +111,16 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   // Own changes this edit touches: a span overlapping or adjacent, or a
   // fragment in a gap inside the closed range.
   const swallowedGaps = gaps.filter((g) => g.at >= ef && g.at <= et);
+  // Looked up by id many times below. The first of two with one id wins, as a
+  // linear search would have it.
+  const byId = new Map();
+  for (const c of changes) if (!byId.has(c.id)) byId.set(c.id, c);
+  // The swallowed gaps by position, in their order, for the walk below.
+  const swallowedAt = new Map();
+  for (const g of swallowedGaps) {
+    const list = swallowedAt.get(g.at);
+    if (list) list.push(g); else swallowedAt.set(g.at, [g]);
+  }
   const owned = new Set();
   // A span of mine joins when it touches the edit. A change of mine with no
   // span joins when one of its fragments sits in a swallowed gap. A span of
@@ -116,14 +134,36 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
     .sort((a, b) => a.from - b.from || (a.id < b.id ? -1 : 1));
   if (touching.length > 0) owned.add(touching[0].id);
   for (const g of swallowedGaps) for (const f of g.fragments) {
-    const c = changes.find((x) => x.id === f.change);
+    const c = byId.get(f.change);
     // A fragment read as a change of its own is not joined: it has no record
     // to merge into, and it never leaves the gap it is in.
     if (c && c.who === me.who && !hasSpan(c) && !c.orphan) owned.add(c.id);
   }
   // Pure deletion of text inside inserted spans only, by nobody of mine: the
   // spans shrink and nothing is recorded, unless original text is involved.
-  const spanAt = (p) => changes.find((c) => hasSpan(c) && c.from <= p && p < c.to);
+  // Which span covers each character of the edit: the first of them in the
+  // order of `changes`, which is what decides where an overlapping pair ends.
+  // Only spans reaching into the range matter, and most edits have none. Each
+  // character is filled once, by the first span to cover it, and a jump table
+  // skips what is filled, so the cost is the range plus the spans.
+  let cover = null;
+  if (et > ef) {
+    const reaching = changes.filter((c) => hasSpan(c) && c.from < et && c.to > ef);
+    if (reaching.length > 0) {
+      cover = new Array(et - ef).fill(undefined);
+      const jump = new Int32Array(et - ef + 1);
+      for (let i = 0; i <= et - ef; i++) jump[i] = i;
+      const find = (i) => {
+        while (jump[i] !== i) { jump[i] = jump[jump[i]]; i = jump[i]; }
+        return i;
+      };
+      for (const c of reaching) {
+        const end = Math.min(c.to, et) - ef;
+        for (let i = find(Math.max(c.from, ef) - ef); i < end; i = find(i)) { cover[i] = c; jump[i] = i + 1; }
+      }
+    }
+  }
+  const spanAt = (p) => (cover ? cover[p - ef] : undefined);
   const originalRuns = [];
   {
     let p = ef;
@@ -144,7 +184,7 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   if (untracked) owned.clear();
   let mine = null;
   if (records) {
-    const first = [...owned].map((id) => changes.find((c) => c.id === id)).sort((a, b) => a.from - b.from)[0];
+    const first = [...owned].map((id) => byId.get(id)).sort((a, b) => a.from - b.from)[0];
     mine = first
       ? { ...first, run: run ?? first.run, at: now, state: "set" }
       : { id: mintId(), who: me.who, author: me.author, run, at: now, from: ef, to: ef, state: "set" };
@@ -173,7 +213,7 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   for (let p = ef; p <= et; p++) {
     const target = splitAtEnd && p === et ? after : merged;
     // Untracked edits can leave two gaps on one point; every one of them is taken.
-    for (const g of swallowedGaps) if (g.at === p) for (const f of g.fragments) pushFragment(target, mine && owned.has(f.change) ? mine.id : f.change, f.text, f.id, f.rank);
+    for (const g of swallowedAt.get(p) ?? []) for (const f of g.fragments) pushFragment(target, mine && owned.has(f.change) ? mine.id : f.change, f.text, f.id, f.rank);
     if (p < et && !spanAt(p) && records) pushFragment(merged, mine.id, cur[p]);
   }
   // Spans.
@@ -223,7 +263,7 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
     let from = ef;
     let to = ef + len;
     for (const id of owned) {
-      const c = changes.find((x) => x.id === id);
+      const c = byId.get(id);
       if (!hasSpan(c)) continue;
       if (c.from < from) from = c.from;
       if (c.to > et) to = Math.max(to, c.to + delta);
@@ -277,8 +317,10 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   live.sort((a, b) => a.from - b.from || a.to - b.to);
   outGaps.sort((a, b) => a.at - b.at);
   // Pure-deletion changes take their place from their first fragment.
+  const firstGap = new Map();
+  for (const g of outGaps) for (const f of g.fragments) if (!firstGap.has(f.change)) firstGap.set(f.change, g);
   for (const c of live) if (!hasSpan(c)) {
-    const g = outGaps.find((x) => x.fragments.some((f) => f.change === c.id));
+    const g = firstGap.get(c.id);
     if (g && c.from !== g.at) { c.from = g.at; c.to = g.at; }
   }
   return { changes: live, gaps: outGaps };
@@ -306,7 +348,7 @@ function fileText(doc, fileId) {
 
 function cursorPos(doc, bytes) {
   try {
-    const result = doc.getCursorPos(Cursor.decode(bytes));
+    const result = doc.getCursorPos(loroClasses.Cursor.decode(bytes));
     if (!result || typeof result.offset !== "number") return null;
     return { offset: result.offset, stale: Boolean(result.update) };
   } catch {
@@ -320,8 +362,8 @@ function cursorPos(doc, bytes) {
 function sameCursor(a, b) {
   if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) return false;
   try {
-    const x = Cursor.decode(a);
-    const y = Cursor.decode(b);
+    const x = loroClasses.Cursor.decode(a);
+    const y = loroClasses.Cursor.decode(b);
     return JSON.stringify([x.pos() ?? null, x.side(), x.containerId()]) === JSON.stringify([y.pos() ?? null, y.side(), y.containerId()]);
   } catch {
     return false;
@@ -377,18 +419,22 @@ export function resolveFile(doc, fileId) {
     let from = 0;
     let to = 0;
     let stale = false;
+    let staleStart = false;
+    let staleEnd = false;
     if (c.end instanceof Uint8Array) {
       const s0 = cursorPos(doc, c.start);
       const e0 = cursorPos(doc, c.end);
       if (!s0 || !e0) continue;
       from = s0.offset;
-      stale = s0.stale || e0.stale;
+      staleStart = s0.stale;
+      staleEnd = e0.stale;
+      stale = staleStart || staleEnd;
       to = Math.max(from, e0.stale ? e0.offset : e0.offset + charWidth(body, e0.offset));
     }
-    changes.push({ id: c.id, who: c.who, author: c.author, run: c.run ?? null, at: c.at, from, to, stale, hasCursor: true, legacy: true });
+    changes.push({ id: c.id, who: c.who, author: c.author, run: c.run ?? null, at: c.at, from, to, stale, staleStart, staleEnd, hasCursor: true, legacy: true });
   }
   for (const [id, entry] of doc.getMap(CHANGES).entries()) {
-    if (!(entry instanceof LoroMap)) continue;
+    if (!(entry instanceof loroClasses.LoroMap)) continue;
     const value = /** @type {any} */ (entry);
     if (value.get("file") !== fileId) continue;
     if (value.get("kind") === "fragment") {
@@ -411,21 +457,25 @@ export function resolveFile(doc, fileId) {
       let from = 0;
       let to = 0;
       let stale = false;
+      let staleStart = false;
+      let staleEnd = false;
       if (startBytes instanceof Uint8Array) {
         const s = cursorPos(doc, startBytes);
         if (!s) continue;
         from = s.offset;
         to = from;
+        staleStart = s.stale;
         stale = s.stale;
         if (endBytes instanceof Uint8Array) {
           const e = cursorPos(doc, endBytes);
           if (!e) continue;
+          staleEnd = e.stale;
           if (e.stale) stale = true;
           to = e.stale ? e.offset : e.offset + charWidth(body, e.offset);
           if (to < from) to = from;
         }
       }
-      changes.push({ id, who: value.get("who"), author: value.get("author"), run: value.get("run") ?? null, at: value.get("at"), from, to, stale, hasCursor: startBytes instanceof Uint8Array });
+      changes.push({ id, who: value.get("who"), author: value.get("author"), run: value.get("run") ?? null, at: value.get("at"), from, to, stale, staleStart, staleEnd, hasCursor: startBytes instanceof Uint8Array });
     }
   }
   // A fragment whose change is gone was written while someone accepted that
@@ -447,7 +497,10 @@ export function resolveFile(doc, fileId) {
   // before the span.
   for (const f of live) {
     const inside = changes.find((c) => c.to > c.from && c.from < f.at && f.at < c.to);
-    if (inside) f.at = inside.from;
+    if (inside) {
+      f.at = inside.from;
+      f.relocated = true;
+    }
   }
   const gaps = [];
   for (const f of live.sort((x, y) => x.at - y.at || byRank(x, y))) {
@@ -455,7 +508,8 @@ export function resolveFile(doc, fileId) {
     if (last && last.at === f.at) {
       last.fragments.push({ id: f.id, change: f.change, text: f.text, rank: f.rank, stale: f.stale });
       if (f.stale) last.stale = true;
-    } else gaps.push({ id: `gap@${f.at}`, at: f.at, fragments: [{ id: f.id, change: f.change, text: f.text, rank: f.rank, stale: f.stale }], stale: f.stale });
+      if (f.relocated) last.relocated = true;
+    } else gaps.push({ id: `gap@${f.at}`, at: f.at, fragments: [{ id: f.id, change: f.change, text: f.text, rank: f.rank, stale: f.stale }], stale: f.stale, ...(f.relocated ? { relocated: true } : {}) });
   }
   const out = [];
   for (const c of changes) {
@@ -471,13 +525,92 @@ export function resolveFile(doc, fileId) {
   return { changes: out, gaps, orphans: fragments.filter((f) => !known.has(f.change)) };
 }
 
+// A file's resolved state is a pure function of the document version, and
+// resolving it costs time in proportion to the document's edit history, so it
+// is kept per document and file, tagged with the version it was read at.
+// `opCount` moves with every op, pending ones included. Whoever moves the
+// version either hands over the exact new state (`adoptResolved`) or the next
+// read finds the tag behind and resolves again. Callers get the cached object
+// itself and must not change it.
+/** @type {WeakMap<object, Map<string, { clock: number, state: any }>>} */
+const resolvedCache = new WeakMap();
+
+/**
+ * `resolveFile`, read at most once per document version. The result is shared:
+ * treat it as read-only.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} fileId
+ * @returns {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans: OrphanFragment[] }}
+ */
+export function resolveFileCached(doc, fileId) {
+  const clock = doc.opCount();
+  const entry = resolvedCache.get(doc)?.get(fileId);
+  if (entry && entry.clock === clock) return entry.state;
+  const state = resolveFile(doc, fileId);
+  adoptAt(doc, fileId, clock, state);
+  return state;
+}
+
+function adoptAt(doc, fileId, clock, state) {
+  let files = resolvedCache.get(doc);
+  if (!files) resolvedCache.set(doc, (files = new Map()));
+  files.set(fileId, { clock, state });
+}
+
+/**
+ * Stores a state the caller derived for the document's current version, so the
+ * next read of it costs nothing. The caller vouches that it equals what
+ * `resolveFile` would return now.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} fileId
+ * @param {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans?: OrphanFragment[] }} state
+ */
+export function adoptResolved(doc, fileId, state) {
+  adoptAt(doc, fileId, doc.opCount(), { ...state, orphans: state.orphans ?? [] });
+}
+
+/**
+ * The state after edits that touch no change span and no gap: everything after
+ * an edit only moves. Returns null when an edit touches a span or a gap, which
+ * is for `planEdits` to settle. The edits are those of one transaction, in the
+ * coordinates before it, in order.
+ *
+ * @param {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans?: OrphanFragment[] }} state
+ * @param {Edit[]} edits
+ */
+export function shiftResolved(state, edits) {
+  const cuts = [];
+  for (const e of edits) {
+    for (const c of state.changes) {
+      if (c.to > c.from ? c.from <= e.to && c.to >= e.from : c.from >= e.from && c.from <= e.to) return null;
+    }
+    for (const g of state.gaps) if (g.at >= e.from && g.at <= e.to) return null;
+    cuts.push([e.to, e.insert.length - (e.to - e.from)]);
+  }
+  const map = (p) => {
+    let d = 0;
+    for (const [to, delta] of cuts) if (p > to) d += delta;
+    return p + d;
+  };
+  return {
+    changes: state.changes.map((c) => ({ ...c, from: map(c.from), to: map(c.to) })),
+    gaps: state.gaps.map((g) => {
+      const at = map(g.at);
+      return { ...g, id: `gap@${at}`, at };
+    }),
+    orphans: state.orphans ?? [],
+  };
+}
+
 // The plain-value records of the earlier model in one file, by id.
 function legacyRecords(doc, fileId) {
   /** @type {Map<string, any>} */
   const out = new Map();
   for (const [id, entry] of doc.getMap(CHANGES).entries()) {
     const value = /** @type {any} */ (entry);
-    if (!value || value instanceof LoroMap || value.file !== fileId) continue;
+    if (!value || value instanceof loroClasses.LoroMap || value.file !== fileId) continue;
     if (typeof value.deleted !== "string" || !(value.start instanceof Uint8Array)) continue;
     out.set(id, value);
   }
@@ -542,7 +675,7 @@ function convertLegacy(doc, fileId, id) {
   const map = doc.getMap(CHANGES);
   for (const { change: c } of group) {
     map.delete(c.id);
-    const record = map.setContainer(c.id, new LoroMap());
+    const record = map.setContainer(c.id, new loroClasses.LoroMap());
     record.set("kind", "change");
     record.set("file", fileId);
     record.set("who", c.who);
@@ -554,7 +687,7 @@ function convertLegacy(doc, fileId, id) {
   }
   const owners = new Map(group.map((e) => [e.change.id, e.change]));
   for (const f of outer.fragments) {
-    const record = map.setContainer(f.id, new LoroMap());
+    const record = map.setContainer(f.id, new loroClasses.LoroMap());
     record.set("kind", "fragment");
     record.set("file", fileId);
     const o = owners.get(f.change);
@@ -574,7 +707,7 @@ function convertLegacy(doc, fileId, id) {
 // is a container, converting its legacy record first if need be.
 function materialize(doc, fileId, id) {
   const map = doc.getMap(CHANGES);
-  if (map.get(id) instanceof LoroMap) return;
+  if (map.get(id) instanceof loroClasses.LoroMap) return;
   const colon = id.lastIndexOf(":");
   const legacyId = map.get(id) !== undefined ? id : colon > 0 ? id.slice(0, colon) : id;
   convertLegacy(doc, fileId, legacyId);
@@ -596,8 +729,8 @@ function deletedOf(gaps, id) {
  * @returns {Row[]}
  */
 export function resolveChanges(doc, fileId) {
-  const { changes, gaps } = resolveFile(doc, fileId);
-  return changes.map(({ stale, hasCursor, legacy, ...c }) => ({ ...c, deleted: deletedOf(gaps, c.id) }));
+  const { changes, gaps } = resolveFileCached(doc, fileId);
+  return changes.map(({ stale, staleStart, staleEnd, hasCursor, legacy, ...c }) => ({ ...c, deleted: deletedOf(gaps, c.id) }));
 }
 
 /**
@@ -610,7 +743,7 @@ export function listChanges(doc) {
   const seen = new Set();
   for (const [, value] of doc.getMap(CHANGES).entries()) {
     // Legacy records are plain values and name their file too.
-    const file = value instanceof LoroMap ? value.get("file") : /** @type {any} */ (value)?.file;
+    const file = value instanceof loroClasses.LoroMap ? value.get("file") : /** @type {any} */ (value)?.file;
     if (typeof file !== "string" || seen.has(file)) continue;
     seen.add(file);
     const text = fileText(doc, file);
@@ -633,15 +766,16 @@ function writeChange(doc, text, fileId, c, heal = false) {
   let start = null;
   let end = null;
   if (c.to > c.from) {
-    start = text.getCursor(c.from, -1);
-    end = text.getCursor(lastCharStart(text.toString(), c.to), 1);
+    const body = text.toString();
+    start = cursorAt(text, c.from, -1, body);
+    end = cursorAt(text, lastCharStart(body, c.to), 1, body);
     if (!start || !end) return false;
   }
   const map = doc.getMap(CHANGES);
   materialize(doc, fileId, c.id);
   let record = map.get(c.id);
-  if (!(record instanceof LoroMap)) {
-    record = map.setContainer(c.id, new LoroMap());
+  if (!(record instanceof loroClasses.LoroMap)) {
+    record = map.setContainer(c.id, new loroClasses.LoroMap());
     record.set("kind", "change");
     record.set("file", fileId);
   }
@@ -658,11 +792,20 @@ function writeChange(doc, text, fileId, c, heal = false) {
   // same moment both keep their write. Nothing is written over a cursor with
   // null: a span emptied in this view may have grown in another.
   if (start) {
-    const have = resolvedSpan(doc, text, record);
-    const staleStart = heal && cursorPos(doc, record.get("start"))?.stale;
-    const staleEnd = heal && cursorPos(doc, record.get("end"))?.stale;
-    if (!have || have.from !== c.from || staleStart) record.set("start", start.encode());
-    if (!have || have.to !== c.to || staleEnd) record.set("end", end.encode());
+    if (heal && typeof c.staleStart === "boolean" && typeof c.staleEnd === "boolean") {
+      // `resolveFile` already read both ends, so nothing is resolved here:
+      // resolving a stale cursor commits whatever is pending, and prune must
+      // leave its writes for the caller's commit. The span it resolved is `c`.
+      const has = record.get("start") instanceof Uint8Array && record.get("end") instanceof Uint8Array;
+      if (!has || c.staleStart) record.set("start", start.encode());
+      if (!has || c.staleEnd) record.set("end", end.encode());
+    } else {
+      const have = resolvedSpan(doc, text, record);
+      const staleStart = heal && cursorPos(doc, record.get("start"))?.stale;
+      const staleEnd = heal && cursorPos(doc, record.get("end"))?.stale;
+      if (!have || have.from !== c.from || staleStart) record.set("start", start.encode());
+      if (!have || have.to !== c.to || staleEnd) record.set("end", end.encode());
+    }
   } else if (record.get("start") === undefined) {
     record.set("start", null);
     record.set("end", null);
@@ -735,7 +878,7 @@ function rankGap(fragments) {
 function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = false) {
   const map = doc.getMap(CHANGES);
   let record = map.get(id);
-  if (!(record instanceof LoroMap)) {
+  if (!(record instanceof loroClasses.LoroMap)) {
     // A fragment of a legacy record (id `<legacy>:<i>`) is rewritten, with
     // the whole record it belongs to, only when something about it changes.
     const colon = id.lastIndexOf(":");
@@ -751,8 +894,8 @@ function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = f
       record = map.get(id);
     }
   }
-  if (!(record instanceof LoroMap)) {
-    record = map.setContainer(id, new LoroMap());
+  if (!(record instanceof loroClasses.LoroMap)) {
+    record = map.setContainer(id, new loroClasses.LoroMap());
     record.set("kind", "fragment");
     record.set("file", fileId);
     if (owner) {
@@ -766,7 +909,10 @@ function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = f
   if (f.change !== id && record.get("change") !== f.change) record.set("change", f.change);
   if (record.get("text") !== f.text) record.set("text", f.text);
   if (startBytes) {
-    if (heal && cursorPos(doc, record.get("start"))?.stale) record.set("start", startBytes);
+    if (heal && typeof f.stale === "boolean") {
+      // Staleness was read by `resolveFile`; a live cursor already resolves to `at`.
+      if (f.stale || !(record.get("start") instanceof Uint8Array)) record.set("start", startBytes);
+    } else if (heal && cursorPos(doc, record.get("start"))?.stale) record.set("start", startBytes);
     else moveCursor(doc, record, "start", startBytes, at);
   }
   if (record.get("rank") !== rank) record.set("rank", rank);
@@ -776,7 +922,7 @@ function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = f
 // A fragment with no id gets a fresh one.
 // Returns false when no cursor can be made.
 function writeGap(doc, text, fileId, at, fragments, owners = new Map(), heal = false) {
-  const start = text.getCursor(at, -1);
+  const start = cursorAt(text, at, -1);
   if (!start) return false;
   const map = doc.getMap(CHANGES);
   const ranks = rankGap(fragments);
@@ -815,6 +961,172 @@ export function writePlanned(doc, fileId, plan) {
     else if (c.state === "set" && !c.orphan && writeChange(doc, text, fileId, c)) written.push(c.id);
   }
   return written;
+}
+
+/**
+ * The plan a batch of local edits is written with, from the state before the
+ * batch, the final state `planEdits` chained to, and `touched`, the ids of the
+ * changes and gaps any step did not leave as it found them. Changes the batch
+ * touched are set, the rest kept. A gap is kept when no step touched it and its
+ * fragments are those of a gap before the batch, with the same ids, texts and
+ * ranks: its cursors are anchored in the text and moved with it, so its records
+ * are still right wherever the edits left it, and checking them again would
+ * cost a cursor resolution per gap per keystroke. Every other gap is set, and a
+ * fragment whose cursor and rank already hold is not written again. Gaps are
+ * named by position, which moves between steps, so no gap is matched by its
+ * place.
+ *
+ * @param {{ changes: any[], gaps: any[] }} before
+ * @param {{ changes: any[], gaps: any[] }} state
+ * @param {Set<string>} touched
+ * @returns {PlannedState}
+ */
+export function plannedWrite(before, state, touched) {
+  const kept = new Set(state.changes.map((change) => change.id));
+  const was = new Map();
+  for (const gap of before.gaps) if (gap.fragments.length && gap.fragments[0].id) was.set(gap.fragments[0].id, gap);
+  const unchanged = (gap) => {
+    if (touched.has(gap.id) || gap.fragments.length === 0) return null;
+    const old = was.get(gap.fragments[0].id);
+    if (!old || old.id !== gap.id || old.fragments.length !== gap.fragments.length) return null;
+    for (let i = 0; i < gap.fragments.length; i++) {
+      const f = gap.fragments[i];
+      const o = old.fragments[i];
+      if (!f.id || f.id !== o.id || f.change !== o.change || f.text !== o.text || f.rank !== o.rank) return null;
+    }
+    return old;
+  };
+  const same = new Set();
+  const gaps = state.gaps.map((gap) => {
+    const old = unchanged(gap);
+    if (old) same.add(old);
+    return { ...gap, state: old ? "kept" : "set" };
+  });
+  return {
+    changes: [
+      ...state.changes.map((change) => ({ ...change, state: touched.has(change.id) ? "set" : "kept" })),
+      ...before.changes.filter((change) => !kept.has(change.id)).map((change) => ({ ...change, state: "removed" })),
+    ],
+    gaps: [
+      ...gaps,
+      ...before.gaps.filter((gap) => !same.has(gap)).map((gap) => ({ ...gap, state: "removed" })),
+    ],
+  };
+}
+
+/**
+ * The state `resolveFile` would read back from what `writePlanned` just wrote
+ * for `plan`, derived from the plan, the records and the edits instead of
+ * resolving every record again. `before` is the state the plan was made
+ * against, `written` what `writePlanned` returned, and `edits` those of the one
+ * transaction the batch consists of, in its coordinates before it. A fragment's
+ * rank is read from its record when its gap was written, since the writer may
+ * have chosen it, and a new fragment's id is the one the writer gave it.
+ *
+ * What was not written is not taken from the plan: a kept change or gap keeps
+ * the cursors it had, so its place is where the state before the batch has it,
+ * moved by the edits, and the plan must agree. Returns null whenever that or
+ * anything else does not obviously hold: no edits to move things by, an edit
+ * touching a kept record, a record that did not get written, a fragment without
+ * an id, a rank or a live change, a fragment inside a span, a record of the
+ * earlier model, an orphan fragment. Then the caller resolves for itself,
+ * because a state that is wrong draws wrong marks. Flags of staleness are
+ * carried over and not recomputed; only `prune` reads them, and it resolves on
+ * its own.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {PlannedState} plan
+ * @param {string[]} written
+ * @param {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans?: any[] }} before
+ * @param {Edit[] | null} edits
+ * @returns {{ changes: ResolvedChange[], gaps: ResolvedGap[], orphans: OrphanFragment[] } | null}
+ */
+export function writtenState(doc, plan, written, before, edits) {
+  if (!edits || before.orphans?.length) return null;
+  // A gap read at a span's start, though its cursor lies inside the span, is
+  // shown where its cursor is not; an edit that splits the span moves it back
+  // to the cursor, which no mapping of the shown position can follow. That
+  // only arises from concurrent edits, so the state is resolved instead.
+  if (before.gaps.some((g) => g.relocated)) return null;
+  // Where a point before the batch is after it, or null when an edit touches
+  // it, as `shiftResolved` reads touching.
+  const moved = (from, to) => {
+    for (const e of edits) if (from <= e.to && to >= e.from) return null;
+    let d = 0;
+    for (const e of edits) if (from > e.to) d += e.insert.length - (e.to - e.from);
+    return d;
+  };
+  const was = new Map(before.changes.map((c) => [c.id, c]));
+  const wasGap = new Map(before.gaps.map((g) => [g.id, g]));
+  const map = doc.getMap(CHANGES);
+  const wrote = new Set(written);
+  const live = new Set();
+  for (const c of plan.changes) {
+    if (c.state === "removed") continue;
+    if (c.legacy || c.orphan) return null;
+    if (c.state === "set" && !wrote.has(c.id)) return null;
+    if (c.state === "kept") {
+      const old = was.get(c.id);
+      if (!old || old.legacy) return null;
+      const d = moved(old.from, old.to);
+      if (d === null || old.from + d !== c.from || old.to + d !== c.to) return null;
+    }
+    live.add(c.id);
+  }
+  const byAt = new Map();
+  for (const g of plan.gaps) {
+    if (g.state === "removed") continue;
+    if (g.state === "kept") {
+      const old = wasGap.get(g.id);
+      if (!old) return null;
+      const d = moved(old.at, old.at);
+      if (d === null || old.at + d !== g.at) return null;
+    }
+    let list = byAt.get(g.at);
+    if (!list) byAt.set(g.at, (list = []));
+    for (const f of g.fragments) {
+      if (!f.id || typeof f.text !== "string" || f.text === "" || !live.has(f.change)) return null;
+      let rank = f.rank;
+      if (g.state === "set") {
+        const record = map.get(f.id);
+        if (!(record instanceof loroClasses.LoroMap) || record.get("text") !== f.text) return null;
+        rank = record.get("rank");
+      }
+      if (typeof rank !== "number") return null;
+      list.push({ id: f.id, change: f.change, text: f.text, rank, stale: f.stale === true });
+    }
+  }
+  // As `resolveFile` orders them: gaps by position, fragments by rank.
+  const gaps = [];
+  for (const [at, fragments] of [...byAt].sort((a, b) => a[0] - b[0])) {
+    if (fragments.length === 0) continue;
+    fragments.sort(byRank);
+    gaps.push({ id: `gap@${at}`, at, fragments, stale: fragments.some((f) => f.stale) });
+  }
+  const first = new Map();
+  for (const g of gaps) for (const f of g.fragments) if (!first.has(f.change)) first.set(f.change, g.at);
+  const changes = [];
+  for (const { state: _state, emptied: _emptied, ...c } of plan.changes.filter((x) => x.state !== "removed")) {
+    const out = { ...c, stale: c.stale ?? false, staleStart: c.staleStart ?? false, staleEnd: c.staleEnd ?? false, hasCursor: c.hasCursor === true || c.to > c.from };
+    if (out.to === out.from) {
+      // A change with no span reads at its first gap, and with no fragments it is not read at all.
+      if (!first.has(out.id)) continue;
+      out.from = out.to = first.get(out.id);
+    }
+    changes.push(out);
+  }
+  changes.sort((a, b) => a.from - b.from || a.to - b.to || (a.id < b.id ? -1 : 1));
+  // `resolveFile` moves a fragment found inside a span to the span's start.
+  // The planner does not leave one there, so none is looked for: if there is
+  // one, the plan is not understood.
+  const spans = changes.filter((c) => c.to > c.from);
+  let reach = -Infinity;
+  let k = 0;
+  for (const g of gaps) {
+    while (k < spans.length && spans[k].from < g.at) reach = Math.max(reach, spans[k++].to);
+    if (reach > g.at) return null;
+  }
+  return { changes, gaps, orphans: [] };
 }
 
 /**
@@ -917,10 +1229,10 @@ export function unsuggestedText(doc, fileId) {
 export function accept(doc, id) {
   const map = doc.getMap(CHANGES);
   const plain = /** @type {any} */ (map.get(id));
-  if (plain !== undefined && !(plain instanceof LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
+  if (plain !== undefined && !(plain instanceof loroClasses.LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
   const value = map.get(id);
-  if (!(value instanceof LoroMap) || !decidable(map, value)) return false;
-  for (const [fid, fv] of [...map.entries()]) if (fv instanceof LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
+  if (!(value instanceof loroClasses.LoroMap) || !decidable(map, value)) return false;
+  for (const [fid, fv] of [...map.entries()]) if (fv instanceof loroClasses.LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
   map.delete(id);
   doc.commit();
   return true;
@@ -933,7 +1245,7 @@ function decidable(map, value) {
   if (kind === "change") return true;
   if (kind !== "fragment") return false;
   const parent = map.get(value.get("change"));
-  return !(parent instanceof LoroMap && parent.get("kind") === "change");
+  return !(parent instanceof loroClasses.LoroMap && parent.get("kind") === "change");
 }
 
 // Rejects one change without committing. See `reject`. With `restored`, each
@@ -944,9 +1256,9 @@ function decidable(map, value) {
 function rejectOne(doc, id, restored = null, edits = null) {
   const map = doc.getMap(CHANGES);
   const plain = /** @type {any} */ (map.get(id));
-  if (plain !== undefined && !(plain instanceof LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
+  if (plain !== undefined && !(plain instanceof loroClasses.LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
   const value = map.get(id);
-  if (!(value instanceof LoroMap) || !decidable(map, value)) return false;
+  if (!(value instanceof loroClasses.LoroMap) || !decidable(map, value)) return false;
   const file = /** @type {string} */ (value.get("file"));
   const text = fileText(doc, file);
   if (text) {
@@ -983,7 +1295,7 @@ function rejectOne(doc, id, restored = null, edits = null) {
       let pending = [];
       const flush = (anchor) => {
         if (pending.length === 0) return;
-        const start = text.getCursor(anchor, -1);
+        const start = cursorAt(text, anchor, -1);
         if (start) for (const f of pending) writeFragment(doc, f.id, file, f, start.encode(), anchor, f.rank);
         pending = [];
       };
@@ -1019,7 +1331,7 @@ function rejectOne(doc, id, restored = null, edits = null) {
     if (restored && span) for (const r of restored.slice(0, early)) r.at -= span.to - span.from;
     for (const at of positions) if (span && at <= span.to) restore(at);
   }
-  for (const [fid, fv] of [...map.entries()]) if (fv instanceof LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
+  for (const [fid, fv] of [...map.entries()]) if (fv instanceof loroClasses.LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
   map.delete(id);
   return true;
 }
@@ -1086,16 +1398,25 @@ export function rejectMany(doc, ids) {
  */
 export function prune(doc, now = Date.now()) {
   const map = doc.getMap(CHANGES);
+  const clock = doc.opCount();
   let count = 0;
   const files = new Set();
-  for (const [, v] of map.entries()) { const file = v instanceof LoroMap ? v.get("file") : /** @type {any} */ (v)?.file; if (typeof file === "string") files.add(file); }
+  for (const [, v] of map.entries()) { const file = v instanceof loroClasses.LoroMap ? v.get("file") : /** @type {any} */ (v)?.file; if (typeof file === "string") files.add(file); }
+  // Resolving a stale cursor commits whatever is pending, so every file is
+  // resolved before the first write: the caller commits what prune wrote, once,
+  // under its own origin.
+  const resolved = [];
   for (const file of files) {
     const text = fileText(doc, file);
+    if (!text) { resolved.push({ file, text: null, changes: [], gaps: [] }); continue; }
+    const { changes, gaps } = resolveFile(doc, file);
+    resolved.push({ file, text, changes, gaps });
+  }
+  for (const { file, text, changes, gaps } of resolved) {
     if (!text) {
-      for (const [id, v] of [...map.entries()]) { if (v instanceof LoroMap && v.get("file") === file) { map.delete(id); count += 1; } }
+      for (const [id, v] of [...map.entries()]) { if (v instanceof loroClasses.LoroMap && v.get("file") === file) { map.delete(id); count += 1; } }
       continue;
     }
-    const { changes, gaps } = resolveFile(doc, file);
     const liveIds = new Set(changes.map((c) => c.id));
     for (const g of gaps) for (const f of g.fragments) liveIds.add(f.id);
     // An empty record is dropped only once it has rested empty for a while: its
@@ -1104,7 +1425,7 @@ export function prune(doc, now = Date.now()) {
     // last edit, so an old insertion deleted a moment ago still gets its grace.
     // A record found live again loses the mark.
     for (const [id, v] of [...map.entries()]) {
-      if (!(v instanceof LoroMap) || v.get("file") !== file) continue;
+      if (!(v instanceof loroClasses.LoroMap) || v.get("file") !== file) continue;
       const emptiedAt = v.get("emptied");
       if (liveIds.has(id)) { if (emptiedAt !== undefined) v.delete("emptied"); continue; }
       if (typeof emptiedAt !== "number") { v.set("emptied", now); continue; }
@@ -1119,12 +1440,12 @@ export function prune(doc, now = Date.now()) {
     // found live again loses the mark.
     const staleSettled = (id) => {
       const v = map.get(id);
-      if (!(v instanceof LoroMap)) return true;
+      if (!(v instanceof loroClasses.LoroMap)) return true;
       const since = v.get("stale");
       if (typeof since !== "number") { v.set("stale", now); return false; }
       return since < now - SETTLE_MS;
     };
-    const unmark = (id) => { const v = map.get(id); if (v instanceof LoroMap && v.get("stale") !== undefined) v.delete("stale"); };
+    const unmark = (id) => { const v = map.get(id); if (v instanceof loroClasses.LoroMap && v.get("stale") !== undefined) v.delete("stale"); };
     for (const g of gaps) {
       if (!g.stale) { for (const f of g.fragments) unmark(f.id); continue; }
       if (g.fragments.map((f) => staleSettled(f.id)).every(Boolean) && writeGap(doc, text, file, g.at, g.fragments, new Map(), true)) for (const f of g.fragments) unmark(f.id);
@@ -1132,8 +1453,23 @@ export function prune(doc, now = Date.now()) {
     for (const c of changes) {
       if (c.orphan) continue;
       if (!c.stale) { unmark(c.id); continue; }
-      if (c.to > c.from && staleSettled(c.id) && writeChange(doc, text, file, c, true)) unmark(c.id);
+      if (c.to > c.from) {
+        if (staleSettled(c.id) && writeChange(doc, text, file, c, true)) unmark(c.id);
+        continue;
+      }
+      // A change whose span is gone but which still owns fragments has no live
+      // text to re-anchor to, and its cursors would stay stale for good, each
+      // read replaying history for them. Without cursors it reads at its first
+      // gap (`resolveFile`), which is where it is shown anyway.
+      if (c.hasCursor && staleSettled(c.id)) {
+        const v = map.get(c.id);
+        if (v instanceof loroClasses.LoroMap) { v.delete("start"); v.delete("end"); unmark(c.id); }
+      }
     }
   }
+  // A prune that wrote moved the version, and what it wrote can move what
+  // resolves, so the cache tags already stop matching; dropping them frees the
+  // old states. A prune that wrote nothing leaves them valid.
+  if (doc.opCount() !== clock) resolvedCache.delete(doc);
   return count;
 }

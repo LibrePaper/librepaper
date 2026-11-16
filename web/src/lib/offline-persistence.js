@@ -2,8 +2,19 @@ import { LoroDoc, VersionVector } from "loro-crdt";
 import { projectIdentityKey } from "./project-identity.js";
 import { openOfflineDatabase, requestResult, STATES, transactionDone, UPDATES } from "./offline-projects.js";
 
-const COMPACT_AFTER_UPDATES = 64;
+// Every stored delta row is one Loro import when the project reopens offline,
+// and compaction re-exports the whole history on the main thread. Typing can
+// write up to three commits per keystroke with tiny deltas, so the row count
+// is the bound that fires first; 256 keeps a reopen to at most 256 small
+// imports after the snapshot and compacts about every 85 to 256 keystrokes.
+// Large deltas are capped by bytes instead.
+const COMPACT_AFTER_UPDATES = 256;
 const COMPACT_AFTER_BYTES = 4 * 1024 * 1024;
+// The offline copy is written after a short pause rather than on every
+// keystroke, so typing does not export the document and open an IndexedDB
+// transaction each time. At most this much typing can be missing from the
+// offline copy if the tab dies; the server has it anyway.
+const WRITE_DELAY = 250;
 
 export function durableProjectPersistence(identity, indexedDB_ = globalThis.indexedDB, legacyIdentity = null) {
   const key = projectIdentityKey(identity);
@@ -17,6 +28,14 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       let stored = false;
       let record = null;
       let persistedVector = null;
+      // Bytes of delta rows not yet folded into the snapshot, kept in memory
+      // so a steady-state write never has to read them back.
+      let pendingBytes = 0;
+      let compactScheduled = false;
+      // Set by close() so the final write can run after `closed` is true,
+      // including the re-runs that writes and compaction chain onto themselves.
+      let finishing = false;
+      let writeTimer = null;
       let pendingFlush = Promise.resolve();
       let unsubscribe;
       let hydrating = true;
@@ -30,7 +49,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       }
 
       async function putState() {
-        if (closed || writing || !dirty) return pendingFlush;
+        if ((closed && !finishing) || writing || !dirty) return pendingFlush;
         dirty = false;
         writing = true;
         events.writing(1);
@@ -42,6 +61,27 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
               mode: "update",
               ...(persistedVector ? { from: VersionVector.decode(persistedVector) } : {}),
             });
+            if (record?.version === 3 && record.snapshot) {
+              // Steady state: the snapshot record is untouched, so write only
+              // the new delta row. The row count is read from the index
+              // (no values), so rows other tabs added or compacted away are
+              // still counted correctly.
+              const transaction = database.transaction(UPDATES, "readwrite");
+              const done = transactionDone(transaction);
+              const updates = transaction.objectStore(UPDATES);
+              const counted = requestResult(updates.index("project").count(key));
+              updates.add({ project: key, id: updateId(), update, vector: version, bytes: update.byteLength });
+              const count = (await counted) + 1;
+              await done;
+              pendingBytes += update.byteLength;
+              persistedVector = version;
+              stored = true;
+              writing = false;
+              if (count >= COMPACT_AFTER_UPDATES || pendingBytes >= COMPACT_AFTER_BYTES) scheduleCompaction();
+              if (dirty) return putState();
+              events.persisted();
+              return;
+            }
             const transaction = database.transaction([STATES, UPDATES], "readwrite");
             const done = transactionDone(transaction);
             const states = transaction.objectStore(STATES);
@@ -55,6 +95,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             const count = pending.length + 1;
             const bytes = pending.reduce((sum, item) => sum + Number(item.bytes || item.update?.byteLength || 0), 0)
               + update.byteLength;
+            let compacted = false;
             let next = current?.version === 3 ? current : {
               version: 3,
               snapshot: current?.snapshot || (current instanceof Uint8Array ? current : null),
@@ -68,10 +109,12 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
               next = { ...next, version: 3, snapshot, vector: merging.oplogVersion().encode() };
               for (const item of pending) updates.delete([key, item.id]);
               updates.delete([key, entry.id]);
+              compacted = true;
             }
             states.put(next, key);
             await done;
             record = next;
+            pendingBytes = compacted ? 0 : bytes;
             persistedVector = version;
             stored = true;
             writing = false;
@@ -87,6 +130,51 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         return pendingFlush;
       }
 
+      function scheduleCompaction() {
+        if (compactScheduled || closed) return;
+        compactScheduled = true;
+        const run = () => { compactScheduled = false; void compact(); };
+        if (typeof globalThis.requestIdleCallback === "function") globalThis.requestIdleCallback(run, { timeout: 5000 });
+        else setTimeout(run, 200);
+      }
+
+      // Folds the stored deltas into the snapshot off the typing path.
+      async function compact() {
+        if (closed) return;
+        if (writing) { scheduleCompaction(); return; }
+        writing = true;
+        pendingFlush = (async () => {
+          try {
+            database ||= await openOfflineDatabase(indexedDB_);
+            const transaction = database.transaction([STATES, UPDATES], "readwrite");
+            const done = transactionDone(transaction);
+            const states = transaction.objectStore(STATES);
+            const updates = transaction.objectStore(UPDATES);
+            const [current, pending] = await Promise.all([requestResult(states.get(key)), updatesFor(transaction)]);
+            if (current?.version === 3 && current.snapshot) {
+              const merging = new LoroDoc();
+              merging.import(new Uint8Array(current.snapshot));
+              for (const item of pending) merging.import(new Uint8Array(item.update));
+              const next = { ...current, version: 3, snapshot: merging.export({ mode: "update" }), vector: merging.oplogVersion().encode() };
+              for (const item of pending) updates.delete([key, item.id]);
+              states.put(next, key);
+              await done;
+              record = next;
+              pendingBytes = 0;
+            } else {
+              await done;
+            }
+          } catch (error) {
+            events.failed(error);
+          }
+          writing = false;
+          // Chained through the returned promise, not `void` in a finally, so
+          // close() waits for a change that arrived during compaction too.
+          if (dirty) return putState();
+        })();
+        pendingFlush.catch(() => {});
+      }
+
       // The offline copy is a recovery point, not merely an outbox. Persist
       // imports from the room as well as local edits so an explicitly flushed
       // document is exactly the document that will open offline. The saved
@@ -95,6 +183,17 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       function changed() {
         if (closed || hydrating) return;
         dirty = true;
+        if (writeTimer === null) {
+          writeTimer = setTimeout(() => { writeTimer = null; void putState(); }, WRITE_DELAY);
+        }
+      }
+
+      // Browsers can discard a hidden tab without running timers, so a pending
+      // write starts as the page hides instead of waiting for the pause.
+      function pageHidden() {
+        if (!dirty) return;
+        clearTimeout(writeTimer);
+        writeTimer = null;
         void putState();
       }
 
@@ -129,6 +228,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             const transaction = database.transaction(UPDATES, "readonly");
             const pending = await updatesFor(transaction);
             for (const item of pending) doc.import(new Uint8Array(item.update));
+            pendingBytes = pending.reduce((sum, item) => sum + Number(item.bytes || item.update?.byteLength || 0), 0);
             if (pending.length) persistedVector = doc.oplogVersion().encode();
           }
           hydrating = false;
@@ -138,6 +238,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             unsubscribe = undefined;
             return;
           }
+          if (typeof globalThis.addEventListener === "function") globalThis.addEventListener("pagehide", pageHidden);
           events.hydrated();
         } catch (error) {
           hydrating = false;
@@ -150,10 +251,13 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         hydration,
         async flush() {
           await hydration;
+          // An explicit flush writes now, so the pending pause is not needed.
+          clearTimeout(writeTimer);
+          writeTimer = null;
           const current = doc.oplogVersion().encode();
           if (!stored || !persistedVector || current.byteLength !== persistedVector.byteLength
               || current.some((byte, index) => byte !== persistedVector[index])) dirty = true;
-          if (dirty) await putState();
+          if (dirty && !closed) await putState();
           await pendingFlush;
         },
         // There is no `confirm(coverage)` any more, and there is no stored
@@ -166,8 +270,15 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         // here is the whole document, and reconnecting exports whatever the
         // server's vector says it is missing.
         close() {
+          // The final write has to start before `closed` stops new writes, and
+          // it must not be skipped while the hydration is still running.
+          finishing = true;
+          clearTimeout(writeTimer);
+          writeTimer = null;
+          if (dirty && !hydrating) void putState();
           closed = true;
           unsubscribe?.();
+          if (typeof globalThis.removeEventListener === "function") globalThis.removeEventListener("pagehide", pageHidden);
           void pendingFlush.catch(() => {}).finally(() => database?.close());
         },
       };

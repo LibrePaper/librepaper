@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { typstFacts } from "../../src/lib/visual-markup/typst-facts.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 // Headings are numbered only while a numbering is set. A label after a heading binds to it.
 {
@@ -12,6 +15,29 @@ import { typstFacts } from "../../src/lib/visual-markup/typst-facts.js";
   const unnumbered = typstFacts({ "main.typ": plain }, "main.typ", "main.typ", []);
   assert.equal(unnumbered.labels.get("intro")?.number ?? null, null);
   assert.equal(unnumbered.labels.get("bg")?.number ?? null, null);
+}
+
+// A set rule inside an included file stays inside it: the parent's numbering
+// comes back after the include, and the included headings still advance the count.
+{
+  const main = '#set heading(numbering: "1.")\n\n= First <first>\n\n#include "part.typ"\n\n= After <after>\n';
+  const part = '#set heading(numbering: none)\n\n= Inside\n';
+  const facts = typstFacts({ "main.typ": main, "part.typ": part }, "main.typ", "main.typ", []);
+  assert.equal(facts.labels.get("first")?.number, "1");
+  assert.equal(facts.labels.get("after")?.number, "2", "the parent heading after the include is numbered again");
+  assert.deepEqual(facts.numbered.map((item) => item.path), ["main.typ", "main.typ"], "the unnumbered included heading is not counted");
+}
+
+// A numbered element of an included file carries the root position of the include that brings it in.
+{
+  const main = '#set heading(numbering: "1.")\n\n= First\n\n#include "part.typ"\n\n= After\n';
+  const facts = typstFacts({ "main.typ": main, "part.typ": "= Included\n" }, "main.typ", "main.typ", []);
+  const include = main.indexOf("#include");
+  const included = facts.numbered.find((item) => item.path === "part.typ");
+  assert.equal(included.rootAt, include);
+  assert.equal(included.at, 0);
+  const first = facts.numbered.find((item) => item.path === "main.typ");
+  assert.equal(first.rootAt, first.at);
 }
 
 // Figures are numbered by kind: an image and a table count separately. A label

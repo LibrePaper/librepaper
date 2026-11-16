@@ -3,62 +3,56 @@ title: "Simple deployment"
 notice: "LibrePaper is experimental. Self-host only if you can maintain its database, files, credentials, and recovery copies."
 ---
 
-The setup runs on one VPS with Docker only, and you edit one file. Backups, object storage, alerts and the rest are in [Advanced features](advanced.html).
+This setup runs on one VPS with Docker. You edit one file, `librepaper.toml`. Backups, object storage, alerts and the rest are in [Advanced features](advanced.html).
 
 ## LibrePaper
 
 ### How it works
 
-Four programs run side by side on the VPS, each in its own Docker container:
+Four containers run on the VPS:
 
 | Service | What it does |
 |---|---|
-| Caddy | Answers on ports 80 and 443, obtains HTTPS certificates automatically, and passes requests to the app. |
+| Caddy | Answers on ports 80 and 443, gets HTTPS certificates, and passes requests to the app. |
 | LibrePaper | The app: documents, sharing, comments, publishing, sign-in. |
 | PostgreSQL | The database. |
-| Backup | Copies the database and files to off-site storage every night, once you configure it. |
+| Backup | Copies the database and files off the VPS once a day, once you configure it. |
 
-Your data lives in two places, both on the VPS's disk (Docker volumes):
+Your data lives in two Docker volumes on the VPS's disk:
 
-- **The database** (`postgres` volume) holds accounts, sharing, comments, and each document's edit history.
-- **Files** (`data` volume) hold uploaded figures, compacted document snapshots, and `session.key`, which signs sign-ins and share links.
+- **`postgres`** holds accounts, sharing, comments, and each document's edit history.
+- **`data`** holds uploaded figures, compacted document snapshots, and `secrets/session.key`, which signs sign-ins and share links.
 
-Everything is on one machine, so losing the VPS loses it all until [backups](advanced.html#backups) are set up. The same page explains how to move files to an S3 bucket or the database to a managed service.
+Everything is on one machine, so losing the VPS loses it all until [backups](advanced.html#backups) are set up.
 
 ### What you need
 
-- Use a virtual private server (for example OVHcloud, Hetzner, DigitalOcean or Linode).
-- Install Docker Engine and Compose v2 on it.
-- Open ports 80 and 443.
-- Point two DNS names at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
-- Register at least one sign-in provider: a GitHub OAuth app, a Google OAuth client, a Microsoft Entra ID app registration, or any OpenID Connect provider. See [Sign-in](#sign-in).
+- A virtual private server, for example from OVHcloud, Hetzner, DigitalOcean or Linode.
+- Docker Engine and Compose v2 on the server.
+- Ports 80 and 443 open.
+- Two DNS names pointing at the server: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
+- At least one sign-in provider. See [Sign-in](#sign-in).
 
 ## Install
 
-Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. It also includes `./manage`, the helper used below. The download pins the two LibrePaper images by digest, so an upgrade runs the images the release was built from. PostgreSQL and Caddy are pinned by version tag. Run this on the VPS, over SSH. It unpacks into a `librepaper/` directory that is private to you (mode 700).
+Run this on the VPS, over SSH:
 
 ```sh
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
 cd librepaper
 ```
 
+This unpacks a `librepaper/` directory, private to you (mode 700). It holds the Compose file, `librepaper.toml`, the backup and Caddy configuration, and `./manage`, the helper used below. The two LibrePaper images are pinned by digest, so an upgrade runs the images the release was built from. PostgreSQL and Caddy are pinned by version tag.
+
 ## Configure
 
-Everything is set in one file, `librepaper.toml`. You need your two origins and at least one sign-in provider. Everything else has a working default. Leave the files readable (0644). The containers read them through bind mounts, and the 700 directory is what keeps them private. Never `chmod 600 librepaper.toml`.
+Set everything in `librepaper.toml`. You need your two origins and one sign-in provider. Everything else has a working default.
+
+Keep the file readable (0644). The containers read it through bind mounts, and the 700 directory keeps it private. Never `chmod 600 librepaper.toml`.
 
 ```sh
 $EDITOR librepaper.toml
 ```
-
-### Origins
-
-```toml
-[origins]
-app = "https://paper.example"
-docs = "https://docs.paper.example"
-```
-
-`app` is where people use LibrePaper. `docs` serves published documents and must be a different host. A published document can run its own scripts (an HTML page, an interactive figure). On a separate host the browser treats it as a different website, so those scripts cannot see a reader's LibrePaper sign-in or act on their behalf.
 
 ### librepaper.toml
 
@@ -136,9 +130,13 @@ directory = "/var/lib/librepaper"
 database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
 # database_connections = 20         # PostgreSQL connection pool size
 
-# Optional. Set true to let people comment without signing in.
+# Optional. Anonymous access, per link. A link works without sign-in only when
+# its owner chose "Anyone with the link" and its switch here is true. All off by default.
 # [access]
-# anonymous_comments = false
+# anonymous_reads    = false  # read links may be opened without signing in
+# anonymous_comments = false  # comment links may be used without signing in
+# anonymous_suggests = false  # reserved: suggest links always need sign-in for now
+# anonymous_edits    = false  # reserved: edit links always need sign-in for now
 
 # Matches the edge network in compose.yaml; do not widen.
 [proxy]
@@ -168,11 +166,16 @@ trusted_networks = ["172.29.0.0/16"]
 # expire_after = "30d"
 # expire_from = "updated"            # or "created"
 # erase_inactive_after = "365d"      # erase accounts with no sign-in for this long, with their documents
+
+# Optional. Links the sign-in page shows as this server's terms of service and privacy policy.
+# [legal]
+# terms_url = "https://example.org/terms.html"
+# privacy_url = "https://example.org/privacy.html"
 ```
 
 ### Update configuration
 
-The safe way is to edit a copy. `./manage apply` checks it before anything changes:
+Edit a copy, then apply it. `./manage apply` checks the copy before anything changes:
 
 ```sh
 cp librepaper.toml librepaper.toml.candidate
@@ -180,93 +183,64 @@ cp librepaper.toml librepaper.toml.candidate
 ./manage apply
 ```
 
-- It validates the candidate, installs it over `librepaper.toml`, recreates the app and backup containers, reloads Caddy and waits for `/ready`.
+- `apply` validates the candidate, installs it as `librepaper.toml`, recreates the app and backup containers, reloads Caddy and waits for `/ready`.
 - If a check fails, nothing changes.
-- Editing `librepaper.toml` directly and running `./manage apply` works too.
+- You can also edit `librepaper.toml` directly and run `./manage apply`.
 
 ## Sign-in
 
-LibrePaper has no passwords of its own. People sign in with GitHub, Google, Microsoft Entra ID, ORCID or any OpenID Connect provider, and the server never sees or stores a password. You register LibrePaper once with each provider. Each gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. You can enable several.
+LibrePaper has no passwords of its own. People sign in with GitHub, Google, Microsoft Entra ID, ORCID or any OpenID Connect provider, and the server never sees a password. Register LibrePaper once with each provider, and copy the client ID and client secret into that provider's table in `librepaper.toml`. Enable as many providers as you need. At least one is required.
 
-Every provider table also says who may publish and comment:
+### Who may publish and comment
 
-```toml
-[auth.github]
-client_id = "replace"
-client_secret = "replace"
-publishers = ["alice", "bob"]
-commenters = ["*"]
-```
+Each provider table sets `publishers` and `commenters`:
 
 - `publishers` lists the accounts that may publish. A provider table without it lets nobody from that provider publish. Each entry is one of:
-  - `"*"` for any account of that provider.
+  - `"*"`, any account of that provider.
   - A GitHub login.
-  - An email address the provider has verified, or `"@example.org"` for a whole domain. This applies to Google, Entra and custom OpenID Connect providers.
-  - An ORCID iD, such as `"0000-0002-1825-0097"`. This applies to ORCID.
-- `commenters` takes the same values and defaults to `["*"]`, which admits any account of that provider.
-- An email or `@domain` entry admits whoever that provider verifies as owning the address. Turning on a provider means trusting its administrators with every address in its list, so prefer `@domain` entries for domains the provider owns.
+  - A verified email address, or `"@example.org"` for a whole domain. This works for Google, Entra and custom OpenID Connect providers.
+  - An ORCID iD, such as `"0000-0002-1825-0097"`, for ORCID.
+- `commenters` takes the same values. It defaults to `["*"]`, any account of that provider.
+- `publishers` also decides who may get suggest or edit access through a link or an agent token. Other accounts get comment access.
+- An email or `@domain` entry admits whoever the provider verifies as owning that address. Trusting a provider with an address means trusting its administrators with it, so prefer `@domain` entries for domains the provider owns.
 
-A browser session lasts 30 days. Set `session_lifetime` in `[auth]`, from `1h` to `30d`, to make it shorter. Sessions do not renew on use, and a CLI token never lasts longer than the browser session that approved it.
+A browser session lasts 30 days. To shorten it, set `session_lifetime` in `[auth]`, from `1h` to `30d`. Sessions do not renew on use. A CLI token never outlives the browser session that approved it.
 
-**GitHub.** LibrePaper requests no scopes and receives the account's public login name.
+### Providers
 
-- See [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app). On GitHub, the path is Settings, Developer settings, OAuth Apps, New OAuth App.
-- Homepage URL: `https://paper.example`
-- Authorization callback URL: `https://paper.example/auth/callback`
-- Copy the client ID, generate a client secret, and put both in `[auth.github]`.
+**GitHub.** LibrePaper requests the `user:email` scope. It reads the account's login and its primary verified email address. The address is stored as a contact address and never used to grant access. The admin console requests no scopes.
 
-**Google.** LibrePaper requests the `openid`, `email` and `profile` scopes and receives the account's name and email address. A Gmail address must be verified by Google. An address at another domain signs in only if that domain uses Google Workspace.
+- Create the app at [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app): Settings, Developer settings, OAuth Apps, New OAuth App.
+- Homepage URL: `https://paper.example`. Authorization callback URL: `https://paper.example/auth/callback`.
+- Put the client ID and a generated client secret in `[auth.github]`.
 
-- See [Setting up OAuth 2.0](https://support.google.com/cloud/answer/6158849). In Google Cloud Console, the path is APIs and Services, Credentials, Create credentials, OAuth client ID, Web application. Google asks you to configure the consent screen first.
-- Authorized redirect URI: `https://paper.example/auth/callback/google`
-- Put the client ID and secret in `[auth.google]`:
+**Google.** LibrePaper requests the `openid`, `email` and `profile` scopes. A Gmail address must be verified by Google. An address at another domain signs in only if that domain uses Google Workspace.
 
-```toml
-[auth.google]
-client_id = "replace"
-client_secret = "replace"
-```
+- Create the credentials in [Setting up OAuth 2.0](https://support.google.com/cloud/answer/6158849). In Google Cloud Console, go to APIs and Services, Credentials, Create credentials, OAuth client ID, Web application. Google asks you to configure the consent screen first.
+- Authorized redirect URI: `https://paper.example/auth/callback/google`.
+- Put the client ID and secret in `[auth.google]`.
 
-**Microsoft Entra ID.** Sign-in admits the members and guests of one Microsoft Entra tenant. Register a single-tenant web app with the redirect URI `https://paper.example/auth/callback/entra`, following [Register an application](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app), then copy its IDs and a client secret into `[auth.entra]`:
+**Microsoft Entra ID.** Sign-in admits the members and guests of one Microsoft Entra tenant. Register a single-tenant web app with the redirect URI `https://paper.example/auth/callback/entra`, following [Register an application](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app). Put the tenant ID (a GUID, not a domain name), the application ID and a client secret in `[auth.entra]`. Members removed from the tenant keep access until their session ends, so set `session_lifetime` to shorten that.
 
-```toml
-[auth]
-session_lifetime = "24h"           # optional: removed members lose access within a day, not 30
+**ORCID.** LibrePaper requests only the `openid` scope and receives the ORCID iD and the name on the ORCID record. ORCID sends no email address, so an account's handle is its iD.
 
-[auth.entra]
-tenant = "00000000-0000-0000-0000-000000000000"   # Directory (tenant) ID, a GUID
-client_id = "replace"                             # Application (client) ID
-client_secret = "replace"
-# label = "Contoso"                               # the button text, default Microsoft
-```
+- Register a free public API client at [ORCID developer tools](https://orcid.org/developer-tools). The redirect URI is `https://paper.example/auth/callback/orcid`. ORCID requires HTTPS redirect URIs.
+- Put the client ID (it starts with `APP-`) and the client secret in `[auth.orcid]`, as in the file above.
 
-**ORCID.** LibrePaper requests only the `openid` scope and receives the ORCID iD and the name on the ORCID record. ORCID sends no email address, so an account's handle is its iD, such as `0000-0002-1825-0097`.
+**Other OpenID Connect providers.** Any provider with an OpenID Connect discovery document works. Add one `[auth.oidc.<name>]` table per provider, up to 8. The name starts with a letter and uses lowercase letters, digits and hyphens, up to 24 characters.
 
-- Register a free public API client at [ORCID developer tools](https://orcid.org/developer-tools). Sign in to your own ORCID account, then register an application.
-- Redirect URI: `https://paper.example/auth/callback/orcid`. ORCID requires HTTPS redirect URIs.
-- Put the client ID (it starts with `APP-`) and the client secret in `[auth.orcid]`.
-
-```toml
-[auth.orcid]
-client_id = "APP-XXXXXXXXXXXXXXXX"
-client_secret = "replace"
-publishers = ["0000-0002-1825-0097"]   # ORCID iDs, or "*" for any ORCID account
-```
-
-**Other OpenID Connect providers.** Any provider with an OpenID Connect discovery document works. Add one `[auth.oidc.<name>]` table for each provider, up to 8. The name uses lowercase letters, digits and hyphens.
-
-- Register LibrePaper as a client, with the callback URL `https://paper.example/auth/callback/oidc-<name>`.
-- Set `label`, the button text. It is required. `scopes` defaults to `openid email profile`.
+- Register LibrePaper as a client with the callback URL `https://paper.example/auth/callback/oidc-<name>`.
+- `issuer` and `label` (the button text) are required. `scopes` defaults to `openid email profile`.
 - The provider must send `email_verified` and mark addresses as verified. AD FS does not, so it is not supported.
 
-Here are examples for Keycloak and GitLab:
+Keycloak and GitLab, for example:
 
 ```toml
 [auth.oidc.keycloak]
 issuer = "https://sso.example.org/realms/staff"   # the realm's issuer, no trailing path
 client_id = "librepaper"
 client_secret = "replace"
-label = "Example SSO"                             # the button text
+label = "Example SSO"
 
 [auth.oidc.gitlab]
 issuer = "https://gitlab.com"                     # or your own GitLab
@@ -276,24 +250,20 @@ label = "GitLab"
 # scopes = "openid email profile"                 # the default
 ```
 
-**Accounts on your own server.** LibrePaper has no local accounts or passwords. To sign people in without an outside service, run a self-hosted OpenID Connect provider next to LibrePaper, such as [Authentik](https://goauthentik.io), [Authelia](https://www.authelia.com), [Keycloak](https://www.keycloak.org), [Pocket ID](https://pocket-id.org), [Kanidm](https://kanidm.com) or [Zitadel](https://zitadel.com). The accounts then live on your machine, and you create and remove them in the provider. Some providers offer invitation links. In Authentik, for example, the operator creates a one-time [invitation](https://docs.goauthentik.io/docs/users-sources/user/invitations) and the recipient picks a username and password. Add the provider as an `[auth.oidc.<name>]` table like the examples above, and check that it sends `email_verified: true` for your users.
+**Accounts on your own server.** To sign people in without an outside service, run a self-hosted OpenID Connect provider beside LibrePaper, such as [Authentik](https://goauthentik.io), [Authelia](https://www.authelia.com), [Keycloak](https://www.keycloak.org), [Pocket ID](https://pocket-id.org), [Kanidm](https://kanidm.com) or [Zitadel](https://zitadel.com). You create and remove accounts in that provider. Add it as an `[auth.oidc.<name>]` table, and check that it sends `email_verified: true` for your users.
 
 **Known limits.**
 
-- One person who signs in through two providers has two accounts. Each account has its own projects.
-- A session outlives a disablement at the provider. It lasts until `session_lifetime` runs out.
+- A person who signs in through two providers has two accounts, each with its own projects.
+- A session outlives a disablement at the provider until `session_lifetime` runs out.
 
 ## Deploy
-
-Docker pulls the four images and starts the services. The database is created on the first start.
 
 ```sh
 docker compose up -d
 ```
 
-`./manage status` shows the result.
-
-Once it is up, everything from [How it works](#how-it-works) is running, and the data lives where that section says.
+Docker pulls the images and starts the services. The database is created on the first start. `./manage status` shows the result.
 
 ## Check
 
@@ -302,10 +272,10 @@ Once it is up, everything from [How it works](#how-it-works) is running, and the
 ./manage check     # validates librepaper.toml, resticprofile.toml and the Caddyfile; warns if a name does not resolve
 ```
 
-Caddy obtains a certificate the first time a name is visited, so the first request can take a few seconds. Open `https://paper.example` in a browser and sign in. If something fails:
+Caddy gets a certificate the first time a name is visited, so the first request can take a few seconds. Open `https://paper.example` in a browser and sign in. If something fails:
 
 ```sh
-./manage logs librepaper    # why the app is not answering
+./manage logs librepaper
 ```
 
 ## Upgrade
@@ -315,21 +285,20 @@ Caddy obtains a certificate the first time a name is visited, so the first reque
 ./manage upgrade v0.0.25    # a specific release
 ```
 
-- It verifies the downloaded kit's attestation with cosign, run from a pinned Docker image, before it runs anything from the kit. Releases before this check have no bundle file. For one of those, `gh attestation download librepaper-deploy.tar.gz --repo LibrePaper/librepaper` fetches the bundle. Verify the kit as in [Upgrades](security.html#upgrades) and pass it with `LIBREPAPER_KIT`, or add `--unverified`.
+- It verifies the downloaded kit's attestation with cosign, run from a pinned Docker image, before it runs anything from the kit. Releases before this check have no bundle file. For one of those, `gh attestation download librepaper-deploy.tar.gz --repo LibrePaper/librepaper` fetches the bundle. Verify the kit as in [Upgrades](security.html#upgrades), then pass it with `LIBREPAPER_KIT`, or add `--unverified`.
 - It backs up first when backups are configured. `--no-backup` skips this.
 - It checks your configuration with the new release before switching. If a check fails, nothing switches.
-- It keeps your `.toml` files and `caddy/local.d/`.
+- It keeps your `.toml` files and `caddy/local.d/`. It replaces `compose.yaml` on every upgrade, so put your own changes in `compose.override.yaml`.
 - It refuses to move to an older release.
-- It leaves the previous release's images on disk, about 250 MB per upgrade. `docker image prune` keeps them, because they are still referenced by digest.
+- It leaves the previous release's images on disk, about 250 MB per upgrade. The server migrates the schema at startup.
+- `[access] anonymous_comments = true` only lets owners mark comment links "Anyone with the link". Existing links still need sign-in. See [Anonymous access](advanced.html#anonymous-access).
 
-Helpers from v0.0.45 and earlier read a digest-pinned kit wrong. With those, `./manage upgrade vX.Y.Z` stops with `the kit pins <digest>, not vX.Y.Z` and changes nothing. Replace the helper once, then upgrade as usual. Later helpers hand the upgrade to the kit's own helper by themselves.
+Helpers from v0.0.45 and earlier cannot read the digest-pinned kit. They stop with `the kit pins <digest>, not vX.Y.Z` and change nothing. Replace the helper once, then upgrade as usual. Later helpers hand the upgrade to the kit's own helper by themselves.
 
 ```sh
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xzO librepaper/manage > manage.new &&
   chmod 755 manage.new && mv -f manage.new manage
 ```
-
-The server migrates the schema at startup. `compose.yaml` is replaced on every upgrade. Put your own changes in `compose.override.yaml`.
 
 To free the space old releases take, remove every LibrePaper image except the running one:
 
@@ -337,4 +306,4 @@ To free the space old releases take, remove every LibrePaper image except the ru
 docker images --digests --format '{{.Repository}}@{{.Digest}}' | grep '^ghcr.io/librepaper/' | xargs -r docker rmi
 ```
 
-`docker rmi` refuses an image that a container still uses, so this never removes the running release. It prints an error for each image it keeps. Older releases are not needed afterwards, because `./manage upgrade` refuses to move back to one.
+`docker rmi` refuses an image that a container still uses, so the running release is never removed. Old releases are not needed afterwards, because `./manage upgrade` refuses to move back to one.

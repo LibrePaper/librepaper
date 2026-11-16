@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import IconButton from "./IconButton.svelte";
   import { m } from "../lib/paraglide/messages.js";
+  import { isSendKey } from "../lib/send-key.js";
   let {
     placeholder = m.chatcomposer_placeholder(),
     disabled = false,
@@ -76,19 +77,20 @@
   }
 
   function keydown(event) {
-    if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
-    if (event.shiftKey || event.ctrlKey) {
+    if (isSendKey(event)) {
       event.preventDefault();
-      const textarea = event.currentTarget;
-      const at = textarea.selectionStart;
-      const next = `${draft.slice(0, at)}\n${draft.slice(textarea.selectionEnd)}`;
-      draft = next;
-      ondraft?.(draft);
-      void tick().then(() => textarea.setSelectionRange(at + 1, at + 1));
+      if (canSend && !disabled) event.currentTarget.form?.requestSubmit();
       return;
     }
+    // Shift+Enter: the draft is controlled, so the newline is put in by hand.
+    if (event.key !== "Enter" || !event.shiftKey || event.isComposing || event.keyCode === 229) return;
     event.preventDefault();
-    if (canSend && !disabled) event.currentTarget.form?.requestSubmit();
+    const textarea = event.currentTarget;
+    const at = textarea.selectionStart;
+    const next = `${draft.slice(0, at)}\n${draft.slice(textarea.selectionEnd)}`;
+    draft = next;
+    ondraft?.(draft);
+    void tick().then(() => textarea.setSelectionRange(at + 1, at + 1));
   }
 </script>
 
@@ -149,5 +151,11 @@
   }
   @media (pointer: coarse) {
     .composer-buttons :global(.btn-icon) { min-width: 44px; min-height: 44px; }
+  }
+  /* Phones: the message field keeps 16px so iOS does not zoom, and the send
+     button is finger-sized without a larger icon. */
+  @media (max-width: 767px) {
+    .composer-box textarea { font-size: 1rem; }
+    .composer-buttons :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
   }
 </style>

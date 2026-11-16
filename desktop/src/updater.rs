@@ -70,7 +70,7 @@ pub fn spawn(app: AppHandle) {
     run(app, Trigger::Startup);
 }
 
-/// The Help menu's Check for Updates. It says so when there is nothing new.
+/// The app menu's Check for Updates. It says so when there is nothing new.
 pub fn check_now(app: AppHandle) {
     if !self_updating() {
         return;

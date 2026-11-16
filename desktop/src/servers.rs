@@ -62,6 +62,24 @@ impl Servers {
         self.servers.push(url.origin().ascii_serialization());
     }
 
+    /// The origins the switch dialog lists, in saved order. The default server is
+    /// always listed, last if it is not saved.
+    pub fn listed(&self) -> Vec<String> {
+        let saved = self
+            .servers
+            .iter()
+            .filter_map(|raw| accepted(raw))
+            .map(|url| url.origin().ascii_serialization());
+        let default = accepted(DEFAULT_SERVER).map(|url| url.origin().ascii_serialization());
+        let mut origins: Vec<String> = Vec::new();
+        for origin in saved.chain(default) {
+            if !origins.contains(&origin) {
+                origins.push(origin);
+            }
+        }
+        origins
+    }
+
     /// Puts this server first, so the app opens it from now on.
     pub fn make_default(&mut self, url: &Url) {
         let origin = url.origin().ascii_serialization();
@@ -116,6 +134,38 @@ mod tests {
         let mut list = list_of(&["https://a.example"]);
         list.make_default(&url("https://c.example/"));
         assert_eq!(list.servers, vec!["https://c.example", "https://a.example"]);
+    }
+
+    #[test]
+    fn listed_appends_the_default_server_when_missing() {
+        let list = list_of(&["https://a.example"]);
+        assert_eq!(
+            list.listed(),
+            vec!["https://a.example", "https://app.librepaper.org"]
+        );
+    }
+
+    #[test]
+    fn listed_does_not_repeat_the_default_server() {
+        let list = list_of(&["https://app.librepaper.org/"]);
+        assert_eq!(list.listed(), vec!["https://app.librepaper.org"]);
+    }
+
+    #[test]
+    fn listed_keeps_saved_order_and_skips_rejected_entries() {
+        let list = list_of(&[
+            "https://b.example",
+            "http://example.com",
+            "https://a.example",
+        ]);
+        assert_eq!(
+            list.listed(),
+            vec![
+                "https://b.example",
+                "https://a.example",
+                "https://app.librepaper.org"
+            ]
+        );
     }
 
     #[test]

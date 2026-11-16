@@ -100,6 +100,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
             },
             vec![("paper.md".into(), PAPER.as_bytes().to_vec())],
             Authority {
+                agent_label: String::new(),
                 account_id: Some(owner.id),
                 principal_key: "owner".into(),
                 session_generation: Some(owner.session_generation),
@@ -859,6 +860,81 @@ async fn an_editor_creates_and_deletes_text_files() {
         json!({
             "operation":operation(&epoch),
             "delete":[{"path":"notes/extra.md"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["error"]["code"], "conflict", "{response}");
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_editor_renames_a_text_file_and_keeps_its_identity() {
+    let Some(deployment) = deployment("mcp-document-files-rename").await else {
+        return;
+    };
+    let owner = bearer(
+        deployment.owner_id,
+        "owner",
+        &deployment.owner_generation,
+        &deployment.owner_link_key,
+    );
+    let (epoch, _) = read_manifest(&deployment, &owner).await;
+    let (status, response) = call(
+        &deployment,
+        &owner,
+        "document_files",
+        json!({
+            "operation":operation(&epoch),
+            "create":[{"path":"notes/before.md","text":"# Before\n"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let id_of = |path: &str, snapshot: &librepaper_room::room::agent_query::QuerySnapshot| {
+        snapshot
+            .projection()
+            .files
+            .get(path)
+            .map(|entry| entry.id.clone())
+    };
+    let before = room.agent_query_snapshot().await.unwrap();
+    let id = id_of("notes/before.md", &before);
+    assert!(id.is_some());
+
+    let (status, response) = call(
+        &deployment,
+        &owner,
+        "document_files",
+        json!({
+            "operation":operation(&epoch),
+            "rename":[{"from":"notes/before.md","to":"notes/after.md"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(recovered(&response)["status"], "committed", "{response}");
+    let after = room.agent_query_snapshot().await.unwrap();
+    assert!(!after.texts().contains_key("notes/before.md"));
+    assert_eq!(after.texts()["notes/after.md"], "# Before\n");
+    assert_eq!(id_of("notes/after.md", &after), id);
+
+    // Renaming a file that is no longer there conflicts.
+    let (status, response) = call(
+        &deployment,
+        &owner,
+        "document_files",
+        json!({
+            "operation":operation(&epoch),
+            "rename":[{"from":"notes/before.md","to":"notes/other.md"}]
         }),
     )
     .await;

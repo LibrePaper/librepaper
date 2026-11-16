@@ -8,25 +8,368 @@
 //
 // Two forms are needed, because the two renderers want different things. Typst
 // takes the bytes and writes the image into the page itself. Markdown produces
-// HTML a browser will fetch from, so it takes a data URL -- never the route
-// the bytes came from, which on a private document carries a credential and
-// would put it inside a rendered page. A data URL, unlike a blob URL made here,
-// loads in the document frame, which lives on another origin, and an SVG opened
-// from one in a tab of its own runs in an opaque origin rather than as the app.
-// PDFs stay blob URLs: the reader's figure view shows them in an <object>, and
-// browsers render them in a PDF viewer that is isolated from the page.
+// HTML a browser will fetch from, so it takes a URL -- never the route the
+// bytes came from, which on a private document carries a credential and would
+// put it inside a rendered page. For a download that URL is a data URL, which
+// is self-contained: it loads in the document frame, which lives on another
+// origin, and an SVG opened from one in a tab of its own runs in an opaque
+// origin rather than as the app. PDFs used as URLs are blob URLs, because the
+// reader's figure view shows them in an <object>, and browsers render them in a
+// PDF viewer that is isolated from the page.
+//
+// The live preview is the exception for raster images and PDFs. Every keystroke
+// would otherwise carry each figure's base64 inside the page, so those figures
+// are named by `figureReference(sha)` instead. The bytes travel to the preview
+// frame once, and the frame makes its own blob URLs. An SVG never takes that
+// route: an SVG blob URL made on the documents origin and opened in a tab of its
+// own would run as that origin, while browsers block a data URL opened at the
+// top level. So SVG, and every other type, keeps its data URL.
+//
+// Behind the memory map sits a persistent store (IndexedDB, keyed by digest)
+// so a figure survives a reload. Bytes are fetched from a signed link on the
+// object store when the server offers one, and from the byte route otherwise
+// (spec transport 5 and 6.2).
+
+import { ASSET_DATABASE, localDataForgotten } from "./local-data.js";
+
+/// How much the persistent store may hold, least recently used evicted first.
+const ASSET_STORE_BYTES = 256 * 1024 * 1024;
+// Two object stores, so that eviction reads only the small metadata and never
+// the bytes: `bytes` (digest -> Uint8Array) and `meta` (digest -> {size, used}).
+const BYTES = "bytes";
+const META = "meta";
+/// Retries for network errors and 5xx from our server.
+const BACKOFF = [500, 1000, 2000];
+/// Retries for a 429 that says the server is out of transfer or work permits.
+const THROTTLE_RETRIES = 5;
 
 const bytes = new Map(); // digest -> Uint8Array
 const urls = new Map(); // digest -> data: URL or blob: URL (PDFs only)
+const kept = new Set(); // digests of the open project, never evicted to make room
 const inFlight = new Map(); // digest -> Promise
 const scopes = new Map();
 let generation = 0;
 let nextScope = 0;
+// Set when a link is refused or a bucket fails as a network error; the tab
+// then uses the byte route for the rest of its life.
+let useByteRoute = false;
+// The open database, or a promise of it. Not kept for a signed-out tab.
+let database = null;
+// Digests whose last use has been written in this tab (at most once each).
+const touched = new Set();
+
+// Test-only hooks. `sleep` and `random` replace the retry waits and jitter;
+// `indexedDB` replaces the factory (null means none); `capBytes` replaces the
+// cap. Passing undefined for a key restores its default.
+const hooks = { sleep: undefined, random: undefined, indexedDB: undefined, capBytes: undefined };
+
+/** @test-only */
+export function __setAssetTestHooks(overrides = {}) {
+  Object.assign(hooks, overrides);
+}
+
+/** Test-only: forgets the tab's store state, as if the module were fresh. The
+ * persistent store itself is not deleted. */
+export function __resetAssetTestState() {
+  release();
+  kept.clear();
+  useByteRoute = false;
+  database = null;
+  touched.clear();
+}
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms) => (hooks.sleep ?? defaultSleep)(ms);
+const jitter = () => (hooks.random ?? Math.random)() * 250;
+const storeCap = () => hooks.capBytes ?? ASSET_STORE_BYTES;
+// Reading the global can throw where storage is denied; that is no store.
+function idbFactory() {
+  if (hooks.indexedDB !== undefined) return hooks.indexedDB;
+  try {
+    return globalThis.indexedDB ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function scopedKey(slug, sha, headers) {
   const entries = headers instanceof Headers ? [...headers.entries()] : Object.entries(headers || {});
   const fingerprint = JSON.stringify([slug, entries.sort(([a], [b]) => a.localeCompare(b))]);
   if (!scopes.has(fingerprint)) scopes.set(fingerprint, ++nextScope);
   return `${scopes.get(fingerprint)}:${sha}`;
+}
+
+const isDigest = (sha) => /^[0-9a-f]{64}$/.test(sha);
+
+async function digestOf(body) {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", body))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function requestResult(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("asset store request failed"));
+  });
+}
+
+// Collects every row of a cursor, oldest first, as the store's sizes.
+function collectRows(req) {
+  return new Promise((resolve, reject) => {
+    const rows = [];
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve(rows);
+        return;
+      }
+      rows.push({ key: cursor.primaryKey, size: cursor.value.size });
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error || new Error("asset store cursor failed"));
+  });
+}
+
+// Opens the store, or answers null: for a signed-out tab, a browser without
+// IndexedDB, or a refused open. Nothing here throws.
+function openStore() {
+  if (localDataForgotten()) return Promise.resolve(null);
+  if (database) return database;
+  const factory = idbFactory();
+  if (!factory) return Promise.resolve(null);
+  database = new Promise((resolve, reject) => {
+    const open = factory.open(ASSET_DATABASE, 1);
+    open.onupgradeneeded = () => {
+      const db = open.result;
+      if (!db.objectStoreNames.contains(BYTES)) db.createObjectStore(BYTES);
+      if (!db.objectStoreNames.contains(META)) db.createObjectStore(META).createIndex("used", "used");
+    };
+    open.onsuccess = () => {
+      const db = open.result;
+      // A sign-out in another tab deletes this database. Closing here lets
+      // that delete finish, and the next call reopens a fresh connection.
+      db.onversionchange = () => {
+        db.close();
+        database = null;
+      };
+      resolve(db);
+    };
+    open.onerror = () => reject(open.error || new Error("asset store is unavailable"));
+  }).catch(() => null);
+  return database;
+}
+
+/// The bytes stored for a digest, verified, or null. An entry that fails its
+/// digest is deleted so it is fetched again.
+async function readStored(sha) {
+  const db = await openStore();
+  if (!db) return null;
+  let stored;
+  try {
+    stored = await requestResult(db.transaction(BYTES, "readonly").objectStore(BYTES).get(sha));
+  } catch {
+    return null;
+  }
+  if (!stored) return null;
+  const body = new Uint8Array(stored);
+  let actual;
+  try {
+    actual = await digestOf(body);
+  } catch {
+    return null;
+  }
+  if (actual !== sha) {
+    await deleteStored(sha);
+    return null;
+  }
+  void touch(sha);
+  return body;
+}
+
+async function deleteStored(sha) {
+  const db = await openStore();
+  if (!db || localDataForgotten()) return;
+  try {
+    const tx = db.transaction([BYTES, META], "readwrite");
+    tx.objectStore(BYTES).delete(sha);
+    tx.objectStore(META).delete(sha);
+  } catch {
+    /* the entry stays; the next read will check it again */
+  }
+}
+
+/// Writes this tab's last use of an entry, once per digest.
+async function touch(sha) {
+  if (touched.has(sha)) return;
+  touched.add(sha);
+  const db = await openStore();
+  if (!db || localDataForgotten()) return;
+  try {
+    const meta = db.transaction(META, "readwrite").objectStore(META);
+    const record = await requestResult(meta.get(sha));
+    if (record) meta.put({ ...record, used: Date.now() }, sha);
+  } catch {
+    /* the entry keeps its old place in the order */
+  }
+}
+
+/// Stores verified bytes, then evicts least recently used entries until the
+/// store is within its cap. Entries of the open project (`kept`) are never
+/// evicted. An asset larger than the cap is not stored.
+async function writeStored(sha, body) {
+  if (body.byteLength > storeCap()) return;
+  const db = await openStore();
+  if (!db || localDataForgotten()) return;
+  try {
+    const tx = db.transaction([BYTES, META], "readwrite");
+    tx.objectStore(BYTES).put(body, sha);
+    const meta = tx.objectStore(META);
+    meta.put({ size: body.byteLength, used: Date.now() }, sha);
+    touched.add(sha);
+    const rows = await collectRows(meta.index("used").openCursor());
+    let total = rows.reduce((sum, row) => sum + row.size, 0);
+    for (const row of rows) {
+      if (total <= storeCap()) break;
+      if (kept.has(row.key) || row.key === sha) continue;
+      tx.objectStore(BYTES).delete(row.key);
+      meta.delete(row.key);
+      total -= row.size;
+    }
+    // Every evictable entry is gone and the store is still over its cap: the
+    // project is bigger than the cap. The entry just written is dropped too,
+    // so the rest of the project comes from the network on the next cold tab
+    // rather than the store holding a part of it past its cap.
+    if (total > storeCap()) {
+      tx.objectStore(BYTES).delete(sha);
+      meta.delete(sha);
+    }
+  } catch {
+    /* a quota refusal, or a database deleted under this tab: memory only */
+  }
+}
+
+function retryAfterMs(response) {
+  const raw = response.headers?.get?.("Retry-After");
+  const seconds = raw === null || raw === undefined ? NaN : Number(raw);
+  return (Number.isFinite(seconds) && seconds >= 0 ? seconds : 1) * 1000;
+}
+
+async function reasonOf(response) {
+  try {
+    return (await response.json())?.reason;
+  } catch {
+    return undefined;
+  }
+}
+
+/// A request to our server, with the retry table of spec 5.2. `read`, when
+/// given, reads the body of an OK response, and is part of the retried request:
+/// a body that fails to read (a connection dropped mid-download) is retried
+/// exactly like a network error. Returns `{ response, body }`, where body is
+/// `read`'s result for an OK response and undefined otherwise; the caller checks
+/// the response. A network error that runs out of retries throws.
+async function askServer(url, init, read) {
+  let failures = 0; // network errors, failed body reads and 5xx, shared
+  let throttled = 0;
+  for (;;) {
+    let response;
+    let body;
+    try {
+      response = await fetch(url, init);
+      if (response.ok && read) body = await read(response);
+    } catch (error) {
+      if (failures >= BACKOFF.length) throw error;
+      await sleep(BACKOFF[failures++] + jitter());
+      continue;
+    }
+    if (response.status === 429) {
+      const reason = await reasonOf(response);
+      if ((reason === "transfer_concurrency" || reason === "work_concurrency") && throttled < THROTTLE_RETRIES) {
+        throttled++;
+        await sleep(retryAfterMs(response) + jitter());
+        continue;
+      }
+      return { response, body };
+    }
+    if (response.status >= 500 && failures < BACKOFF.length) {
+      await sleep(BACKOFF[failures++] + jitter());
+      continue;
+    }
+    return { response, body };
+  }
+}
+
+/// The signed link for a digest: `{ url }`, where url is null when the server
+/// offers none, or `{ failed: true }` when the server has no link route (404 or
+/// 405, an older or stand-in server). Then this asset, and the rest of the
+/// tab, use the byte route. Any other refusal throws, after askServer's
+/// retries: the byte route would meet the same refusal from the same server,
+/// and trying it too would only add load to a server that is already busy.
+async function requestLink(slug, sha, headers) {
+  const { response, body } = await askServer(
+    `/api/documents/${slug}/assets/${sha}/link`,
+    { credentials: "same-origin", headers, cache: "no-store" },
+    (r) => r.json(),
+  );
+  if (response.status === 404 || response.status === 405) {
+    useByteRoute = true;
+    return { failed: true };
+  }
+  if (!response.ok) throw new Error(`could not fetch a figure link (${response.status})`);
+  const { url } = body;
+  return { url: url ?? null };
+}
+
+/// The bytes from the bucket, or null when the byte route should be used.
+async function fetchFromBucket(slug, sha, headers) {
+  const first = await requestLink(slug, sha, headers);
+  if (first.failed) return null;
+  if (first.url === null) {
+    useByteRoute = true;
+    return null;
+  }
+  let link = first.url;
+  let reissued = false;
+  for (;;) {
+    let response;
+    try {
+      response = await fetch(link, { cache: "no-store", credentials: "omit" });
+      if (response.ok) return new Uint8Array(await response.arrayBuffer());
+    } catch {
+      // A network or CORS error from the bucket: this tab uses the byte route.
+      useByteRoute = true;
+      return null;
+    }
+    if (response.status !== 403 || reissued) return null;
+    reissued = true;
+    let again;
+    try {
+      again = await requestLink(slug, sha, headers);
+    } catch {
+      return null;
+    }
+    if (again.failed) return null;
+    if (again.url === null) {
+      useByteRoute = true;
+      return null;
+    }
+    link = again.url;
+  }
+}
+
+/// The bytes from the server, by the link when there is one and by the byte
+/// route otherwise. Not verified here.
+async function fetchFromServer(slug, sha, headers) {
+  if (!useByteRoute) {
+    const fromBucket = await fetchFromBucket(slug, sha, headers);
+    if (fromBucket) return fromBucket;
+  }
+  const { response, body } = await askServer(
+    `/api/documents/${slug}/assets/${sha}`,
+    { credentials: "same-origin", headers, cache: "no-store" },
+    (r) => r.arrayBuffer(),
+  );
+  if (!response.ok) throw new Error(`could not fetch a figure (${response.status})`);
+  return new Uint8Array(body);
 }
 
 /// The bytes of a figure, fetched once per browser and kept.
@@ -35,18 +378,17 @@ async function fetchOne(slug, sha, headers) {
   const captured = generation;
   if (bytes.has(key)) return bytes.get(key);
   if (inFlight.has(key)) return inFlight.get(key);
-  const url = `/api/documents/${slug}/assets/${sha}`;
   const wanted = (async () => {
-    const response = await fetch(url, { credentials: "same-origin", headers, cache: "no-store" });
-    if (!response.ok) throw new Error(`could not fetch a figure (${response.status})`);
-    const body = new Uint8Array(await response.arrayBuffer());
-    if (generation !== captured) throw new Error("Asset authorization changed");
-    if (/^[0-9a-f]{64}$/.test(sha)) {
-      const actual = [...new Uint8Array(await crypto.subtle.digest("SHA-256", body))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-      if (actual !== sha) throw new Error("Captured asset failed its integrity check");
+    const stored = isDigest(sha) ? await readStored(sha) : null;
+    let body = stored;
+    if (!body) {
+      body = await fetchFromServer(slug, sha, headers);
+      if (generation !== captured) throw new Error("Asset authorization changed");
+      if (isDigest(sha) && (await digestOf(body)) !== sha) throw new Error("Captured asset failed its integrity check");
     }
     if (generation !== captured) throw new Error("Asset authorization changed");
     bytes.set(key, body);
+    if (!stored && isDigest(sha)) void writeStored(sha, body);
     return body;
   })();
   inFlight.set(key, wanted);
@@ -79,14 +421,39 @@ export function typeOf(path) {
   return "application/octet-stream";
 }
 
-/// Fetches every figure a document names and returns them in both forms.
-/// `digests` is the path-to-digest map the shared document carries.
+/// The types a figure may be given by reference. The live preview names these
+/// by `figureReference`, and the preview frame makes its own blob URL from the
+/// bytes. SVG is left out on purpose (see the top of this file), and so is
+/// every type the store does not know.
+const REFERENCED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"]);
+
+/** Whether a figure of this MIME type is named by reference rather than given as a URL. @param {string} type */
+export function referencedType(type) {
+  return REFERENCED_TYPES.has(type);
+}
+
+/// The reference the live preview writes into its HTML for a figure. It loads
+/// nothing and makes no request, so a page that outlives its frame shows a
+/// broken image rather than fetching anything.
+/** @param {string} sha */
+export function figureReference(sha) {
+  return `about:blank#librepaper-asset=${encodeURIComponent(sha)}`;
+}
+
+/// Fetches every figure a document names and returns them in the forms asked
+/// for. `digests` is the path-to-digest map the shared document carries.
+///
+/// `urls` says what each path's URL is: `true` gives a data URL (a blob URL for
+/// a PDF), `"reference"` gives a `figureReference` for a raster image or PDF
+/// and the same as `true` for any other type, and `false` gives none. With
+/// `"reference"`, `references` lists each referenced figure once, with the
+/// bytes already held, so a caller can hand them to the frame.
 ///
 /// A figure that cannot be fetched is left out rather than failing the render:
 /// the rest of the document is still worth showing, and the image is broken in
 /// the page, which is what a missing figure looks like everywhere else.
-/** @param {string} slug @param {Record<string, string>} digests @param {HeadersInit} [headers] @param {{strict?: boolean}} [options] @returns {Promise<{assets: Record<string, Uint8Array>, urls: Record<string, string>, missing: string[]}>} */
-export async function gather(slug, digests, headers = {}, { strict = false } = {}) {
+/** @param {string} slug @param {Record<string, string>} digests @param {HeadersInit} [headers] @param {{strict?: boolean, urls?: boolean | "reference"}} [options] @returns {Promise<{assets: Record<string, Uint8Array>, urls: Record<string, string>, missing: string[], references: Array<{sha: string, type: string, bytes: Uint8Array}>}>} */
+export async function gather(slug, digests, headers = {}, { strict = false, urls: wantUrls = true } = {}) {
   const wanted = Object.entries(digests || {});
   const got = await Promise.all(
     wanted.map(async ([path, sha]) => {
@@ -95,8 +462,12 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
         const captured = generation;
         const body = await fetchOne(slug, sha, headers);
         if (generation !== captured) throw new Error("Asset authorization changed");
+        if (!wantUrls) return [path, body, null, null];
+        const type = typeOf(path);
+        if (wantUrls === "reference" && referencedType(type)) {
+          return [path, body, figureReference(sha), { sha, type }];
+        }
         if (!urls.has(key)) {
-          const type = typeOf(path);
           let url;
           if (type === "application/pdf") {
             url = URL.createObjectURL(new Blob([body], { type }));
@@ -108,7 +479,7 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
           // document agent.
           urls.set(key, `${url}#librepaper-asset=${encodeURIComponent(sha)}`);
         }
-        return [path, body, urls.get(key)];
+        return [path, body, urls.get(key), null];
       } catch {
         return null;
       }
@@ -120,11 +491,18 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
   const where = {};
   /** @type {string[]} */
   const missing = [];
+  /** @type {Array<{sha: string, type: string, bytes: Uint8Array}>} */
+  const references = [];
+  const referenced = new Set();
   for (const one of got) {
     if (!one) continue;
-    const [path, body, url] = one;
+    const [path, body, url, reference] = one;
     assets[path] = body;
-    where[path] = url;
+    if (url) where[path] = url;
+    if (reference && !referenced.has(reference.sha)) {
+      referenced.add(reference.sha);
+      references.push({ sha: reference.sha, type: reference.type, bytes: body });
+    }
   }
   for (const [path] of wanted) {
     if (!Object.prototype.hasOwnProperty.call(assets, path)) missing.push(path);
@@ -132,7 +510,7 @@ export async function gather(slug, digests, headers = {}, { strict = false } = {
   if (strict && missing.length) {
     throw Object.assign(new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`), { missing });
   }
-  return { assets, urls: where, missing };
+  return { assets, urls: where, missing, references };
 }
 
 /// Whether every figure a document names is already here, which is what says a
@@ -143,11 +521,21 @@ export function ready(digests, slug = "", headers = {}) {
   return Object.values(digests || {}).every((sha) => bytes.has(scopedKey(slug, sha, headers)));
 }
 
+/// The open project's figures. The persistent store never evicts these to
+/// make room: a project is loaded whole, and switching files inside it must
+/// not fetch again. Called with every digest of the current tree.
+export function keep(digests) {
+  kept.clear();
+  for (const sha of digests) kept.add(sha);
+}
+
 /// Forgets everything, for a page leaving a document. The blob URLs are
 /// revoked: each one holds its bytes alive in the browser until it is.
-/// Data URLs do not need to be revoked.
+/// Data URLs do not need to be revoked. The persistent store is kept, and so
+/// is no longer protected: the kept set is cleared.
 export function release() {
   generation++;
+  kept.clear();
   for (const url of urls.values()) {
     const base = url.split("#", 1)[0];
     if (base.startsWith("blob:")) URL.revokeObjectURL(base);

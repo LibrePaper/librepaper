@@ -17,7 +17,7 @@ const body = (start, end) => {
 };
 
 const showList = body("  async function showList()", "  async function deleteSelected");
-const reallyDelete = body("  async function reallyDelete()", "  /* --------------------------------------------------------- a new project */");
+const moveToTrash = body("  async function moveToTrash(slugs)", "  /* --------------------------------------------------------- a new project */");
 const requestPaths = body("  const pathRequests = new Map();", "  async function learnPaths()");
 const tagging = body("  const tagQueues = new Map();", "  // The two things the rail's tag list offers beneath the tags.");
 const tagEditing = body("  const tagEdits = new Map();", "  function renameTag(");
@@ -42,6 +42,7 @@ const context = (values) => vm.createContext({ m,
   // A loaded listing warms the document page. No case here is about that.
   warmReader: () => {},
   readDefaultPreview: () => "html",
+  buildPreferenceUser: () => "anonymous",
   location: { origin: "https://example.test" },
   me: {},
   ...values,
@@ -132,8 +133,6 @@ const context = (values) => vm.createContext({ m,
   const problems = [];
   const said = [];
   const ctx = context({
-    pendingDeletion: ["good", "http-failure", "network-failure"],
-    confirming: true,
     selected: new Set(["good", "http-failure", "network-failure"]),
     SHELL_HEADERS: {},
     fetch: (url) => {
@@ -144,8 +143,8 @@ const context = (values) => vm.createContext({ m,
     say: (message, options) => (options?.kind === "problem" ? problems : said).push(message),
     showList: async () => {},
   });
-  vm.runInContext(reallyDelete, ctx);
-  const deleting = vm.runInContext("reallyDelete()", ctx);
+  vm.runInContext(moveToTrash, ctx);
+  const deleting = vm.runInContext("moveToTrash(['good', 'http-failure', 'network-failure'])", ctx);
   await Promise.resolve();
   ctx.selected = new Set(["http-failure", "network-failure", "selected-while-waiting"]);
   pending.get("good").resolve({ ok: true });

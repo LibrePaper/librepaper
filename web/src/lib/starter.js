@@ -10,6 +10,7 @@
 export const FORMATS = [
   { id: "markdown", name: "Markdown", extension: "md" },
   { id: "quarto", name: "Quarto", extension: "qmd" },
+  { id: "org", name: "Org", extension: "org" },
   { id: "latex", name: "LaTeX", extension: "tex" },
   { id: "typst", name: "Typst", extension: "typ" },
   { id: "html", name: "HTML", extension: "html" },
@@ -19,7 +20,7 @@ export const formatNamed = (id) => FORMATS.find((format) => format.id === id) ??
 
 // Names are written into source, so the characters each format reads as
 // syntax have to stop being syntax: a paper called "A & B" is a title in all
-// five and a broken file in two of them. A template puts each placeholder in
+// six and a broken file in two of them. A template puts each placeholder in
 // one kind of place per format (see below), and the escape is for that place.
 const texEscape = (title) => title.replace(/[\\{}$&#^_%~]/g, (char) => ({
   "\\": "\\textbackslash{}", "^": "\\textasciicircum{}", "~": "\\textasciitilde{}",
@@ -34,11 +35,17 @@ const quoteEscape = (title) => title.replace(/[\\"]/g, (char) => `\\${char}`);
 // one way to say "this is text" without knowing which characters matter.
 const markdownEscape = (title) => title.replace(/[!-/:-@[-`{-~]/g, (char) => `\\${char}`);
 
+// An Org keyword such as `#+TITLE:` runs to the end of its line and has no
+// escape, so a name needs no escaping at all; a line break would end the
+// keyword early, so it becomes a space.
+const orgEscape = (title) => title.replace(/\r?\n/g, " ");
+
 const ESCAPES = {
   latex: texEscape,
   typst: quoteEscape,
   quarto: quoteEscape,
   markdown: markdownEscape,
+  org: orgEscape,
   html: htmlEscape,
 };
 

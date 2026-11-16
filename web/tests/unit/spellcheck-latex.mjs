@@ -14,6 +14,11 @@ function words(text) {
 }
 
 {
+  // A default value holding a command splits the text, but is still an option.
+  assert.deepEqual(words("\\newcommand{\\overlay}[3][0.62\\textwidth]{\\x #1} ok"), ["ok"]);
+  assert.deepEqual(words("\\renewcommand{\\a}[1][\\textwidth]{b} ok"), ["ok"]);
+}
+{
   // Plain prose is untouched.
   assert.deepEqual(words("The quick brown fox."), ["The", "quick", "brown", "fox"]);
 }
@@ -233,6 +238,15 @@ function words(text) {
 {
   // Author names are skipped, and a title stays prose.
   assert.deepEqual(words("\\author{Jane Doe} \\title{My Paper}"), ["My", "Paper"]);
+}
+
+{
+  // A percent sign inside \verb is text, not a comment.
+  assert.deepEqual(words("\\verb|50%| kept\nnext"), ["kept", "next"]);
+}
+{
+  // A comment inside a name argument hides a brace, and the group closes at the real one.
+  assert.deepEqual(words("\\cite{a% }\nkeys} after"), ["after"]);
 }
 
 console.log("spellcheck-latex: markup is skipped and prose is kept");

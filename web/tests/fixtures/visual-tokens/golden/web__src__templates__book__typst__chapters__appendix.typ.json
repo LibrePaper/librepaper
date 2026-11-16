@@ -1,0 +1,264 @@
+[
+  {
+    "args": [],
+    "body": {
+      "from": 35,
+      "to": 59
+    },
+    "children": [
+      {
+        "from": 35,
+        "kind": "text",
+        "to": 59
+      }
+    ],
+    "from": 0,
+    "kind": "command",
+    "meta": {
+      "arg:level": "1",
+      "arg:outlined": "true"
+    },
+    "name": "heading",
+    "named": {
+      "level": {
+        "from": 16,
+        "to": 17
+      },
+      "outlined": {
+        "from": 29,
+        "to": 33
+      }
+    },
+    "to": 60
+  },
+  {
+    "from": 60,
+    "kind": "text",
+    "to": 61
+  },
+  {
+    "from": 61,
+    "kind": "command",
+    "meta": {
+      "key": "app-derivation"
+    },
+    "name": "label",
+    "to": 77
+  },
+  {
+    "from": 77,
+    "kind": "text",
+    "to": 159
+  },
+  {
+    "args": [
+      {
+        "from": 164,
+        "to": 178
+      }
+    ],
+    "body": {
+      "from": 164,
+      "to": 201
+    },
+    "children": [
+      {
+        "from": 164,
+        "kind": "text",
+        "to": 178
+      },
+      {
+        "from": 178,
+        "kind": "raw",
+        "name": "separator",
+        "to": 180
+      },
+      {
+        "from": 180,
+        "kind": "raw",
+        "name": "argument",
+        "to": 191
+      },
+      {
+        "from": 191,
+        "kind": "raw",
+        "name": "separator",
+        "to": 192
+      },
+      {
+        "body": {
+          "from": 193,
+          "to": 200
+        },
+        "children": [
+          {
+            "from": 193,
+            "kind": "text",
+            "to": 200
+          }
+        ],
+        "from": 192,
+        "kind": "group",
+        "name": "content",
+        "to": 201
+      }
+    ],
+    "from": 159,
+    "kind": "command",
+    "meta": {
+      "arg:supplement": "[Chapter]",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "ref",
+    "named": {
+      "supplement": {
+        "from": 192,
+        "to": 201
+      }
+    },
+    "to": 202
+  },
+  {
+    "from": 202,
+    "kind": "text",
+    "to": 241
+  },
+  {
+    "from": 241,
+    "kind": "command",
+    "meta": {
+      "key": "sec-assumptions"
+    },
+    "name": "ref",
+    "to": 257
+  },
+  {
+    "from": 257,
+    "kind": "text",
+    "to": 312
+  },
+  {
+    "body": {
+      "from": 313,
+      "to": 316
+    },
+    "display": false,
+    "from": 312,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 317
+  },
+  {
+    "from": 317,
+    "kind": "text",
+    "to": 322
+  },
+  {
+    "body": {
+      "from": 323,
+      "to": 326
+    },
+    "display": false,
+    "from": 322,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 327
+  },
+  {
+    "from": 327,
+    "kind": "text",
+    "to": 371
+  },
+  {
+    "body": {
+      "from": 372,
+      "to": 431
+    },
+    "display": true,
+    "from": 371,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 432
+  },
+  {
+    "from": 432,
+    "kind": "text",
+    "to": 433
+  },
+  {
+    "from": 433,
+    "kind": "command",
+    "meta": {
+      "key": "eq-dim-variance"
+    },
+    "name": "label",
+    "to": 450
+  },
+  {
+    "from": 450,
+    "kind": "text",
+    "to": 458
+  },
+  {
+    "body": {
+      "from": 459,
+      "to": 468
+    },
+    "display": false,
+    "from": 458,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 469
+  },
+  {
+    "from": 469,
+    "kind": "text",
+    "to": 501
+  },
+  {
+    "body": {
+      "from": 502,
+      "to": 513
+    },
+    "display": false,
+    "from": 501,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 514
+  },
+  {
+    "from": 514,
+    "kind": "text",
+    "to": 539
+  },
+  {
+    "from": 539,
+    "kind": "command",
+    "meta": {
+      "key": "eq-dim-variance"
+    },
+    "name": "ref",
+    "to": 555
+  },
+  {
+    "from": 555,
+    "kind": "text",
+    "to": 608
+  }
+]

@@ -14,35 +14,37 @@ use tokio::process::Command;
 /// answers with a megabyte is refused the memory, not the run.
 const MAX_PROBE_BYTES: usize = 64 * 1024;
 
-/// How a probe is run. The two that differ between callers, and nothing
-/// else: everything about bounding and cleanup is the same for all of them.
+/// How a probe is run. A probe always inherits the service's environment,
+/// the same one a render runs in, because a probe is only useful if it
+/// predicts whether a build works. A cleared environment broke MiKTeX on
+/// Windows, which needs USERPROFILE (issue #91). Discovery also runs in a
+/// fresh temporary directory, so files in whatever directory the service
+/// started in cannot affect the answer.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Probe {
     pub timeout: Duration,
-    /// Run with a cleared environment in a fresh temporary directory.
-    /// Discovery does: it is deciding what is installed, and a tool that
-    /// reads its own configuration out of the ambient environment would
-    /// make that answer depend on who started the service. An adapter does
-    /// not: it is about to run the tool for real, in the environment the
-    /// run will use.
-    pub isolated: bool,
+    /// Run in a fresh temporary directory rather than the caller's current
+    /// directory. Discovery does, so a stray `latexmkrc` in the directory the
+    /// service started in cannot change what it finds.
+    pub fresh_directory: bool,
 }
 
 impl Probe {
-    /// What discovery uses.
-    pub(crate) fn isolated(timeout: Duration) -> Self {
+    /// What discovery uses: the service's environment, in a fresh directory.
+    pub(crate) fn discovery(timeout: Duration) -> Self {
         Self {
             timeout,
-            isolated: true,
+            fresh_directory: true,
         }
     }
 
-    /// What the tests use to probe a tool in the ambient environment.
+    /// What the tests use to probe a tool in the caller's current directory.
+    /// The environment is inherited either way.
     #[cfg(test)]
     pub(crate) fn inherited(timeout: Duration) -> Self {
         Self {
             timeout,
-            isolated: false,
+            fresh_directory: false,
         }
     }
 }
@@ -64,25 +66,16 @@ pub(crate) async fn version_line(path: &Path, probe: Probe) -> Option<String> {
 
 /// The raw streams, bounded and with the child cleaned up however it ends.
 pub(crate) async fn version_output(path: &Path, probe: Probe) -> Option<(String, String)> {
-    version_output_with_path(path, probe, std::env::var_os("PATH")).await
-}
-
-async fn version_output_with_path(
-    path: &Path,
-    probe: Probe,
-    inherited_path: Option<std::ffi::OsString>,
-) -> Option<(String, String)> {
     let mut command = Command::new(path);
     // Held for the life of the call: dropping it removes the directory, and
     // the child's working directory has to outlive the child.
-    let isolation = probe.isolated.then(tempfile::tempdir).transpose().ok()?;
-    if let Some(directory) = &isolation {
-        // Keep the startup-resolved PATH so wrappers can find their helper
-        // programs even though discovery otherwise runs with a clean env.
-        command.current_dir(directory.path()).env_clear();
-        if let Some(path) = inherited_path {
-            command.env("PATH", path);
-        }
+    let fresh = probe
+        .fresh_directory
+        .then(tempfile::tempdir)
+        .transpose()
+        .ok()?;
+    if let Some(directory) = &fresh {
+        command.current_dir(directory.path());
     }
     command.arg("--version");
     // Discovery can run on every companion state poll. Keep console tools
@@ -235,22 +228,38 @@ mod tests {
         );
     }
 
-    /// Isolated wrapper probes keep the startup-resolved PATH so the wrapper
-    /// can find an installed helper while all other ambient variables vanish.
+    /// A discovery probe runs in the service's environment, so a wrapper sees
+    /// the variables a render would give it (issue #91: MiKTeX needs USERPROFILE).
     #[cfg(unix)]
     #[tokio::test]
-    async fn an_isolated_probe_preserves_path_for_wrapper_helpers() {
+    async fn a_discovery_probe_sees_the_service_environment() {
         let directory = tempfile::tempdir().unwrap();
-        let helper = script(directory.path(), "helper", "echo helper-version");
-        let wrapper = script(directory.path(), "wrapper", "helper --version");
-        let (stdout, _) = version_output_with_path(
-            &wrapper,
-            Probe::isolated(Duration::from_secs(5)),
-            Some(directory.path().as_os_str().to_owned()),
-        )
-        .await
-        .expect("the wrapper can find its helper on the preserved PATH");
-        assert!(stdout.contains("helper-version"), "{stdout}");
-        assert!(helper.is_file());
+        let probed = script(directory.path(), "home", "echo \"home=$HOME\"");
+        let (stdout, _) = version_output(&probed, Probe::discovery(Duration::from_secs(5)))
+            .await
+            .expect("the probe prints its environment");
+        let expected = format!("home={}", std::env::var("HOME").unwrap());
+        assert!(
+            stdout.contains(&expected),
+            "the probe must inherit HOME as a build does (issue #91): {stdout}"
+        );
+    }
+
+    /// A discovery probe runs in a fresh directory, not where the service
+    /// started, so files there cannot change the answer.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_discovery_probe_runs_outside_the_service_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let probed = script(directory.path(), "where", "pwd");
+        let (stdout, _) = version_output(&probed, Probe::discovery(Duration::from_secs(5)))
+            .await
+            .expect("the probe prints its directory");
+        let here = std::env::current_dir().unwrap();
+        assert_ne!(
+            stdout.trim(),
+            here.display().to_string(),
+            "discovery must not run in the service's directory"
+        );
     }
 }

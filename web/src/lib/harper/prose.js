@@ -8,10 +8,11 @@ import { skipRanges } from "../spellcheck/index.js";
  * kept so paragraphs stay apart), and the skip ranges themselves.
  * @param {string} text
  * @param {string} format
+ * @param {string} [key] names the document, so an edit re-parses from its previous tree
  * @returns {{ text: string, skips: Array<[number, number]> }}
  */
-export function proseText(text, format) {
-  const skips = skipRanges(text, format);
+export function proseText(text, format, key) {
+  const skips = skipRanges(text, format, key);
   let out = "";
   let at = 0;
   for (const [from, to] of skips) {

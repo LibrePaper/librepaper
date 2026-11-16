@@ -1689,7 +1689,11 @@ mod tests {
         projection: librepaper_document::document::projection::Projection,
         texts: BTreeMap<String, String>,
     ) -> Arc<librepaper_document::document::projection::Projected> {
-        Arc::new(librepaper_document::document::projection::Projected { projection, texts })
+        Arc::new(librepaper_document::document::projection::Projected {
+            projection,
+            texts,
+            retained: Default::default(),
+        })
     }
 
     fn snapshot() -> QuerySnapshot {
@@ -2227,6 +2231,7 @@ mod thread_pagination_tests {
                     ..Default::default()
                 },
                 texts: [("main.md".into(), "body\n".into())].into_iter().collect(),
+                retained: Default::default(),
             }),
             threads: [(fingerprint, window)].into_iter().collect(),
             ..QuerySnapshot::default()
@@ -2376,6 +2381,7 @@ mod thread_pagination_tests {
                     ..Default::default()
                 },
                 texts: [("main.md".into(), "body\n".into())].into_iter().collect(),
+                retained: Default::default(),
             }),
             threads,
             ..QuerySnapshot::default()

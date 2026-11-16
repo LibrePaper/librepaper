@@ -1,0 +1,123 @@
+{
+  "schema": 3,
+  "calepin_version": "0.0.60",
+  "input": "paper.typ",
+  "generation": "167b3cf841ac69c0-1349cde127705c16",
+  "store": {},
+  "chunks": {
+    "chunk-1": {
+      "label": "chunk-1",
+      "engine": "python",
+      "source": "print(40 + 2)\n",
+      "status": "ok",
+      "options": {
+        "echo": true,
+        "results": "render",
+        "results-location": "statement",
+        "warning": true,
+        "message": true,
+        "fig-width": "70%",
+        "fig-height": null,
+        "fig-align": "center",
+        "fig-responsive": true,
+        "fig-link": null,
+        "fig-caption": null,
+        "fig-cap-location": null,
+        "fig-alt-text": null,
+        "fig-subcaptions": null,
+        "fig-layout-columns": null,
+        "fig-layout-rows": null,
+        "tbl-caption": null,
+        "lst-caption": null,
+        "kind": null
+      },
+      "items": [
+        {
+          "type": "source",
+          "text": "print(40 + 2)"
+        },
+        {
+          "type": "stream",
+          "name": "stdout",
+          "text": "42"
+        }
+      ]
+    },
+    "chunk-2": {
+      "label": "chunk-2",
+      "engine": "python",
+      "source": "print(\"second\")\n",
+      "status": "ok",
+      "options": {
+        "echo": false,
+        "results": "render",
+        "results-location": "statement",
+        "warning": true,
+        "message": true,
+        "fig-width": "70%",
+        "fig-height": null,
+        "fig-align": "center",
+        "fig-responsive": true,
+        "fig-link": null,
+        "fig-caption": null,
+        "fig-cap-location": null,
+        "fig-alt-text": null,
+        "fig-subcaptions": null,
+        "fig-layout-columns": null,
+        "fig-layout-rows": null,
+        "tbl-caption": null,
+        "lst-caption": null,
+        "kind": null
+      },
+      "items": [
+        {
+          "type": "source",
+          "text": "print(\"second\")"
+        },
+        {
+          "type": "stream",
+          "name": "stdout",
+          "text": "second"
+        }
+      ]
+    },
+    "inline-1": {
+      "label": "inline-1",
+      "engine": "python",
+      "source": "print(1 + 1)",
+      "status": "ok",
+      "options": {
+        "echo": false,
+        "results": "render",
+        "results-location": "statement",
+        "warning": true,
+        "message": true,
+        "fig-width": "70%",
+        "fig-height": null,
+        "fig-align": "center",
+        "fig-responsive": true,
+        "fig-link": null,
+        "fig-caption": null,
+        "fig-cap-location": null,
+        "fig-alt-text": null,
+        "fig-subcaptions": null,
+        "fig-layout-columns": null,
+        "fig-layout-rows": null,
+        "tbl-caption": null,
+        "lst-caption": null,
+        "kind": null
+      },
+      "items": [
+        {
+          "type": "source",
+          "text": "print(1 + 1)"
+        },
+        {
+          "type": "stream",
+          "name": "stdout",
+          "text": "2"
+        }
+      ]
+    }
+  }
+}

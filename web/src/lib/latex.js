@@ -35,7 +35,11 @@ import { maybeBytes as toBytes } from "./bytes.js";
 import { named } from "./latex/errors.js";
 import { m } from "./paraglide/messages.js";
 
-export const DEBOUNCE = 1500;
+/// The preview waits for the source to be quiet for `debounce()`: the last
+/// completed compile pass, clamped to this range. Before any pass has
+/// finished, the longest wait applies.
+export const DEBOUNCE_MIN = 300;
+export const DEBOUNCE_MAX = 1500;
 
 /// The whole job's time budget and the bounded pass count SPEC "Browser
 /// compilation controller" asks for. Both are exceeded as a reported
@@ -90,6 +94,8 @@ let activeToken = null; // { cancelled: boolean } for the job currently running
 let activeCallbacks = null; // { waiting, failing } for that same job
 let jobGeneration = 0;
 let newestResolvedGeneration = -1;
+// Wall time of the most recent compile pass that resolved, or null before one has.
+let lastPassMs = null;
 
 // Bibliography state persists for the whole session; `bibCache` is keyed by
 // `bibliography.identity()`'s hash,
@@ -207,6 +213,18 @@ async function loadRelease() {
   }
 }
 
+/// Starts the PDF engine's downloads before the first compile: the release,
+/// then the engine files, bundle index and core bundle together. Never rejects.
+export async function warm() {
+  if (!base) return;
+  try {
+    const entry = await loadRelease();
+    const resources = await getResources();
+    const kinds = currentSettings.engine === "xelatex" ? ["xetex", "dvipdfm"] : ["pdftex"];
+    await resources?.warmRelease?.(entry, absoluteBase(), kinds);
+  } catch { /* best effort: a compile fetches what it needs */ }
+}
+
 function timeoutError(what = "the compile") {
   return named("WorkerTimeout", `${what} exceeded its time budget`);
 }
@@ -285,6 +303,16 @@ export function configure({ project, settings: nextSettings } = {}) {
     engine: currentSettings.engine === "auto" ? null : currentSettings.engine,
     release: null,
   });
+}
+
+/// Gives a LaTeX session to a document that has none. Documents converted to
+/// LaTeX only for export (Org, for one) never call `configure`, so their PDF
+/// request would be rejected. An already configured project is left alone:
+/// `configure` with another project cancels the running compile.
+/** @param {string} project */
+export function ensureProject(project) {
+  if (currentProject || typeof project !== "string" || !project) return;
+  configure({ project, settings: currentSettings });
 }
 
 export function settings() {
@@ -1019,6 +1047,7 @@ function pump() {
   runCompile({ tree, jobGeneration: mine, token, startedAt })
     .then((result) => {
       if (token.cancelled) return;
+      lastPassMs = Math.max(0, nowImpl() - startedAt);
       if (result.job.generation >= newestResolvedGeneration) {
         newestResolvedGeneration = result.job.generation;
         statusStore.set({
@@ -1042,6 +1071,13 @@ function pump() {
       }
       pump();
     });
+}
+
+/// How long the preview should wait for the source to be quiet before it
+/// compiles, in milliseconds.
+export function debounce() {
+  if (lastPassMs === null) return DEBOUNCE_MAX;
+  return Math.min(DEBOUNCE_MAX, Math.max(DEBOUNCE_MIN, lastPassMs));
 }
 
 /// Compiles a tree. `manual` marks a request the reader is starting
@@ -1161,6 +1197,7 @@ export const _testing = {
     fetchImpl = (input, init) => fetch(input, init);
     nowImpl = () => Date.now();
     deadlineMs = DEADLINE_MS;
+    lastPassMs = null;
     release = null;
     releasePromise = null;
   },

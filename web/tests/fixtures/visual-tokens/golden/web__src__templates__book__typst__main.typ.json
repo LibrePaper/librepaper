@@ -1,0 +1,116 @@
+[
+  {
+    "args": [
+      {
+        "from": 9,
+        "to": 27
+      }
+    ],
+    "from": 0,
+    "kind": "command",
+    "meta": {
+      "path": "@preview/ilm:2.1.1",
+      "statement": "true"
+    },
+    "name": "import",
+    "to": 33
+  },
+  {
+    "from": 33,
+    "kind": "text",
+    "to": 35
+  },
+  {
+    "body": {
+      "from": 37,
+      "to": 98
+    },
+    "from": 35,
+    "kind": "comment",
+    "to": 98
+  },
+  {
+    "from": 98,
+    "kind": "text",
+    "to": 99
+  },
+  {
+    "from": 99,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "",
+      "template": "ilm"
+    },
+    "name": "show",
+    "to": 817
+  },
+  {
+    "from": 817,
+    "kind": "text",
+    "to": 819
+  },
+  {
+    "args": [
+      {
+        "from": 829,
+        "to": 857
+      }
+    ],
+    "from": 819,
+    "kind": "command",
+    "meta": {
+      "path": "chapters/01-introduction.typ",
+      "statement": "true"
+    },
+    "name": "include",
+    "to": 858
+  },
+  {
+    "from": 858,
+    "kind": "text",
+    "to": 860
+  },
+  {
+    "args": [
+      {
+        "from": 870,
+        "to": 893
+      }
+    ],
+    "from": 860,
+    "kind": "command",
+    "meta": {
+      "path": "chapters/02-methods.typ",
+      "statement": "true"
+    },
+    "name": "include",
+    "to": 894
+  },
+  {
+    "from": 894,
+    "kind": "text",
+    "to": 896
+  },
+  {
+    "args": [
+      {
+        "from": 906,
+        "to": 929
+      }
+    ],
+    "from": 896,
+    "kind": "command",
+    "meta": {
+      "path": "chapters/03-results.typ",
+      "statement": "true"
+    },
+    "name": "include",
+    "to": 930
+  },
+  {
+    "from": 930,
+    "kind": "text",
+    "to": 931
+  }
+]

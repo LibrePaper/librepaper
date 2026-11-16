@@ -8,7 +8,8 @@
 //! 1. Write the job's files into the persistent workspace (`workspace`).
 //! 2. Run the expanded command there through the confined runner, which owns
 //!    cancellation, the deadline and the captured log.
-//! 3. Read the result file, and for a PDF the SyncTeX file beside it.
+//! 3. Read the result file, for a PDF the SyncTeX file beside it, and for
+//!    Typst the Calepin results in `.calepin/` beside the entry file.
 //!
 //! Exit status 0 with no result file is a failure that names the path the
 //! command was expected to write. After exit status 0 the result counts
@@ -33,10 +34,18 @@ use crate::local::protocol::{
     Tool, MAX_RESULT_BYTES,
 };
 
+mod calepin;
 pub mod discovery;
 pub mod records;
+mod run_figures;
 pub mod tool;
 pub mod workspace;
+
+/// Whether `path` is a figure the Run directory `folder` holds, for
+/// `POST run-directory/has`.
+pub fn run_figure_present(folder: &Path, path: &str) -> bool {
+    run_figures::has(folder, path)
+}
 
 pub use tool::{Format, Key, Output, Record};
 
@@ -111,11 +120,24 @@ pub async fn run(
     cancel: Shutdown,
     progress: mpsc::UnboundedSender<JobStatus>,
 ) -> JobOutcome {
+    run_with(request, staged, bindings, cancel, progress, None).await
+}
+
+/// `run`, with the Run directory optionally given instead of read from the
+/// binding. Only tests pass one.
+async fn run_with(
+    request: JobRequest,
+    staged: PathBuf,
+    bindings: &BindingStore,
+    cancel: Shutdown,
+    progress: mpsc::UnboundedSender<JobStatus>,
+    run_dir_override: Option<PathBuf>,
+) -> JobOutcome {
     let key = match Key::parse_parts(&request.format, &request.output) {
         Ok(key) => key,
         Err(error) => return failed(&request, &error),
     };
-    let expanded = match records::get(key).record.expand(&request.entrypoint) {
+    let mut expanded = match records::get(key).record.expand(&request.entrypoint) {
         Ok(expanded) => expanded,
         Err(error) => return failed(&request, &error),
     };
@@ -157,9 +179,43 @@ pub async fn run(
             )
         }
     };
+    // Quarto and Typst (through Calepin) run code from the document, so both
+    // need the Run directory and its links.
+    let runs_code = matches!(key.format, Format::Quarto | Format::Typst);
+    let run_dir = run_dir_override.or_else(|| binding.run_dir.clone());
+    if runs_code && run_dir.is_none() {
+        return failed(&request, "Choose a Run directory before running code.");
+    }
+    // Links from an earlier render go first, so no project file is written
+    // under one.
+    if let Err(error) = workspace::unlink_run_directory(&root) {
+        return failed(&request, &error);
+    }
     // The editor is the source of truth for the files the manifest names.
     if let Err(error) = workspace::sync_hosted_workspace(&staged, &root, &request.manifest) {
         return failed(&request, &error);
+    }
+    let mut notices = Vec::new();
+    if let (true, Some(run_dir)) = (runs_code, run_dir.as_ref()) {
+        let manifest_paths = request.manifest.iter().map(|e| e.path.clone()).collect();
+        match workspace::link_run_directory(
+            &root,
+            run_dir,
+            &manifest_paths,
+            &request.entrypoint,
+            &expanded.result,
+        ) {
+            Ok(found) => notices = found,
+            Err(error) => return failed(&request, &error),
+        }
+        // Calepin has no such option: its chunks run in the document's folder
+        // inside the workspace, where the links above are.
+        if key.format == Format::Quarto {
+            expanded.command.push("--execute-dir".into());
+            expanded
+                .command
+                .push(run_dir.to_string_lossy().into_owned());
+        }
     }
     // The check that the entry file exists comes after the uploads are in place.
     if let Err(error) = BindingStore::require_entrypoint_file(&root, &request.entrypoint) {
@@ -209,6 +265,7 @@ pub async fn run(
         generation: request.generation,
         log_tail: String::from_utf8_lossy(&output).into_owned(),
         provenance: provenance(&request),
+        notices,
         ..Default::default()
     };
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -225,6 +282,28 @@ pub async fn run(
                     None,
                     bytes,
                 );
+                // The stored results let the browser draw Calepin's chunks
+                // with its own Typst compiler. Only a successful run sends them.
+                let calepin = if key.format == Format::Typst {
+                    calepin::results(&root, &request.entrypoint)
+                } else {
+                    None
+                };
+                let room =
+                    MAX_RESULT_BYTES - calepin.as_ref().map_or(0, Vec::len).min(MAX_RESULT_BYTES);
+                let figures = match (runs_code, run_dir.as_ref()) {
+                    (true, Some(run_dir)) if !request.wanted.is_empty() => {
+                        run_figures::collect(run_dir, &request.wanted, room)
+                    }
+                    _ => Vec::new(),
+                };
+                let results = match calepin {
+                    Some(bytes) => Some(run_figures::append(bytes, &figures)),
+                    None => run_figures::results(&figures),
+                };
+                if let Some(bytes) = within_result_bound(results) {
+                    files.insert("results".into(), bytes);
+                }
                 status.status = JobState::Done;
             }
             Ok(Some(_)) => {
@@ -284,6 +363,23 @@ pub async fn run(
         .map(|(name, bytes)| (name.clone(), protocol::OutputEntry::from_bytes(bytes)))
         .collect();
     JobOutcome { status, files }
+}
+
+/// The results file, unless it is past the transport bound: the client would
+/// reject the whole output, so an oversize one is dropped and the artifact is
+/// still delivered.
+fn within_result_bound(results: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    results.filter(|bytes| {
+        let fits = bytes.len() <= MAX_RESULT_BYTES;
+        if !fits {
+            eprintln!(
+                "librepaper: dropping the run results ({} bytes, over the {} byte limit)",
+                bytes.len(),
+                MAX_RESULT_BYTES
+            );
+        }
+        fits
+    })
 }
 
 fn provenance(request: &JobRequest) -> Provenance {

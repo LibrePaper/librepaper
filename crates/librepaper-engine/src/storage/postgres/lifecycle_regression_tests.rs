@@ -37,6 +37,7 @@ async fn account(catalog: &PostgresCatalog) -> super::super::AccountRecord {
 
 fn mutation_authorization(account: &super::super::AccountRecord) -> Authority {
     Authority {
+        agent_label: String::new(),
         principal_key: account.handle.clone(),
         account_id: Some(account.id),
         session_generation: Some(account.session_generation),
@@ -302,6 +303,7 @@ async fn source_rows_on_different_owners_serialize_the_deployment_quota() {
         catalog.flush_log_row(
             first.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: &first_bytes,
                 vector: &[],
@@ -311,6 +313,7 @@ async fn source_rows_on_different_owners_serialize_the_deployment_quota() {
         catalog.flush_log_row(
             second.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: &second_bytes,
                 vector: &[],
@@ -366,6 +369,7 @@ async fn source_and_asset_admissions_serialize_the_same_owner_quota() {
         catalog.flush_log_row(
             source_doc.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: &source_bytes,
                 vector: &[],
@@ -405,6 +409,7 @@ async fn compaction_can_shrink_over_quota_storage_but_cannot_grow_it() {
         .flush_log_row(
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: &row_bytes,
                 vector: &[],
@@ -491,6 +496,7 @@ async fn already_admitted_log_rows_can_flush_after_a_project_is_hidden() {
         .flush_log_row(
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: &row_bytes,
                 vector: &[],
@@ -559,6 +565,7 @@ async fn quota_rejected_new_project_keeps_its_upload_admission() {
         .flush_log_row(
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: &rejected_bytes,
                 vector: &[],

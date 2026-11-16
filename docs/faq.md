@@ -4,13 +4,12 @@ title: "FAQ"
 
 ## How do I move a project from Overleaf?
 
-- In Overleaf, open the project and choose Menu > Download > Source. This saves a ZIP of every file.
-- In LibrePaper, choose New project > Upload Files and drop the ZIP on the page. Folders are kept, and a wrapper folder around the whole archive is removed.
-- The browser compiler has pdfLaTeX and XeLaTeX. LuaLaTeX projects need changes before they compile.
-- The engine follows a `% !TEX program = xelatex` line, then the packages the document loads. Settings > Render forces one engine everywhere.
-- BibTeX and Biber run on their own. Upload the `.bib` files with the rest of the project.
-- Unsupported file types are skipped and listed after the upload.
-- Only the files come across. Overleaf comments, tracked changes and history do not.
+1. In Overleaf, open the project and choose Menu > Download > Source. This saves a ZIP of every file.
+2. In LibrePaper, choose New project > Upload files and drop the ZIP on the page. Folders are kept. If the archive has one wrapper folder, LibrePaper removes it by default; untick the box to keep it.
+
+The browser compiler has pdfLaTeX and XeLaTeX. It does not include LuaLaTeX, so LuaLaTeX projects need changes before they compile. The engine is chosen in this order: the project's **LaTeX engine** setting (Settings > Rendering), a `% !TEX program = xelatex` line, then the packages the document loads. BibTeX and Biber run on their own, so upload the `.bib` files with the rest of the project.
+
+Unsupported file types are skipped and listed after the upload. Only the files come across. Overleaf comments, tracked changes and history do not.
 
 ## How do I use my own fonts in LaTeX and Typst?
 
@@ -27,13 +26,28 @@ title: "FAQ"
   \setmainfont{FiraSans-Regular.otf}[Path=fonts/, BoldFont=FiraSans-Bold.otf]
   ```
 
-- pdfLaTeX cannot use `.ttf` or `.otf` files.
-- `.woff` and `.woff2` files are for HTML. Typst and LaTeX cannot read them.
-- HTML previews use the browser's default fonts. Use the PDF view to see your fonts.
-- Everyone who can open the project, read links included, downloads the font files. Check that the font licence allows that.
+pdfLaTeX cannot use `.ttf` or `.otf` files. `.woff` and `.woff2` files are for HTML, and Typst and LaTeX cannot read them. HTML previews use LibrePaper's own fonts, so use the PDF view to see yours. Everyone who can open the project, read links included, downloads the font files, so check that the font licence allows that.
 
-## Is there a dark mode?
+## How much does it cost to run LibrePaper?
 
-- Yes. The app follows your computer's setting by default.
-- Settings > General > Theme offers Light, Dark and System. The choice is remembered per browser.
-- The rendered document keeps its own colours. Only the interface changes.
+Very little. The key architectural decision in this software is that document compilation happens in the client's browser using WebAssembly. That dramatically reduces the server load, such that I (Vincent) can keep librepaper.org running free for everyone. Currently, I am not taking donations. My approximate costs, in US dollars, are:
+
+| Item | Cost |
+|---|---|
+| Virtual server: app, database, web server | $10 to $15 a month |
+| Object storage for user files | $0.008 per GB a month |
+| Object storage for the asset mirror: renderers, fonts, LaTeX | $0.008 per GB a month |
+| Object storage for hourly backups, plus a replica | $0.008 per GB a month; about 7 times the size of the live data, for three months of history and a replica |
+| Network: downloads and storage requests | free |
+| macOS app signing and notarization | $99 a year |
+| Windows app signing | about $120 a year |
+| Domains | about $25 a year |
+| Mail | free |
+| Code hosting, releases, container images, desktop builds | free |
+| Sign-in | free |
+| TLS certificates | free |
+| Backup monitoring | free |
+| Admin access | free |
+| **Total** | **about $25 to $40 a month** |
+
+Each account can currently store 100 MB of files. If LibrePaper gets very popular and costs get out of hand, I might accept donations, on a non-profit basis. No feature will ever be gated. The software will always be open source and self-hostable.

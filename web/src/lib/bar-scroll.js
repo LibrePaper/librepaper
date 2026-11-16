@@ -1,5 +1,6 @@
-// On a phone the top bar steps aside while a page scrolls down and comes back
-// on the way up. The reader and the project list share this rule.
+// On a phone the bars step aside while a page scrolls down and come back on
+// the way up. In the reader these are the mode switch and the bottom tab bar;
+// in the project list it is the top bar. They share this rule.
 
 /// Whether the bar is hidden after a scroll of `delta` pixels that ended `top` pixels down, with `bottom` pixels still to scroll to the end (negative during overscroll).
 export function barHiddenAfter(hidden, delta, top, bottom = Infinity) {
@@ -32,10 +33,10 @@ export function watchScrolls(selector, onscroll) {
   return () => document.removeEventListener("scroll", onScroll, { capture: true });
 }
 
-/// Calls `onreveal()` whenever keyboard focus enters the site bar (`body > nav`). Returns stop().
-export function revealOnNavFocus(onreveal) {
+/// Calls `onreveal()` whenever keyboard focus enters the site bar (`body > nav`), or any other bar `selector` names. Returns stop().
+export function revealOnNavFocus(onreveal, selector = "body > nav") {
   function onNavFocus(event) {
-    if (event.target.closest("body > nav")) onreveal();
+    if (event.target instanceof Element && event.target.closest(selector)) onreveal();
   }
   document.addEventListener("focusin", onNavFocus);
   return () => document.removeEventListener("focusin", onNavFocus);

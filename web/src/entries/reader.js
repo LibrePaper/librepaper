@@ -13,8 +13,17 @@ import { blockPageZoom } from "../lib/pinch.js";
 import { listenForSignOut } from "../lib/local-data.js";
 import { signedOutHref } from "../lib/api.js";
 import { markDocumentLanguage } from "../lib/locale.js";
+import { installTips } from "../lib/tip.js";
+import { preventFocusZoom } from "../lib/ios-viewport.js";
+import { reloadOnStaleChunks } from "../lib/stale-chunks.js";
+import loroWasmUrl from "loro-crdt/web/loro_wasm_bg.wasm?url";
 
+preventFocusZoom();
 markDocumentLanguage();
+// A deploy can leave this tab asking for chunks the server no longer has.
+reloadOnStaleChunks();
+// The one tooltip, for every element that carries data-tip.
+installTips();
 
 // The editor font URLs arrive the same way and are read first, because the
 // font is applied as soon as the editor type starts.
@@ -44,5 +53,14 @@ globalThis.LIBREPAPER_MODULES = JSON.parse(document.getElementById("librepaper-m
 const initialSettings = intake() ? "tools" : "";
 mount(Boundary, { target: document.body, props: { component: Reader, props: { initialSettings }, name: "the reader" } });
 void registerOfflineShell();
+// The CRDT's wasm is fetched only once a session starts, which is after the
+// document has been asked for. Hinting it here lets the browser fetch it at
+// idle priority while the page is still waiting on that answer, so an editor
+// opens without three quarters of a megabyte on its critical path. It is only
+// downloaded, never compiled, for someone who turns out to be a reader.
+const loroHint = document.createElement("link");
+loroHint.rel = "prefetch";
+loroHint.href = loroWasmUrl;
+document.head.append(loroHint);
 // A signed-out browser must not keep writing the previous account's work.
 listenForSignOut(() => location.replace(signedOutHref()));

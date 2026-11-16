@@ -1,0 +1,698 @@
+//! HTTP coverage for shared results (Quarto and Calepin records).
+//!
+//! `/api/documents/{slug}/results`: GET (Read), PUT and DELETE (Edit). The
+//! record is not a project file; its bytes count toward the owner's storage.
+//!
+//! The quota refusal (413) is exercised by pushing the owner's usage to just
+//! under the default 50 MiB policy through the document's uncompacted bytes.
+//!
+//! Needs `LIBREPAPER_TEST_POSTGRES_URL` and is skipped without it.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use serde_json::{json, Value};
+use tokio::net::TcpListener;
+use uuid::Uuid;
+
+use super::http_test_support::{deployment as http_deployment, owner_bearer, Deployment};
+use super::Server;
+use crate::server::origins::Origins;
+use librepaper_base::auth::{sign_device, Identity, PROVIDER_GITHUB};
+use librepaper_base::role::Role;
+use librepaper_engine::storage::postgres::{NewAccount, WriterLease};
+use librepaper_engine::storage::store::DocumentInput;
+
+const READER: &str = "https://paper.example";
+const DOCS: &str = "https://docs.paper.example";
+const PAPER: &str = "# Results\n\nA document with shared results.\n";
+
+async fn deployment(slug: &str) -> Option<Deployment> {
+    http_deployment(
+        DocumentInput {
+            slug: slug.into(),
+            title: "Results Test".into(),
+            source_format: "markdown".into(),
+        },
+        vec![("paper.md".into(), PAPER.as_bytes().to_vec())],
+        librepaper_base::auth::Policy::allowing("github", &["owner"]),
+        librepaper_base::auth::Policy::default(),
+    )
+    .await
+}
+
+struct Served {
+    base: String,
+    deployment_slug: String,
+    owner: String,
+    catalog: Arc<librepaper_engine::storage::postgres::PostgresCatalog>,
+    _stop: tokio::sync::oneshot::Sender<()>,
+    _writer: WriterLease,
+    _objects: tempfile::TempDir,
+}
+
+async fn serve(deployment: Deployment) -> Served {
+    let owner = owner_bearer(&deployment)
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let Deployment {
+        mut server,
+        slug,
+        catalog,
+        _writer,
+        _objects,
+        ..
+    } = deployment;
+    server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
+    let server: Arc<Server> = Arc::new(server);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address: SocketAddr = listener.local_addr().unwrap();
+    let router = server.clone().router();
+    let (shutdown, stopped) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async {
+            let _ = stopped.await;
+        })
+        .await
+        .unwrap();
+    });
+    Served {
+        base: format!("http://{address}"),
+        deployment_slug: slug,
+        owner,
+        catalog,
+        _stop: shutdown,
+        _writer,
+        _objects,
+    }
+}
+
+impl Served {
+    fn url(&self) -> String {
+        format!(
+            "{}/api/documents/{}/results",
+            self.base, self.deployment_slug
+        )
+    }
+
+    async fn call(&self, method: &str, authorization: &str, body: Option<String>) -> (u16, Value) {
+        let client = reqwest::Client::new();
+        let mut request = client
+            .request(method.parse().unwrap(), self.url())
+            .header("host", "paper.example")
+            .header("authorization", authorization);
+        if let Some(body) = body {
+            request = request
+                .header("content-type", "application/json")
+                .body(body);
+        }
+        let response = request.send().await.unwrap();
+        let status = response.status().as_u16();
+        let value = response.json::<Value>().await.unwrap_or(Value::Null);
+        (status, value)
+    }
+
+    async fn document_id(&self) -> Uuid {
+        let row: Uuid = sqlx::query_scalar("SELECT id FROM documents WHERE slug=$1")
+            .bind(&self.deployment_slug)
+            .fetch_one(self.catalog.pool())
+            .await
+            .unwrap();
+        row
+    }
+
+    /// A signed-in account granted `role` on the project.
+    async fn bearer_with(&self, role: Role) -> String {
+        let account = self
+            .catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some(format!("results-{}", Uuid::new_v4().simple())),
+                handle: "guest".into(),
+                display_name: "Guest".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        self.catalog
+            .set_grant(self.document_id().await, account.id, role)
+            .await
+            .unwrap();
+        let identity = Identity {
+            provider: PROVIDER_GITHUB.into(),
+            id: account.id.to_string(),
+            handle: "guest".into(),
+            name: "Guest".into(),
+            picture: String::new(),
+            session_generation: account.session_generation.to_string(),
+        };
+        let token = sign_device(
+            &[0; 32],
+            &identity,
+            librepaper_base::util::now_unix() + 3600,
+        );
+        format!("Bearer {token}")
+    }
+
+    async fn storage(&self) -> Value {
+        let response = reqwest::Client::new()
+            .get(format!("{}/api/account/storage", self.base))
+            .header("host", "paper.example")
+            .header("authorization", &self.owner)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        response.json::<Value>().await.unwrap()
+    }
+}
+
+fn calepin_record() -> Value {
+    json!({
+        "version": 1,
+        "path": "paper.typ",
+        "engine": "calepin",
+        "cells": [],
+        "files": [
+            {"path": ".calepin/calepin.typ", "text": "#let x = 1"},
+            {"path": ".calepin/paper/figure-1.png", "base64": "iVBORw0KGgo="},
+        ],
+    })
+}
+
+fn fingerprint(seed: char) -> String {
+    seed.to_string().repeat(64)
+}
+
+fn record() -> Value {
+    json!({
+        "version": 1,
+        "path": "main.qmd",
+        "cells": [
+            {"fingerprint": fingerprint('a'), "label": "tbl-head", "html": "<p>one</p>"},
+            {"fingerprint": fingerprint('b'), "label": null, "html": "<p>two</p>"},
+        ],
+    })
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_owner_puts_and_gets_a_record() {
+    let Some(deployment) = deployment("results-round-trip").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let (status, _) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 404, "no record yet");
+
+    let (status, put) = served.call("PUT", &owner, Some(record().to_string())).await;
+    assert_eq!(status, 200, "{put}");
+    assert!(put["bytes"].as_i64().unwrap() > 0);
+    assert!(put["updatedAt"].is_string());
+
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert_eq!(got["version"], 1);
+    assert_eq!(got["path"], "main.qmd");
+    assert_eq!(got["cells"].as_array().unwrap().len(), 2);
+    assert_eq!(got["cells"][0]["label"], "tbl-head");
+    assert_eq!(got["cells"][1]["label"], Value::Null);
+    assert_eq!(got["uploaderName"], "Owner");
+    assert_eq!(got["bytes"], put["bytes"]);
+    assert!(got["updatedAt"].is_string());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_reader_can_get_but_not_put_or_delete() {
+    let Some(deployment) = deployment("results-reader").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    let reader = served.bearer_with(Role::Reader).await;
+
+    let (status, _) = served.call("PUT", &owner, Some(record().to_string())).await;
+    assert_eq!(status, 200);
+
+    let (status, got) = served.call("GET", &reader, None).await;
+    assert_eq!(status, 200, "a reader reads the record");
+    assert_eq!(got["path"], "main.qmd");
+
+    let (status, _) = served
+        .call("PUT", &reader, Some(record().to_string()))
+        .await;
+    // Lacking the rung is refused as not found, like every authorize::<Edit> route.
+    assert_eq!(status, 404, "a reader cannot replace the record");
+    let (status, _) = served.call("DELETE", &reader, None).await;
+    assert_eq!(status, 404, "a reader cannot delete the record");
+
+    let (status, _) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "the record survived");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_invalid_record_is_refused() {
+    let Some(deployment) = deployment("results-invalid").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let mut bad_fingerprint = record();
+    bad_fingerprint["cells"][0]["fingerprint"] = json!("ABC");
+    let mut upper = record();
+    upper["cells"][0]["fingerprint"] = json!("A".repeat(64));
+    let mut unknown = record();
+    unknown["extra"] = json!(true);
+    let mut unknown_cell = record();
+    unknown_cell["cells"][0]["extra"] = json!(1);
+    let mut wrong_version = record();
+    wrong_version["version"] = json!(2);
+    let mut empty_path = record();
+    empty_path["path"] = json!("");
+
+    for (name, body) in [
+        ("short fingerprint", bad_fingerprint),
+        ("uppercase fingerprint", upper),
+        ("unknown field", unknown),
+        ("unknown cell field", unknown_cell),
+        ("wrong version", wrong_version),
+        ("empty path", empty_path),
+    ] {
+        let (status, _) = served.call("PUT", &owner, Some(body.to_string())).await;
+        assert_eq!(status, 400, "{name}");
+    }
+    let (status, _) = served
+        .call("PUT", &owner, Some("not json".to_string()))
+        .await;
+    assert_eq!(status, 400, "not json");
+    let (status, _) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 404, "nothing was stored");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_owner_puts_and_gets_a_calepin_record() {
+    let Some(deployment) = deployment("results-calepin").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let (status, put) = served
+        .call("PUT", &owner, Some(calepin_record().to_string()))
+        .await;
+    assert_eq!(status, 200, "{put}");
+
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert_eq!(got["engine"], "calepin");
+    assert_eq!(got["path"], "paper.typ");
+    assert_eq!(got["cells"], json!([]));
+    let files = got["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["path"], ".calepin/calepin.typ");
+    assert_eq!(files[0]["text"], "#let x = 1");
+    assert_eq!(files[1]["base64"], "iVBORw0KGgo=");
+    assert_eq!(got["uploaderName"], "Owner");
+    assert!(got["updatedAt"].is_string());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_invalid_calepin_record_is_refused() {
+    let Some(deployment) = deployment("results-calepin-invalid").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let mut outside = calepin_record();
+    outside["files"][0]["path"] = json!("main.typ");
+    let mut dotdot = calepin_record();
+    dotdot["files"][0]["path"] = json!(".calepin/../x");
+    let mut both = calepin_record();
+    both["files"][0]["base64"] = json!("AAAA");
+    let mut neither = calepin_record();
+    neither["files"][0] = json!({"path": ".calepin/calepin.typ"});
+    let mut with_cells = calepin_record();
+    with_cells["cells"] = json!([
+        {"fingerprint": fingerprint('a'), "label": null, "html": "<p>x</p>"}
+    ]);
+    let mut quarto_with_files = record();
+    quarto_with_files["files"] = calepin_record()["files"].clone();
+    let mut unknown_engine = calepin_record();
+    unknown_engine["engine"] = json!("knitr");
+    let mut repeated = calepin_record();
+    repeated["files"][1]["path"] = json!(".calepin/calepin.typ");
+
+    for (name, body) in [
+        ("path outside .calepin", outside),
+        ("path with ..", dotdot),
+        ("text and base64", both),
+        ("neither text nor base64", neither),
+        ("calepin with cells", with_cells),
+        ("quarto record with files", quarto_with_files),
+        ("unknown engine", unknown_engine),
+        ("repeated path", repeated),
+    ] {
+        let (status, _) = served.call("PUT", &owner, Some(body.to_string())).await;
+        assert_eq!(status, 400, "{name}");
+    }
+    let (status, _) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 404, "nothing was stored");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn delete_reports_the_freed_bytes_and_the_record_is_gone() {
+    let Some(deployment) = deployment("results-delete").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let (status, deleted) = served.call("DELETE", &owner, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(deleted["bytes"], 0, "nothing to free");
+
+    let (_, put) = served.call("PUT", &owner, Some(record().to_string())).await;
+    let (status, deleted) = served.call("DELETE", &owner, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(deleted["bytes"], put["bytes"]);
+    let (status, _) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_storage_status_counts_shared_results() {
+    let Some(deployment) = deployment("results-storage").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    let entry = |status: &Value, slug: &str| -> Value {
+        status["usage"]["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["slug"] == slug)
+            .unwrap()
+            .clone()
+    };
+
+    let before = served.storage().await;
+    let slug = served.deployment_slug.clone();
+    assert_eq!(entry(&before, &slug)["resultsBytes"], 0);
+
+    let (_, put) = served.call("PUT", &owner, Some(record().to_string())).await;
+    let bytes = put["bytes"].as_i64().unwrap();
+    let after = served.storage().await;
+    assert_eq!(entry(&after, &slug)["resultsBytes"], bytes);
+    assert_eq!(
+        after["usage"]["chargedBytes"].as_i64().unwrap()
+            - before["usage"]["chargedBytes"].as_i64().unwrap(),
+        bytes,
+        "the owner is charged for the record"
+    );
+
+    served.call("DELETE", &owner, None).await;
+    let gone = served.storage().await;
+    assert_eq!(
+        gone["usage"]["chargedBytes"],
+        before["usage"]["chargedBytes"]
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_cell_from_an_included_file_keeps_its_path() {
+    let Some(deployment) = deployment("results-cell-path").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let mut included = record();
+    included["cells"][1]["path"] = json!("sections/part.qmd");
+    let (status, put) = served.call("PUT", &owner, Some(included.to_string())).await;
+    assert_eq!(status, 200, "{put}");
+
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert_eq!(got["cells"][1]["path"], "sections/part.qmd");
+    assert!(got["cells"][0].get("path").is_none(), "{got}");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_unsafe_cell_path_is_refused() {
+    let Some(deployment) = deployment("results-cell-path-invalid").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    for path in ["../part.qmd", "/etc/passwd", ""] {
+        let mut body = record();
+        body["cells"][1]["path"] = json!(path);
+        let (status, _) = served.call("PUT", &owner, Some(body.to_string())).await;
+        assert_eq!(status, 400, "cell path {path:?}");
+    }
+    let (status, _) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 404, "nothing was stored");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_owner_puts_and_gets_inline_values() {
+    let Some(deployment) = deployment("results-inlines").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+
+    let mut inlined = record();
+    inlined["inlines"] = json!([
+        {"fingerprint": fingerprint('c'), "html": "42"},
+        {"fingerprint": fingerprint('d'), "html": "7", "path": "sections/part.qmd"},
+    ]);
+    let (status, put) = served.call("PUT", &owner, Some(inlined.to_string())).await;
+    assert_eq!(status, 200, "{put}");
+
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert_eq!(got["inlines"][0]["html"], "42");
+    assert!(got["inlines"][0].get("path").is_none(), "{got}");
+    assert_eq!(got["inlines"][1]["path"], "sections/part.qmd");
+
+    let mut unsafe_path = record();
+    unsafe_path["inlines"] = json!([
+        {"fingerprint": fingerprint('c'), "html": "1", "path": "/etc/passwd"},
+    ]);
+    let (status, _) = served
+        .call("PUT", &owner, Some(unsafe_path.to_string()))
+        .await;
+    assert_eq!(status, 400, "an unsafe inline path is refused");
+
+    let mut calepin = calepin_record();
+    calepin["inlines"] = json!([{"fingerprint": fingerprint('c'), "html": "1"}]);
+    let (status, _) = served.call("PUT", &owner, Some(calepin.to_string())).await;
+    assert_eq!(status, 400, "a calepin record holds no inline values");
+
+    let (status, _) = served.call("PUT", &owner, Some(record().to_string())).await;
+    assert_eq!(status, 200);
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert!(
+        got.get("inlines").is_none(),
+        "an absent list is not stored: {got}"
+    );
+}
+
+const SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_quarto_record_with_run_figures_round_trips_and_is_charged_raw() {
+    let Some(deployment) = deployment("results-run-figures").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    // Large enough that base64 (a third bigger) would show in the charge.
+    let svg = format!("{SVG}<!--{}-->", "x".repeat(30_000));
+    let mut body = record();
+    body["files"] = json!([{"path": "figs/plot.svg", "base64": b64(svg.as_bytes())}]);
+
+    let (status, put) = served.call("PUT", &owner, Some(body.to_string())).await;
+    assert_eq!(status, 200, "{put}");
+    let bytes = put["bytes"].as_i64().unwrap();
+    assert!(bytes >= svg.len() as i64, "charges the raw bytes");
+    assert!(
+        bytes < (svg.len() * 4 / 3) as i64,
+        "not the base64 text: {bytes}"
+    );
+
+    let (status, got) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 200, "{got}");
+    assert_eq!(got["files"][0]["path"], "figs/plot.svg");
+    assert_eq!(got["files"][0]["base64"], b64(svg.as_bytes()));
+    assert!(got["files"][0].get("blob").is_none());
+    assert_eq!(got["bytes"], put["bytes"]);
+
+    let before = served.storage().await;
+    let (status, deleted) = served.call("DELETE", &owner, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(deleted["bytes"], put["bytes"]);
+    let after = served.storage().await;
+    assert_eq!(
+        before["usage"]["chargedBytes"].as_i64().unwrap()
+            - after["usage"]["chargedBytes"].as_i64().unwrap(),
+        bytes
+    );
+    let files: i64 = sqlx::query_scalar("SELECT count(*) FROM document_result_files")
+        .fetch_one(served.catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(files, 0, "the file rows went with the record");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_replaced_record_replaces_its_files() {
+    let Some(deployment) = deployment("results-replace-files").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    let mut first = record();
+    first["files"] = json!([{"path": "a.svg", "base64": b64(SVG.as_bytes())}]);
+    let (status, _) = served.call("PUT", &owner, Some(first.to_string())).await;
+    assert_eq!(status, 200);
+    let mut second = record();
+    second["files"] = json!([{"path": "b.svg", "base64": b64(SVG.as_bytes())}]);
+    let (status, _) = served.call("PUT", &owner, Some(second.to_string())).await;
+    assert_eq!(status, 200);
+    let (_, got) = served.call("GET", &owner, None).await;
+    assert_eq!(got["files"].as_array().unwrap().len(), 1);
+    assert_eq!(got["files"][0]["path"], "b.svg");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_calepin_record_with_a_run_figure_round_trips() {
+    let Some(deployment) = deployment("results-calepin-figure").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    let mut body = calepin_record();
+    body["files"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"path": "plots/a.svg", "base64": b64(SVG.as_bytes())}));
+    let (status, put) = served.call("PUT", &owner, Some(body.to_string())).await;
+    assert_eq!(status, 200, "{put}");
+    let (_, got) = served.call("GET", &owner, None).await;
+    assert_eq!(got["files"], body["files"], "the wire shape is unchanged");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn bad_run_figures_are_refused() {
+    let Some(deployment) = deployment("results-bad-figures").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    for (name, file) in [
+        ("text", json!({"path": "a.svg", "text": SVG})),
+        (
+            "not an image",
+            json!({"path": "a.png", "base64": b64(b"hello")}),
+        ),
+        (
+            "under .librepaper",
+            json!({"path": ".librepaper/a.svg", "base64": b64(SVG.as_bytes())}),
+        ),
+    ] {
+        let mut body = record();
+        body["files"] = json!([file]);
+        let (status, _) = served.call("PUT", &owner, Some(body.to_string())).await;
+        assert_eq!(status, 400, "{name}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_record_over_the_quota_is_refused_with_the_storage_reason() {
+    let Some(deployment) = deployment("results-over-quota").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    // Leave the owner 100 bytes of room.
+    let usage = served.storage().await["usage"]["chargedBytes"]
+        .as_i64()
+        .unwrap();
+    sqlx::query("UPDATE documents SET uncompacted_update_bytes = uncompacted_update_bytes + $1 WHERE slug=$2")
+        .bind(50 * 1024 * 1024 - 100 - usage)
+        .bind(&served.deployment_slug)
+        .execute(served.catalog.pool())
+        .await
+        .unwrap();
+
+    // Past the pre-read bound.
+    let big = format!("{SVG}<!--{}-->", "x".repeat(3 * 1024 * 1024));
+    let mut body = record();
+    body["files"] = json!([{"path": "a.svg", "base64": b64(big.as_bytes())}]);
+    let (status, refused) = served.call("PUT", &owner, Some(body.to_string())).await;
+    assert_eq!(status, 413, "{refused}");
+    assert_eq!(refused["reason"], "storage");
+
+    // Under the pre-read bound, over the exact quota.
+    let mut body = record();
+    body["files"] = json!([{"path": "a.svg", "base64": b64(format!("{SVG}<!--{}-->", "x".repeat(2000)).as_bytes())}]);
+    let (status, refused) = served.call("PUT", &owner, Some(body.to_string())).await;
+    assert_eq!(status, 413, "{refused}");
+    assert_eq!(refused["reason"], "storage");
+    let (status, _) = served.call("GET", &owner, None).await;
+    assert_eq!(status, 404, "nothing was stored");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn there_are_no_count_caps_on_cells() {
+    let Some(deployment) = deployment("results-no-caps").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let owner = served.owner.clone();
+    let mut body = record();
+    body["cells"] = Value::Array(
+        (0..2500)
+            .map(|_| json!({"fingerprint": fingerprint('a'), "label": null, "html": "<p>x</p>"}))
+            .collect(),
+    );
+    let (status, put) = served.call("PUT", &owner, Some(body.to_string())).await;
+    assert_eq!(status, 200, "{put}");
+}

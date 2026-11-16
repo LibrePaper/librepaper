@@ -1,9 +1,10 @@
-import { Facet, StateEffect, StateField } from "@codemirror/state";
+import { StateEffect, StateField } from "@codemirror/state";
 import { EditorView, WidgetType } from "@codemirror/view";
 import { typst2tex } from "tex2typst";
 import "./markup.css";
 import "./visual-markup.css";
-import { preambleFold } from "./preamble.js";
+import { foldLayer } from "../visual/folds.js";
+import { latexFolds } from "../visual/fold-finders.js";
 import { cleanTitle, longToday, titleParts } from "./metadata.js";
 import {
   createImageResolver,
@@ -22,17 +23,11 @@ import {
 } from "./markup.ts";
 import { COMMANDS, ENVIRONMENTS } from "./languages/latex/catalog.ts";
 import { loadKatex } from "../katex.js";
-import { VISUAL_FORMATS } from "./formats.js";
+import { rewriteDisplay } from "../math-numbering.js";
 import { m } from "../paraglide/messages.js";
-// The Markdown, Quarto and Typst widgets. They import helpers back from this file.
-import "./markdown-widgets.js";
-import "./task-widgets.js";
-import "./typst-widgets.js";
+import { figureUrlFor } from "../missing-figures.js";
 
 export { VISUAL_FORMATS } from "./formats.js";
-
-// LaTeX's \includegraphics often leaves the extension off, so these are tried in turn.
-const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".svg", ".pdf"];
 
 // The facts about the open LaTeX project that the widgets read: labels, citations,
 // acronyms, macros, theorems, heading numbers and the citation style. Every field starts empty.
@@ -46,6 +41,7 @@ function emptyFacts() {
     theorems: new Map(),
     environmentNumbers: new Map(),
     headingNumbers: new Map(),
+    captionNumbers: new Map(),
     citeStyle: "author-year",
   };
 }
@@ -76,16 +72,14 @@ export function factsUpdate(facts) {
   return [setFacts.of(facts), refreshVisual.of(null)];
 }
 
-// The callback that opens an included file, given its raw name. The first one wins.
-export const includeOpener = Facet.define({ combine: (values) => values[0] ?? null });
-
-/// The visual layer for one file, or nothing for a format it does not draw.
+/// The visual layer for one LaTeX file, or nothing for any other format: Markdown, Quarto, Org and Typst are drawn by the paper view (lib/paper).
 /// `path` returns the open file's project path (no leading slash), for resolving relative image paths.
 /// `imageUrl(path)` resolves a project path (no leading slash) to a URL an <img> can load, or null.
+/// `resultsFiles()` returns the files of the last run (or null); a figure that is not a project file is drawn from them.
 /// `dark` picks the dark colours.
 /// `openInclude(name)` opens the file an \input, \include or \subfile names; without it the chip has no button.
-export function visualMarkup(format, { path = () => "", imageUrl = null, dark = false, openInclude = null } = {}) {
-  if (!VISUAL_FORMATS.has(format)) return [];
+export function visualMarkup(format, { path = () => "", imageUrl = null, resultsFiles = null, dark = false, openInclude = null } = {}) {
+  if (format !== "latex") return [];
 
   const extensions = [
     visualExtension(),
@@ -102,59 +96,37 @@ export function visualMarkup(format, { path = () => "", imageUrl = null, dark = 
     }),
   ];
 
-  if (imageUrl) {
+  if (imageUrl || resultsFiles) {
     // Upstream resolves against leading-slash paths; LibrePaper's have none.
     extensions.push(
       imageResolver.of(
         createImageResolver(
           () => "/" + path(),
-          (resolved) => resolveImage(imageUrl, resolved.replace(/^\/+/, "")),
+          (resolved) => figureUrlFor(imageUrl ?? (() => null), resultsFiles, resolved.replace(/^\/+/, "")),
         ),
       ),
     );
   }
 
-  if (format === "latex") extensions.push(preambleFold());
-  // Every format draws from document facts and opens includes the same way.
+  extensions.push(...foldLayer(latexFolds, { openInclude }));
   extensions.push(factsField);
-  if (openInclude) extensions.push(includeOpener.of(openInclude));
 
   return extensions;
 }
 
-async function resolveImage(imageUrl, file) {
-  const url = await imageUrl(file);
-  if (url || /\.[^/]+$/.test(file)) return url;
-  for (const extension of IMAGE_EXTENSIONS) {
-    const found = await imageUrl(file + extension);
-    if (found) return found;
-  }
-  return null;
-}
-
-// KaTeX lacks some math environments and has no \label. The environment is
-// rebuilt in a form KaTeX accepts. Display labels with a number become a \tag
-// of that number; the rest of the labels are removed.
+// KaTeX lacks some math environments and has no \label, so the formula is
+// rewritten by the shared rewrite (math-numbering.js, as the preview and the
+// paper layer use it). A numbered equation or row becomes a \tag of its
+// number, and the other labels are removed.
 function latexMath(body, environment, numbers) {
-  let tex;
-  if (!environment || environment === "equation" || environment === "equation*") {
-    tex = body;
-  } else if (environment === "multline" || environment === "multline*") {
-    tex = `\\begin{gather*}${body}\\end{gather*}`;
-  } else if (environment === "eqnarray" || environment === "eqnarray*") {
-    tex = `\\begin{array}{rcl}${body}\\end{array}`;
-  } else {
-    // align, align*, gather and gather* are KaTeX's own environments.
-    tex = `\\begin{${environment}}${body}\\end{${environment}}`;
-  }
-  // A formula with its own \tag keeps it; KaTeX rejects a second one.
-  if (numbers && !/\\tag\s*\{/.test(tex)) {
-    tex = tex.replace(/\\label\s*\{([^{}]*)\}/g, (match, key) => {
-      const found = numbers.get(key.trim());
-      return found ? `\\tag{${found.number}}` : "";
-    });
-  }
-  return tex.replace(/\\label\s*\{[^{}]*\}/g, "");
+  const source = environment ? `\\begin{${environment}}${body}\\end{${environment}}` : body;
+  return rewriteDisplay(source, (keys) => {
+    for (const key of keys) {
+      const number = numbers?.get(key)?.number;
+      if (number) return number;
+    }
+    return null;
+  }).tex;
 }
 
 // Typst source is converted to TeX, and on failure the raw text stays.
@@ -285,7 +257,8 @@ class RefWidget extends WidgetType {
   toDOM(view) {
     const element = document.createElement("span");
     element.className = "cm-lp-ref";
-    element.title = this.raw;
+    element.setAttribute("data-tip", this.raw);
+    element.setAttribute("data-tip-wait", "long");
     element.textContent = this.text;
     revealOnMousedown(view, element);
     return element;
@@ -327,50 +300,34 @@ registerWidget("headnum", ({ token, state }) => {
   return number ? new HeadNumWidget(number) : null;
 });
 
-// An \input, \include or \subfile, shown as a chip with the file's name.
-class IncludeWidget extends WidgetType {
-  constructor(context) {
+// "Figure 3." before the text of a figure's \caption, drawn only when the numbering
+// pass gave that caption a number. Nothing is invented for a caption without one.
+class CaptionNumWidget extends WidgetType {
+  constructor(text) {
     super();
-    const { token, source, state } = context;
-    this.name = token.args?.[0] ? source.slice(token.args[0].from, token.args[0].to).trim() : "";
-    this.opener = state.facet(includeOpener);
+    this.text = text;
   }
 
   eq(other) {
-    return other instanceof IncludeWidget && other.name === this.name && other.opener === this.opener;
+    return other instanceof CaptionNumWidget && other.text === this.text;
   }
 
-  toDOM(view) {
+  toDOM() {
     const element = document.createElement("span");
-    element.className = "cm-lp-include";
-    element.append(this.name);
-
-    if (this.opener) {
-      const opener = this.opener;
-      const name = this.name;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "cm-lp-include-open";
-      button.textContent = m.common_open();
-      // The button stops its own mousedown, so the reveal below does not see it.
-      button.addEventListener("mousedown", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        opener(name);
-      });
-      element.appendChild(button);
-    }
-
-    revealOnMousedown(view, element);
+    element.className = "cm-lp-captionnum";
+    element.textContent = this.text;
     return element;
   }
 
   ignoreEvent() {
-    return true;
+    return false;
   }
 }
 
-registerWidget("include", (context) => new IncludeWidget(context));
+registerWidget("captionnum", ({ token, state }) => {
+  const number = factsOf(state).captionNumbers?.get(token.from);
+  return number ? new CaptionNumWidget(m.widgets_figure_number({ number })) : null;
+});
 
 // Makes one part of the title block open its command in the source. The listener
 // sits on the part, a child of the block, so it runs before the block's own reveal,
@@ -379,7 +336,8 @@ function linkPart(view, block, element, part) {
   if (part.from === null) return;
   element.dataset.part = part.kind;
   element.dataset.index = String(part.index);
-  element.title = m.index_edit_in_source();
+  element.setAttribute("data-tip", m.index_edit_in_source());
+  element.setAttribute("data-tip-wait", "long");
   element.addEventListener("mousedown", (event) => {
     // The offset from build time may be stale, so the part is found again in the current text.
     const current = titleParts(view.state.doc.toString(), view.posAtDOM(block)).find(
@@ -505,7 +463,10 @@ export class ElementWidget extends WidgetType {
   toDOM(view) {
     const element = document.createElement(this.tag);
     element.className = this.className;
-    if (this.title) element.title = this.title;
+    if (this.title) {
+      element.setAttribute("data-tip", this.title);
+      element.setAttribute("data-tip-wait", "long");
+    }
     appendParts(element, this.content);
 
     if (this.openUrl) {

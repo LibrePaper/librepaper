@@ -78,6 +78,10 @@ pub enum KnownMessage {
         request_id: String,
         #[serde(default)]
         protocol: String,
+        /// The client can fetch a large `doc-rows` payload by reference
+        /// (`ref` and `digest`). Absent means it cannot, and rows stay inline.
+        #[serde(default, rename = "rowsRef")]
+        rows_ref: bool,
     },
     #[serde(rename = "doc-presence")]
     DocPresence {
@@ -295,6 +299,7 @@ impl KnownMessage {
     option_field!(color, color, Comment);
     value_field!(position, position, Option<i64>, Comment);
     value_field!(document, document, bool, Comment);
+    value_field!(rows_ref, rows_ref, bool, DocOpen);
 
     fn source(&self) -> Option<&SourceSelection> {
         match self {
@@ -401,6 +406,10 @@ impl Message {
     }
     pub fn position(&self) -> Option<i64> {
         self.value(KnownMessage::position)
+    }
+    /// Whether a `doc-open` says the client can fetch rows by reference.
+    pub fn rows_ref(&self) -> bool {
+        self.value(KnownMessage::rows_ref)
     }
     pub fn document(&self) -> bool {
         self.value(KnownMessage::document)

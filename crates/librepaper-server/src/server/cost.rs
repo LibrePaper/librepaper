@@ -168,7 +168,6 @@ impl Server {
         snapshot["sockets"] = self.socket_budget.snapshot();
         snapshot["memory_budget"] = self.rooms.registry().budget().snapshot();
         snapshot["pending_budget"] = self.rooms.registry().pending().snapshot();
-        snapshot["storage_ledger"] = self.rooms.registry().ledger().snapshot();
         snapshot["http_work"] = json!({
             "active": self.config.cost.work_concurrency - self.cost.work.available_permits(),
             "control_active": 16 - self.cost.control_work.available_permits(),
@@ -196,10 +195,6 @@ impl Server {
         // pools with different rules -- decoded documents can be evicted to
         // make room and pending typing cannot.
         snapshot["pending_budget"] = self.rooms.registry().pending().snapshot();
-        // The coarse half of the owner storage check: what each owner and the
-        // deployment are charged for figures, archives and logs as this
-        // process believes, rebuilt from the catalogue at every admission.
-        snapshot["storage_ledger"] = self.rooms.registry().ledger().snapshot();
         snapshot["filesystem"] = self
             .store
             .blobs
@@ -226,14 +221,54 @@ impl Server {
     }
 }
 
+/// How long a refused client is told to wait, in seconds. A concurrency
+/// refusal clears within a second or two of a burst draining; a budget or
+/// memory refusal is pacing over a minute or more.
+fn refusal_wait(reason: &str) -> u64 {
+    match reason {
+        "transfer_concurrency" | "work_concurrency" => 1,
+        _ => 60,
+    }
+}
+
 pub(super) fn refusal(reason: &str, scope: &str) -> Reply {
+    let wait = refusal_wait(reason);
     let mut response = write_json(
         429,
-        &json!({"error":"deployment resource allowance exhausted", "reason":reason, "scope":scope, "retryable":true, "retry_after":60}),
+        &json!({"error":"deployment resource allowance exhausted", "reason":reason, "scope":scope, "retryable":true, "retry_after":wait}),
     );
-    set(&mut response, "retry-after", "60");
+    set(&mut response, "retry-after", &wait.to_string());
     set(&mut response, "cache-control", "no-store");
     response
+}
+
+/// Whether a request's bytes are relayed by this server, and so take a
+/// transfer permit. A signed link (`/api/.../assets/{sha}/link`) does no byte
+/// work, so it is not a transfer path.
+fn transfer_path(path: &str) -> bool {
+    if path.starts_with("/assets/") {
+        return true;
+    }
+    path.starts_with("/api/") && path.contains("/assets/") && !path.ends_with("/link")
+}
+
+/// How long a page may wait for one relayed file before it is refused. A
+/// policy about how long a page may wait, not a guess at anybody's capacity.
+/// The wait happens after the request budget has admitted the request, with
+/// the work permit given back for its duration, so a waiting request holds
+/// no work slot and nothing but its own task.
+const TRANSFER_WAIT: Duration = Duration::from_secs(10);
+
+/// Waits up to `wait` for a transfer permit, first come first served. `None`
+/// means the deadline passed or the semaphore was closed.
+async fn acquire_transfer(
+    transfers: Arc<tokio::sync::Semaphore>,
+    wait: Duration,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    match tokio::time::timeout(wait, transfers.acquire_owned()).await {
+        Ok(Ok(permit)) => Some(permit),
+        _ => None,
+    }
 }
 
 fn control(path: &str, method: &Method) -> bool {
@@ -426,19 +461,31 @@ async fn middleware_inner(
     } else {
         None
     };
+    // The work permit is taken first and held until the handler answers. A
+    // relayed file that has to wait for a transfer permit gives it back for
+    // the wait (see below), so the wait never holds a work slot.
     let is_control = control(&path, &method);
-    let _work = match server.cost.work.clone().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => match is_control
-            .then(|| server.cost.control_work.clone().try_acquire_owned())
-            .transpose()
-        {
-            Ok(Some(permit)) => permit,
-            _ => {
-                server.metrics.record_refusal("work_concurrency");
-                return refusal("work_concurrency", "deployment");
-            }
-        },
+    let take_work = || {
+        server
+            .cost
+            .work
+            .clone()
+            .try_acquire_owned()
+            .ok()
+            .or_else(|| {
+                if is_control {
+                    server.cost.control_work.clone().try_acquire_owned().ok()
+                } else {
+                    None
+                }
+            })
+    };
+    let mut _work = match take_work() {
+        Some(permit) => Some(permit),
+        None => {
+            server.metrics.record_refusal("work_concurrency");
+            return refusal("work_concurrency", "deployment");
+        }
     };
     let network = client_network(&client_address(
         peer,
@@ -511,17 +558,27 @@ async fn middleware_inner(
         };
         return refusal("request_budget", scope);
     }
-    let permit = if path.starts_with("/published/")
-        || path.starts_with("/assets/")
-        || (path.starts_with("/api/") && path.contains("/assets/"))
-    {
-        match server.cost.transfers.clone().try_acquire_owned() {
-            Ok(permit) => Some(permit),
-            Err(_) => {
-                server.metrics.record_refusal("transfer_concurrency");
-                return refusal("transfer_concurrency", "deployment");
+    // A relayed file waits for a transfer permit only now, after the request
+    // budget has counted it, so the budget bounds how many requests can wait.
+    // The wait holds no work permit: the one taken above goes back for its
+    // duration and is taken again afterwards. A waiting request holds nothing
+    // but its own task. The transfer permit is held until the response body
+    // has streamed.
+    let permit = if transfer_path(&path) {
+        _work = None;
+        let Some(transfer) = acquire_transfer(server.cost.transfers.clone(), TRANSFER_WAIT).await
+        else {
+            server.metrics.record_refusal("transfer_concurrency");
+            return refusal("transfer_concurrency", "deployment");
+        };
+        _work = match take_work() {
+            Some(permit) => Some(permit),
+            None => {
+                server.metrics.record_refusal("work_concurrency");
+                return refusal("work_concurrency", "deployment");
             }
-        }
+        };
+        Some(transfer)
     } else {
         None
     };
@@ -1099,5 +1156,61 @@ mod comment_budget_tests {
         assert!(budgets.take("a", 1, 10));
         budgets.housekeep(11);
         assert!(budgets.spent.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod transfer_admission_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn refusals_say_how_long_to_wait() {
+        for (reason, wait) in [
+            ("transfer_concurrency", 1_u64),
+            ("work_concurrency", 1),
+            ("request_budget", 60),
+            ("request_memory", 60),
+        ] {
+            let reply = refusal(reason, "deployment");
+            assert_eq!(reply.headers()["retry-after"], wait.to_string(), "{reason}");
+            let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["retry_after"], wait, "{reason}");
+        }
+    }
+
+    #[test]
+    fn transfer_paths_are_the_relayed_ones_and_not_signed_links() {
+        assert!(transfer_path("/assets/app.js"));
+        assert!(!transfer_path("/published/x"));
+        let digest = "a".repeat(64);
+        assert!(transfer_path(&format!(
+            "/api/documents/abc/assets/{digest}"
+        )));
+        assert!(!transfer_path(&format!(
+            "/api/documents/abc/assets/{digest}/link"
+        )));
+        assert!(!transfer_path("/api/documents/abc"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_waiting_transfer_gets_the_permit_when_one_frees() {
+        let transfers = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = transfers.clone().acquire_owned().await.unwrap();
+        let waiting = tokio::spawn(acquire_transfer(transfers.clone(), TRANSFER_WAIT));
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        drop(held);
+        assert!(waiting.await.unwrap().is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_transfer_still_waiting_after_the_deadline_is_refused() {
+        let transfers = Arc::new(tokio::sync::Semaphore::new(1));
+        let _held = transfers.clone().acquire_owned().await.unwrap();
+        let started = tokio::time::Instant::now();
+        assert!(acquire_transfer(transfers, TRANSFER_WAIT).await.is_none());
+        assert!(started.elapsed() >= TRANSFER_WAIT);
     }
 }

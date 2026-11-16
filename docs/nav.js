@@ -47,6 +47,7 @@ export const nav = [
     ],
   },
   { path: "privacy", label: "Privacy and data retention" },
+  { path: "terms", label: "Terms of service" },
   { path: "faq", label: "FAQ" },
   { path: "contact", label: "Contact" },
 ];

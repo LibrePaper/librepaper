@@ -1,0 +1,104 @@
+\documentclass[11pt]{article}
+\usepackage{graphicx,booktabs,listings,hyperref}
+\title{Edge \emph{cases} for the \verb|tokenizer|}
+\author{A. Author \and B. Writer}
+\begin{document}
+\maketitle
+
+% A full line comment with \section{not real} and $math$
+Text with 50\% off, \$5 and \& ampersands \# hashes \_under\_ \{braces\} \textbackslash{}.
+Nested {braces {deep {deeper}}} and a group {\bfseries bold \textit{both}} end.
+
+\section{Intro}\label{sec:intro}
+\section*{Unnumbered}
+\subsection*{Starred sub}
+\paragraph{Run-in} text.
+
+Inline math $x^2 + y_i$, \(a \le b\), and display $$\int_0^1 f\,dx$$.
+\[ \sum_{k=1}^{n} k = \frac{n(n+1)}{2} \]
+\begin{equation*}
+  E = mc^2 \label{eq:e}
+\end{equation*}
+\begin{align}
+  a &= b \\
+  c &= d
+\end{align}
+
+\begin{verbatim}
+verbatim \section{x} $y$ % not a comment
+\end{verbatim}
+\begin{lstlisting}[language=Python]
+print("hi")  # \emph{raw}
+\end{lstlisting}
+\begin{minted}{python}
+x = 1
+\end{minted}
+Verb: \verb+a|b+ and \verb*{c d}.
+
+\begin{figure}[htbp]
+  \centering
+  \begin{subfigure}{0.45\textwidth}
+    \includegraphics[width=\linewidth]{img/a.png}
+    \caption{First panel}\label{fig:a}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}{0.45\textwidth}
+    \includegraphics[width=\linewidth]{img/b.png}
+    \caption{Second panel}
+  \end{subfigure}
+  \caption{Two panels, see \ref{fig:a} and \cref{fig:a}.}
+  \label{fig:both}
+\end{figure}
+
+\begin{table}[h]
+  \caption{A table}
+  \begin{tabular}{l|cc}
+    \toprule
+    Name & \multicolumn{2}{c}{Value} \\
+    \midrule
+    alpha & 1 & 2 \\
+    beta  & 3 & 4 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{itemize}
+  \item First item
+  \item Second item with \textbf{bold}
+    \begin{enumerate}
+      \item Nested one
+      \item Nested two
+        \begin{itemize}
+          \item Deep
+        \end{itemize}
+    \end{enumerate}
+  \item Third
+\end{itemize}
+
+\begin{enumerate}[label=(\alph*)]
+  \item Lettered
+\end{enumerate}
+
+Links: \href{https://example.org/a_b?c=d&e=f}{the site}, \url{https://example.org/~x}, and \href{mailto:a@b.c}{mail}.
+Citations: \cite{smith2020}, \citep[p.~3]{doe2019, roe2021}, \citet{poe2018}, \textcite{x}, \parencite{y}, \autocite{z}.
+
+Accents: caf\'e, na\"ive, \v{S}koda, \c{c}a, \~n, \^o, \`a, \'{e}, \H{o}.
+Ligatures: wait---what -- ``quoted'' and 'single' and ?` !`
+Ties~here and a non-breaking~space, \footnote{A note with $m$ inside.} and \emph{emph}.
+\textit{italic} \texttt{mono \# text} \underline{u} \uline{v}.
+
+\begin{quote}
+  A quoted block.
+\end{quote}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\todo}[1]{\textcolor{red}{#1}}
+\begin{center}Centered \todo{pending}\end{center}
+\noindent\hspace{1em}\vspace*{2pt}\newpage
+Unclosed group {no close here
+Unclosed math $x + y
+\begin{itemize}
+  \item Unclosed environment
+\bibliographystyle{plain}
+\bibliography{refs}
+\end{document}

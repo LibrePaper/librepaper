@@ -35,6 +35,7 @@ function setup(fetch, { inDesktop = true } = {}) {
   setup(async () => { throw new Error("no request may be sent"); }, { inDesktop: false });
   const desktopOnly = (error) => error.name === "DesktopOnly" && error.message === local.DESKTOP_ONLY_MESSAGE;
   await assert.rejects(local.capabilities(), desktopOnly);
+  await assert.rejects(local.agents(), desktopOnly);
   await assert.rejects(local.manage("/state"), desktopOnly);
   await assert.rejects(local.runRender({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, format: "quarto", output: "html" }), desktopOnly);
   assert.equal(local.DESKTOP_ONLY_MESSAGE, "This needs the LibrePaper desktop app.");
@@ -72,7 +73,7 @@ function setup(fetch, { inDesktop = true } = {}) {
   await assert.rejects(local.capabilities(), unreachable);
   await assert.rejects(local.manage("/state"), unreachable);
   setup(async () => { throw new TypeError("Failed to fetch"); });
-  await assert.rejects(local.manage("/state"), unreachable);
+  await assert.rejects(local.agents(), unreachable);
 }
 
 // A 502 that names a reason is the local service answering a failed remote request: Refused, with its body.
@@ -100,6 +101,22 @@ function setup(fetch, { inDesktop = true } = {}) {
     );
     assert.equal(posts, 1, "a failed job request is not replayed");
   }
+}
+
+// Stop before submission posts no job.
+{
+  let posts = 0;
+  setup(async (url, init = {}) => {
+    if (init.method === "POST") posts += 1;
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    local.runRender({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, format: "quarto", output: "html" }, { signal: controller.signal }),
+    (error) => error.name === "Canceled",
+  );
+  assert.equal(posts, 0, "a stopped run posts no job");
 }
 
 // A 403 from a management route says it is not available for this site.

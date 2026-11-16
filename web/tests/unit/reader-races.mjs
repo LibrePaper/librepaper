@@ -5,20 +5,22 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { m } from "../../src/lib/paraglide/messages.js";
-import { diagnosticContext } from "../../src/lib/diagnostic-context.js";
+import { diagnosticContext } from "../../src/lib/assistant-review.js";
 import { createReaderBoot } from "../../src/lib/reader/boot.js";
 import { createPendingChat } from "../../src/lib/reader/chat.js";
 import { createReaderCollaboration } from "../../src/lib/reader/collaboration.js";
 import { createProjectSession } from "../../src/lib/project-session.js";
 import { createPreviewRenderer } from "../../src/lib/reader/preview-render.js";
 import { createRenderCoordinator } from "../../src/lib/reader/render-coordinator.js";
+import { createSourceSchedule } from "../../src/lib/reader/source-schedule.js";
 import { loadRunes } from "../helpers/runes.mjs";
 import { needsSourceRefresh } from "../../src/lib/reader/source-events.js";
-import { openingFile, previewTarget, rendersAlone, includersOf } from "../../src/lib/opening.js";
 import { englishSource } from "../helpers/english-source.mjs";
 
 const { createBuildSettings } = await loadRunes(new URL("../../src/lib/reader/build-settings.svelte.js", import.meta.url));
 const { createTimeline } = await loadRunes(new URL("../../src/lib/reader/timeline.svelte.js", import.meta.url));
+const { createPainted } = await loadRunes(new URL("../../src/lib/reader/painted.svelte.js", import.meta.url));
+const { createPreviewTarget } = await loadRunes(new URL("../../src/lib/reader/preview-target.svelte.js", import.meta.url));
 
 const reader = englishSource(readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
 const body = (start, end) => {
@@ -28,17 +30,6 @@ const body = (start, end) => {
   assert.notEqual(to, -1, `Reader function boundary not found: ${end}`);
   return reader.slice(from, to);
 };
-
-// Initial Quarto setup must configure the desktop app as active for an editor.
-// If permission is assigned afterwards, editable onboarding examples remain
-// on the Markdown fallback even when the desktop app is already there.
-{
-  const prepare = body("  async function prepare(document_)", "  $effect(() => {");
-  assert.ok(
-    prepare.indexOf("mayEdit = Boolean(allowed)") < prepare.indexOf("scopeLocalApp()"),
-    "prepare resolves edit permission before scoping the local app, which is active only for an editor",
-  );
-}
 
 // Session lifecycle checks use the extracted resource owners directly. The
 // fake room/session expose only the contracts Reader needs, which keeps these
@@ -203,6 +194,8 @@ const context = (values) => {
     previewReason: "none",
     previewChoices: [],
     lockedFile: "",
+    target: { navigation: 0, bump() { this.navigation += 1; } },
+    schedule: { generation: 0 },
     SLUG: "doc",
     buildPreferences: { selection: "automatic", backend: "browser", output: "html" },
     session: null,
@@ -212,8 +205,8 @@ const context = (values) => {
     ...values,
   });
   ctx.renderCoordinator = createRenderCoordinator({
-    navigation: () => ctx.navigationGeneration,
-    source: () => ctx.sourceGeneration,
+    navigation: () => ctx.target.navigation,
+    source: () => ctx.schedule.generation,
     main: () => ctx.treeNow?.().main || "",
     render: (ticket) => ctx.renderPreview(ticket),
   });
@@ -367,6 +360,39 @@ const preview = (values = {}) => {
   assert.equal(harness.published.at(-1)?.kind, "html", "and a flow page is what reaches the frame");
 }
 
+// The engine's source map rides along with the flow page, and is absent when
+// the engine did not return one.
+{
+  const harness = preview({
+    facts: { format: "latex", latexOutput: "html" },
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
+    heading: async () => "",
+    renderers: {
+      formatOf: () => "latex",
+      previewFormatOf: () => "latex",
+      producesPdf: () => true,
+      render: () => Promise.resolve({ html: "<p>page</p>", sources: ["paper.tex", null], diagnostics: [] }),
+    },
+  });
+  await harness.paint();
+  assert.deepEqual(harness.published.at(-1)?.sources, ["paper.tex", null]);
+}
+{
+  const harness = preview({
+    facts: { format: "latex", latexOutput: "html" },
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
+    heading: async () => "",
+    renderers: {
+      formatOf: () => "latex",
+      previewFormatOf: () => "latex",
+      producesPdf: () => true,
+      render: () => Promise.resolve({ html: "<p>page</p>", diagnostics: [] }),
+    },
+  });
+  await harness.paint();
+  assert.equal("sources" in harness.published.at(-1), false);
+}
+
 // A frame showing something this render does not own is refreshed rather than
 // painted over.
 {
@@ -377,6 +403,36 @@ const preview = (values = {}) => {
   await harness.paint();
   assert.equal(harness.refreshed, 1);
   assert.deepEqual(harness.published, []);
+}
+
+// A LaTeX HTML compile that finishes after the source moved on: dropped by
+// default, shown when the page compiles continuously.
+for (const continuous of [false, true]) {
+  const rendered = deferred();
+  // The text really changes, so the result is for older text and not a
+  // bookkeeping-only commit of the same tree.
+  let text = "x";
+  const harness = preview({
+    facts: { format: "latex", latexOutput: "html", latexContinuous: continuous },
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": text }, digests: {} }),
+    heading: async () => "",
+    renderers: {
+      formatOf: () => "latex",
+      previewFormatOf: () => "latex",
+      producesPdf: () => true,
+      render: () => rendered.promise,
+    },
+  });
+  const pending = harness.paint();
+  text = "xy";
+  harness.facts.source += 1;
+  rendered.resolve({ html: "<p>page</p>", diagnostics: [] });
+  await pending;
+  assert.equal(
+    harness.published.some((payload) => payload.kind === "html"),
+    continuous,
+    continuous ? "a continuous compile shows its result after an edit" : "a result for older text is dropped",
+  );
 }
 
 console.log("reader-races: all checks passed");
@@ -395,8 +451,9 @@ console.log("reader-races: all checks passed");
   const active = { files,
     directoryChanged: (events) => !Array.isArray(events) || events.some((event) => directory.has(event.target)) };
   let targets = 0;
-  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, scheduleTargetUpdate: () => targets++ });
-  vm.runInContext(body("  function filesChanged(events, active = session)", "  function refreshPeers()"), ctx);
+  const origins = [];
+  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: (options) => { changes++; origins.push(Boolean(options?.remote)); }, schedule: { scheduleTarget: () => targets++ } });
+  vm.runInContext(body("  function filesChanged(events, active = session, by = \"local\")", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: "cid:2@1:Text" }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(refreshes, 0, "an edit inside a file does not rebuild the directory");
@@ -410,6 +467,12 @@ console.log("reader-races: all checks passed");
   vm.runInContext("filesChanged({})", ctx);
   assert.equal(refreshes, 2, "a change to the directory rebuilds it");
   assert.equal(changes, 4);
+  assert.deepEqual(origins, [false, false, false, false], "this browser's own edits are local");
+  // A collaborator's batch arrives as an import, and the repaint is told so.
+  ctx.events = [{ target: "cid:2@1:Text" }];
+  vm.runInContext("filesChanged(events, session, 'import')", ctx);
+  assert.equal(origins.at(-1), true, "an imported edit is a remote one");
+  changes -= 1;
   // One commit is one batch, so a batch that touches both an included file and
   // the directory rebuilds the list once and repaints once.
   // A rename moves a name in `paths` and touches nothing else. The list used
@@ -428,39 +491,6 @@ console.log("reader-races: all checks passed");
   ctx.other = other;
   vm.runInContext("filesChanged(events, other)", ctx);
   assert.equal(changes, 6, "stale session events are ignored");
-}
-
-// Pointing the preview at a LaTeX file configures the already joined project,
-// even though the initial prepare ran while it was Markdown.
-{
-  let configured = 0;
-  const ctx = context({
-    session: { latexSettings: () => ({ engine: "auto" }) },
-    // The directory itself belongs to the workspace, which is driven on its
-    // own in tests/unit/workspace.mjs. What is checked here is the other half
-    // of that read: re-pointing the preview at the file that is open, which is
-    // a rendering question rather than a directory one.
-    files: [], sourceFormat: "markdown",
-    openTextPath: "paper.tex", lockedPath: "", aloneSet: new Set(), visitorFile: "",
-    liveTreeNow: () => ({ texts: { "paper.tex": "\\documentclass{article}" }, digests: {} }),
-    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {},
-    tick: async () => ({ then: () => {} }), paintPreview: () => {},
-    navigationGeneration: 0, everPainted: false, everPaintedShown: false,
-    docsOrigin: null, navigateFrame: () => {},
-    framePreview: { clear: () => {} },
-    renderCoordinator: { invalidate: () => {} },
-    renderStatus: { resetFailure: () => {} },
-    renderers: { formatOf: () => "latex", previewFormatOf: () => "latex", warm: () => {} },
-   
-    configureLatex: () => configured++,
-    mayEdit: true, mainPathNow: () => "paper.tex",
-  });
-  vm.runInContext(body("  function updatePreviewTarget()", "  // The preview follows the open file"), ctx);
-  vm.runInContext("updatePreviewTarget()", ctx);
-  assert.equal(configured, 1);
-  assert.equal(ctx.previewPath, "paper.tex");
-  assert.equal(ctx.previewReason, "alone");
-  assert.equal(ctx.sourceFormat, "latex");
 }
 
 // LaTeX configuration follows format/session lifetime. Build settings are
@@ -636,17 +666,17 @@ for (const invalidate of [null, "navigation", "main"]) {
   let reviewed = 0;
   let rescheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, mayEdit: true, publishedBundle: null,
+    painted: createPainted(),
+    mayEdit: true, publishedBundle: null,
     outlineRevision: 0, sourceFormat: "", editing: false,
-    previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
-    setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
+    schedule: createSourceSchedule({ editing: () => false, format: () => "", setTimer: () => 1, clearTimer: () => {} }),
     diagnosticPainter: { typed: () => {} },
     refreshReview: () => { reviewed += 1; },
     bundle: { keepCurrent: () => { rescheduled += 1; } },
   });
-  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
+  vm.runInContext(body("  function sourceChanged({ remote = false } = {})", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
-  assert.equal(ctx.sourceGeneration, 1);
+  assert.equal(ctx.schedule.generation, 1);
   assert.equal(reviewed, 1, "an edit refreshes the rows of the Changes panel");
   assert.equal(rescheduled, 0, "an edit never schedules a stored reader rendition");
 }
@@ -679,42 +709,6 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.changeRows)), [], "no session, no rows");
 }
 
-// Further keystrokes must not postpone an editor's already scheduled preview.
-{
-  let scheduled = 0;
-  const ctx = context({
-    sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
-    previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
-    diagnosticPainter: { typed: () => {} },
-    setTimeout: (fn, ms) => {
-      assert.ok(ms <= 50, "Markdown starts rendering within 50 ms of an edit");
-      return ++scheduled;
-    }, clearTimeout: () => {}, paintPreview: () => {},
-  });
-  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
-  for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
-  assert.equal(scheduled, 1);
-  assert.equal(ctx.sourceGeneration, 10);
-}
-
-// Typst's PDF compiler is still scheduled at a bounded cadence: continuous
-// typing must not keep moving the timer's deadline forever.
-{
-  let scheduled = 0;
-  const ctx = context({
-    sourceGeneration: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
-    previewTimer: null, diagnosticPainter: { typed: () => {} },
-    setTimeout: (fn, ms) => {
-      assert.ok(ms <= 50, "Typst starts rendering within 50 ms of an edit");
-      return ++scheduled;
-    }, clearTimeout: () => {}, paintPreview: () => {}, dropHeldRendering: () => {},
-    renderingStore: { schedulePoll: () => {}, cancelPoll: () => {} },
-  });
-  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
-  for (let i = 0; i < 10; i++) vm.runInContext("sourceChanged()", ctx);
-  assert.equal(scheduled, 1, "Typst preview timer remains bounded during typing");
-}
-
 // Loro may notify the main-text observer from inside CodeMirror's update
 // listener. Diagnostic painting must wait until that update has returned;
 // otherwise Editor.setDiagnostics dispatches a forbidden nested update.
@@ -722,8 +716,13 @@ for (const invalidate of [null, "navigation", "main"]) {
   let inEditorUpdate = true;
   let paintedDiagnostics = 0;
   const ctx = context({
-    sourceGeneration: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
+    painted: createPainted(),
+    quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
     previewPath: "main.qmd",
+    schedule: createSourceSchedule({
+      editing: () => true, format: () => "quarto", paint: () => {},
+      requestFrame: () => 1, cancelFrame: () => {}, setTimer: () => 1, clearTimer: () => {},
+    }),
     session: {
       idOf: () => "main", textOf: () => ({ toString: () => "# Draft\n" }),
     },
@@ -733,10 +732,9 @@ for (const invalidate of [null, "navigation", "main"]) {
       paintedDiagnostics++;
     } },
     diagnosticPainter: { typed: () => {} }, diagnosticContext,
-    editing: true, pdfOutput: false, previewTimer: null,
-    setTimeout: () => {}, clearTimeout: () => {}, paintPreview: () => {},
+    editing: true, pdfOutput: false,
   });
-  vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
+  vm.runInContext(body("  function sourceChanged({ remote = false } = {})", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
   inEditorUpdate = false;
   await new Promise(queueMicrotask);
@@ -764,11 +762,12 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(harness.published[0].kind, "html");
   assert.equal(harness.published[0].html, "<p>draft</p>");
 
-  // With Run code on, the stored choice of this computer is what renders.
+  // Quarto is drawn by this browser even with Run code on and a format set to
+  // this computer: its code runs only on an explicit Run.
   harness.facts.buildPreferences = { selection: "automatic", backend: "local", output: "html" };
   harness.facts.localExecution = true;
   await harness.paint();
-  assert.equal(builds.at(-1).backend, "local");
+  assert.equal(builds.at(-1).backend, "browser");
 
   // And a reader who has not approved execution gets the Markdown it is,
   // rather than code this browser was never given permission to run.
@@ -873,40 +872,8 @@ for (const invalidate of [null, "navigation", "main"]) {
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
-// Ctrl-S names where the work is, and reserves "saved" for the server. This
-// browser's own storage is evictable and is one device, so an offline Ctrl-S
-// says what will happen to the typing rather than calling it saved.
-{
-  const said = [];
-  const ctx = context({
-    connected: true, persistence: { pending: 1, local: true, joined: true },
-    say: (value) => { said.push(value); },
-  });
-  vm.runInContext(body("  function reportPersistence()", "  // There is no save, so a close"), ctx);
-  vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, [], "work without durable coverage is not reported as saved");
-  ctx.persistence.pending = 0;
-  ctx.persistence.joined = false;
-  vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, [], "a connected socket is not a completed join");
-  ctx.persistence.joined = true;
-  vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, ["Saved on the server."]);
-  ctx.connected = false;
-  vm.runInContext("reportPersistence()", ctx);
-  assert.match(said[1], /^Offline. Everything typed so far has already reached the server./);
-  ctx.persistence.pending = 2;
-  vm.runInContext("reportPersistence()", ctx);
-  assert.match(said[2], /in this browser only/, "work the server has not seen is not called saved");
-  assert.doesNotMatch(said[1] + said[2], /saved/i, "the word is the server's");
-  // A local write that failed says so through its own failure, not here.
-  ctx.persistence = { pending: 0, local: true, localError: "quota exceeded" };
-  vm.runInContext("reportPersistence()", ctx);
-  assert.equal(said.length, 3);
-}
-
-// Closing the page is held only while work has reached neither the server nor
-// this browser.
+// Closing the page is held when the opening says the work is at risk. What
+// counts as at risk is the opening's, and is checked in opening-sequence.mjs.
 {
   const unloadBody = body("  function beforeUnload(event)", "  // The arrangement is changed");
   const closing = (ctx) => {
@@ -944,7 +911,10 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   collaboration.start({ created_at: "first", role: "editor" });
   const active = fake.session;
   active.joinOptions.send({ type: "doc-update", update: "held" });
-  assert.equal(sent.length, 1, "the initial y-open is sent");
+  assert.equal(sent.length, 0, "nothing is sent while the socket is connecting");
+  await rooms[0].onConnected(true);
+  assert.equal(sent.length, 1, "the initial y-open is sent when the socket opens");
+  assert.equal(fetches, 0, "the first open trusts the document the boot just fetched");
   rooms[0].onConnected(false);
   const stale = rooms[0].onConnected(true);
   const current = rooms[0].onConnected(true);
@@ -955,6 +925,33 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.equal(sent.filter((message) => message.type === "doc-open").length, 2, "only the current reconnect re-opens");
   collaboration.close();
   assert.equal(active.left, true);
+}
+
+// A document restored from the offline copy may have been replaced while this
+// browser was away, so even the first open checks it before sending.
+{
+  const sent = [];
+  let changed = 0;
+  let fetches = 0;
+  const fake = fakeCollaboration();
+  let roomOptions;
+  const collaboration = createReaderCollaboration({
+    slug: "example",
+    fetcher: async () => { fetches++; return { ok: true, json: async () => ({ created_at: "second", role: "editor" }) }; },
+    openRoom: (_slug, options) => {
+      roomOptions = options;
+      return { send: (message) => sent.push(message), sendLive: () => ({ ok: true }), close: () => {} };
+    },
+    collab: fake.module,
+    getCanEdit: () => true,
+    onDocumentChanged: () => changed++,
+  });
+  collaboration.start({ created_at: "first", role: "editor", local_copy: true });
+  await roomOptions.onConnected(true);
+  collaboration.close();
+  assert.equal(fetches, 1, "a local copy is re-checked on the first open");
+  assert.equal(changed, 1, "a replaced document invalidates the local copy");
+  assert.equal(sent.filter((message) => message.type === "doc-open").length, 0);
 }
 
 // A recreated document or changed capability invalidates the old session and
@@ -982,7 +979,7 @@ for (const latest of [
   await roomOptions.onConnected(true);
   collaboration.close();
   assert.equal(changed, 1, "changed metadata invalidates the old session");
-  assert.equal(sent.filter((message) => message.type === "doc-open").length, 1);
+  assert.equal(sent.filter((message) => message.type === "doc-open").length, 0, "the invalidated session never opens");
 }
 
 // Late notifications cannot reach a disposed reader. Two halves: the session
@@ -1089,10 +1086,11 @@ for (const latest of [
   assert.equal(timers[0].cleared, true, "teardown clears the chat timer");
 }
 
-// The preview follows the file open in the source. A file that cannot render
-// alone is shown inside the one file that includes it, a file with nothing to
-// draw empties the preview, and a lock keeps the preview on one file while the
-// source moves on.
+// Reader's share of the preview lock. The target is driven on its own in
+// tests/unit/preview-target.mjs; what is checked here is what Reader adds
+// around it: the eye refuses a file that cannot render alone, a lock opens the
+// split layout when the source is shown alone, and treeNow names the file the
+// target draws.
 {
   const texts = {
     'thesis.tex': '\\documentclass{book}\n\\input{chapters/intro}',
@@ -1102,97 +1100,58 @@ for (const latest of [
   };
   const files = Object.keys(texts).map(path => ({ id: path, path, kind: 'text' }));
   files.push({ id: 'logo.png', path: 'logo.png', kind: 'asset' });
-  const configured = [];
-  let cleared = 0, painted = 0;
+  const painted = createPainted();
   const ctx = context({
     session: { paths: new Map(files.map(f => [f.id, f.path])) },
-    files, openFile: 'thesis.tex', sourceFormat: '', aloneSet: new Set(), visitorFile: '',
-    compact: false, layout: 'source', showMobileView: () => {},
-    viewing: null, editing: true, editor: { text: () => null },
+    files, openFile: 'refs.bib',
+    compact: false, arrangement: { state: { layout: 'source' }, showMobileView: () => {} },
+    viewing: null, editing: true,
     liveTreeNow: () => ({ texts, digests: {} }),
-    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {},
-    renderers: { formatOf: p => p.endsWith('.tex') ? 'latex' : '', previewFormatOf: p => p.endsWith('.tex') ? 'latex' : '', warm: () => {} },
-    configureLatex: f => configured.push(f),
-    SLUG: 'thesis', location: {origin:'http://localhost'},
-    navigationGeneration: 0, issued: 0, docsOrigin: null,
-    framePreview: {clear: () => cleared++},
-    renderCoordinator: { invalidate: () => {} },
-    renderStatus: { resetFailure: () => {}, clearDocx: () => {} },
-    diagnosticPainter: { rendered: () => {} },
-    previewTimer: null, deliveredKind: '', activeSynctex: null, previewCleared: false,
-    navigateFrame: () => {},
-    tick: async () => {}, paintPreview: () => painted++,
+    SLUG: 'thesis',
   });
-  // `lockedPath`, `openTextPath` and the visitor-aware `filesShown` and
-  // `shownOpenId` are derived in the page; here they are read from the same
-  // two ids, as an editor with a session sees them.
+  ctx.target = createPreviewTarget({
+    texts: () => texts,
+    formatOf: (path) => (path.endsWith('.tex') ? 'latex' : ''),
+    open: () => ({
+      textPath: files.find((f) => f.id === ctx.openFile && f.kind === 'text')?.path || '',
+      hasFile: Boolean(ctx.openFile),
+    }),
+    lockedPath: () => files.find((f) => f.id === ctx.target.state.lockedFile)?.path || '',
+    painted: () => painted,
+  });
   vm.runInContext(`
-    Object.defineProperty(globalThis, 'filesShown', { get() { return files; } });
-    Object.defineProperty(globalThis, 'shownOpenId', { get() { return openFile; } });
-    Object.defineProperty(globalThis, 'lockedPath', { get() { return files.find((f) => f.id === lockedFile)?.path || ''; } });
-    Object.defineProperty(globalThis, 'openTextPath', { get() { return files.find((f) => f.id === openFile && f.kind === 'text')?.path || ''; } });
+    Object.defineProperty(globalThis, 'layout', { get() { return arrangement.state.layout; } });
+    Object.defineProperty(globalThis, 'previewPath', { get() { return target.state.path; } });
+    Object.defineProperty(globalThis, 'aloneSet', { get() { return target.state.alone; } });
   `, ctx);
-  vm.runInContext(`${body('  /// Empties the preview', '  // A project with no file at all')}\n${body('  function updatePreviewTarget()', '  // The preview follows the open file')}\n${body('  function lockPreviewOn(id)', '  // Any edit can change')}`, ctx);
-  vm.runInContext(body('  function treeNow()', '  // Painting the preview'), ctx);
-  const open = (id) => { ctx.openFile = id; vm.runInContext('updatePreviewTarget()', ctx); };
+  vm.runInContext(`${body('  function lockPreviewOn(id)', '  function lockPreview(id)')}\n${body('  function lockPreview(id)', '  function unlockPreview()')}\n${body('  function unlockPreview()', '  // A file added, renamed or removed')}\n${body('  function treeNow()', '  // Painting the preview')}`, ctx);
+  const treeMain = () => vm.runInContext('treeNow().main', ctx);
 
-  vm.runInContext('updatePreviewTarget()', ctx);
-  assert.equal(ctx.previewPath, 'thesis.tex', 'the preview starts on the open file');
-  assert.equal(ctx.previewReason, 'alone');
-  assert.deepEqual([...ctx.aloneSet].sort(), ['appendix.tex', 'thesis.tex'], 'the files that render alone are the ones the eye offers');
-
-  open('appendix.tex');
-  assert.equal(ctx.previewPath, 'appendix.tex', 'opening a file that renders alone moves the preview');
-  assert.equal(vm.runInContext('treeNow().main', ctx), 'appendix.tex');
-  await new Promise(setImmediate);
-  assert.equal(painted, 1);
-
-  open('chapters/intro.tex');
-  assert.equal(ctx.previewPath, 'thesis.tex', 'an included file is shown inside its includer');
-  assert.equal(ctx.previewReason, 'inside');
-  assert.equal(vm.runInContext('treeNow().main', ctx), 'thesis.tex');
-
-  open('refs.bib');
-  assert.equal(ctx.previewPath, '', 'a file with nothing to draw empties the preview');
-  assert.equal(ctx.previewReason, 'none');
-  assert.equal(ctx.sourceFormat, '');
-
-  // The eye locks without moving the source.
+  // The eye locks without moving the source, and the source-only layout makes
+  // room for the preview.
+  ctx.target.update();
   vm.runInContext('lockPreview("appendix.tex")', ctx);
   assert.equal(ctx.openFile, 'refs.bib', 'locking does not open the file');
-  assert.equal(ctx.previewPath, 'appendix.tex');
-  assert.equal(ctx.previewReason, 'locked');
-  assert.equal(ctx.layout, 'split', 'a source-only layout makes room for the preview');
-  open('chapters/intro.tex');
-  assert.equal(ctx.previewPath, 'appendix.tex', 'the lock holds while the source moves');
-  assert.equal(vm.runInContext('treeNow().main', ctx), 'appendix.tex');
+  assert.equal(ctx.target.state.lockedFile, 'appendix.tex');
+  assert.equal(ctx.arrangement.state.layout, 'split', 'a source-only layout makes room for the preview');
+  assert.equal(treeMain(), 'appendix.tex', 'treeNow names the file the target draws');
 
+  // The eye offers only the files that render alone, so neither an included
+  // file nor an asset can take the lock.
   vm.runInContext('lockPreview("chapters/intro.tex")', ctx);
-  assert.equal(ctx.lockedFile, 'appendix.tex', 'a file that cannot render alone cannot be locked');
+  assert.equal(ctx.target.state.lockedFile, 'appendix.tex', 'a file that cannot render alone cannot be locked');
+  vm.runInContext('lockPreview("logo.png")', ctx);
+  assert.equal(ctx.target.state.lockedFile, 'appendix.tex', 'an asset cannot be locked');
 
-  // A figure open in the source leaves the preview where it is.
-  open('logo.png');
-  assert.equal(ctx.previewPath, 'appendix.tex');
-
+  // The lock holds while the source moves, and unlocking follows the source again.
+  ctx.openFile = 'chapters/intro.tex';
+  ctx.target.update();
+  assert.equal(treeMain(), 'appendix.tex', 'the lock holds while the source moves');
   vm.runInContext('unlockPreview()', ctx);
-  open('chapters/intro.tex');
-  assert.equal(ctx.previewPath, 'thesis.tex', 'unlocking returns to following the open file');
-  assert.equal(ctx.lockedFile, '');
-
-  // The lock is by identity: a rename keeps it, and a delete drops it.
-  vm.runInContext('lockPreview("appendix.tex")', ctx);
-  files.find(f => f.id === 'appendix.tex').path = 'annex.tex';
-  texts['annex.tex'] = texts['appendix.tex']; delete texts['appendix.tex'];
-  open('chapters/intro.tex');
-  assert.equal(ctx.previewPath, 'annex.tex');
-  ctx.files = files.filter(f => f.id !== 'appendix.tex');
-  delete texts['annex.tex'];
-  open('chapters/intro.tex');
-  assert.equal(ctx.lockedFile, '', 'deleting the locked file drops the lock');
-  assert.equal(ctx.previewPath, 'thesis.tex');
-  assert.ok(cleared >= 3);
+  assert.equal(ctx.target.state.lockedFile, '');
+  assert.equal(treeMain(), 'thesis.tex', 'unlocking returns to following the open file');
 }
-console.log('reader-races: the preview follows the open file, shows includes inside, and honours the lock');
+console.log("reader-races: the eye offers only the files that render alone, and treeNow names the file the target draws");
 
 // Main and secondary previews never expose the retired rendering store.
 assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//);
@@ -1210,10 +1169,18 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   assert.deepEqual(commands, ['lock:paper.tex','unlock','layout-split']);
   vm.runInContext('chooseViewCommand("preview-latex-html"); chooseViewCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
-  const view = body('{#snippet viewItems()}', '{/snippet}');
-  const file = body('{#snippet fileItems()}', '{/snippet}');
-  assert.match(view, /Lock preview on this file/);
-  assert.match(view, /Unlock the preview/);
+  const menusSource = englishSource(readFileSync(new URL("../../src/components/reader/Menus.svelte", import.meta.url), "utf8"));
+  const menuBody = (start, end) => {
+    const from = menusSource.indexOf(start);
+    assert.notEqual(from, -1, `Menus snippet not found: ${start}`);
+    const to = menusSource.indexOf(end, from);
+    assert.notEqual(to, -1, `Menus snippet boundary not found: ${end}`);
+    return menusSource.slice(from, to);
+  };
+  const view = menuBody('{#snippet viewItems()}', '{/snippet}');
+  const file = menuBody('{#snippet fileItems()}', '{/snippet}');
+  assert.match(view, /labelOf\("lock-preview"\)/);
+  assert.match(view, /labelOf\("unlock-preview"\)/);
   assert.match(view, /@render previewItems\(\)/);
   // Running code is the top bar's switch, not a View menu item.
   assert.doesNotMatch(view, /local-execution/);
@@ -1223,10 +1190,9 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   assert.match(file, /value="settings"/);
   assert.match(file, /value="compile"/);
   assert.doesNotMatch(reader, /label="Tools"/);
-  const menus = body('{#snippet menus()}', '{#snippet children()}');
-  assert.match(menus, /<MenubarMenu id="file" label="File"/);
-  assert.match(menus, /<MenubarMenu id="edit" label="Edit"/);
-  assert.match(menus, /<MenubarMenu id="view" label="View"/);
+  assert.match(menusSource, /<MenubarMenu id="file" label="File"/);
+  assert.match(menusSource, /<MenubarMenu id="edit" label="Edit"/);
+  assert.match(menusSource, /<MenubarMenu id="view" label="View"/);
 }
 console.log('reader-races: View menu exposes explicit preview controls at every width');
 

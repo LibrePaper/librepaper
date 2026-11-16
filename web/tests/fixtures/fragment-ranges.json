@@ -1,0 +1,220 @@
+[
+  {
+    "name": "one deletion takes the fragment it made",
+    "before": "abcdef",
+    "edits": [{ "from": 2, "to": 4, "insert": "" }],
+    "after": "abef",
+    "fragments": [{ "id": "f1", "text": "cd", "at": 2 }],
+    "expect": [{ "id": "f1", "edit": 0, "start": 0, "end": 2 }]
+  },
+  {
+    "name": "a deletion with no fragment takes none",
+    "before": "abcdef",
+    "edits": [{ "from": 2, "to": 4, "insert": "" }],
+    "after": "abef",
+    "fragments": [],
+    "expect": []
+  },
+  {
+    "name": "a pure insertion takes nothing, and leaves a fragment unused",
+    "before": "ab",
+    "edits": [{ "from": 1, "to": 1, "insert": "X" }],
+    "after": "aXb",
+    "fragments": [{ "id": "f1", "text": "q", "at": 1 }],
+    "expect": []
+  },
+  {
+    "name": "a deleted text split in two fragments takes both, in order",
+    "before": "abcdef",
+    "edits": [{ "from": 2, "to": 4, "insert": "" }],
+    "after": "abef",
+    "fragments": [
+      { "id": "f1", "text": "c", "at": 2 },
+      { "id": "f2", "text": "d", "at": 2 }
+    ],
+    "expect": [
+      { "id": "f1", "edit": 0, "start": 0, "end": 1 },
+      { "id": "f2", "edit": 0, "start": 1, "end": 2 }
+    ]
+  },
+  {
+    "name": "a run may start at any fragment, skipping one at another gap",
+    "before": "abcdef",
+    "edits": [{ "from": 2, "to": 4, "insert": "" }],
+    "after": "abef",
+    "fragments": [
+      { "id": "f0", "text": "zz", "at": 0 },
+      { "id": "f1", "text": "cd", "at": 2 }
+    ],
+    "expect": [{ "id": "f1", "edit": 0, "start": 0, "end": 2 }]
+  },
+  {
+    "name": "a run is contiguous: a fragment between the pieces breaks it",
+    "before": "abcdef",
+    "edits": [{ "from": 2, "to": 4, "insert": "" }],
+    "after": "abef",
+    "fragments": [
+      { "id": "f1", "text": "c", "at": 2 },
+      { "id": "fz", "text": "q", "at": 2 },
+      { "id": "f2", "text": "d", "at": 2 }
+    ],
+    "expect": []
+  },
+  {
+    "name": "a fragment longer than the deletion is not taken",
+    "before": "abcdef",
+    "edits": [{ "from": 2, "to": 3, "insert": "" }],
+    "after": "abdef",
+    "fragments": [{ "id": "f1", "text": "cd", "at": 2 }],
+    "expect": []
+  },
+  {
+    "name": "a replacement is a deletion: its fragment sits before the new text",
+    "before": "abcd",
+    "edits": [{ "from": 1, "to": 3, "insert": "XY" }],
+    "after": "aXYd",
+    "fragments": [{ "id": "f1", "text": "bc", "at": 1 }],
+    "expect": [{ "id": "f1", "edit": 0, "start": 0, "end": 2 }]
+  },
+  {
+    "name": "two identical deletions keep their own fragments by gap",
+    "before": "a-a-",
+    "edits": [
+      { "from": 0, "to": 1, "insert": "" },
+      { "from": 2, "to": 3, "insert": "" }
+    ],
+    "after": "--",
+    "fragments": [
+      { "id": "f2", "text": "a", "at": 1 },
+      { "id": "f1", "text": "a", "at": 0 }
+    ],
+    "expect": [
+      { "id": "f1", "edit": 0, "start": 0, "end": 1 },
+      { "id": "f2", "edit": 1, "start": 0, "end": 1 }
+    ]
+  },
+  {
+    "name": "the gap search of every deletion runs before any fallback",
+    "before": "a--a",
+    "edits": [
+      { "from": 0, "to": 1, "insert": "" },
+      { "from": 3, "to": 4, "insert": "" }
+    ],
+    "after": "--",
+    "fragments": [
+      { "id": "fx", "text": "a", "at": 2 },
+      { "id": "fy", "text": "a", "at": 1 }
+    ],
+    "expect": [
+      { "id": "fy", "edit": 0, "start": 0, "end": 1 },
+      { "id": "fx", "edit": 1, "start": 0, "end": 1 }
+    ]
+  },
+  {
+    "name": "a deletion whose fragment sits at another gap takes it by the fallback",
+    "before": "abcd",
+    "edits": [{ "from": 2, "to": 3, "insert": "" }],
+    "after": "abd",
+    "fragments": [{ "id": "f1", "text": "c", "at": 0 }],
+    "expect": [{ "id": "f1", "edit": 0, "start": 0, "end": 1 }]
+  },
+  {
+    "name": "a deletion that finds no run takes none, and a later one still can",
+    "before": "a-a",
+    "edits": [
+      { "from": 0, "to": 1, "insert": "" },
+      { "from": 2, "to": 3, "insert": "" }
+    ],
+    "after": "-",
+    "fragments": [{ "id": "f1", "text": "a", "at": 1 }],
+    "expect": [{ "id": "f1", "edit": 1, "start": 0, "end": 1 }]
+  },
+  {
+    "name": "an insertion before the deletion moves its gap",
+    "before": "abcd",
+    "edits": [
+      { "from": 0, "to": 0, "insert": "XY" },
+      { "from": 2, "to": 3, "insert": "" }
+    ],
+    "after": "XYabd",
+    "fragments": [{ "id": "f1", "text": "c", "at": 4 }],
+    "expect": [{ "id": "f1", "edit": 1, "start": 0, "end": 1 }]
+  },
+  {
+    "name": "an insertion after the deletion leaves its gap",
+    "before": "abcd",
+    "edits": [
+      { "from": 1, "to": 2, "insert": "" },
+      { "from": 3, "to": 3, "insert": "Z" }
+    ],
+    "after": "acZd",
+    "fragments": [{ "id": "f1", "text": "b", "at": 1 }],
+    "expect": [{ "id": "f1", "edit": 0, "start": 0, "end": 1 }]
+  },
+  {
+    "name": "astral characters: deleting an emoji takes its fragment, two units wide",
+    "before": "a😀b",
+    "edits": [{ "from": 1, "to": 3, "insert": "" }],
+    "after": "ab",
+    "fragments": [{ "id": "f1", "text": "😀", "at": 1 }],
+    "expect": [{ "id": "f1", "edit": 0, "start": 0, "end": 2 }]
+  },
+  {
+    "name": "astral characters: a deletion after an emoji sits at a gap counted in units",
+    "before": "😀abc😀",
+    "edits": [{ "from": 3, "to": 4, "insert": "" }],
+    "after": "😀ac😀",
+    "fragments": [{ "id": "f1", "text": "b", "at": 3 }],
+    "expect": [{ "id": "f1", "edit": 0, "start": 0, "end": 1 }]
+  },
+  {
+    "name": "astral characters: two emoji deletions keep their own fragments by gap",
+    "before": "😀a😀b",
+    "edits": [
+      { "from": 0, "to": 2, "insert": "" },
+      { "from": 3, "to": 5, "insert": "" }
+    ],
+    "after": "ab",
+    "fragments": [
+      { "id": "f2", "text": "😀", "at": 1 },
+      { "id": "f1", "text": "😀", "at": 0 }
+    ],
+    "expect": [
+      { "id": "f1", "edit": 0, "start": 0, "end": 2 },
+      { "id": "f2", "edit": 1, "start": 0, "end": 2 }
+    ]
+  },
+  {
+    "name": "astral characters: a run of accented, emoji and symbol pieces gets ranges in units",
+    "before": "xé😀☕y",
+    "edits": [{ "from": 1, "to": 5, "insert": "" }],
+    "after": "xy",
+    "fragments": [
+      { "id": "f1", "text": "é😀", "at": 1 },
+      { "id": "f2", "text": "☕", "at": 1 }
+    ],
+    "expect": [
+      { "id": "f1", "edit": 0, "start": 0, "end": 3 },
+      { "id": "f2", "edit": 0, "start": 3, "end": 4 }
+    ]
+  },
+  {
+    "name": "astral characters: replacing an emoji with another keeps the deleted one whole",
+    "before": "a😀b",
+    "edits": [{ "from": 1, "to": 3, "insert": "😁" }],
+    "after": "a😁b",
+    "fragments": [{ "id": "f1", "text": "😀", "at": 1 }],
+    "expect": [{ "id": "f1", "edit": 0, "start": 0, "end": 2 }]
+  },
+  {
+    "name": "astral characters: an emoji inserted before the deletion moves its gap by two units",
+    "before": "abcd",
+    "edits": [
+      { "from": 0, "to": 0, "insert": "😀" },
+      { "from": 2, "to": 3, "insert": "" }
+    ],
+    "after": "😀abd",
+    "fragments": [{ "id": "f1", "text": "c", "at": 4 }],
+    "expect": [{ "id": "f1", "edit": 1, "start": 0, "end": 1 }]
+  }
+]

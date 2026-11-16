@@ -2,6 +2,8 @@ import { needsBibliography } from "./bibliography-engine.js";
 import { formatOf, previewFormatOf } from "./formats.js";
 import { textPage } from "./text-page.js";
 import { typstTree } from "./pandoc/typst.js";
+import { expandOrgIncludes } from "./org-include.js";
+import { orgTreeReady } from "./source-trees.js";
 import { parse as parseLatexLog } from "./latex/log.js";
 import { parse as parseTypstLog } from "./typst-log.js";
 // The renderers, loaded into the editor.
@@ -9,7 +11,9 @@ import { parse as parseTypstLog } from "./typst-log.js";
 // The modules come from the same pinned renderer releases as the native
 // command line tools, so the preview follows the document source. Rendering
 // stays in this browser or the desktop app and is never stored by
-// the deployment.
+// the deployment. The one exception: when the author turns on Share results,
+// the output of a local Quarto HTML run is stored per document and shown in
+// the draft of collaborators.
 //
 // They are plain WebAssembly with a handful of exports rather than
 // wasm-bindgen, so this is the whole of the glue: reserve memory in the
@@ -21,11 +25,14 @@ import { parse as parseTypstLog } from "./typst-log.js";
 import * as latex from "./latex.js";
 import * as latexHtml from "./latex/html.js";
 import * as quarto from "./engines/quarto.js";
+import * as calepin from "./calepin-results.js";
 import * as localBridge from "./desktop/client.js";
+import { logMissesAFile, runDirectoryDiagnostics } from "./reader/run-directory.js";
 import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
 import { m } from "./paraglide/messages.js";
+import { houseStyleCss, latexmlWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle, withHouseStyle } from "./house-style.js";
 
 /// This browser's identity for a render tree -- `{ main, texts, digests }`
 /// -- used only as a transient cache key: whether a local build's job
@@ -65,12 +72,12 @@ export function available(format) {
 }
 
 // The source format and the output painted by the reader are separate
-// concerns. Both LaTeX and Typst produce a paged PDF; Markdown and authored
+// concerns. Both LaTeX and Typst produce a paged PDF; Markdown, Org and authored
 // HTML produce flow HTML. Keeping this mapping here prevents the reader from
 // accidentally using LaTeX's compiler chooser as a proxy for PDF support.
 export function outputKind(format) {
   if (format === "latex" || format === "typst") return "pdf";
-  if (format === "markdown" || format === "quarto" || format === "html" || format === "text") return "html";
+  if (format === "markdown" || format === "quarto" || format === "org" || format === "html" || format === "text") return "html";
   return "";
 }
 
@@ -116,6 +123,11 @@ export function resolveHtmlAssetUrls(source, tree) {
     (whole, attribute, quote, reference) => `${attribute}=${quote}${resolve(reference)}${quote}`);
 }
 
+/// Seconds the last completed LaTeX HTML compile took, or null before one has.
+export function latexHtmlLastSeconds() {
+  return latexHtml.lastCompileSeconds();
+}
+
 export function cancelPreview(options) {
   latexHtml.cancel(options);
   activeLocalAbort?.abort();
@@ -153,10 +165,11 @@ export function diff(oldText, newText, format = "markdown") {
 export { formatOf, previewFormatOf } from "./formats.js";
 
 // The output a local render of this document produces, or "" when the format
-// has no command for what is asked: the commands for LaTeX and Typst make a
-// PDF only, so an HTML preview of either stays in the browser.
+// has no command for what is asked: the command for LaTeX makes a PDF only,
+// and the one for Typst makes a PDF or an HTML page.
 function localOutput(format, buildPreferences, requestedFormat) {
-  if (format === "latex" || format === "typst") return requestedFormat === "html" ? "" : "pdf";
+  if (format === "latex") return requestedFormat === "html" ? "" : "pdf";
+  if (format === "typst") return requestedFormat === "html" ? "html" : "pdf";
   if (format !== "markdown" && format !== "quarto") return "";
   const chosen = buildPreferences?.output;
   return chosen === "pdf" || chosen === "docx" ? chosen : "html";
@@ -170,6 +183,13 @@ function localDiagnostics(format, result, tree) {
   if (format === "latex") return parseLatexLog(result.log, { main: tree.main, paths });
   if (format === "typst" && !result.ok) return parseTypstLog(result.log, { paths });
   return [];
+}
+
+// The page of a local HTML render. A Quarto page is shown in the house style;
+// `artifact` stays the render as it came, for whatever saves or exports it.
+async function localHtml(format, artifact) {
+  const html = new TextDecoder().decode(artifact);
+  return format === "quarto" ? quartoWithHouseStyle(html, await houseStyleCss()) : html;
 }
 
 /// Renders a document into the page a save would store, and says what the
@@ -188,7 +208,11 @@ function localDiagnostics(format, result, tree) {
 /// A render carries `html` or `pdf`, never both, and the caller posts
 /// whichever it has: flow documents are painted into the shell and paged
 /// documents into the PDF frame, and that is the whole difference here.
-export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "" } = {}) {
+///
+/// An optional `signal` stops a render on this computer: one already aborted
+/// when the job would start throws an `AbortError` without starting it, and
+/// one that fires later cancels the job in flight.
+export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "", signal = null, wanted = [] } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = previewFormatOf(tree.main);
   // A format set to this computer renders there, through the command Settings
@@ -198,18 +222,34 @@ export async function render(tree, title, { manual = false, format: requestedFor
   if (output && buildPreferences?.backend === "local") {
     localBridge.configure({ project, origin: globalThis.location?.origin || "" });
     const digest = await snapshotDigest(tree);
-    const job = { snapshot: digest, generation: Date.now() };
+    // Stop pressed while the snapshot was being hashed: nothing has started,
+    // so the job in flight (if any) is not another render's to cancel.
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const job = { snapshot: digest, generation: Date.now(), wanted };
     activeLocalAbort?.abort();
     const abort = new AbortController();
+    signal?.addEventListener("abort", () => abort.abort(), { once: true });
     activeLocalAbort = abort;
     const result = await localBridge.runRender({ job, tree, format, output, entrypoint: tree.main }, { signal: abort.signal });
+    // A Quarto run that could not find a file is told where its code looks.
+    const missesAFile = format === "quarto" && !result.ok && logMissesAFile(result.log);
+    const runDirectoryPath = missesAFile
+      ? await localBridge.runDirectory(project).then((status) => status?.path || null, () => null)
+      : null;
     return {
+      notices: result.notices || [],
       artifact: result.artifact,
       artifactKind: output,
-      html: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null,
+      html: output === "html" && result.artifact ? await localHtml(format, result.artifact) : null,
+      // The render as it came, for an export; `html` is the preview's copy.
+      exportHtml: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null,
       pdf: output === "pdf" ? result.artifact : null,
       synctex: result.synctex,
-      diagnostics: localDiagnostics(format, result, tree),
+      results: result.results ?? null,
+      diagnostics: [
+        ...localDiagnostics(format, result, tree),
+        ...runDirectoryDiagnostics({ format, ok: result.ok, log: result.log, notices: result.notices }, runDirectoryPath, [...Object.keys(tree.texts || {}), ...Object.keys(tree.assets || {})]),
+      ],
       log: result.log,
       provenance: result.provenance,
       ok: result.ok,
@@ -244,12 +284,17 @@ export async function render(tree, title, { manual = false, format: requestedFor
       const settings = configuration?.latex && Object.prototype.hasOwnProperty.call(configuration.latex, "settings")
         ? configuration.latex.settings
         : Object.prototype.hasOwnProperty.call(tree, "settings") ? tree.settings || {} : latex.settings();
-      return latexHtml.compile(tree, {
-        base: configuration?.latex?.base || latex.at(),
-        settings,
-        configuration: configuration?.latex,
-      });
+      const [result, css] = await Promise.all([
+        latexHtml.compile(tree, {
+          base: configuration?.latex?.base || latex.at(),
+          settings,
+          configuration: configuration?.latex,
+        }),
+        houseStyleCss(),
+      ]);
+      return result?.html ? { ...result, html: latexmlWithHouseStyle(result.html, css) } : result;
     }
+    latex.ensureProject(project);
     const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok } = await latex.compile(tree, { manual });
     // Keep the output channels explicit. In particular, a failed LaTeX
     // compile has no HTML page; `undefined` would look like a page to callers
@@ -271,42 +316,108 @@ export async function render(tree, title, { manual = false, format: requestedFor
       ok,
     };
   }
-  // Labels may be Svelte proxies, which cannot cross a worker boundary.
-  // Send only the compiler inputs, copied into ordinary maps.
-  const quartoTree = format === "quarto" ? await quarto.virtualTree(tree, {
-    expandIncludes: tree.texts || {},
-  }) : tree;
   const capturedSettings = configuration && Object.prototype.hasOwnProperty.call(configuration, "settings")
-    ? configuration.settings : quartoTree.settings;
+    ? configuration.settings : tree.settings;
   // Markdown and Quarto reach a PDF through Pandoc and Typst: Pandoc writes
   // a Typst source beside the document and the Typst renderer compiles it.
   // Quarto's own diagnostics describe the HTML path and are not mapped here.
   if ((format === "markdown" || format === "quarto") && buildPreferences?.output === "pdf") {
-    const pandocInput = format === "quarto" ? quarto.pandocDraft(quartoTree, source) : quartoTree;
+    let pandocInput = tree;
+    if (format === "quarto") {
+      const drafted = await quartoDraft(tree, 1, capturedModules, capturedSettings).catch((error) => ({ error }));
+      if (drafted.error) return quartoFailure(drafted.error, tree, title);
+      pandocInput = draftTree(tree, drafted.markdown);
+    }
     const typstSource = await typstTree(pandocInput, { from: "markdown" });
     return renderTypst(typstSource, title, "pdf", capturedModules, capturedSettings);
   }
-  const module = (format === "markdown" || format === "quarto") && needsBibliography({ source }) ? "citations" : format === "quarto" ? "markdown" : format;
-  if (format === "typst") return renderTypst(quartoTree, title, requestedFormat, capturedModules, capturedSettings);
-  return request(module, "render", {
-    tree: renderTree(quartoTree, capturedSettings),
-    title,
-  }, capturedModules).then((result) => {
-    if (format === "quarto" && result) {
-      return { ...result, diagnostics: quarto.mapQuartoDiagnostics(result.diagnostics || [], quartoTree) };
+  if (format === "typst") return renderTypstDraft(tree, title, requestedFormat, capturedModules, capturedSettings);
+  // The Org renderer does not follow #+INCLUDE, so the included text goes in first.
+  if (format === "org") await orgTreeReady(tree.texts?.[tree.main] ?? "");
+  if (format === "quarto") {
+    try {
+      return await renderQuarto(tree, title, capturedModules, capturedSettings, source);
+    } catch (error) {
+      return quartoFailure(error, tree, title);
     }
-    return result;
-  });
+  }
+  const module = format === "markdown" && needsBibliography({ source }) ? "citations" : format;
+  const renderable = format === "org" ? expandOrgIncludes(tree) : tree;
+  return housed(await request(module, "render", {
+    tree: renderTree(renderable, capturedSettings),
+    title,
+  }, capturedModules));
+}
+
+// The wasm renderers' pages carry no house stylesheet of their own: the app
+// puts it in, so the preview and every export of the page have it.
+function housed(result) {
+  return typeof result?.html === "string" ? { ...result, html: withHouseStyle(result.html) } : result;
+}
+
+// Quarto cross references (@fig-x, @tbl-x, …) look like citations to
+// needsBibliography; they are the dialect's, not the bibliography's.
+const QUARTO_CROSSREF = /@(?:fig|tbl|sec|eq|lst|thm|lem|cor|prp|cnj|def|exm|exr|sol|rem)-[\p{L}\p{N}_:.-]*/gu;
+function quartoNeedsBibliography(source) {
+  return needsBibliography({ source: String(source ?? "").replace(QUARTO_CROSSREF, "") });
+}
+
+// The Markdown module renders a Quarto document itself: the .qmd is the main
+// file and the saved outputs reach it in a file beside the sources. Only a
+// document with a bibliography still goes through citations.wasm, which does
+// not know Quarto, so that one is given the module's draft as plain Markdown.
+async function renderQuarto(tree, title, moduleUrls, settings, source) {
+  const sidecar = await quarto.quartoSidecar(source, { path: tree.main, results: tree.quartoResults ?? null, files: tree.texts });
+  const withSidecar = { ...tree, texts: { ...tree.texts, [quarto.QUARTO_SIDECAR]: JSON.stringify(sidecar) } };
+  if (quartoNeedsBibliography(source)) {
+    const drafted = await quartoDraft(withSidecar, 0, moduleUrls, settings);
+    const result = await request("citations", "render", {
+      tree: renderTree(draftTree(tree, drafted.markdown), settings),
+      title,
+    }, moduleUrls);
+    const mapped = quarto.mapDraftDiagnostics(result?.diagnostics || [], drafted.line_map, tree.main);
+    return housed({ ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] });
+  }
+  const result = await request("markdown", "render", { tree: renderTree(withSidecar, settings), title }, moduleUrls);
+  return result ? housed({ ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) }) : result;
+}
+
+// The module's Quarto draft of a tree, as Markdown with its line map.
+function quartoDraft(tree, forPandoc, moduleUrls, settings) {
+  return request("markdown", "draft", { tree: renderTree(tree, settings), forPandoc }, moduleUrls).then((drafted) => ({
+    ...drafted,
+    diagnostics: drafted.diagnostics || [],
+  }));
+}
+
+// The draft stands in for the .qmd, as a Markdown file beside it.
+function draftTree(tree, markdown) {
+  let main = tree.main.replace(/\.qmd$/i, ".md");
+  while (Object.hasOwn(tree.texts || {}, main)) main = main.replace(/\.md$/, "-draft.md");
+  const texts = { ...tree.texts, [main]: markdown };
+  delete texts[tree.main];
+  return { ...tree, main, texts };
+}
+
+// A Quarto document the module cannot draft (an older module, or a failure
+// inside it) is shown as its source, with the reason beside it.
+async function quartoFailure(error, tree, title) {
+  const reason = error?.message || String(error);
+  return {
+    html: await textPage(tree.texts?.[tree.main] ?? "", tree.main, title || tree.main),
+    pdf: null,
+    diagnostics: [{ severity: "error", message: m.renderers_quarto_failed(), hints: [reason], file: tree.main, line: 0, column: 0, end_line: 0, end_column: 0 }],
+  };
 }
 
 // Labels may be Svelte proxies, which cannot cross a worker boundary.
 // Send only the compiler inputs, copied into ordinary maps.
-function renderTree(tree, settings) {
+function renderTree(tree, settings, { urls = true } = {}) {
   return {
     main: tree.main,
     texts: { ...tree.texts },
     assets: { ...tree.assets },
-    urls: { ...tree.urls },
+    urls: urls ? { ...tree.urls } : {},
     // Captured settings travel with historical trees. Current WASM modules
     // may ignore this field, while release-aware adapters can resolve it
     // without changing the worker ABI.
@@ -320,7 +431,7 @@ function renderTree(tree, settings) {
 // here so Reader never decodes a PDF through TextDecoder.
 async function renderTypst(tree, title, requestedFormat, moduleUrls, settings) {
   const result = await request("typst", "render", {
-    tree: renderTree(tree, settings),
+    tree: renderTree(tree, settings, { urls: false }),
     title,
     format: requestedFormat,
   }, moduleUrls);
@@ -328,7 +439,7 @@ async function renderTypst(tree, title, requestedFormat, moduleUrls, settings) {
     const html = result?.html;
     return {
       ...result,
-      html: html == null ? null : String(html),
+      html: html == null ? null : typstWithHouseStyle(String(html), await houseStyleCss()),
       pdf: null,
       diagnostics: result?.diagnostics || [],
     };
@@ -342,6 +453,28 @@ async function renderTypst(tree, title, requestedFormat, moduleUrls, settings) {
   };
 }
 
+// A Calepin notebook imports its runtime and its stored results from
+// /.calepin/. The browser never runs code: it compiles with the files of
+// the last run when it has them, and otherwise with the bundled runtime
+// switched off, which draws the code without its output.
+async function renderTypstDraft(tree, title, requestedFormat, moduleUrls, settings) {
+  const saved = tree.calepinResults?.files ?? null;
+  if (!saved && !calepin.usesCalepin(tree.texts)) return renderTypst(tree, title, requestedFormat, moduleUrls, settings);
+  if (!saved) return renderTypst(calepin.overlay(tree, await calepin.runtimeFiles(), { disabled: true }), title, requestedFormat, moduleUrls, settings);
+  const drawn = await renderTypst(calepin.overlay(tree, saved), title, requestedFormat, moduleUrls, settings);
+  if (!missesChunk(drawn)) return drawn;
+  // A chunk added since the run has no stored result, and Calepin's
+  // runtime stops there. The draft is drawn without outputs instead.
+  const plain = await renderTypst(calepin.overlay(tree, saved, { disabled: true }), title, requestedFormat, moduleUrls, settings);
+  return { ...plain, diagnostics: [...(plain.diagnostics || []), { severity: "info", message: m.renderers_calepin_outputs_hidden(), file: tree.main, line: 0, column: 0, end_line: 0, end_column: 0 }] };
+}
+
+// True when Calepin's runtime stopped at a chunk with no stored result.
+function missesChunk(result) {
+  if (result?.pdf || result?.html) return false;
+  return (result?.diagnostics || []).some((diagnostic) => calepin.MISSING_LABEL.test(String(diagnostic?.message ?? "")));
+}
+
 /// The page to show where a flow document would be when compilation fails.
 /// Paged formats leave the frame empty so the Reader can show source and
 /// diagnostics without falling back to an older result.
@@ -350,7 +483,8 @@ export async function failurePage(title, format) {
   if (producesPdf(format)) return null;
   // A data file never fails to preview.
   if (format === "text") return null;
-  return request(format === "quarto" ? "markdown" : format, "failure", { title });
+  const page = await request(format === "quarto" ? "markdown" : format, "failure", { title });
+  return typeof page === "string" && page ? withHouseStyle(page) : page;
 }
 
 /// The document's first heading, which names a document that was never given a
@@ -479,10 +613,22 @@ export function htmlTitleOf(source) {
 /// The promise settles once the engine is loaded, which is what the preview's
 /// waiting display reports as the engine stage. It never rejects: a failure
 /// is reported when something is actually rendered.
-export function warm(format) {
+export function warm(format, source = "") {
   if (format === "html" || format === "text") return Promise.resolve(); // the identity has nothing to fetch
   // LaTeX is not a renderer-worker format: `latex.js` loads the pinned
   // engine release itself, on the editor's side, and reports its own phase.
-  if (format === "latex") return Promise.resolve();
-  return request(format === "quarto" ? "markdown" : format, "warm").then(() => {}, () => {});
+  if (format === "latex") {
+    // The downloads start now rather than at the first paint. Without a
+    // mirror yet, the reader asks again once /api/config has answered.
+    if (!latex.at()) return Promise.resolve();
+    const settings = latex.settings();
+    return settings.output === "pdf" ? latex.warm() : latexHtml.warm(latex.at(), settings);
+  }
+  const loading = [request(format === "quarto" ? "markdown" : format, "warm")];
+  // A document with citations renders in citations.wasm, so it starts at the
+  // same time as the Markdown module rather than at the first render.
+  if ((format === "markdown" && needsBibliography({ source })) || (format === "quarto" && quartoNeedsBibliography(source))) {
+    loading.push(request("citations", "warm"));
+  }
+  return Promise.all(loading.map((load) => load.then(() => {}, () => {}))).then(() => {});
 }

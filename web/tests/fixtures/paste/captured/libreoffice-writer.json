@@ -1,0 +1,25 @@
+{
+  "name": "libreoffice-writer",
+  "app": "LibreOffice 26.2",
+  "browser": null,
+  "note": null,
+  "platform": "linux",
+  "session": "wayland",
+  "types": [
+    "application/x-openoffice-embed-source-xml",
+    "text/rtf",
+    "text/richtext",
+    "text/html",
+    "text/markdown",
+    "text/plain",
+    "application/x-openoffice-link",
+    "application/x-openoffice-objectdescriptor-xml",
+    "UTF8_STRING",
+    "STRING",
+    "application/x-libreoffice-internal-id-N",
+    "SAVE_TARGETS"
+  ],
+  "capturedAt": "2026-11-12",
+  "htmlBytes": 7473,
+  "textBytes": 2724
+}

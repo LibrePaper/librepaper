@@ -1,11 +1,11 @@
 <script>
   import { tick } from "svelte";
-  import PanelHeader from "../PanelHeader.svelte";
+  import PanelTabs from "../PanelTabs.svelte";
   import Modal from "../Modal.svelte";
   import Icon from "../Icon.svelte";
   import ShareRow from "./share/ShareRow.svelte";
   import ShareForm from "./share/ShareForm.svelte";
-  import { allows, budgetOf } from "./share/shared.js";
+  import { allows, anonymousAllowed, budgetOf } from "./share/shared.js";
   import { createSharing } from "../../lib/sharing.svelte.js";
   import { m } from "../../lib/paraglide/messages.js";
 
@@ -14,12 +14,13 @@
   let root = $state(null);
   // Whether the create form is open. It stands in for the toolbar.
   let creating = $state(false);
-  let draft = $state({ name: "", role: "reader", until: "7d", budget: "" });
+  let draft = $state({ name: "", role: "reader", until: "7d", budget: "", anonymous: true });
   // The link waiting to be revoked, or null. It stops a link somebody may
   // already be holding.
   let confirming = $state(null);
 
   const allowed = (role) => allows(sharing.sharing, role);
+  const anonymous = (role) => anonymousAllowed(sharing.sharing, role);
   const links = $derived(sharing.sharing?.links ?? []);
 
   $effect(() => {
@@ -35,7 +36,7 @@
   }
 
   function startCreate() {
-    draft = { name: "", role: "reader", until: "7d", budget: "" };
+    draft = { name: "", role: "reader", until: "7d", budget: "", anonymous: true };
     creating = true;
   }
 
@@ -46,7 +47,7 @@
 
   async function commit() {
     if (!creating) return;
-    const answer = await sharing.change({ create: { kind: "link", role: draft.role, name: draft.name.trim(), until: draft.until, budget: budgetOf(draft.budget) } });
+    const answer = await sharing.change({ create: { kind: "link", role: draft.role, name: draft.name.trim(), until: draft.until, budget: budgetOf(draft.budget), anonymous: draft.anonymous && anonymous(draft.role) } });
     if (!answer) return;
     creating = false;
     focusBack();
@@ -87,9 +88,8 @@
       <div class="share-scroll">
         <!-- Inside the scroller, so a short panel still reaches the form's buttons. -->
         {#if creating}
-          <ShareForm kind="link" bind:draft busy={sharing.busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
+          <ShareForm kind="link" bind:draft busy={sharing.busy} {allowed} anonymousAllowed={anonymous} onsubmit={commit} oncancel={cancelForm} />
         {/if}
-        <p class="panel-meta">{m.share_links_scope_note()}</p>
         {#if links.length === 0}
           <p class="panel-meta">{m.share_no_links()}</p>
         {:else}
@@ -104,6 +104,7 @@
     </div>
   {:else}
     <div class="share-pad">
+      {#if !canShare && !sharing.error}<p class="panel-muted">{m.share_owner_only()}</p>{/if}
       {@render messages()}
       {#if sharing.error && !sharing.sharing}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => sharing.load()}>{m.common_try_again()}</button>{/if}
     </div>
@@ -113,8 +114,9 @@
 <div bind:this={root} class="share-root">
   {#if inline}
     <section class="panel panel-tabbed share-sidebar" aria-label={m.common_share()}>
-      <PanelHeader title={m.common_share()} />
-      {@render content()}
+      <PanelTabs id="share" title={m.common_share()}>
+        {@render content()}
+      </PanelTabs>
     </section>
   {:else}
     <Modal bind:open title={m.common_share()} onclose={onclose}
@@ -136,6 +138,11 @@
 <style>
   .share-root { display: contents; }
   .share-sidebar :global(select) { max-width: 100%; }
+  /* The sidebar's pane already carries the panel's padding, so the content's
+     own padding comes off here. The modal keeps it. The pad is a block in a
+     clipped flex column, so it takes the pane's room and scrolls within it. */
+  .share-sidebar :global(.share-pane) { padding: 0; }
+  .share-sidebar :global(.share-pad) { flex: 1 1 0; min-height: 0; padding: 0; }
   .share-modal-body { height: min(30rem, 60vh); min-width: 0; }
   .share-pane { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; padding: var(--panel-padding); }
   .share-pad { padding: var(--panel-padding); overflow-y: auto; }
@@ -146,5 +153,9 @@
   .share-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
   .share-scroll > p { margin-block: calc(var(--spacing) * 1); }
   .share-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--color-divider); }
-  .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
+  .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-secondary); font-size: var(--panel-meta-size); }
+  /* Phones: the new link and new token control is a finger's height. */
+  @media (max-width: 767px) {
+    .share-new { min-height: 2.75rem; }
+  }
 </style>

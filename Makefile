@@ -19,10 +19,12 @@ CARGO_PROFILE ?= release
 # The browser renderers, fetched into web/wasm (not embedded in the binary):
 # tests read them, and tools/assets/mirror publish sends them to the asset mirror.
 WASM    := web/wasm/markdown.wasm
+ORG     := web/wasm/org.wasm
 BIB     := web/wasm/bibliography.wasm
 CITES   := web/wasm/citations.wasm
 # Fetched, not built: see assets.lock and the pinned inputs section below.
 TYPST   := web/wasm/typst.wasm
+TYPST_SYNTAX := web/wasm/typst-syntax.wasm
 PANDOC  := web/wasm/pandoc.wasm
 HARPER  := web/wasm/harper.wasm
 # The pages. web/dist is entirely a build output, so it is an input to
@@ -37,7 +39,7 @@ LCM_DIR := web/vendor/loro-codemirror
 LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
            $(LCM_DIR)/awareness.ts $(LCM_DIR)/ephemeral.ts $(LCM_DIR)/utils.ts
 # Everything tools/assets/pins.mjs fetch writes; see the pinned inputs section below.
-PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(PANDOC) $(HARPER) $(LCM)
+PINNED  := $(WASM) $(ORG) $(BIB) $(CITES) $(TYPST) $(TYPST_SYNTAX) $(PANDOC) $(HARPER) $(LCM)
 # web/src/site is deliberately not in this list. The marketing page and the
 # docs chrome are built by vite.site.config.js into docs/_site, which the
 # binary does not embed, and no page under web/pages reaches them. Counting
@@ -45,7 +47,7 @@ PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(PANDOC) $(HARPER) $(LCM)
 # rewrites every file in web/dist, which build.rs watches -- so editing the
 # landing page recompiled the whole crate. The site builds on its own: see the
 # site target at the bottom of this file.
-WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mjs web/tests/unit/vocabulary.js
+WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/vendor-mermaid.mjs web/tools/compress-shell.mjs web/tests/unit/vocabulary.js
 WEB     := $(shell find web/src web/public web/messages web/project.inlang -type f -not -path 'web/src/site/*' -not -path 'web/src/lib/paraglide/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
@@ -99,7 +101,7 @@ test: pins $(SHELL_OUT)  ## Run every check, the web and Rust halves in parallel
 	@echo "test: passed -- NOT everything. Still to run:"
 	@echo "  tools/test/suite browser                  the components in a real chromium"
 	@echo "  tools/dev/db test                         the PostgreSQL-gated cases, in a throwaway container"
-	@echo "  make check                                test + browser + reader smoke in one go"
+	@echo "  make check                                test + browser + deployment scenarios + integration"
 
 # The web and Rust halves do not depend on each other, so `test` runs them side
 # by side. Each half can also be run alone.
@@ -140,11 +142,16 @@ test-nextest:
 		cargo test --workspace; \
 	fi
 
-# One command that means what a green `test` looks like it means. The Postgres
-# cases stay out: they need docker and take long. Run `tools/dev/db test`.
-check: test  ## Run the test suite, the browser components and the reader smoke test
-	@tools/test/suite browser
-	@tools/test/suite smoke
+# One command that means what a green `test` looks like it means. The binary is
+# built first and handed to the browser suite, because a browser test that
+# drives it skips when it is missing. The deployment scenarios need docker for
+# a throwaway PostgreSQL, and so do the web integration tests that drive a
+# deployment. The other Postgres cases stay out: they take long.
+# Run `tools/dev/db test`.
+check: test $(BIN)  ## Run the test suite, the browser components and the deployment scenarios
+	@LIBREPAPER_TEST_BINARY="$(CURDIR)/$(BIN)" tools/test/suite browser
+	@LIBREPAPER_TEST_BINARY="$(CURDIR)/$(BIN)" tools/test/suite e2e
+	@LIBREPAPER_TEST_BINARY="$(CURDIR)/$(BIN)" tools/test/suite integration
 
 # Not part of `test`: it needs Docker. It drives the built binary, so the
 # binary is built first, wherever CARGO_TARGET_DIR puts it.

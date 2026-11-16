@@ -1,0 +1,112 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { loadRunes } from "../helpers/runes.mjs";
+import { m } from "../../src/lib/paraglide/messages.js";
+
+const { fetchResults, putResults, createSharedResults, publishProblem } = await loadRunes(new URL("../../src/lib/reader/shared-results.svelte.js", import.meta.url));
+
+test("publishProblem names a failed upload by its reason and is silent otherwise", () => {
+  assert.equal(publishProblem({ kind: "failed", reason: "storage" }), m.rundirectorycontrol_not_shared_full());
+  assert.equal(publishProblem({ kind: "failed", reason: "unmatched" }), m.rundirectorycontrol_not_shared_unmatched());
+  assert.equal(publishProblem({ kind: "failed", reason: "network" }), m.rundirectorycontrol_not_shared_failed());
+  assert.equal(publishProblem({ kind: "failed" }), m.rundirectorycontrol_not_shared_failed());
+  for (const status of [{ kind: "idle" }, { kind: "shared", bytes: 1 }, { kind: "skipped", reason: "none" }, undefined, null]) {
+    assert.equal(publishProblem(status), null);
+  }
+});
+
+const record = { version: 1, path: "main.qmd", cells: [{ fingerprint: "a".repeat(64), label: null, html: "<p>1</p>" }] };
+
+async function withFetch(handler, body) {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, options) => { calls.push({ path, options }); return handler(path, options); };
+  try { await body(calls); } finally { globalThis.fetch = original; }
+}
+
+test("a document without results reads as null", async () => {
+  await withFetch(async () => new Response(JSON.stringify({ error: "none" }), { status: 404 }), async (calls) => {
+    assert.equal(await fetchResults("paper", {}), null);
+    assert.equal(calls[0].path, "/api/documents/paper/results");
+  });
+});
+
+test("identical results are not uploaded twice", async () => {
+  await withFetch(async () => new Response(JSON.stringify({ bytes: 120, updatedAt: "2026-11-12T10:00:00Z" }), { status: 200 }), async (calls) => {
+    const shared = createSharedResults("paper", () => ({}));
+    assert.deepEqual(await shared.upload(record), { kind: "shared", bytes: 120, figures: 0 });
+    await shared.upload(record);
+    assert.equal(calls.filter((call) => call.options?.method === "PUT").length, 1);
+    await shared.upload({ ...record, path: "other.qmd" });
+    assert.equal(calls.length, 2);
+  });
+});
+
+test("a full storage answers failed with the storage reason", async () => {
+  await withFetch(async () => new Response(JSON.stringify({ error: "full" }), { status: 413 }), async () => {
+    const put = await putResults("paper", record, {});
+    assert.deepEqual(put, { ok: false, status: 413, error: "full" });
+    const shared = createSharedResults("paper", () => ({}));
+    assert.deepEqual(await shared.upload(record), { kind: "failed", reason: "storage" });
+  });
+});
+
+test("a record replaced by someone else is uploaded again; this tab's own echo is not", async () => {
+  let stored = "";
+  let next = 0;
+  await withFetch(async (_path, options) => {
+    if (options?.method === "PUT") { stored = `t${++next}`; return new Response(JSON.stringify({ bytes: 120, updatedAt: stored }), { status: 200 }); }
+    return new Response(JSON.stringify({ ...record, updatedAt: stored }), { status: 200 });
+  }, async (calls) => {
+    const puts = () => calls.filter((call) => call.options?.method === "PUT").length;
+    const shared = createSharedResults("paper", () => ({}));
+    await shared.upload(record);
+    await shared.refresh();
+    await shared.upload(record);
+    assert.equal(puts(), 1, "its own upload coming back keeps the dedupe");
+    stored = "collaborator";
+    await shared.refresh();
+    await shared.upload(record);
+    assert.equal(puts(), 2, "after a collaborator's upload the same output goes up again");
+  });
+});
+
+test("an upload no longer allowed by the time it is hashed is not sent", async () => {
+  await withFetch(async () => new Response(JSON.stringify({ bytes: 1, updatedAt: "t" }), { status: 200 }), async (calls) => {
+    const shared = createSharedResults("paper", () => ({}));
+    await shared.upload(record, () => false);
+    assert.equal(calls.length, 0);
+  });
+});
+
+test("an older refresh that answers last does not overwrite a newer one", async () => {
+  const answers = [];
+  await withFetch((_path) => new Promise((resolve) => answers.push(resolve)), async () => {
+    const shared = createSharedResults("paper", () => ({}));
+    const older = shared.refresh();
+    const newer = shared.refresh();
+    answers[1](new Response(JSON.stringify({ error: "none" }), { status: 404 }));
+    await newer;
+    answers[0](new Response(JSON.stringify({ ...record, updatedAt: "old" }), { status: 200 }));
+    await older;
+    assert.equal(shared.state.record, null, "the deletion seen by the newer refresh stands");
+  });
+});
+
+test("a failed refresh keeps the outputs already shown; a 404 clears them", async () => {
+  let answer = () => new Response(JSON.stringify({ ...record, updatedAt: "t1" }), { status: 200 });
+  await withFetch(async () => answer(), async () => {
+    const shared = createSharedResults("paper", () => ({}));
+    await shared.refresh();
+    assert.equal(shared.state.record?.updatedAt, "t1");
+    answer = () => new Response("", { status: 503 });
+    await shared.refresh();
+    assert.equal(shared.state.record?.updatedAt, "t1", "a server error keeps the record");
+    answer = () => { throw new TypeError("offline"); };
+    await shared.refresh();
+    assert.equal(shared.state.record?.updatedAt, "t1", "a network error keeps the record");
+    answer = () => new Response(JSON.stringify({ error: "none" }), { status: 404 });
+    await shared.refresh();
+    assert.equal(shared.state.record, null, "a confirmed deletion clears it");
+  });
+});

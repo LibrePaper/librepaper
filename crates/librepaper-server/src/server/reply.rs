@@ -245,9 +245,11 @@ pub(super) fn set(response: &mut Reply, name: &'static str, value: &str) {
 }
 
 pub fn write_json(status: u16, payload: &Value) -> Reply {
-    let mut payload = payload.clone();
+    // Only an error reply gains fields, so only it needs its own copy; a
+    // success body can be large and is serialised straight from the borrow.
+    let mut payload = std::borrow::Cow::Borrowed(payload);
     if status >= 400 {
-        if let Some(fields) = payload.as_object_mut() {
+        if let Some(fields) = payload.to_mut().as_object_mut() {
             fields.entry("reason").or_insert_with(|| {
                 json!(match status {
                     401 => "authentication_required",

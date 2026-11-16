@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { TASK_GROUPS, filterTaskGroups } from "../../src/lib/agent-tasks.js";
+import { findTask } from "../../src/lib/assistant.js";
 
 // Small fixtures, so the expectations do not move when the copy does.
 const groups = [
@@ -71,4 +72,12 @@ test("TASK_GROUPS has unique group ids and unique task ids", () => {
   assert.equal(new Set(groupIds).size, groupIds.length);
   const taskIds = TASK_GROUPS.flatMap((group) => group.tasks.map((task) => task.id));
   assert.equal(new Set(taskIds).size, taskIds.length);
+});
+
+test("every task that runs is a task the built-in agent knows", () => {
+  const runs = TASK_GROUPS.flatMap((group) => group.tasks).filter((task) => task.run);
+  assert.equal(runs.length, 10);
+  for (const task of runs) {
+    assert.ok(findTask(task.run), `${task.id} runs ${task.run}, which is not in TASK_CATALOG`);
+  }
 });

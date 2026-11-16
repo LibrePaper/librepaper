@@ -4,7 +4,7 @@ import { Token } from '../../core/tokens';
 import type { Render } from '../latex/catalog';
 import { TYPST_FUNCTIONS } from './catalog';
 import { TYPST_EMOJI, TYPST_SYMBOLS } from './symbols';
-import { rules } from './rules';
+import { tokenizeTypst } from './tree';
 import { table } from './table';
 import { figure, typstImageStyle } from './figure';
 
@@ -272,7 +272,6 @@ function hiddenSummary(text: string): string | null {
 export const typst: Language = {
   id: 'typst',
   name: 'Typst',
-  rules,
   style,
   commands,
   table,
@@ -286,9 +285,8 @@ export const typst: Language = {
     return match ? match[1] : null;
   },
   imageStyle: typstImageStyle,
-  hiddenSummary
+  hiddenSummary,
+  tokenize: tokenizeTypst
 };
-
-export { rules } from './rules';
 
 registerLanguage(typst);

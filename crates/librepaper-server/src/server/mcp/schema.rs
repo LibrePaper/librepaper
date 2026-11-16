@@ -30,17 +30,31 @@ pub(super) fn tools() -> &'static Vec<Value> {
 }
 
 /// The tools that only an Editor may call. The server refuses each of them
-/// for a Commenter, so a Commenter is not offered them.
-const EDITOR_TOOLS: [&str; 3] = ["document_propose", "document_apply", "document_files"];
+/// for a Commenter, so a Commenter is not offered them. `document_propose` is
+/// listed here too: a Suggester may propose, but only as tracked changes, so
+/// `SUGGESTER_TOOLS` adds it back for that rung.
+const EDITOR_TOOLS: [&str; 4] = [
+    "document_propose",
+    "document_withdraw",
+    "document_apply",
+    "document_files",
+];
+
+/// The Editor-only tools a Suggester may also call. The server publishes a
+/// suggester's proposal only as tracked changes, refuses direct apply and file
+/// writes below Editor, and lets a suggester withdraw only its own tracked
+/// changes.
+const SUGGESTER_TOOLS: [&str; 2] = ["document_propose", "document_withdraw"];
 
 /// The tools a Reader may call: read the source and fetch a result. Every
 /// other tool needs Commenter or better.
 const READER_TOOLS: [&str; 2] = ["document_read", "document_result"];
 
 /// The tools a caller may be offered for its role. An Editor gets every
-/// served tool. A Commenter gets read, comment and result, and the comment
-/// tool without the `label` action, which the server also refuses below
-/// Editor. A Reader gets `READER_TOOLS` only.
+/// served tool. A Suggester gets what a Commenter gets plus `document_propose`,
+/// which it may use only to publish tracked changes. A Commenter gets read,
+/// comment and result, and the comment tool without the `label` action, which
+/// the server also refuses below Editor. A Reader gets `READER_TOOLS` only.
 pub(super) fn served_tools(role: Role) -> Vec<Value> {
     for_role(role, all_served_tools())
 }
@@ -56,6 +70,7 @@ pub(super) fn served_tools_full(role: Role) -> Vec<Value> {
 /// so the role rules live in one place.
 fn for_role(role: Role, tools: &[Value]) -> Vec<Value> {
     let editor = role.at_least(Role::Editor);
+    let suggester = role.at_least(Role::Suggester);
     tools
         .iter()
         .filter(|tool| {
@@ -63,17 +78,31 @@ fn for_role(role: Role, tools: &[Value]) -> Vec<Value> {
             if !role.at_least(Role::Commenter) {
                 READER_TOOLS.contains(&name)
             } else {
-                editor || !EDITOR_TOOLS.contains(&name)
+                editor
+                    || !EDITOR_TOOLS.contains(&name)
+                    || (suggester && SUGGESTER_TOOLS.contains(&name))
             }
         })
         .map(|tool| {
             if editor {
                 tool.clone()
+            } else if suggester && tool["name"] == "document_propose" {
+                suggester_view(tool)
             } else {
                 commenter_view(tool)
             }
         })
         .collect()
+}
+
+/// A Suggester's copy of `document_propose`. The publish choice is still
+/// offered, but the description says what a suggester's proposal can become.
+fn suggester_view(tool: &Value) -> Value {
+    let mut tool = tool.clone();
+    tool["description"] = Value::from(
+        "Propose replacements for captured source ranges. You may publish a proposal only as tracked changes (publish: \"suggestions\"), which an editor accepts or rejects, or keep it private (publish: \"private\"). Direct apply is not available to you.",
+    );
+    tool
 }
 
 /// A Commenter's copy of a tool. Only `document_comment` differs: its
@@ -217,10 +246,27 @@ fn validators() -> &'static HashMap<String, jsonschema::Validator> {
     })
 }
 
+/// Whether the tool's authored schema requires `operation`.
+fn requires_operation(name: &str) -> bool {
+    tools().iter().any(|tool| {
+        tool["name"] == name
+            && tool["inputSchema"]["required"]
+                .as_array()
+                .is_some_and(|required| required.iter().any(|field| field == "operation"))
+    })
+}
+
 /// Validates a tool call's arguments against that tool's advertised schema.
+/// A direct caller that leaves out `operation` is pointed at `?schema=full`.
 pub(super) fn validate_tool(name: &str, args: &Value) -> Result<(), String> {
     match validators().get(name) {
-        Some(validator) => check(validator, args),
+        Some(validator) => check(validator, args).map_err(|error| {
+            if args.get("operation").is_none() && requires_operation(name) {
+                format!("{error}. This tool needs operation: {{epoch, id}}. GET the tools route with ?schema=full for the schema a direct caller supplies.")
+            } else {
+                error
+            }
+        }),
         None => Err(format!("unknown tool {name}")),
     }
 }
@@ -291,6 +337,19 @@ mod tests {
         assert_eq!(args["nested"][0].as_u64(), Some(1));
         assert_eq!(args["nested"][1]["n"].as_f64(), Some(2.5));
         assert_eq!(args["text"].as_str(), Some("10.0"));
+    }
+
+    #[test]
+    fn a_missing_operation_points_a_direct_caller_at_the_full_schema() {
+        let error = validate_tool("document_files", &json!({})).unwrap_err();
+        assert!(error.contains("schema=full"), "{error}");
+        let error = validate_tool("document_read", &json!({})).unwrap_err();
+        assert!(!error.contains("schema=full"), "{error}");
+        let operation =
+            json!({"epoch":"e","id":"v2.1700000000000.0123456789abcdef0123456789abcdef"});
+        let typo = json!({"operation": operation, "typo": 1});
+        let error = validate_tool("document_files", &typo).unwrap_err();
+        assert!(!error.contains("schema=full"), "{error}");
     }
 
     #[test]
@@ -373,6 +432,65 @@ mod tests {
         assert_eq!(names, ["document_read", "document_result"]);
     }
 
+    /// A Suggester is offered what a Commenter is offered plus propose, whose
+    /// description says it can only publish tracked changes. Apply, files and
+    /// withdraw stay Editor-only.
+    #[test]
+    fn suggesters_are_offered_propose_but_no_direct_apply() {
+        let suggester_tools = served_tools(Role::Suggester);
+        let names: Vec<&str> = suggester_tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "document_read",
+                "document_propose",
+                "document_withdraw",
+                "document_comment",
+                "document_result"
+            ]
+        );
+        assert!(!names.contains(&"document_apply"));
+        let propose = suggester_tools
+            .iter()
+            .find(|t| t["name"] == "document_propose")
+            .expect("document_propose");
+        let description = propose["description"].as_str().expect("description");
+        assert!(
+            description.contains("publish: \"suggestions\""),
+            "{description}"
+        );
+        assert!(
+            description.contains("Direct apply is not available"),
+            "{description}"
+        );
+        let comment = suggester_tools
+            .iter()
+            .find(|t| t["name"] == "document_comment")
+            .expect("document_comment");
+        let actions = comment["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .expect("suggester action enum");
+        assert!(!actions.contains(&json!("label")));
+        // The direct HTTP caller's list follows the same rule.
+        let full: Vec<String> = served_tools_full(Role::Suggester)
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            full,
+            [
+                "document_read",
+                "document_propose",
+                "document_withdraw",
+                "document_comment",
+                "document_result"
+            ]
+        );
+    }
+
     /// A Commenter is offered only the tools it can use; an Editor is offered
     /// all of them.
     #[test]
@@ -394,7 +512,8 @@ mod tests {
         assert!(editor.contains(&"document_propose"));
         assert!(editor.contains(&"document_apply"));
         assert!(editor.contains(&"document_files"));
-        assert_eq!(editor.len(), 6);
+        assert!(editor.contains(&"document_withdraw"));
+        assert_eq!(editor.len(), 7);
         // Labelling needs Editor: a Commenter's document_comment offers no
         // `label` action and its description does not mention labels.
         let comment_for = |role: Role| {

@@ -187,7 +187,7 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
         // account.
         let url = format!(
             "{}&prompt=select_account",
-            server.app.authorize_url(&callback, &state, &verifier)
+            server.app.authorize_url(&callback, &state, &verifier, "")
         );
         set(&mut response, "location", &url);
         append_cookie(
@@ -856,6 +856,11 @@ async fn moderate(server: &Server, actor: &str, body: Body) -> Response<Body> {
     };
     match result {
         Ok((outcome, label)) => {
+            // Open sockets learn of a hide or unhide now rather than after
+            // the moderation cache expires.
+            if matches!(request.action.as_str(), "hide" | "unhide") {
+                server.reauthorize(request.target.trim()).await;
+            }
             tracing::info!(actor, action = %request.action, label = %label, "moderation");
             json_reply(&json!({"outcome": outcome, "label": label}))
         }

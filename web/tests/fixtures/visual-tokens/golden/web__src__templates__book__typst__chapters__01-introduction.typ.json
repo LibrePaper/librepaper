@@ -1,0 +1,295 @@
+[
+  {
+    "body": {
+      "from": 2,
+      "to": 34
+    },
+    "children": [
+      {
+        "from": 2,
+        "kind": "text",
+        "to": 15
+      },
+      {
+        "from": 15,
+        "kind": "command",
+        "meta": {
+          "key": "chap-introduction"
+        },
+        "name": "label",
+        "to": 34
+      }
+    ],
+    "from": 0,
+    "kind": "heading",
+    "level": 1,
+    "to": 34
+  },
+  {
+    "from": 34,
+    "kind": "text",
+    "to": 204
+  },
+  {
+    "body": {
+      "from": 207,
+      "to": 234
+    },
+    "children": [
+      {
+        "from": 207,
+        "kind": "text",
+        "to": 218
+      },
+      {
+        "from": 218,
+        "kind": "command",
+        "meta": {
+          "key": "sec-motivation"
+        },
+        "name": "label",
+        "to": 234
+      }
+    ],
+    "from": 204,
+    "kind": "heading",
+    "level": 2,
+    "to": 234
+  },
+  {
+    "from": 234,
+    "kind": "text",
+    "to": 350
+  },
+  {
+    "from": 350,
+    "kind": "command",
+    "meta": {
+      "key": "shannon1948"
+    },
+    "name": "ref",
+    "to": 362
+  },
+  {
+    "from": 362,
+    "kind": "text",
+    "to": 428
+  },
+  {
+    "from": 428,
+    "kind": "command",
+    "meta": {
+      "key": "efron1979"
+    },
+    "name": "ref",
+    "to": 438
+  },
+  {
+    "from": 438,
+    "kind": "text",
+    "to": 517
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 527,
+      "to": 594
+    },
+    "children": [
+      {
+        "from": 527,
+        "kind": "text",
+        "to": 594
+      }
+    ],
+    "from": 517,
+    "kind": "command",
+    "meta": {},
+    "name": "footnote",
+    "to": 595
+  },
+  {
+    "from": 595,
+    "kind": "text",
+    "to": 597
+  },
+  {
+    "body": {
+      "from": 600,
+      "to": 621
+    },
+    "children": [
+      {
+        "from": 600,
+        "kind": "text",
+        "to": 608
+      },
+      {
+        "from": 608,
+        "kind": "command",
+        "meta": {
+          "key": "sec-outline"
+        },
+        "name": "label",
+        "to": 621
+      }
+    ],
+    "from": 597,
+    "kind": "heading",
+    "level": 2,
+    "to": 621
+  },
+  {
+    "from": 621,
+    "kind": "text",
+    "to": 623
+  },
+  {
+    "args": [
+      {
+        "from": 628,
+        "to": 642
+      }
+    ],
+    "body": {
+      "from": 628,
+      "to": 665
+    },
+    "children": [
+      {
+        "from": 628,
+        "kind": "text",
+        "to": 642
+      },
+      {
+        "from": 642,
+        "kind": "raw",
+        "name": "separator",
+        "to": 644
+      },
+      {
+        "from": 644,
+        "kind": "raw",
+        "name": "argument",
+        "to": 655
+      },
+      {
+        "from": 655,
+        "kind": "raw",
+        "name": "separator",
+        "to": 656
+      },
+      {
+        "body": {
+          "from": 657,
+          "to": 664
+        },
+        "children": [
+          {
+            "from": 657,
+            "kind": "text",
+            "to": 664
+          }
+        ],
+        "from": 656,
+        "kind": "group",
+        "name": "content",
+        "to": 665
+      }
+    ],
+    "from": 623,
+    "kind": "command",
+    "meta": {
+      "arg:supplement": "[Chapter]",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "ref",
+    "named": {
+      "supplement": {
+        "from": 656,
+        "to": 665
+      }
+    },
+    "to": 666
+  },
+  {
+    "from": 666,
+    "kind": "text",
+    "to": 722
+  },
+  {
+    "args": [
+      {
+        "from": 727,
+        "to": 741
+      }
+    ],
+    "body": {
+      "from": 727,
+      "to": 764
+    },
+    "children": [
+      {
+        "from": 727,
+        "kind": "text",
+        "to": 741
+      },
+      {
+        "from": 741,
+        "kind": "raw",
+        "name": "separator",
+        "to": 743
+      },
+      {
+        "from": 743,
+        "kind": "raw",
+        "name": "argument",
+        "to": 754
+      },
+      {
+        "from": 754,
+        "kind": "raw",
+        "name": "separator",
+        "to": 755
+      },
+      {
+        "body": {
+          "from": 756,
+          "to": 763
+        },
+        "children": [
+          {
+            "from": 756,
+            "kind": "text",
+            "to": 763
+          }
+        ],
+        "from": 755,
+        "kind": "group",
+        "name": "content",
+        "to": 764
+      }
+    ],
+    "from": 722,
+    "kind": "command",
+    "meta": {
+      "arg:supplement": "[Chapter]",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "ref",
+    "named": {
+      "supplement": {
+        "from": 755,
+        "to": 764
+      }
+    },
+    "to": 765
+  },
+  {
+    "from": 765,
+    "kind": "text",
+    "to": 905
+  }
+]

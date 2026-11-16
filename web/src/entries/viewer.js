@@ -224,9 +224,27 @@ const find = createFind({
 /// across and down it, as fractions. Fractions survive a change of scale, a
 /// new column count and a new document of the same length.
 function captureAnchor(x, y) {
+  const pages = stage?.querySelector(".pages")?.children;
+  if (!pages?.length) return null;
+  // Page tops only grow down the column, so the page at the point is found
+  // by bisection and only its neighbours are measured, rather than every
+  // page of a long document.
+  let low = 0;
+  let high = pages.length - 1;
+  let found = 0;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (pages[middle].getBoundingClientRect().top <= y) {
+      found = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
   let best = null;
   let bestDistance = Infinity;
-  for (const element of stage?.querySelectorAll(".page") ?? []) {
+  for (let i = Math.max(0, found - 2); i <= Math.min(pages.length - 1, found + 3); i++) {
+    const element = pages[i];
     const rect = element.getBoundingClientRect();
     const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
     const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;

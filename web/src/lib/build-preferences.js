@@ -20,6 +20,19 @@ export function anonymousIdentity() {
     return (anonymousId = value);
   } catch { return (anonymousId = "anonymous"); }
 }
+/**
+ * The identity build preferences are kept under: the signed-in account's
+ * `provider:handle`, or this browser's anonymous identity when nobody is
+ * signed in. Every reader and writer of build preferences uses this one
+ * function, so the editor, the dashboard and the settings dialog agree on
+ * whose preferences they are.
+ * @param {{provider?: string, handle?: string} | null | undefined} account
+ * @returns {string}
+ */
+export function buildPreferenceUser(account) {
+  return account?.provider && account?.handle ? `${account.provider}:${account.handle}` : anonymousIdentity();
+}
+
 function key({ origin = globalThis.location?.origin || "", user = "anonymous" } = {}, what = "") {
   return `${PREFIX}:${JSON.stringify([String(origin), String(user || "anonymous"), String(what)])}`;
 }
@@ -51,6 +64,38 @@ export function writeDefaultPreview(scope, format, value) {
   const output = value === "pdf" ? "pdf" : "html";
   try { storage()?.setItem(key(scope, defaultPreview(format)), JSON.stringify(output)); } catch { /* private mode/quota */ }
   return read(scope, format);
+}
+
+// Continuous compile: recompile the LaTeX HTML preview while typing instead of
+// after a pause. Off unless this person turns it on.
+const liveCompiling = (format) => `live-compile:${format}`;
+
+export function readLiveCompile(scope, format = "latex") {
+  try {
+    return JSON.parse(storage()?.getItem(key(scope, liveCompiling(format))) || "null") === true;
+  } catch { return false; }
+}
+
+export function writeLiveCompile(scope, format, value) {
+  const on = value === true;
+  try { storage()?.setItem(key(scope, liveCompiling(format)), JSON.stringify(on)); } catch { /* private mode/quota */ }
+  return on;
+}
+
+// Share results: whether this person's local Quarto runs upload their output
+// for collaborators. On unless this person turns it off, per document.
+const sharingResults = (slug) => `share-results:${slug}`;
+
+export function readShareResults(scope, slug = "") {
+  try {
+    return JSON.parse(storage()?.getItem(key(scope, sharingResults(slug))) || "null") !== false;
+  } catch { return true; }
+}
+
+export function writeShareResults(scope, slug, value) {
+  const on = value !== false;
+  try { storage()?.setItem(key(scope, sharingResults(slug)), JSON.stringify(on)); } catch { /* private mode/quota */ }
+  return on;
 }
 
 export function read(scope, format = "") {

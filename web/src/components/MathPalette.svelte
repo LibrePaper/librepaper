@@ -365,7 +365,7 @@
       <div class="math-grid">
         {#each tiles as { template, html } (template.id)}
           <!-- The rendered math is the label. The name is a tooltip and what a screen reader says. -->
-          <button type="button" class="math-tile" data-template={template.id} aria-label={template.label} title={template.label} onclick={() => openTemplate(template.id)}>
+          <button type="button" class="math-tile" data-template={template.id} aria-label={template.label} data-tip={template.label} onclick={() => openTemplate(template.id)}>
             <span class="math-tile-preview" aria-hidden="true">{#if html}{@html html}{:else}{template.label}{/if}</span>
           </button>
         {/each}

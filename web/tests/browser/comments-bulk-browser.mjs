@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 // The panel's bulk verbs act only on what the cards would let this caller do
-// one at a time: "Resolve all" skips what is already resolved; "Clear resolved" and "Delete all" hand
+// one at a time: "Resolve all" skips what is already resolved; "Delete resolved" and "Delete all" hand
 // the page one list, so it can confirm once, and only ever name comments the
 // caller may delete.
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -61,22 +61,22 @@ try {
   assert.deepEqual(await page.evaluate('window.verbs("theirs")'), ["Reply"]);
 
   // A commenter: no "Delete all", since they cannot delete what is not theirs.
-  assert.deepEqual(await page.evaluate("window.labels()"), ["Resolve all", "Clear resolved"]);
+  assert.deepEqual(await page.evaluate("window.labels()"), ["Resolve all", "Delete resolved"]);
   assert.ok(await page.evaluate('window.click("Resolve all")'));
   assert.deepEqual(await page.evaluate("window.resolved"), ["open"]);
-  assert.ok(await page.evaluate('window.click("Clear resolved")'));
+  assert.ok(await page.evaluate('window.click("Delete resolved")'));
   assert.deepEqual(await page.evaluate("window.deleted"), [["done"]]);
 
   // An owner clears everything in one list.
   await page.evaluate("window.asModerator()");
   await until("moderator panel", () => page.evaluate('window.labels().includes("Delete all")'), 2000);
-  assert.ok(await page.evaluate('window.click("Clear resolved")'));
+  assert.ok(await page.evaluate('window.click("Delete resolved")'));
   assert.ok(await page.evaluate('window.click("Delete all")'));
   assert.deepEqual(await page.evaluate("window.deleted"), [
     ["done", "locked"],
     ["open", "theirs", "done", "locked"],
   ]);
-  console.log("comments-bulk-browser: a card's own verbs, and resolve all / clear resolved / delete all respecting each caller's reach");
+  console.log("comments-bulk-browser: a card's own verbs, and resolve all / delete resolved / delete all respecting each caller's reach");
 } finally {
   await page?.close();
   if (server) await new Promise((resolve) => server.close(resolve));

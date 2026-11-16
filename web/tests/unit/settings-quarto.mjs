@@ -15,12 +15,12 @@ const renderer = await read("RendererSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
 const statusPill = await read("StatusPill.svelte");
 
-// Rendering, Tools, Backups and Account are offered the
+// Rendering, Tools, Agents, Backups and Account are offered the
 // same way on the landing page and the project page, to a visitor and to a
 // signed-in browser alike.
 for (const signedIn of [true, false]) {
   const ids = offered({ signedIn }).map((item) => item.id);
-  for (const id of ["rendering", "tools", "backups", "account"]) {
+  for (const id of ["rendering", "tools", "agents", "backups", "account"]) {
     assert.ok(ids.includes(id), `signedIn=${signedIn} offers ${id}`);
   }
 }
@@ -103,3 +103,11 @@ assert.match(statusPill, /role="status" aria-label=\{accessibleLabel \|\| label\
 assert.match(statusPill, /aria-hidden="true"/);
 
 console.log("settings-quarto: Rendering page shows one section per format; where it renders and its commands sit in each");
+
+// Tools shows the Run directory of the open document, with a button that asks
+// the reader to open the Run directory dialog.
+assert.match(dialog, /<ToolsSettings \{view\} \{runDirectory\} \{onchooserundirectory\} \/>/);
+assert.match(toolsSettings, /id="tools-run-directory"/);
+assert.match(toolsSettings, /runDirectory\?\.loaded \? runDirectory\.status : null/);
+assert.match(toolsSettings, /onclick=\{\(\) => onchooserundirectory\?\.\(\)\}/);
+assert.match(toolsSettings, /m\.rundirectorycontrol_missing\(\{ path: runStatus\.path \}\)/);

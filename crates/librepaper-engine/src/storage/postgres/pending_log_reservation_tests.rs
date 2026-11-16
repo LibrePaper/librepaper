@@ -1,6 +1,6 @@
-//! Durable admission survives a failed flush and is replaced on commit.
+//! Durable admission is reserved in chunks, survives a failed flush, and is
+//! drawn down by the flush that consumes it.
 
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::super::usage::{usage_bytes, Sources, UsageScope};
@@ -47,32 +47,28 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
         .await
         .unwrap();
     let reservation_key = Uuid::now_v7();
-    let digest: [u8; 32] = Sha256::digest(b"x").into();
-    catalog
-        .reserve_pending_log_bytes(document.id, reservation_key, 32, digest)
-        .await
-        .unwrap();
-    assert!(catalog
-        .reserve_pending_log_bytes(
-            document.id,
-            reservation_key,
-            32,
-            Sha256::digest(b"different payload").into(),
-        )
-        .await
-        .is_err());
-    catalog
-        .reserve_pending_log_bytes(document.id, reservation_key, 32, digest)
-        .await
-        .unwrap();
-    let reserved_total: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(sum(bytes),0)::bigint FROM pending_log_reservations WHERE document_id=$1",
-    )
-    .bind(document.id)
-    .fetch_one(catalog.pool())
-    .await
-    .unwrap();
-    assert_eq!(reserved_total, 32);
+    assert_eq!(
+        catalog
+            .reserve_pending_log_bytes(document.id, reservation_key, 64, 64)
+            .await
+            .unwrap(),
+        64
+    );
+    // Growing the same row is one row, not a second reservation.
+    assert_eq!(
+        catalog
+            .reserve_pending_log_bytes(document.id, reservation_key, 16, 16)
+            .await
+            .unwrap(),
+        80
+    );
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pending_log_reservations WHERE document_id=$1")
+            .bind(document.id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows, 1);
 
     let mut tx = catalog.begin_fenced_flush(document.id, 0).await.unwrap();
     catalog
@@ -80,12 +76,13 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
             &mut tx,
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: b"x",
                 vector: b"vector",
                 source_format: None,
             },
-            &[reservation_key],
+            reservation_key,
             32,
         )
         .await
@@ -99,7 +96,7 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
     .fetch_one(catalog.pool())
     .await
     .unwrap();
-    assert_eq!(remaining, 32);
+    assert_eq!(remaining, 80);
 
     let mut tx = catalog.begin_fenced_flush(document.id, 0).await.unwrap();
     catalog
@@ -107,13 +104,64 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
             &mut tx,
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: b"x",
                 vector: b"vector",
                 source_format: None,
             },
-            &[reservation_key],
+            reservation_key,
             32,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT bytes FROM pending_log_reservations WHERE document_id=$1 AND reservation_id=$2",
+    )
+    .bind(document.id)
+    .bind(reservation_key)
+    .fetch_one(catalog.pool())
+    .await
+    .unwrap();
+    assert_eq!(remaining, 48);
+    assert_eq!(catalog.log_sequence(document.id).await.unwrap(), 1);
+
+    // Taking more than the row holds is a lost reservation.
+    let mut tx = catalog.begin_fenced_flush(document.id, 1).await.unwrap();
+    assert!(catalog
+        .insert_log_row_reserved(
+            &mut tx,
+            document.id,
+            FlushRow {
+                file_count: None,
+                expected_update_sequence: 1,
+                update_bytes: b"x",
+                vector: b"vector",
+                source_format: None,
+            },
+            reservation_key,
+            49,
+        )
+        .await
+        .is_err());
+    tx.rollback().await.unwrap();
+
+    // Taking exactly what is left deletes the row.
+    let mut tx = catalog.begin_fenced_flush(document.id, 1).await.unwrap();
+    catalog
+        .insert_log_row_reserved(
+            &mut tx,
+            document.id,
+            FlushRow {
+                file_count: None,
+                expected_update_sequence: 1,
+                update_bytes: b"x",
+                vector: b"vector",
+                source_format: None,
+            },
+            reservation_key,
+            48,
         )
         .await
         .unwrap();
@@ -125,7 +173,7 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
             .await
             .unwrap();
     assert_eq!(count, 0);
-    assert_eq!(catalog.log_sequence(document.id).await.unwrap(), 1);
+    assert_eq!(catalog.log_sequence(document.id).await.unwrap(), 2);
 }
 
 #[tokio::test]
@@ -164,20 +212,24 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
         .unwrap();
 
     let first_key = Uuid::now_v7();
-    let first_digest: [u8; 32] = Sha256::digest(b"first").into();
     catalog
-        .reserve_pending_log_bytes(document.id, first_key, 32, first_digest)
+        .reserve_pending_log_bytes(document.id, first_key, 32, 32)
         .await
         .unwrap();
+    // 8 bytes remain: a batch needing 16 is refused, and a chunk that does
+    // not fit is granted as the shortfall when that is all a batch needs.
     assert!(catalog
-        .reserve_pending_log_bytes(
-            document.id,
-            Uuid::now_v7(),
-            16,
-            Sha256::digest(b"second").into(),
-        )
+        .reserve_pending_log_bytes(document.id, Uuid::now_v7(), 64, 16)
         .await
         .is_err());
+    let second_key = Uuid::now_v7();
+    assert_eq!(
+        catalog
+            .reserve_pending_log_bytes(document.id, second_key, 64, 8)
+            .await
+            .unwrap(),
+        8
+    );
     catalog
         .moderate_project(&document.slug, true, "test-operator", "abusive project")
         .await
@@ -189,29 +241,33 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
             &mut tx,
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: b"x",
                 vector: b"vector",
                 source_format: None,
             },
-            &[first_key],
+            first_key,
             32,
         )
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    let remaining: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM pending_log_reservations WHERE document_id=$1")
-            .bind(document.id)
-            .fetch_one(catalog.pool())
-            .await
-            .unwrap();
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pending_log_reservations WHERE document_id=$1 AND reservation_id=$2",
+    )
+    .bind(document.id)
+    .bind(first_key)
+    .fetch_one(catalog.pool())
+    .await
+    .unwrap();
     assert_eq!(remaining, 0);
     assert_eq!(catalog.log_sequence(document.id).await.unwrap(), 1);
 }
+
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
+async fn durable_usage_replaces_pending_reservation_on_flush() {
     let catalog = catalog().await;
     crate::testing::reset(&catalog).await;
     let _writer = catalog.claim_writer().await.unwrap();
@@ -242,12 +298,7 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
     let deployment_before = catalog.durable_usage_bytes(None).await.unwrap();
     let reservation_key = Uuid::now_v7();
     catalog
-        .reserve_pending_log_bytes(
-            document.id,
-            reservation_key,
-            32,
-            Sha256::digest(b"x").into(),
-        )
+        .reserve_pending_log_bytes(document.id, reservation_key, 32, 32)
         .await
         .unwrap();
     assert_eq!(
@@ -273,12 +324,13 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
             &mut tx,
             document.id,
             FlushRow {
+                file_count: None,
                 expected_update_sequence: 0,
                 update_bytes: b"x",
                 vector: b"vector",
                 source_format: None,
             },
-            &[reservation_key],
+            reservation_key,
             32,
         )
         .await
@@ -296,6 +348,104 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
     assert_eq!(catalog.usage_bytes(None).await.unwrap(), deployment_after);
 }
 
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_open_document_is_refused_while_the_owner_is_full_and_accepted_once_space_is_freed() {
+    use crate::log::sequencer::{Ingested, Sequencer};
+    use crate::log::{Budget, PendingBudget};
+    use crate::storage::blob::{BlobStore, FsStore};
+    use std::sync::Arc;
+
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+        .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
+    let mut options = PostgresOptions::new(url);
+    options.policy.owner_bytes = 1_000_000;
+    let catalog = PostgresCatalog::connect(options).await.unwrap();
+    catalog.migrate().await.unwrap();
+    crate::testing::reset(&catalog).await;
+    let _writer = catalog.claim_writer().await.unwrap();
+    let tag = Uuid::now_v7();
+    let account = catalog
+        .create_account(NewAccount {
+            kind: "anonymous".into(),
+            provider: None,
+            provider_subject: None,
+            handle: format!("freed-{tag}"),
+            display_name: "Freed space test".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    let mut documents = Vec::new();
+    for name in ["open", "other"] {
+        documents.push(
+            catalog
+                .create_document(NewDocument {
+                    slug: format!("freed-{name}-{tag}"),
+                    owner_id: account.id,
+                    owner_session_generation: None,
+                    ownership_mode: "owned".into(),
+                    title: "Freed space test".into(),
+                    source_format: "markdown".into(),
+                })
+                .await
+                .unwrap(),
+        );
+    }
+
+    // Open the first document once; it stays open for the whole test.
+    let object_root = tempfile::tempdir().unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+    let config = Arc::new(librepaper_base::config::Configuration::default());
+    let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
+    let pending = PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);
+    let sequencer = Sequencer::admit(
+        documents[0].id,
+        documents[0].slug.clone(),
+        Arc::new(catalog.clone()),
+        blobs,
+        config,
+        budget,
+        pending,
+        "deployment-test-peer".into(),
+        Arc::new(std::sync::OnceLock::new()),
+    )
+    .await
+    .unwrap();
+
+    // The other document takes every byte of the owner's allowance.
+    let used = catalog.usage_bytes(Some(account.id)).await.unwrap();
+    let hog = Uuid::now_v7();
+    let rest = 1_000_000 - used;
+    catalog
+        .reserve_pending_log_bytes(documents[1].id, hog, rest, rest)
+        .await
+        .unwrap();
+
+    let mut outbox = crate::testing::Outbox::new();
+    let update = outbox.edit();
+    let refused = sequencer
+        .ingest(1, "test-peer", "test-principal", 1, update.clone())
+        .await;
+    match refused {
+        Ingested::Retryable(retry) => assert_eq!(retry.reason, "storage_quota"),
+        other => panic!("a full owner must be refused, got {other:?}"),
+    }
+
+    // Space is freed in the database; the document is not reopened.
+    catalog
+        .release_pending_log_reservation(documents[1].id, hog)
+        .await
+        .unwrap();
+    let accepted = sequencer
+        .ingest(1, "test-peer", "test-principal", 1, update)
+        .await;
+    assert!(
+        matches!(accepted, Ingested::Accepted),
+        "the same open document accepts the update once space is free, got {accepted:?}"
+    );
+}
+
 /// The sums the hand-written code computed before `usage_bytes` replaced them.
 const OLD_OWNER_SUM: &str = r#"SELECT COALESCE(sum(bytes),0)::bigint FROM (
      SELECT a.byte_length AS bytes FROM document_archives a
@@ -309,12 +459,15 @@ const OLD_OWNER_SUM: &str = r#"SELECT COALESCE(sum(bytes),0)::bigint FROM (
        WHERE d.owner_id=$1
      UNION ALL SELECT r.bytes FROM pending_log_reservations r
        JOIN documents d ON d.id=r.document_id WHERE d.owner_id=$1
+     UNION ALL SELECT x.byte_length FROM document_results x
+       JOIN documents d ON d.id=x.document_id WHERE d.owner_id=$1
    ) usage"#;
 
 const OLD_DEPLOYMENT_SUM: &str = "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
      + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
      + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
-     + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)";
+     + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0) \
+     + COALESCE((SELECT sum(byte_length)::bigint FROM document_results),0)";
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
@@ -352,7 +505,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
     }
     // Owner 0 holds 10 archive, 20 asset, 30 current base, 40 uncompacted,
     // 5 chat and 7 reserved bytes, plus a superseded base that is not charged.
-    // Owner 1 holds 100, 200, 300, 400, 0 and 70.
+    // Owner 1 holds 100, 200, 300, 400, 0 and 70. Results add 3 and 30.
     let rows = [
         (documents[0], 10_i64, 20_i64, 30_i64, 40_i64, 5_i64, 7_i64),
         (documents[1], 100, 200, 300, 400, 0, 70),
@@ -421,6 +574,19 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
     .await
     .unwrap();
 
+    // Shared results: 3 bytes for owner 0, 30 for owner 1.
+    for (document, bytes) in [(documents[0], 3_i64), (documents[1], 30)] {
+        sqlx::query(
+            "INSERT INTO document_results(document_id,body,byte_length,uploader_name)
+             VALUES($1,'x',$2,'Usage test')",
+        )
+        .bind(document)
+        .bind(bytes)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     let mut conn = pool.acquire().await.unwrap();
     let old_owner: i64 = sqlx::query_scalar(OLD_OWNER_SUM)
         .bind(owners[0])
@@ -435,7 +601,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
     let owner = UsageScope::Owner(owners[0]);
     assert_eq!(
         usage_bytes(&mut conn, owner, Sources::ALL).await.unwrap(),
-        112
+        115
     );
     assert_eq!(
         usage_bytes(&mut conn, owner, Sources::ALL).await.unwrap(),
@@ -445,7 +611,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
         usage_bytes(&mut conn, owner, Sources::DURABLE)
             .await
             .unwrap(),
-        105
+        108
     );
     assert_eq!(
         usage_bytes(&mut conn, owner, Sources::ARCHIVES | Sources::RESERVATIONS)
@@ -457,7 +623,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
         usage_bytes(&mut conn, UsageScope::Owner(owners[1]), Sources::ALL)
             .await
             .unwrap(),
-        1070
+        1100
     );
 
     let deployment = UsageScope::Deployment;
@@ -465,7 +631,7 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
         usage_bytes(&mut conn, deployment, Sources::ALL)
             .await
             .unwrap(),
-        1182
+        1215
     );
     assert_eq!(
         usage_bytes(&mut conn, deployment, Sources::ALL)
@@ -477,12 +643,111 @@ async fn usage_bytes_matches_the_sums_it_replaced() {
         usage_bytes(&mut conn, deployment, Sources::DURABLE)
             .await
             .unwrap(),
-        1105
+        1138
     );
     assert_eq!(
         usage_bytes(&mut conn, deployment, Sources::RESERVATIONS)
             .await
             .unwrap(),
         77
+    );
+    drop(conn);
+
+    // The operator's account list charges each owner the same bytes.
+    let accounts = catalog.all_accounts().await.unwrap();
+    for (owner, expected) in [(owners[0], 115_i64), (owners[1], 1100)] {
+        let row = accounts.iter().find(|a| a.id == owner).unwrap();
+        assert_eq!(row.bytes, expected, "moderation usage for {owner}");
+    }
+}
+
+/// A reservation that cannot get the storage-usage lock gives up after a
+/// bounded wait with `Busy`, leaves no row, and does not leave its lock
+/// timeout on the pooled connection. Once the lock is free the same call
+/// succeeds.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_log_reservation_blocked_on_storage_usage_is_busy_and_then_succeeds() {
+    use sqlx::Connection;
+
+    let catalog = catalog().await;
+    crate::testing::reset(&catalog).await;
+    let _writer = catalog.claim_writer().await.unwrap();
+    let tag = Uuid::now_v7();
+    let account = catalog
+        .create_account(NewAccount {
+            kind: "anonymous".into(),
+            provider: None,
+            provider_subject: None,
+            handle: format!("busy-{tag}"),
+            display_name: "Busy test".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    let document = catalog
+        .create_document(NewDocument {
+            slug: format!("busy-{tag}"),
+            owner_id: account.id,
+            owner_session_generation: None,
+            ownership_mode: "owned".into(),
+            title: "Busy test".into(),
+            source_format: "markdown".into(),
+        })
+        .await
+        .unwrap();
+    let reservation_key = Uuid::now_v7();
+
+    let before: String = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+
+    // A second connection holds the deployment-wide accounting lock, as a
+    // stalled flush would.
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").unwrap();
+    let mut holder = sqlx::PgConnection::connect(&url).await.unwrap();
+    sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
+    sqlx::query("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+        .fetch_one(&mut holder)
+        .await
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let refused = catalog
+        .reserve_pending_log_bytes(document.id, reservation_key, 64, 64)
+        .await;
+    let waited = started.elapsed();
+    assert!(
+        matches!(refused, Err(super::super::Error::Busy)),
+        "expected Busy, got {refused:?}"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(5),
+        "the wait was not bounded: {waited:?}"
+    );
+
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pending_log_reservations WHERE document_id=$1")
+            .bind(document.id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows, 0, "a busy refusal left a reservation row");
+
+    // SET LOCAL ended with the transaction: the pool keeps the default.
+    let after: String = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(after, before, "the pooled connection kept the lock timeout");
+
+    sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
+    assert_eq!(
+        catalog
+            .reserve_pending_log_bytes(document.id, reservation_key, 64, 64)
+            .await
+            .unwrap(),
+        64
     );
 }

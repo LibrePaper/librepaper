@@ -5,6 +5,7 @@
   // position or the undo history.
   import { Compartment, Prec as vimPrec } from "@codemirror/state";
   import { ViewPlugin } from "@codemirror/view";
+  import { cursorAt } from "../lib/loro-cursor.js";
   import { undo as undoFn, redo as redoFn, undoManagerField as vimUndoManagerField } from "../lib/loro-undo.js";
   import { loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
   import { keymap } from "@codemirror/view";
@@ -32,17 +33,24 @@
   // brought into line with the setting when it is activated.
   const completionCompartment = new Compartment();
   const bracketsCompartment = new Compartment();
+  const latexAssistCompartment = new Compartment();
   const spellcheckCompartment = new Compartment();
   const checkCompartment = new Compartment();
   // The visual layer is drawn only for LaTeX, Typst and Markdown, and its colours follow
   // the page's mode, so it is brought into line when a file or the mode changes.
   const visualCompartment = new Compartment();
+  // The line numbers, active-line highlight and fold gutter are source-code chrome. They are left
+  // off where the visual layer draws the file, so the page reads as a document rather than code.
+  const chromeCompartment = new Compartment();
   // The bracket keymap goes with auto-closing brackets. Its Backspace deletes an
   // empty pair even without closeBrackets, so leaving it in the main keymap
   // would leave the switch half off.
-  const completionOn = (on) => (on ? autocompletion({ activateOnTyping: true }) : []);
+  // Typing wakes completion only where a source can answer (see completionWake), so prose costs no query.
+  const completionOn = (on, project) => (on ? [autocompletion({ activateOnTyping: false }), completionWake(project)] : []);
+  // The LaTeX \end insertion and environment indentation, for LaTeX files only.
+  const latexAssistOn = (on, isLatex) => (isLatex ? latexAssistExtensions(on) : []);
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
-  const checkOn = (on, citations) => (on ? [lintGutter(), citations] : []);
+  const checkOn = (on, citations, index) => (on ? [lintGutter(), citations, index] : []);
   // The checker for a source, chosen from the setting, the dialect, the prose
   // format of the file and its text, which is read only when Harper is asked for. Code and data files get no checker, and
   // the browser's spellcheck is off there, where every identifier would be
@@ -214,48 +222,66 @@
     lintGutter,
     lintKeymap,
     setDiagnostics as setLintDiagnostics,
+    forEachDiagnostic,
     openLintPanel,
   } from "@codemirror/lint";
   import { LoroExtensions } from "../../vendor/loro-codemirror/index.ts";
   import { undoManagerField, undo as undoCommand, redo as redoCommand } from "../lib/loro-undo.js";
   import { LoroText, UndoManager } from "loro-crdt";
 
-  import { sourceLanguage } from "../lib/source-language.js";
+  import { sourceFormat, sourceLanguage } from "../lib/source-language.js";
+  import { latexAssist as latexAssistExtensions } from "../lib/latex-language/index.js";
+  import { onOrgSyntax, onTypstSyntax } from "../lib/source-trees.js";
   import { emphasisCommand } from "../lib/emphasis.js";
+  import { canHeading, canLink, canList, headingEdit, linkEdit, listEdit } from "../lib/editing-shortcuts.js";
+  import { ORG_COMMANDS } from "../lib/org-editing.js";
+  import { pasteText } from "../lib/paste-html.js";
+  import { pastesPlainAt } from "../lib/paste-context.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
-  import { typstLabels } from "../lib/citation-keys.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
-  import { completionExtension, formatOfPath } from "../lib/completion/index.js";
+  import { completionExtension, completionWake, formatOfPath } from "../lib/completion/index.js";
+  import { createLiveIndex } from "../lib/document-index/live.js";
+  import { labelList } from "../lib/document-index/labels.js";
+  import { indexEditing, indexDiagnostics, indexChanged } from "../lib/document-index-extensions/index.js";
+  import { goToDefinition } from "../lib/document-index-extensions/navigation.js";
+  import { findReferencesCommand } from "../lib/document-index-extensions/references.js";
+  import { renameCommand } from "../lib/document-index-extensions/rename.js";
   import { searchZotero, zoteroItem } from "../lib/desktop/client.js";
-  import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
+  import { changeMarks, changeMarkClicks, setChangeMarks } from "../lib/change-marks.js";
   import { sourceCommentBar } from "../lib/source-comment-bar.js";
   import { VERBS } from "../lib/annotating.js";
   import { commentMarks, setCommentMarks as setCommentMarksEffect } from "../lib/source-comment-marks.js";
   import { authorshipRuns, summarize, markSpans } from "../lib/authorship.js";
   import { authorshipMarks, setAuthorshipMarks } from "../lib/authorship-marks.js";
-  import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, PRUNE_ORIGIN, planEdits, plannedWrite, writePlanned, writtenState, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
-  import { projectDirectory } from "../lib/projection.js";
+  import { projectDirectory, projectPaths } from "../lib/projection.js";
   import { openingFile, resolveInclude } from "../lib/opening.js";
   import { toLf, healLineEndings, LINE_ENDINGS_ORIGIN } from "../lib/line-endings.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
-  import { formatOf as documentFormat } from "../lib/formats.js";
+  import { FLASH_MS, flashPresence, presenceFlash } from "../lib/presence-flash.js";
+  import { formatOf as documentFormat, sourceFormatOf } from "../lib/formats.js";
   import { spellcheckExtension } from "../lib/spellcheck/extension.js";
   import { harperExtension } from "../lib/harper/extension.js";
   import { harperAvailable } from "../lib/harper/client.js";
   import { isEnglishDocument } from "../lib/harper/language.js";
   import { untrack } from "svelte";
   import { visualMarkup, factsUpdate } from "../lib/visual-markup/index.js";
+  import { VISUAL_FORMATS } from "../lib/visual-markup/formats.js";
   import { applyFormat, formatState } from "../lib/visual-markup/formatting.js";
   import { documentFacts } from "../lib/visual-markup/facts.js";
-  import { markdownFacts } from "../lib/visual-markup/markdown-facts.js";
-  import { typstFacts } from "../lib/visual-markup/typst-facts.js";
+  import { paperVisual } from "../lib/paper/index.js";
   import { m } from "../lib/paraglide/messages.js";
+  import { Menu } from "@skeletonlabs/skeleton-svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
+  import { retargetElementAttributes } from "./element-attributes.js";
+  import { APPLE, labelOf, menuKeys } from "../lib/commands.js";
+  import { SOURCE_MENU, clipboardReadable, rightClickCaret } from "../lib/source-menu.js";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
   // to follow. It starts from `tracking` and is flipped by `startTracking` and
@@ -266,11 +292,17 @@
   // is the id of the change the reviewer is looking at.
   /** @type {{ me?: { who: string, author: string }, [key: string]: any }} */
   let { session, format = "", file = "", keys = "default", editable = true,
-    completion = true, brackets = true, proofing = "browser", dialect = "american", check = true,
+    completion = true, brackets = true, latexAssist = true, proofing = "browser", dialect = "american", check = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
+    // A suggester's typing is always tracked: tracking starts on and cannot be stopped.
+    suggestOnly = false,
     visual = false, imageUrl = null,
+    // A getter for the files of the last run (or null); figures that are not project files are drawn from them.
+    resultsFiles = null,
+    // Names which run those files are of; when it changes, figure widgets draw again.
+    resultsRevision = "",
     analyze = analyzeBibliography,
-    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment,
+    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, oncomment, onchangeselect,
     // Called with the caret's formatting (formatState) while visual mode is on.
     onformatstate,
     // Whether the bar over a selection offers the annotating verbs, and what
@@ -288,7 +320,7 @@
     // open file wherever the project as a whole is read.
     entry = "" } = $props();
 
-  let tracked = $state(untrack(() => tracking));
+  let tracked = $state(untrack(() => tracking || suggestOnly));
 
   // One field instance for the component, because it is one editor: a state
   // field is identified by the object, so building a fresh one per file would
@@ -296,6 +328,8 @@
   const pendingChanges = changeMarks();
   // The same reasoning as `pendingChanges`: one instance, shared by every file.
   const commentMarkExtension = commentMarks({ onselect: (id) => oncomment?.(id) });
+  // The same reasoning: a click on a tracked change selects its row in the Changes panel.
+  const changeMarkClickExtension = changeMarkClicks({ onselect: (id) => onchangeselect?.(id) });
 
   // Every file's comment marks, as the reader sent them. Only the file on
   // screen is drawn; `show` draws it again when the file changes.
@@ -333,11 +367,17 @@
   /// A state carries no decorations until something puts them there, so this
   /// runs when a file is shown, after every document change (local or
   /// imported), and when the selection or the viewer changes.
+  let drawnEmpty = null; // [view, file] of the last draw that held no changes
   function drawChanges() {
     if (!view || !showing || !session) return;
+    // No changes now and none drawn last time: the marks are already empty.
+    if (!session.doc.getMap(CHANGES).size) {
+      if (drawnEmpty && drawnEmpty[0] === view && drawnEmpty[1] === showing) return;
+      drawnEmpty = [view, showing];
+    } else drawnEmpty = null;
     view.dispatch({
       effects: setChangeMarks.of({
-        ...resolveFile(session.doc, showing),
+        ...resolveFileCached(session.doc, showing),
         me,
         selected: selectedChange,
       }),
@@ -425,6 +465,45 @@
   /// nothing and changes no text, but pending spans shrink, move or split
   /// around it, and the gaps it collapses merge in order. With no records in
   /// the document, nothing is planned.
+  // Prune tidies records that have rested; it need not run on a keystroke. It
+  // runs a few seconds after the last local edit, and at most about every 30
+  // seconds of continuous typing, when the browser is idle.
+  const PRUNE_QUIET_MS = 4000;
+  const PRUNE_MAX_WAIT_MS = 30000;
+  let pruneTimer = null;
+  let pruneIdle = null;
+  let pruneWaitingSince = 0;
+  function scheduleIdlePrune() {
+    const now = Date.now();
+    if (!pruneWaitingSince) pruneWaitingSince = now;
+    clearTimeout(pruneTimer);
+    pruneTimer = setTimeout(runIdlePrune, Math.max(0, Math.min(PRUNE_QUIET_MS, pruneWaitingSince + PRUNE_MAX_WAIT_MS - now)));
+  }
+  function runIdlePrune() {
+    pruneTimer = null;
+    pruneWaitingSince = 0;
+    const run = () => {
+      pruneIdle = null;
+      const doc = session?.doc;
+      if (!doc || !doc.getMap(CHANGES).size) return;
+      prune(doc);
+      // Under its own origin, so undo leaves the tidying out (see the
+      // UndoManager below) and the view does not reconcile for it.
+      doc.commit({ origin: PRUNE_ORIGIN });
+    };
+    pruneIdle = typeof globalThis.requestIdleCallback === "function"
+      ? { idle: globalThis.requestIdleCallback(run, { timeout: 5000 }) }
+      : { timer: setTimeout(run, 0) };
+  }
+  function cancelIdlePrune() {
+    clearTimeout(pruneTimer);
+    pruneTimer = null;
+    pruneWaitingSince = 0;
+    if (pruneIdle?.idle !== undefined) globalThis.cancelIdleCallback?.(pruneIdle.idle);
+    if (pruneIdle?.timer !== undefined) clearTimeout(pruneIdle.timer);
+    pruneIdle = null;
+  }
+
   function trackChanges(fileId) {
     /** @type {{changes: any[], gaps: any[]}} */
     let snapshot = { changes: [], gaps: [] };
@@ -438,7 +517,7 @@
       const doc = session.doc;
       return {
         update(update) {
-          if (isLocal(update) && doc.getMap(CHANGES).size) snapshot = resolveFile(doc, fileId);
+          if (isLocal(update) && doc.getMap(CHANGES).size) snapshot = resolveFileCached(doc, fileId);
         },
       };
     });
@@ -454,14 +533,39 @@
           // cursor is made at an intermediate offset.
           let state = snapshot;
           const touched = new Set();
+          // The edits of the one transaction that changed the document, which
+          // is all a written state is derived for; with more it is resolved.
+          let batchEdits = null;
+          let batches = 0;
           const now = Date.now();
-          if (tracked || snapshot.changes.length || snapshot.gaps.length) {
+          // An untracked edit that touches no span and no gap only moves what
+          // lies after it, so the resolved state is shifted instead of planned,
+          // written and read back. The text is already in the LoroText, so the
+          // version it is stored under is the one after the edit.
+          let shifted = null;
+          if (!tracked && (snapshot.changes.length || snapshot.gaps.length)
+            && update.transactions.every((transaction) => !transaction.docChanged || transaction.annotation(loroSyncAnnotation) === undefined)) {
+            shifted = snapshot;
+            for (const transaction of update.transactions) {
+              if (!transaction.docChanged) continue;
+              const edits = [];
+              transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
+                edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
+              });
+              shifted = shiftResolved(shifted, edits);
+              if (!shifted) break;
+            }
+            if (shifted) adoptResolved(doc, fileId, shifted);
+          }
+          if (!shifted && (tracked || snapshot.changes.length || snapshot.gaps.length)) {
             for (const transaction of update.transactions) {
               if (!transaction.docChanged || transaction.annotation(loroSyncAnnotation) !== undefined) continue;
               const edits = [];
               transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
                 edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
               });
+              batches += 1;
+              batchEdits = edits;
               /** @type {any} */
               const plan = planEdits(transaction.startState.doc.toString(), state, edits, me, {
                 run: null,
@@ -477,31 +581,25 @@
             }
             if (touched.size) {
               // Everything the batch touched is written once, against the final
-              // text; the rest keeps its cursors.
-              // Gaps are named by position, which moves between steps, so every
-              // gap of the final state is handed over as set: a fragment whose
-              // cursor and rank already hold is not written again.
-              const keptChanges = new Set(state.changes.map((change) => change.id));
-              const planned = {
-                changes: [
-                  ...state.changes.map((change) => ({ ...change, state: touched.has(change.id) ? "set" : "kept" })),
-                  ...snapshot.changes.filter((change) => !keptChanges.has(change.id)).map((change) => ({ ...change, state: "removed" })),
-                ],
-                gaps: [
-                  ...state.gaps.map((gap) => ({ ...gap, state: "set" })),
-                  ...snapshot.gaps.map((gap) => ({ ...gap, state: "removed" })),
-                ],
-              };
-              writePlanned(doc, fileId, planned);
+              // text; the rest keeps its cursors, and so does a gap that no
+              // step touched.
+              const planned = plannedWrite(snapshot, state, touched);
+              const written = writePlanned(doc, fileId, planned);
+              // What was written is what the next read would resolve to, so it
+              // is handed to the cache instead of being read back. A plan the
+              // records do not obviously match is resolved, as before.
+              const adopted = writtenState(doc, planned, written, snapshot, batches === 1 ? batchEdits : null);
+              if (adopted) adoptResolved(doc, fileId, adopted);
               // The anchors plugin runs behind this one and needs the ids that
               // the deletions of this update were stored under. Gaps resolve in
               // position order and fragments in rank order, which is document
               // order.
               const known = new Set(snapshot.gaps.flatMap((gap) => gap.fragments.map((f) => f.id)));
-              created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
+              created = (adopted ?? resolveFileCached(doc, fileId)).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
             }
           }
-          if (doc.getMap(CHANGES).size) prune(doc);
+          // Pruning resolves every file, so it waits for a pause in typing.
+          if (doc.getMap(CHANGES).size) scheduleIdlePrune();
           doc.commit();
           snapshot = { changes: [], gaps: [] };
         },
@@ -534,6 +632,7 @@
       return {
         update(update) {
           if (!update.docChanged || !update.transactions.some(recordsEdits)) return;
+          viewEdited = true;
           const doc = session.doc;
           const steps = [];
           for (const transaction of update.transactions) {
@@ -546,8 +645,8 @@
           }
           if (!steps.length) return;
           const composed = composeEdits(steps.map((step) => step.edits));
-          const before = steps[0].transaction.startState.doc.toString();
-          const fragments = composed.some((edit) => edit.to > edit.from) ? fragmentRangesFor(before, composed, createdFragments()) : [];
+          // The text before the edit is only read when something was deleted.
+          const fragments = composed.some((edit) => edit.to > edit.from) ? fragmentRangesFor(steps[0].transaction.startState.doc.toString(), composed, createdFragments()) : [];
           session.anchors.record([{ fileId, edits: composed, fragments }], session.anchorMemory);
           doc.commit({ origin: ANCHORS_ORIGIN });
         },
@@ -555,7 +654,11 @@
     }));
   }
 
-  let parsedBibliography = $state(null);
+  // Raw, because the result is replaced and never changed in place. As deep
+  // state, the assignment would store a proxy of it, which is never `===` to
+  // the cached result, so the cache-hit check in refreshBibliography would
+  // always fail.
+  let parsedBibliography = $state.raw(null);
   const insertTargets = new Map();
   // One undo manager for the document the editor is bound to, shared by every
   // file's state. A session swap brings a new document and so a new manager.
@@ -591,7 +694,9 @@
   }
 
   /// Stop recording. The changes already made stay pending in the document.
+  /// A suggester's edits are always recorded, so this does nothing for them.
   export function stopTracking() {
+    if (untrack(() => suggestOnly)) return;
     tracked = false;
   }
 
@@ -608,6 +713,7 @@
     if (lower.endsWith(".typ")) return "typst";
     if (lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".qmd")) return "markdown";
     if (lower.endsWith(".tex") || lower.endsWith(".ltx")) return "latex";
+    if (lower.endsWith(".org")) return "org";
     return "";
   }
   function bibliographyEntries() { return parsedBibliography?.entries || []; }
@@ -625,23 +731,28 @@
     const request = bibliographyRequest();
     const key = bibliographyCacheKey(request);
     if (!bibliographyNeedsAnalysis(request)) {
+      const changed = parsedBibliography !== null || key !== lastBibliographyKey;
       parsedBibliography = null; lastBibliographyKey = key;
-      citationsUpdated();
+      if (changed) citationsUpdated();
       onbibliography?.({ entries: [], diagnostics: [] }, request);
       return;
     }
     if (key !== lastBibliographyKey) { parsedBibliography = null; citationsUpdated(); }
     lastBibliographyKey = key;
-    bibliographyCache.get(request, analyze).then((result) => {
+    bibliographyCache.get(request, analyze, key).then((result) => {
       if (generation !== bibliographyGeneration) return;
       const newlyAvailable = !parsedBibliography && result.entries.length > 0;
+      // A cache hit returns the very result already shown, so the citation
+      // underlines have nothing new to draw.
+      const unchanged = result === parsedBibliography;
       parsedBibliography = result;
-      citationsUpdated();
+      if (!unchanged) citationsUpdated();
       scheduleFacts();
       onbibliography?.(result, request);
-      const currentFormat = formatOf(pathOfDoc(session.doc, showing));
-      const currentContext = view && citationContext(view.state.doc.toString(), view.state.selection.main.head, currentFormat);
-      if (newlyAvailable && view?.hasFocus && currentContext) startCompletion(view);
+      if (newlyAvailable && view?.hasFocus) {
+        const currentFormat = formatOf(pathOfDoc(session.doc, showing));
+        if (citationContext(view.state.doc.toString(), view.state.selection.main.head, currentFormat)) startCompletion(view);
+      }
     }).catch((error) => {
       if (generation !== bibliographyGeneration) return;
       parsedBibliography = null;
@@ -659,6 +770,38 @@
   function scheduleFacts() {
     clearTimeout(factsTimer);
     factsTimer = setTimeout(refreshFacts, 300);
+    clearTimeout(indexTimer);
+    indexDirty = true;
+    indexTimer = setTimeout(refreshIndex, 300);
+  }
+  // The project index behind go to definition, hover, references, rename and
+  // the index diagnostics. It follows the facts' cadence.
+  const liveIndex = createLiveIndex();
+  let indexTimer = null;
+  // Set by any edit, local or remote, and cleared by a refresh. A query reads
+  // the index through `currentIndex`, which refreshes first while it is set, so
+  // offsets are never those of text that has since changed.
+  let indexDirty = true;
+  function currentIndex() {
+    if (indexDirty) refreshIndex();
+    return liveIndex.project;
+  }
+  function refreshIndex() {
+    clearTimeout(indexTimer);
+    indexDirty = false;
+    untrack(() => {
+      if (!session?.doc) return;
+      const tree = treeForDoc(session.doc);
+      /** @type {Record<string, string>} */
+      const texts = {};
+      for (const [file, text] of Object.entries(tree.texts)) texts[file] = String(text ?? "");
+      const bibliography = parsedBibliography ? parsedBibliography.entries.map((entry) => entry.key) : null;
+      // The signal is sent after the current task: a query can refresh the
+      // index from inside a view update, where dispatching would throw.
+      if (liveIndex.refresh({ texts, files: Object.keys(tree.files), bibliography })) {
+        queueMicrotask(() => view?.dispatch({ effects: indexChanged.of(null) }));
+      }
+    });
   }
   // Sets the document facts on a view. Reconfiguring the visual layer empties
   // them, so this runs again after each reconfigure with `fresh` set. Otherwise
@@ -670,9 +813,9 @@
     untrack(() => {
       const path = pathOfDoc(session.doc, id);
       const format = formatOf(path);
-      const compute = { latex: documentFacts, markdown: markdownFacts, typst: typstFacts }[format];
-      if (!target || !visual || !compute) return;
-      const facts = compute(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
+      // Only LaTeX is drawn by the visual-markup layer, which reads these facts; the paper view computes its own.
+      if (!target || !visual || format !== "latex") return;
+      const facts = documentFacts(treeForDoc(session.doc).texts, entry || path, path, bibliographyEntries());
       const sent = JSON.stringify(facts, factsJson);
       if (!fresh && sentFacts.get(target) === sent) return;
       sentFacts.set(target, sent);
@@ -702,8 +845,47 @@
       return parsedBibliography.entries;
     },
     format: () => formatOf(pathOfDoc(session?.doc, showing)),
-    labels: () => (formatOf(pathOfDoc(session?.doc, showing)) === "typst" ? typstLabels(treeForDoc(session.doc).texts) : new Set()),
+    // Typst's @name is a reference when a label of that name exists. This can
+    // run inside a view update; currentIndex() defers its signal, so it is safe.
+    labels: () => (formatOf(pathOfDoc(session?.doc, showing)) === "typst"
+      ? new Set(labelList(currentIndex(), {}, { formats: new Set(["typst"]) }).map((label) => label.id))
+      : new Set()),
   });
+
+  // What the document-index extensions read and do through the editor.
+  /** @type {import("../lib/document-index-extensions/context.js").IndexContext} */
+  const indexContext = {
+    project: currentIndex,
+    path: () => pathOfDoc(session.doc, showing),
+    open: (path, at) => {
+      const id = textIdForPath(session.doc, path);
+      if (id) goToIn(id, at);
+    },
+    applyEdits: (edits) => {
+      const byPath = new Map();
+      for (const edit of edits) {
+        if (!byPath.has(edit.path)) byPath.set(edit.path, []);
+        byPath.get(edit.path).push(edit);
+      }
+      const here = pathOfDoc(session.doc, showing);
+      for (const [path, list] of byPath) {
+        const id = textIdForPath(session.doc, path);
+        if (!id) continue;
+        if (path === here && view) {
+          view.dispatch({
+            changes: list.map(({ from, to, insert }) => ({ from, to, insert })),
+            userEvent: "input.rename",
+            scrollIntoView: true,
+          });
+          continue;
+        }
+        const text = getTextFromDoc(id);
+        if (!text) continue;
+        for (const { from, to, insert } of [...list].sort((a, b) => b.from - a.from)) writeText(id, text, from, to, insert);
+      }
+    },
+  };
+  const indexChecks = indexDiagnostics(indexContext);
 
   // Maps a Zotero search response into the entries the completion list reads.
   function zoteroEntries(response) {
@@ -775,18 +957,28 @@
   let view = null;
   // One editor state per file, made the first time that file is opened and
   // kept afterwards. Switching files swaps the state rather than rebuilding
-  // it, so a visit to another chapter costs nothing and leaves the undo
-  // history and the scroll position where they were -- which is the whole
+  // it, so a visit to another chapter costs nothing and keeps the undo
+  // history and the selection where they were -- which is the whole
   // difference between a directory of files and one text somebody keeps
   // scrolling through.
   // A CodeMirror state owns a Loro binding and undo field. File ids are only
   // unique inside a document, and a session swap brings a new document, so
   // cache states under their owning LoroDoc as well as the file id.
+  // The scroll position is not part of an EditorState, so setState drops it.
+  // It is kept in its own small cache, `tops`, as the place from scrollPlace()
+  // (the position on the top screen row and the pixels scrolled into it), and
+  // put back after each swap.
   let states = new WeakMap();
+  let tops = new WeakMap();
   let activeDocument = null;
   const stateMap = (document_) => {
     let map = states.get(document_);
     if (!map) { map = new Map(); states.set(document_, map); }
+    return map;
+  };
+  const topMap = (document_) => {
+    let map = tops.get(document_);
+    if (!map) { map = new Map(); tops.set(document_, map); }
     return map;
   };
   // Which file the view is currently showing, so a swap can put the state it
@@ -813,6 +1005,20 @@
     return textIdForPath(doc, diagnostic.file);
   }
 
+  /// Whether the view's lint state already holds exactly these diagnostics.
+  /// The state maps what it holds through every edit, so this compares against
+  /// what is on screen now, whatever happened since the last call: typing, a
+  /// file switch, or a reconfigure that emptied it.
+  function lintHolds(state, list) {
+    let index = 0;
+    let same = true;
+    forEachDiagnostic(state, (diagnostic, from, to) => {
+      const item = list[index++];
+      if (!item || item.from !== from || item.to !== to || item.severity !== diagnostic.severity || item.message !== diagnostic.message) same = false;
+    });
+    return same && index === list.length;
+  }
+
   /// Paints what a compile had to say: an underline on the span it names, a
   /// mark in the gutter of that line, and the message and hints on hover.
   /// Called with an empty list to clear, which a successful render does.
@@ -828,11 +1034,18 @@
       const at = doc.line(Math.min(Math.max(line, 1), doc.lines));
       return Math.min(at.from + Math.max(column - 1, 0), at.to);
     };
+    // A compile has many diagnostics but few files, and resolving a file walks
+    // the whole project, so each file is resolved once per call.
+    const idOfFile = new Map();
+    const fileIdOf = (diagnostic) => {
+      if (!idOfFile.has(diagnostic.file)) idOfFile.set(diagnostic.file, fileOf(diagnostic));
+      return idOfFile.get(diagnostic.file);
+    };
     shown = all
       // Only this file's. An underline drawn at line 40 of the chapter on
       // screen, for an error at line 40 of a different chapter, would be a
       // confident lie.
-      .filter((diagnostic) => fileOf(diagnostic) === showing)
+      .filter((diagnostic) => fileIdOf(diagnostic) === showing)
       .filter((diagnostic) => diagnostic.severity !== "info")
       .filter((diagnostic) => diagnostic.line > 0 && diagnostic.line <= doc.lines)
       .map((diagnostic) => {
@@ -850,8 +1063,11 @@
       })
       .sort((a, b) => a.from - b.from);
     // With the check off nothing is drawn in the source, and the reader's list
-    // of messages is unchanged.
-    view.dispatch(setLintDiagnostics(view.state, untrack(() => check) ? shown : []));
+    // of messages is unchanged. A live preview compiles on every keystroke and
+    // mostly says the same again, so a list the view already shows is not sent:
+    // rebuilding the lint state redraws the gutter.
+    const drawn = untrack(() => check) ? shown : [];
+    if (!lintHolds(view.state, drawn)) view.dispatch(setLintDiagnostics(view.state, drawn));
     // The gutter marks are the only sign of a compile's result, and a screen
     // reader gets none of them, so the counts are spoken when they change.
     const errors = shown.filter((diagnostic) => diagnostic.severity === "error").length;
@@ -938,9 +1154,41 @@
     return from < to ? { file: showing, from, to } : null;
   }
 
+  let flashTimer = 0;
+  /// Shows a collaborator's place: opens its file when it is not the one shown,
+  /// scrolls the range into view and flashes it in their colour. The caret,
+  /// the selection and the focus stay where they are; only the view moves.
+  /// `colour` is their presence colour, a "#rrggbb" hex, or anything else for
+  /// the theme's fallback.
+  export function revealPeer(id, from, to = from, colour = "") {
+    if (!view || !id) return;
+    // Looking at a collaborator is not typing: the keyboard stays put.
+    show(id, { focus: false });
+    const length = view.state.doc.length;
+    const clamp = (at) => Math.min(Math.max(Number(at) || 0, 0), length);
+    const start = clamp(Math.min(from, to));
+    const end = clamp(Math.max(from, to));
+    const className = typeof colour === "string" && colour.startsWith("#")
+      ? `user-color-${colour.slice(1).toLowerCase()}`
+      : "";
+    view.dispatch({
+      effects: [
+        EditorView.scrollIntoView(start, { y: "center" }),
+        flashPresence.of({ from: start, to: end, className }),
+      ],
+    });
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      flashTimer = 0;
+      view?.dispatch({ effects: flashPresence.of(null) });
+    }, FLASH_MS);
+  }
+
   /// Puts the caret at an offset and scrolls it into the middle of the view:
-  /// what a click in the document does when the two are kept in step.
-  export function goTo(at) {
+  /// what a click in the document does when the two are kept in step. With
+  /// `focus: false` the caret and the view move but the keyboard stays where
+  /// it is, which is what a click in the preview needs.
+  export function goTo(at, { focus = true } = {}) {
     if (!view) return;
     // A place remembered earlier may lie past the end of a file that has
     // shrunk since, and CodeMirror throws on a selection outside the text.
@@ -949,11 +1197,75 @@
       selection: { anchor: place },
       effects: EditorView.scrollIntoView(place, { y: "center" }),
     });
-    view.focus();
+    if (focus) view.focus();
   }
 
   export function focus() {
     view?.focus();
+  }
+
+  /// Scrolls the caret into sight when the keyboard has covered the lower part
+  /// of the screen. Only while the editor has the focus: otherwise nothing is
+  /// being typed and the reader's place is not moved.
+  export function revealCaret() {
+    if (!view || !view.hasFocus) return;
+    view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "nearest", yMargin: 24 }) });
+  }
+
+  // Where the scroller is: the position on the screen row at the top of the
+  // view, and how many pixels of that row lie above the view. A row and not
+  // a line, because a wrapped line can be several screens tall and its start
+  // would be a long way from where the reader was.
+  // A hidden editor (the phone showing the document) has no geometry to read,
+  // so it answers with the last place measured while it was on screen.
+  let lastSeen = null;
+  function scrollPlace() {
+    if (!view.scrollDOM.getClientRects().length) {
+      return lastSeen?.file === showing ? { top: lastSeen.top, offset: lastSeen.offset } : { top: 0, offset: 0 };
+    }
+    return measuredPlace();
+  }
+  function noteSeen() {
+    if (view?.scrollDOM.getClientRects().length) lastSeen = { file: showing, ...measuredPlace() };
+  }
+  function measuredPlace() {
+    const edge = view.scrollDOM.getBoundingClientRect().top;
+    const left = view.contentDOM.getBoundingClientRect().left + 1;
+    const top = view.posAtCoords({ x: left, y: edge + 1 }, false);
+    const row = view.coordsAtPos(top, 1);
+    return { top, offset: row ? Math.max(0, Math.round(edge - row.top)) : 0 };
+  }
+
+  // Scrolls the row holding `place.top` back to `place.offset` pixels above
+  // the top of the view. scrollIntoView keeps the editor's top scroll margin
+  // clear of its target, so that margin is added back here, the way
+  // CodeMirror combines the sources of it. One scroll request and nothing
+  // deferred, so a jump or a collaborator shown right after replaces it.
+  function scrollBack(place) {
+    const at = Math.min(Math.max(0, place.top || 0), view.state.doc.length);
+    lastSeen = { file: showing, top: at, offset: place.offset || 0 };
+    let margin = 0;
+    for (const source of view.state.facet(EditorView.scrollMargins)) margin = Math.max(margin, source(view)?.top ?? 0);
+    view.dispatch({ effects: EditorView.scrollIntoView(at, { y: "start", yMargin: -((place.offset || 0) + margin) }) });
+  }
+
+  // The caret and the scroll place of the view, for the reader to keep while
+  // the page is hidden.
+  export function place() {
+    if (!view) return null;
+    return { caret: view.state.selection.main.head, ...scrollPlace() };
+  }
+
+  // Puts back a place kept by place(), in the file already shown. It does not
+  // focus the editor: focusing a field on a phone raises the keyboard, and the
+  // person has not asked to type.
+  export function restorePlace(id, { caret = 0, top = 0, offset = 0 } = {}) {
+    if (!view || !id) return;
+    show(id, { focus: false });
+    const end = view.state.doc.length;
+    const clamp = (at) => Math.min(Math.max(0, at), end);
+    view.dispatch({ selection: { anchor: clamp(caret) } });
+    scrollBack({ top, offset });
   }
 
   // Applies a formatting tool from lib/visual-markup/formatting.js to the open
@@ -966,18 +1278,132 @@
     return done;
   }
 
+  // Whether the browser lets the editor read the clipboard. Paste is greyed
+  // while it does not: the probe runs when the editor starts and again when a
+  // source menu opens, and a read that is refused turns it off.
+  let pasteReadable = $state(true);
+  // Set by Mod+Shift+V just before the browser's paste event, so that paste
+  // inserts the text/plain it carries and not the converted HTML. Cleared by
+  // that paste, or by the timer if no paste comes.
+  let plainNext = false;
+  let plainTimer = null;
+  // Read once: whether the pointer is a finger. Decides whether the source has
+  // a right-click menu at all, and cannot change without remounting the editor.
+  const coarsePointer = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+  function probeClipboard() {
+    return clipboardReadable(navigator).then((readable) => { pasteReadable = readable; });
+  }
+  probeClipboard();
+
+  // The source's right-click menu: each item's availability, asked when it opens.
+  let sourceMenuAvailable = $state({});
+  const sourceMenuKeys = $derived(menuKeys({ modalEditor: keys === "vim" || keys === "emacs", apple: APPLE }));
+
+  // Shown at once from what the editor knows, then again once the clipboard
+  // probe has answered, so Paste is never offered on a stale answer.
+  async function openSourceMenu() {
+    sourceMenuAvailable = editAvailability();
+    await probeClipboard();
+    sourceMenuAvailable = editAvailability();
+  }
+
+  // Runs a source-menu item. Zag hands focus back to the trigger as the menu
+  // closes, so the command waits a tick and then the editor takes the focus
+  // itself. A refused clipboard read greys Paste (editCommand turns it off).
+  function runSourceMenu(command) {
+    setTimeout(() => { void editCommand(command).catch(() => {}); }, 0);
+  }
+
+  // Right-click and the keyboard's menu key open the same menu. The keyboard
+  // has no pointer, so the menu opens at the caret: a synthetic contextmenu
+  // event at the caret reaches the trigger the same way a right click does.
+  function openSourceMenuAtCaret() {
+    if (!view) return false;
+    const rect = view.coordsAtPos(view.state.selection.main.head) ?? view.dom.getBoundingClientRect();
+    view.contentDOM.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: rect.left, clientY: rect.bottom }));
+    return true;
+  }
+
   export function editAvailability() {
     if (!view) return {};
     const selected = !view.state.selection.main.empty;
     const manager = undoManager;
+    const format = formatHere();
     return {
       undo: editable && (manager?.canUndo?.() ?? false),
       redo: editable && (manager?.canRedo?.() ?? false),
       cut: editable && selected, copy: selected,
-      paste: editable, "select-all": true, find: true, replace: editable,
+      paste: editable && pasteReadable, "paste-plain": editable && pasteReadable, "select-all": true, find: true, replace: editable,
+      "go-to-definition": true, "find-references": true, "rename-symbol": editable,
       bold: editable, italic: editable,
+      link: editable && canLink(format),
+      "numbered-list": editable && canList(format), "bulleted-list": editable && canList(format),
+      "heading-1": editable && canHeading(format, 1), "heading-2": editable && canHeading(format, 2),
+      "heading-3": editable && canHeading(format, 3), "heading-4": editable && canHeading(format, 4),
+      "heading-5": editable && canHeading(format, 5), "heading-6": editable && canHeading(format, 6),
+      // The Org structure commands, in an Org file only.
+      ...Object.fromEntries(Object.keys(ORG_COMMANDS).map((id) => [id, editable && format === "org"])),
+      // A comment is made on a selection in the source, and only where the
+      // reader may comment: the same question the bar over a selection asks.
+      comment: Boolean(annotating) && editable && selected,
       "tab-focus": Boolean(view),
     };
+  }
+
+  // The format of the open file for the markup commands, or "" with no session.
+  function formatHere() {
+    return session ? emphasisFormat() : "";
+  }
+
+  // Markup written into the file, in the file's own syntax: each builder is in
+  // lib/editing-shortcuts.js and is run from the keymap and the Edit menu alike.
+  const structure = {
+    link: () => linkEdit(view.state, formatHere()),
+    "numbered-list": () => listEdit(view.state, formatHere(), "numbered"),
+    "bulleted-list": () => listEdit(view.state, formatHere(), "bulleted"),
+    ...Object.fromEntries([1, 2, 3, 4, 5, 6].map((level) => [`heading-${level}`, () => headingEdit(view.state, formatHere(), level)])),
+  };
+  function runStructure(id) {
+    if (!view || view.state.readOnly) return false;
+    const spec = structure[id]?.();
+    if (!spec) return false;
+    view.dispatch(spec);
+    return true;
+  }
+
+  // Clipboard content as the text to insert: source for the file's format
+  // (lib/paste-html.js), or plain text where the caret is in math or code, or
+  // where the person asked for plain text.
+  function convertPaste(state, { html, text, plain }) {
+    const format = formatHere();
+    const { from } = state.selection.main;
+    const asPlain = plain || pastesPlainAt(state.doc.toString(), from, format);
+    return pasteText({ html, text, format, plain: asPlain });
+  }
+  // Dispatched like the plain paste was, so tracked changes and Loro cursors
+  // see it as one edit.
+  function dispatchPaste(target, insert) {
+    target.dispatch({ ...target.state.replaceSelection(insert), annotations: Transaction.userEvent.of("input.paste"), scrollIntoView: true });
+  }
+  function insertPaste(target, clip) {
+    dispatchPaste(target, convertPaste(target.state, clip));
+  }
+
+  // The Edit menu's paste reads the clipboard itself, so it can reach the HTML
+  // the browser holds. Where read() is missing or refused, readText() gives the
+  // plain text as before, and a refusal of that is left to the caller.
+  async function readClipboard() {
+    let items;
+    try {
+      items = await navigator.clipboard.read();
+    } catch {
+      return { html: "", text: await navigator.clipboard.readText() };
+    }
+    const item = items.find((entry) => entry.types.includes("text/html"));
+    if (!item) return { html: "", text: await navigator.clipboard.readText() };
+    const html = await (await item.getType("text/html")).text();
+    const text = item.types.includes("text/plain") ? await (await item.getType("text/plain")).text() : "";
+    return { html, text };
   }
 
   export async function editCommand(command) {
@@ -990,7 +1416,13 @@
     else if (command === "select-all") selectAll(target);
     else if (command === "bold") boldCommand(target);
     else if (command === "italic") italicCommand(target);
+    else if (command === "comment") onannotate?.("comment", selection());
+    else if (Object.hasOwn(structure, command)) runStructure(command);
+    else if (Object.hasOwn(ORG_COMMANDS, command)) ORG_COMMANDS[command](target);
     else if (command === "tab-focus") toggleTabFocusMode(target);
+    else if (command === "go-to-definition") goToDefinition(target, indexContext);
+    else if (command === "find-references") findReferencesCommand(indexContext)(target);
+    else if (command === "rename-symbol") renameCommand(indexContext)(target);
     else if (command === "find" || command === "replace") {
       openSearchPanel(target);
       if (command === "replace") target.dom.querySelector('[name="replace"]')?.focus();
@@ -1001,10 +1433,19 @@
         if (view !== target || target.state !== state || !editable) throw new Error(m.editor_cut_changed());
         target.dispatch({ changes: { from, to }, selection: { anchor: from }, annotations: Transaction.userEvent.of("delete.cut") });
       }
-    } else if (command === "paste") {
-      const text = await navigator.clipboard.readText();
+    } else if (command === "paste" || command === "paste-plain") {
+      let clip;
+      try {
+        // Paste as plain text reads only text/plain, so no HTML is converted.
+        clip = command === "paste" ? await readClipboard() : { html: "", text: await navigator.clipboard.readText() };
+      } catch (error) {
+        // A refused read: Paste is greyed from now on, and the error still goes to the caller.
+        pasteReadable = false;
+        throw error;
+      }
       if (view !== target || target.state !== state || !editable) throw new Error(m.editor_paste_changed());
-      target.dispatch({ ...state.replaceSelection(text), annotations: Transaction.userEvent.of("input.paste"), scrollIntoView: true });
+      // With several cursors the clipboard text goes to each one as it is: converted markup per cursor is not worth losing CodeMirror's line-wise paste.
+      insertPaste(target, { ...clip, plain: command === "paste-plain" || state.selection.ranges.length > 1 });
     }
   }
 
@@ -1018,15 +1459,13 @@
     const loroText = getTextFromDoc(showing);
     if (!loroText) return null;
     const { from, to } = view.state.selection.main;
-    // Convert UTF-16 offsets to Unicode code points for cursor creation.
-    const fromUnicode = loroText.convertPos(from, "utf16", "unicode") ?? from;
-    const toUnicode = loroText.convertPos(to, "utf16", "unicode") ?? to;
     return {
       session,
       doc,
       file: showing,
-      fromCursor: loroText.getCursor(fromUnicode, 0),
-      toCursor: loroText.getCursor(toUnicode, 0),
+      // Loro's getCursor and getCursorPos both speak UTF-16 here, as CodeMirror does.
+      fromCursor: cursorAt(loroText, from, 0),
+      toCursor: cursorAt(loroText, to, 0),
       capturedText: view.state.sliceDoc(from, to),
     };
   }
@@ -1110,9 +1549,9 @@
       return false;
     }
 
-    // Convert back to UTF-16 for CodeMirror use.
-    const from = loroText.convertPos(Math.min(fromPos, toPos), "unicode", "utf16") ?? 0;
-    const to = loroText.convertPos(Math.max(fromPos, toPos), "unicode", "utf16") ?? 0;
+    // The offsets are already UTF-16, which is what CodeMirror uses.
+    const from = Math.min(fromPos, toPos);
+    const to = Math.max(fromPos, toPos);
 
     if (loroText.toString().slice(from, to) !== target.capturedText) return false;
     // One plan per file, keyed by container id rather than by the handle.
@@ -1218,8 +1657,9 @@
     if (undoManagerDoc !== bound) {
       // The comment anchors are not undone either: their commits are labelled
       // ANCHORS_ORIGIN and follow the text back as undo and redo move it. The
-      // line-ending heal is not undone either.
-      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN, ANCHORS_ORIGIN, LINE_ENDINGS_ORIGIN] });
+      // line-ending heal is not undone either, and nor is the idle prune of
+      // tracked-change records, which runs apart from any keystroke.
+      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN, ANCHORS_ORIGIN, LINE_ENDINGS_ORIGIN, PRUNE_ORIGIN] });
       undoManagerDoc = bound;
     }
     const manager = undoManager;
@@ -1249,36 +1689,41 @@
         // default keymap does, or `j` inserts a letter instead of moving.
         vimCompartment.of(resolvedKeys(untrack(() => keys)) || []),
         themeCompartment.of(themeFor(mode() === "dark")),
-        lineNumbers(),
+        chromeCompartment.of(chromeOn(untrack(() => visual), path)),
         drawSelection(),
-        highlightActiveLine(),
-        highlightActiveLineGutter(),
         highlightSpecialChars(),
         dropCursor(),
         EditorState.allowMultipleSelections.of(true),
         rectangularSelection(),
         bracketMatching(),
         bracketsCompartment.of(bracketsOn(untrack(() => brackets))),
-        foldGutter(),
+        latexAssistCompartment.of(latexAssistOn(untrack(() => latexAssist), sourceFormat(path, format) === "latex")),
         indentOnInput(),
         highlightSelectionMatches(),
         sourceHighlighting,
         sourceLanguage(path, format),
-        completionCompartment.of(completionOn(untrack(() => completion))),
+        completionCompartment.of(completionOn(untrack(() => completion), completionProject)),
         completionExtension({
           project: completionProject,
           sources: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(session.doc, showing)) })],
         }),
+        // Go to definition, hover, references and rename over the project index.
+        indexEditing(indexContext),
+        EditorView.updateListener.of((update) => { if (update.docChanged) indexDirty = true; }),
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws. Drawn only while
         // the check is on.
-        checkCompartment.of(checkOn(untrack(() => check), citationKeys)),
+        checkCompartment.of(checkOn(untrack(() => check), citationKeys, indexChecks)),
         visualCompartment.of(visualOn(untrack(() => visual), path)),
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
+        // The flash over a collaborator's place after a click on their avatar.
+        presenceFlash,
         // The bar over a selection, offering the annotating verbs.
         commentBar,
+        // A right click outside the selection moves the caret there, before the source menu opens.
+        rightClickCaret(),
         authorMarks,
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
@@ -1292,6 +1737,24 @@
           // highest-precedence keymap, so Vim and Emacs keep Ctrl+B and Ctrl+I.
           { key: "Mod-b", preventDefault: true, run: boldCommand },
           { key: "Mod-i", preventDefault: true, run: italicCommand },
+          // Link, headings and lists, and the comment on the selection; the
+          // names are lib/commands.js's, as for bold and italic.
+          { key: "Mod-k", preventDefault: true, run: () => runStructure("link") },
+          { key: "Mod-Alt-1", preventDefault: true, run: () => runStructure("heading-1") },
+          { key: "Mod-Alt-2", preventDefault: true, run: () => runStructure("heading-2") },
+          { key: "Mod-Alt-3", preventDefault: true, run: () => runStructure("heading-3") },
+          { key: "Mod-Alt-4", preventDefault: true, run: () => runStructure("heading-4") },
+          { key: "Mod-Alt-5", preventDefault: true, run: () => runStructure("heading-5") },
+          { key: "Mod-Alt-6", preventDefault: true, run: () => runStructure("heading-6") },
+          { key: "Mod-Shift-7", preventDefault: true, run: () => runStructure("numbered-list") },
+          { key: "Mod-Shift-8", preventDefault: true, run: () => runStructure("bulleted-list") },
+          // Paste as plain text. Not preventDefault and returns false: the browser
+          // still sends its paste event, and the paste handler below sees plainNext.
+          { key: "Mod-Shift-v", run: () => { plainNext = true; clearTimeout(plainTimer); plainTimer = setTimeout(() => { plainNext = false; }, 500); return false; } },
+          { key: "Mod-Alt-m", preventDefault: true, run: () => (void editCommand("comment"), true) },
+          // The source menu from the keyboard: the menu key and Shift+F10.
+          { key: "ContextMenu", preventDefault: true, run: openSourceMenuAtCaret },
+          { key: "Shift-F10", preventDefault: true, run: openSourceMenuAtCaret },
           // Source text size. The keyboard half of the pinch: lib/commands.js names
           // these bindings, and the size is the one lib/editor-zoom.js changes.
           { key: "Mod-=", preventDefault: true, run: () => (setSize(size() + 1), true) },
@@ -1306,6 +1769,30 @@
           // Ctrl-Shift-M opens the list of what the compiler said.
           ...lintKeymap,
         ]),
+        // Native paste (Mod+V, middle click, the browser's menu). Rich text on the
+        // clipboard is converted for the file's format; anything else is left to
+        // CodeMirror, which keeps its multi-cursor and line-wise paste.
+        EditorView.domEventHandlers({
+          paste(event, view) {
+            if (!editable || view.state.readOnly) return false;
+            const html = event.clipboardData?.getData("text/html") ?? "";
+            if (!html) return false;
+            if (plainNext) {
+              plainNext = false;
+              clearTimeout(plainTimer);
+              return false;
+            }
+            // Several cursors: CodeMirror's own paste spreads the lines over them, which is worth more than converted markup per cursor.
+            if (view.state.selection.ranges.length > 1) return false;
+            const text = event.clipboardData.getData("text/plain");
+            const insert = convertPaste(view.state, { html, text, plain: false });
+            // Nothing to convert (plain text in math or code, or an unknown format): CodeMirror pastes natively, line-wise.
+            if (insert === text) return false;
+            event.preventDefault();
+            dispatchPaste(view, insert);
+            return true;
+          },
+        }),
         // Undo and redo are ours, not the binding's. The binding binds Mod-z
         // at Prec.high from inside LoroExtensions, so ours has to outrank it
         // to be the one that runs; `undoManagerField` hands it the same
@@ -1328,6 +1815,7 @@
         // After the change plugin, so the anchors follow records already written.
         anchorsPlugin(id, tracking.created),
         commentMarkExtension,
+        changeMarkClickExtension,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             // The marks were mapped through the edit. Drawing them again from
@@ -1342,8 +1830,8 @@
           // and scrolling the document on every keystroke would make the
           // preview unreadable.
           if (update.selectionSet && !update.docChanged) oncaret?.();
-          // The formatting toolbar reads the caret's markup, so it is told on every move or edit.
-          if (update.docChanged || update.selectionSet) reportFormat(update.view);
+          // The formatting toolbar reads the caret's markup, so it is told after every move or edit, once per frame.
+          if (update.docChanged || update.selectionSet) scheduleFormat();
           // On a phone the keyboard covers the lower half of the screen, and a
           // tap is what raises it, so the tapped line goes to the top of the
           // editor where it stays in sight. Only a pointer tap that places the
@@ -1354,7 +1842,7 @@
           // inside its own update.
           if (update.selectionSet && update.state.selection.main.empty
               && update.transactions.some((tr) => tr.isUserEvent("select.pointer"))
-              && window.matchMedia("(max-width: 760px)").matches) {
+              && window.matchMedia("(max-width: 767px)").matches) {
             const head = update.state.selection.main.head;
             requestAnimationFrame(() => {
               if (!view || view.state.selection.main.head !== head) return;
@@ -1403,24 +1891,39 @@
     if (!target) return;
     target.dispatch({
       effects: [
-        completionCompartment.reconfigure(completionOn(untrack(() => completion))),
+        completionCompartment.reconfigure(completionOn(untrack(() => completion), completionProject)),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
+        latexAssistCompartment.reconfigure(latexAssistOn(untrack(() => latexAssist), sourceFormat(pathOfDoc(session.doc, id), format) === "latex")),
         spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => target.state.doc.toString())),
-        checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys)),
+        checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys, indexChecks)),
       ],
     });
   }
 
   // The visual layer for a file, or nothing where it draws no such format. The
   // colours depend on the page's mode, so this is read again on a theme change.
+  // Markdown, Quarto, Org and Typst files are drawn by the paper layer; LaTeX by the visual-markup layer.
   function visualOn(on, path) {
-    return on ? visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) }) : [];
+    if (!on) return [];
+    if (/\.(md|markdown|qmd|org|typ)$/i.test(path)) {
+      const format = /\.org$/i.test(path) ? "org" : /\.qmd$/i.test(path) ? "quarto" : /\.typ$/i.test(path) ? "typst" : "markdown";
+      return paperVisual({ format, path: () => path, imageUrl: untrack(() => imageUrl), resultsFiles: () => untrack(() => resultsFiles)?.() ?? null, resultsRevision: () => untrack(() => resultsRevision), dark: mode() === "dark", project: format === "typst" ? () => paperProject(path) : null, openInclude: (name) => openIncluded(path, name) });
+    }
+    return visualMarkup(formatOf(path), { path: () => path, imageUrl: untrack(() => imageUrl), resultsFiles: () => untrack(() => resultsFiles)?.() ?? null, dark: mode() === "dark", openInclude: (name) => openIncluded(path, name) });
+  }
+  // The source-code chrome for a file. It is dropped only where the visual layer draws the file,
+  // the same test visualOn applies, so a .bib or .py file keeps its line numbers in visual mode.
+  function chromeOn(on, path) {
+    if (on && VISUAL_FORMATS.has(formatOf(path))) return [];
+    return [lineNumbers(), highlightActiveLine(), highlightActiveLineGutter(), foldGutter()];
   }
   // Opens the project text an include names, for a click on it in the visual layer.
   function openIncluded(from, name) {
     const doc = session?.doc;
     if (!doc) return;
-    const id = textIdForPath(doc, resolveInclude("latex", from, name, treeForDoc(doc).texts));
+    // The file's own format decides how its include names resolve: LaTeX adds .tex and looks at the root,
+    // Typst reads a leading slash, Markdown, Quarto and Org read the name beside the file.
+    const id = textIdForPath(doc, resolveInclude(sourceFormatOf(from), from, name, treeForDoc(doc).texts));
     if (id) openAt(id, 1);
   }
 
@@ -1428,7 +1931,12 @@
   function syncVisual(target, id = showing) {
     if (!target) return;
     const path = pathOfDoc(session.doc, id);
-    target.dispatch({ effects: visualCompartment.reconfigure(visualOn(untrack(() => visual), path)) });
+    target.dispatch({
+      effects: [
+        visualCompartment.reconfigure(visualOn(untrack(() => visual), path)),
+        chromeCompartment.reconfigure(chromeOn(untrack(() => visual), path)),
+      ],
+    });
     refreshFacts(target, id, true);
     reportFormat(target, path);
   }
@@ -1437,6 +1945,20 @@
   function reportFormat(target, path) {
     if (!visual || !onformatstate || !target) return;
     onformatstate(formatState(target, formatOf(path ?? pathOfDoc(session.doc, showing))));
+  }
+
+  // The toolbar is told once per frame, not once per transaction. Typing used
+  // to recompute the file's path, the caret's markup and the toolbar on every
+  // keystroke, and the toolbar only needs the state as of the next paint. The
+  // frame reads the view when it runs, so a view swapped in the meantime is
+  // the one reported.
+  let formatFrame = 0;
+  function scheduleFormat() {
+    if (formatFrame) return;
+    formatFrame = requestAnimationFrame(() => {
+      formatFrame = 0;
+      reportFormat(view);
+    });
   }
 
   // The prose format of a file, or empty for code and data files, which spellcheck leaves alone.
@@ -1452,16 +1974,19 @@
     return text?.kind?.() === "Text" ? text : null;
   }
 
+  // These ask for the paths alone, without the texts: they run on every
+  // keystroke, some of them inside an open transaction, where the session's
+  // tree is not cached and would read every file.
   function pathOfDoc(doc, id) {
     if (!doc || !id) return "";
-    for (const [path, file] of projectDirectory(doc, rules ?? null).files) {
+    for (const [path, file] of projectPaths(doc, rules ?? null).files) {
       if (file.kind === "text" && file.id === id) return path;
     }
     return "";
   }
   function textIdForPath(doc, path) {
     if (!doc || !path) return "";
-    const file = projectDirectory(doc, rules ?? null).files.get(path);
+    const file = projectPaths(doc, rules ?? null).files.get(path);
     return file?.kind === "text" ? file.id : "";
   }
   // Project facts for completion sources. The format comes from the edited
@@ -1479,6 +2004,17 @@
       if (!tree) tree = treeForDoc(doc);
       return tree;
     };
+    /** @type {Record<string, string> | null} the stringified texts, built once */
+    let stringTexts = null;
+    const allTexts = () => {
+      if (stringTexts === null) {
+        /** @type {Record<string, string>} */
+        const texts = {};
+        for (const [file, text] of Object.entries(load().texts)) texts[file] = String(text ?? "");
+        stringTexts = texts;
+      }
+      return stringTexts;
+    };
     return {
       get path() {
         if (projected === null) projected = pathOfDoc(doc, showing) || rawPath;
@@ -1486,17 +2022,24 @@
       },
       format: formatOfPath(rawPath),
       get texts() {
-        /** @type {Record<string, string>} */
-        const texts = {};
-        for (const [file, text] of Object.entries(load().texts)) texts[file] = String(text ?? "");
-        return texts;
+        return allTexts();
       },
       get files() {
         return Object.keys(load().files).sort();
       },
+      // Labels from the live index, which refreshes before it answers.
+      labels(options) {
+        return labelList(currentIndex(), allTexts(), options);
+      },
     };
   }
+  // The project directory as the editor reads it. For the session's own doc
+  // this is session.tree(), which caches the projection by the document's
+  // version and its rules, so the several refreshes that follow one edit share
+  // one build. Its top-level maps are fresh per call and its texts are strings,
+  // so callers may read them freely. Any other doc is projected directly.
   function treeForDoc(doc) {
+    if (session && doc === session.doc) return session.tree();
     const projection = projectDirectory(doc, rules ?? null);
     const texts = Object.create(null), files = Object.create(null), digests = Object.create(null);
     for (const [path, file] of projection.files) {
@@ -1509,6 +2052,14 @@
       }
     }
     return { texts, files, digests };
+  }
+  // The project as the Typst paper view compiles in it: the same texts and
+  // asset digests the preview's tree is made of, and the figure resolver.
+  function paperProject(path) {
+    const tree = session.doc ? treeForDoc(session.doc) : { texts: {}, digests: {} };
+    const texts = {};
+    for (const [file, text] of Object.entries(tree.texts)) texts[file] = String(text ?? "");
+    return { main: path, texts, assets: { ...tree.digests }, assetUrl: (file) => untrack(() => imageUrl)?.(file) ?? null, resultsFiles: () => untrack(() => resultsFiles)?.() ?? null };
   }
   function addTextToDoc(doc, path, body = "") {
     const files = doc.getMap("files"), paths = doc.getMap("paths");
@@ -1552,6 +2103,7 @@
   /// The mark keeps the binding from writing the text back, and the anchors
   /// plugin from recording it. The decision that wrote the document already
   /// read the anchor index back (`settleAnchors` in Reader.svelte).
+  let viewEdited = false; // a keystroke in this view has not been seen by a local batch yet
   function reconcileShown() {
     if (!view || !showing) return;
     const text = getTextFromDoc(showing);
@@ -1565,9 +2117,12 @@
     });
   }
 
-  function show(id) {
+  function show(id, { focus = true } = {}) {
     if (!view || !id || id === showing) return;
-    if (showing && activeDocument) stateMap(activeDocument).set(showing, view.state);
+    if (showing && activeDocument) {
+      stateMap(activeDocument).set(showing, view.state);
+      topMap(activeDocument).set(showing, scrollPlace());
+    }
     const document_ = session.doc;
     const documentStates = stateMap(document_);
     if (!documentStates.has(id)) documentStates.set(id, stateFor(id));
@@ -1603,7 +2158,12 @@
     // The authorship marks belong to the file too, and the summary the reader
     // shows is for the file now on screen.
     drawAuthorship();
-    view.focus();
+    if (focus) view.focus();
+    // Put the scroll back where the file was left, last, after everything
+    // above has reconfigured the view. A caller that jumps somewhere (goToIn,
+    // openAt) calls goTo after show and scrolls again, so that jump wins.
+    const saved = topMap(document_).get(id);
+    if (saved !== undefined) scrollBack(saved);
   }
 
   /// The file the view is showing, which the reader asks when it has a
@@ -1637,6 +2197,12 @@
         parent: host,
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
+      // Keeps lastSeen current while the editor is on screen, once a frame at most.
+      let seenFrame = 0;
+      const onScroll = () => {
+        if (!seenFrame) seenFrame = requestAnimationFrame(() => { seenFrame = 0; noteSeen(); });
+      };
+      view.scrollDOM.addEventListener("scroll", onScroll, { passive: true });
       syncKeys(view);
       syncFeatures(view, initial.first);
       const unsubscribeMode = onMode(() => { syncTheme(view); syncVisual(view); });
@@ -1657,24 +2223,38 @@
       // document without a keystroke here. A local write from outside the
       // view, such as a decision in the Changes panel, is copied into it.
       const unsubscribeChanges = session.doc.subscribe((batch) => queueMicrotask(() => {
-        if (batch.by === "local") reconcileShown();
+        if (batch.by === "local") {
+          // A commit that came from typing in this view cannot have diverged
+          // from it; only writes from elsewhere (the Changes panel) need it.
+          if (batch.origin !== ANCHORS_ORIGIN && batch.origin !== PRUNE_ORIGIN) {
+            if (viewEdited) viewEdited = false;
+            else reconcileShown();
+          }
+        }
         scheduleDraw();
         scheduleAuthorship();
       }));
       refreshBibliography();
       refreshFacts(view, showing, true);
+      refreshIndex();
       view.focus();
       return () => {
         bibliographyGeneration += 1;
         clearTimeout(bibliographyTimer);
         clearTimeout(factsTimer);
+        clearTimeout(indexTimer);
         clearTimeout(authorshipTimer);
+        cancelIdlePrune();
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         unsubscribeChanges();
         unsubscribeMode();
         unsubscribeFont();
         unsubscribeLineHeight();
+        view?.scrollDOM.removeEventListener("scroll", onScroll);
+        cancelAnimationFrame(seenFrame);
         if (view) viewCallbacks.delete(view);
+        cancelAnimationFrame(formatFrame);
+        formatFrame = 0;
         view?.destroy();
         insertTargets.clear();
         // Cached states embed their UndoManager. Reset both caches together;
@@ -1683,6 +2263,8 @@
         states = new WeakMap();
         undoManager = null;
         undoManagerDoc = null;
+        tops = new WeakMap();
+        lastSeen = null;
         view = null;
         activeDocument = null;
         showing = "";
@@ -1744,6 +2326,7 @@
   $effect(() => {
     void completion;
     void brackets;
+    void latexAssist;
     void proofing;
     void dialect;
     if (view) syncFeatures(view);
@@ -1767,9 +2350,56 @@
     if (view) untrack(() => syncVisual(view));
   });
 
+  // A new run's figures: reconfiguring the visual layer makes every figure
+  // widget resolve its image again.
+  $effect(() => {
+    void resultsRevision;
+    if (view && untrack(() => visual)) untrack(() => syncVisual(view));
+  });
+
+  // typst-syntax.wasm loads after the first paint. The Typst files were seen
+  // without a tree until now, so the index reads them again. The spellcheck
+  // and Harper plugins rescan on their own, and the reader follows the load
+  // itself for the outline.
+  $effect(() => onTypstSyntax(() => {
+    liveIndex.invalidate((path) => path.endsWith(".typ"));
+    indexDirty = true;
+    refreshIndex();
+  }));
+  // The same for org.wasm and the Org files.
+  $effect(() => onOrgSyntax(() => {
+    liveIndex.invalidate((path) => path.endsWith(".org"));
+    indexDirty = true;
+    refreshIndex();
+  }));
+
 </script>
 
-<div class="editorhost" bind:this={host}></div>
+<!-- The source's right-click menu, the same one the file tree's menus are: a
+     right click, or the keyboard's menu key, opens it at the pointer or the caret. -->
+{#if coarsePointer}
+  <!-- On a touch screen a long press is the system's text selection, which a
+       context menu would take over, so the source has no menu there. -->
+  <div class="editorhost" bind:this={host}></div>
+{:else}
+<Menu onSelect={(chosen) => runSourceMenu(chosen.value)} onOpenChange={(event) => { if (event.open) void openSourceMenu(); }}>
+  <Menu.ContextTrigger>
+    {#snippet element(attributes)}
+      <div {...retargetElementAttributes(attributes)} class="editorhost" bind:this={host}></div>
+    {/snippet}
+  </Menu.ContextTrigger>
+  <ExplorerMenu>
+    {#each SOURCE_MENU as group, index}
+      {#if index}<hr class="hr my-1" />{/if}
+      {#each group as command (command)}
+        <Menu.Item value={command} class="menuitem" disabled={!sourceMenuAvailable[command]} data-tip={command === "paste" && !pasteReadable ? m.editor_paste_blocked() : undefined} data-tip-place="right">
+          <span class="menuitem-label">{labelOf(command)}</span>{#if sourceMenuKeys[command]}<span class="menuitem-keys">{sourceMenuKeys[command]}</span>{/if}
+        </Menu.Item>
+      {/each}
+    {/each}
+  </ExplorerMenu>
+</Menu>
+{/if}
 
 <!-- A pending change is painted by `.change-added`, `.change-removed` and
      `.change-selected` in `styles/librepaper.css`, beside the rest of the

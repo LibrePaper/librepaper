@@ -1,5 +1,6 @@
 <script>
   import { m } from "../lib/paraglide/messages.js";
+  import { isSendKey } from "../lib/send-key.js";
   // Writing the note, in the column where it will live rather than in a
   // dialog over the document it is about. It is the same card as the notes
   // around it, in the place the new one will take, so the passage stays
@@ -20,13 +21,34 @@
 
   let body = $state("");
   let field = $state(null);
+  let card = $state(null);
 
+  // A remark about the whole document quotes nothing, so the draft names what
+  // it is about instead.
   const quotation = $derived(
-    m.commentcomposer_quotation({ exact: pending?.exact ?? "" }),
+    pending?.whole
+      ? m.common_whole_document()
+      : m.commentcomposer_quotation({ exact: pending?.exact ?? "" }),
   );
 
+  // The card mounts as the Comments tab is opened, and that tab or its panel
+  // may not be showing yet, so focus is retried for a short while until the
+  // field is visible, then the card is scrolled into place and focused.
   $effect(() => {
-    field?.focus({ preventScroll: true });
+    if (!field) return;
+    let frame = 0;
+    let tries = 0;
+    const attempt = () => {
+      const visible = field.checkVisibility?.() ?? field.offsetParent !== null;
+      if (visible) {
+        card?.scrollIntoView({ block: "nearest" });
+        field.focus({ preventScroll: true });
+        return;
+      }
+      if (++tries < 30) frame = requestAnimationFrame(attempt);
+    };
+    frame = requestAnimationFrame(attempt);
+    return () => cancelAnimationFrame(frame);
   });
 
   function send() {
@@ -44,13 +66,13 @@
       oncancel?.();
       return;
     }
-    if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.isComposing || event.keyCode === 229) return;
+    if (!isSendKey(event)) return;
     event.preventDefault();
     send();
   }
 </script>
 
-<article id="composer" class="card composer lp-control-tonal-brand p-2" aria-label={m.commentcomposer_aria()}>
+<article bind:this={card} id="composer" class="card composer lp-control-tonal-brand p-2" aria-label={m.commentcomposer_aria()}>
   <div class="flex flex-col gap-2">
     <blockquote class="quote border-[var(--color-brand)] border-l-2 pl-3 text-sm">{quotation}</blockquote>
 
@@ -91,4 +113,9 @@
      selected one because the passage it is about is ringed in the document. */
   .composer { box-shadow: 0 0 0 1px var(--color-focus); }
   .quote { overflow-wrap: anywhere; }
+  /* Phones: the composer's field and buttons are finger-sized, with 16px text. */
+  @media (max-width: 767px) {
+    textarea { font-size: 1rem; }
+    .btn { min-height: 2.75rem; }
+  }
 </style>

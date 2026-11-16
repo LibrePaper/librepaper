@@ -112,6 +112,15 @@ pub struct DeleteFile {
     pub expect: Option<String>,
 }
 
+/// A file that moves to a new path and keeps its identity, so what is
+/// anchored to it (comments, tracked changes) stays attached. Delete plus
+/// create would give the file a new id.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RenameFile {
+    pub from: String,
+    pub to: String,
+}
+
 /// A binary file that is already uploaded as an asset, named by its digest.
 /// `expect` is the digest of the asset it replaces; without it the path must
 /// be absent.
@@ -169,6 +178,8 @@ pub struct SourceChange {
     pub delete: Vec<DeleteFile>,
     #[serde(default)]
     pub put_binary: Vec<PutBinary>,
+    #[serde(default)]
+    pub rename: Vec<RenameFile>,
     /// Canonical `{tool,args}` digest supplied by the endpoint. It is not
     /// deserialized or included in the payload itself, so callers cannot
     /// alter the request identity through JSON fields.
@@ -185,9 +196,12 @@ pub struct SourceChange {
 }
 
 impl SourceChange {
-    /// Whether the change creates, deletes or replaces a file.
+    /// Whether the change creates, renames, deletes or replaces a file.
     pub fn has_file_operations(&self) -> bool {
-        !(self.create.is_empty() && self.delete.is_empty() && self.put_binary.is_empty())
+        !(self.create.is_empty()
+            && self.delete.is_empty()
+            && self.put_binary.is_empty()
+            && self.rename.is_empty())
     }
 
     fn is_empty(&self) -> bool {
@@ -247,7 +261,10 @@ pub fn validate_source_change(
             if change.base_tree.is_empty() {
                 return Err(AgentError::Invalid("invalid base tree digest".into()));
             }
-            let operations = change.create.len() + change.delete.len() + change.put_binary.len();
+            let operations = change.create.len()
+                + change.delete.len()
+                + change.put_binary.len()
+                + change.rename.len();
             if change.is_empty() || change.patches.len() > MAX_PATCHES || operations > MAX_PATCHES {
                 return Err(AgentError::Invalid(
                     "patch count is outside the limit".into(),
@@ -406,13 +423,54 @@ fn validate_file_operations(
             changed.insert(file.path.clone());
         }
     }
+    // A renamed file keeps its identity, so a rename may not share a path
+    // with anything else the change does: it would be unclear which wins.
+    let mut renamed: HashSet<&str> = HashSet::new();
+    for file in &change.rename {
+        for path in [file.from.as_str(), file.to.as_str()] {
+            if !renamed.insert(path) {
+                return Err(AgentError::Invalid(format!(
+                    "a path may appear in only one rename: {path}"
+                )));
+            }
+            let elsewhere = patched.contains(path)
+                || deleted.contains(path)
+                || change.dependencies.iter().any(|d| d.path == path)
+                || change.create.iter().any(|f| f.path == path)
+                || change.put_binary.iter().any(|f| f.path == path);
+            if elsewhere {
+                return Err(AgentError::Invalid(format!(
+                    "a renamed file cannot also be patched, read, created, replaced or deleted: {path}"
+                )));
+            }
+        }
+    }
+    let mut renamed_to: Vec<&str> = Vec::new();
+    for file in &change.rename {
+        let want = if tree.files.contains_key(&file.from) {
+            Kind::Text
+        } else if tree.assets.contains_key(&file.from) {
+            Kind::Asset
+        } else {
+            changed.insert(file.from.clone());
+            continue;
+        };
+        require_kind(rules, &file.to, want)?;
+        if tree.files.contains_key(&file.to) || tree.assets.contains_key(&file.to) {
+            changed.insert(file.to.clone());
+        } else {
+            renamed_to.push(&file.to);
+        }
+    }
     // Names the tree keeps, by collision key, so that a new name is compared
-    // with what will still be there.
+    // with what will still be there. A renamed file's old name is free, which
+    // lets a rename change only the case of a name.
     let mut taken: HashSet<String> = tree
         .files
         .keys()
         .chain(tree.assets.keys())
         .filter(|path| !deleted.contains(path.as_str()))
+        .filter(|path| !change.rename.iter().any(|file| file.from == **path))
         .map(|path| paths::collision_key(path))
         .collect();
     let mut added: Vec<&str> = Vec::new();
@@ -449,7 +507,7 @@ fn validate_file_operations(
             (None, None) => added.push(&file.path),
         }
     }
-    for path in &added {
+    for path in added.iter().chain(&renamed_to) {
         if !taken.insert(paths::collision_key(path)) {
             return Err(AgentError::Invalid(format!(
                 "{path} collides with another file name"
@@ -703,6 +761,22 @@ fn apply_patch_edits(
         };
         if !removed {
             return Err(format!("file is absent: {}", file.path));
+        }
+    }
+    // The destination is free (validated), so each rename is independent.
+    for file in &change.rename {
+        let moved = if tree.files.contains_key(&file.from) {
+            session::rename_path(doc, &file.from, &file.to)
+        } else if let Some(digest) = tree.assets.get(&file.from) {
+            session::remove_asset(doc, &file.from) && {
+                session::put_asset(doc, &file.to, digest);
+                true
+            }
+        } else {
+            false
+        };
+        if !moved {
+            return Err(format!("file is absent: {}", file.from));
         }
     }
     for file in &change.create {
@@ -1519,6 +1593,114 @@ mod tests {
         assert_eq!(texts["paper.md"], "ONE two");
         assert_eq!(texts["new.md"], "fresh");
         assert!(!texts.contains_key("notes.md"));
+    }
+
+    fn rename(from: &str, to: &str) -> RenameFile {
+        RenameFile {
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    #[test]
+    fn a_renamed_text_file_keeps_its_id() {
+        let tree = tree_with_asset();
+        let doc = doc_with_files(&tree);
+        let mut change = request(&tree, Vec::new());
+        change.rename.push(rename("notes.md", "ideas.md"));
+        assert_eq!(validate(&tree, &change), Ok(()));
+
+        apply_patch_edits(&doc, &tree, &change).expect("the rename fits the tree");
+
+        let texts = session::texts_of(&doc);
+        assert_eq!(texts["ideas.md"], "red blue");
+        assert!(!texts.contains_key("notes.md"));
+        // The tree names the file by its path; the document's id is the same.
+        assert_eq!(session::paths_of(&doc)["notes.md"], "ideas.md");
+    }
+
+    #[test]
+    fn a_renamed_asset_keeps_its_digest() {
+        let tree = tree_with_asset();
+        let doc = doc_with_files(&tree);
+        session::put_asset(&doc, "fig.png", &sha('a'));
+        let mut change = request(&tree, Vec::new());
+        change.rename.push(rename("fig.png", "plot.png"));
+        assert_eq!(validate(&tree, &change), Ok(()));
+
+        apply_patch_edits(&doc, &tree, &change).expect("the rename fits the tree");
+
+        let assets = session::assets_of(&doc);
+        assert_eq!(assets["plot.png"], sha('a'));
+        assert!(!assets.contains_key("fig.png"));
+        // A text cannot become an asset by renaming.
+        let mut across = request(&tree, Vec::new());
+        across.rename.push(rename("notes.md", "notes.png"));
+        assert!(matches!(
+            validate(&tree, &across),
+            Err(AgentError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn a_rename_needs_an_existing_source_and_a_free_destination() {
+        let tree = tree_with_asset();
+        let mut change = request(&tree, Vec::new());
+        change.rename.push(rename("gone.md", "ideas.md"));
+        assert_eq!(
+            validate(&tree, &change),
+            Err(AgentError::Changed(vec!["gone.md".into()]))
+        );
+        let mut taken = request(&tree, Vec::new());
+        taken.rename.push(rename("notes.md", "paper.md"));
+        assert_eq!(
+            validate(&tree, &taken),
+            Err(AgentError::Changed(vec!["paper.md".into()]))
+        );
+        let mut invalid = request(&tree, Vec::new());
+        invalid.rename.push(rename("notes.md", "/etc/x.md"));
+        assert!(matches!(
+            validate(&tree, &invalid),
+            Err(AgentError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn a_renamed_path_cannot_be_used_twice_or_edited() {
+        let tree = tree_with_asset();
+        let mut patched = request(&tree, vec![patch("notes.md", "red blue", 0, 3, "RED")]);
+        patched.rename.push(rename("notes.md", "ideas.md"));
+        assert!(matches!(
+            validate(&tree, &patched),
+            Err(AgentError::Invalid(_))
+        ));
+        let mut deleted = request(&tree, Vec::new());
+        deleted.rename.push(rename("notes.md", "ideas.md"));
+        deleted.delete.push(DeleteFile {
+            path: "notes.md".into(),
+            expect: None,
+        });
+        assert!(matches!(
+            validate(&tree, &deleted),
+            Err(AgentError::Invalid(_))
+        ));
+        let mut created = request(&tree, Vec::new());
+        created.rename.push(rename("notes.md", "ideas.md"));
+        created.create.push(CreateFile {
+            path: "ideas.md".into(),
+            text: String::new(),
+        });
+        assert!(matches!(
+            validate(&tree, &created),
+            Err(AgentError::Invalid(_))
+        ));
+        let mut twice = request(&tree, Vec::new());
+        twice.rename.push(rename("notes.md", "ideas.md"));
+        twice.rename.push(rename("paper.md", "ideas.md"));
+        assert!(matches!(
+            validate(&tree, &twice),
+            Err(AgentError::Invalid(_))
+        ));
     }
 
     #[test]

@@ -8,11 +8,10 @@
 //! started finishes before the clear runs.
 //!
 //! A flush whose reply is lost can leave rows both stored and buffered. A
-//! clear or trim therefore credits a buffered row only when the database did
-//! not already hold it; the stored rows are credited through `chat_bytes`.
+//! clear or trim deletes the stored rows in the database and drops the
+//! buffered ones; PostgreSQL's own sums give the space back.
 //!
-//! The sequencer's storage ledger is only an estimate, so it does not decide
-//! whether a message is kept. The room holds a reservation row in
+//! PostgreSQL decides whether a message is kept. The room holds a reservation row in
 //! PostgreSQL (`pending_log_reservations`, which every usage sum counts) and
 //! admits a message only when the reservation covers the buffered rows plus
 //! the new one. It asks for more in chunks. Writing a batch takes its charge
@@ -66,38 +65,16 @@ impl Default for ChatBuffer {
 }
 
 impl ChatBuffer {
-    /// Drops everything waiting and returns the bytes it had reserved, which
-    /// the caller must give back to the ledger. The caller holds the lock
-    /// across whatever deleted the stored rows, so nothing can be written in
-    /// between.
-    #[must_use]
-    pub fn discard(&mut self) -> i64 {
-        let dropped = self.charged();
+    /// Drops everything waiting. The caller holds the lock across whatever
+    /// deleted the stored rows, so nothing can be written in between.
+    pub fn discard(&mut self) {
         self.rows.clear();
         self.oldest = None;
-        dropped
     }
 
     /// The ids of the waiting messages.
     pub fn ids(&self) -> Vec<Uuid> {
         self.rows.iter().map(|row| row.id).collect()
-    }
-
-    /// Drops everything waiting and returns the bytes reserved by the rows
-    /// whose ids are not in `stored`. Rows that are stored were already
-    /// credited through `chat_bytes`, so crediting them again would refund
-    /// them twice. Same locking rule as [`Self::discard`].
-    #[must_use]
-    pub fn discard_unstored(&mut self, stored: &[Uuid]) -> i64 {
-        let dropped = self
-            .rows
-            .iter()
-            .filter(|row| !stored.contains(&row.id))
-            .map(ChatRecord::charged_bytes)
-            .sum();
-        self.rows.clear();
-        self.oldest = None;
-        dropped
     }
 
     fn charged(&self) -> i64 {
@@ -226,7 +203,6 @@ impl Room {
                 }
             }
         }
-        self.log.charge_storage(charge);
         let message = chat_json(&record);
         let mut echo = message.clone();
         echo["temp_id"] = Value::String(temp_id.to_owned());
@@ -283,8 +259,7 @@ impl Room {
             .await
         {
             Ok(inserted) => {
-                // The ledger was charged when each message was accepted.
-                let _ = buffer.discard();
+                buffer.discard();
                 buffer.reserved = inserted.reserved;
                 buffer.reserved_known = true;
                 self.note_chat_reservation(buffer);
@@ -407,9 +382,8 @@ impl Room {
     }
 
     /// Deletes every message, stored and waiting, gives the owner the bytes
-    /// back and tells every listener, all under the chat lock. A waiting
-    /// message that is also stored (a flush whose reply was lost) is credited
-    /// once, through the stored bytes. Returns what the database held, or `None`
+    /// back and tells every listener, all under the chat lock. Returns what
+    /// the database held, or `None`
     /// and changes nothing when `owner` no longer owns the document.
     pub async fn clear_chat(&self, owner: Uuid) -> Result<Option<ChatCleared>, WriteError> {
         let mut buffer = self.chat.lock().await;
@@ -420,11 +394,9 @@ impl Room {
         else {
             return Ok(None);
         };
-        let waiting = buffer.discard_unstored(&cleared.stored_buffered);
+        buffer.discard();
         self.chat_waiting
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        self.log.charge_storage(-cleared.bytes);
-        self.log.charge_storage(-waiting);
         self.broadcast_chat(None, &json!({"type": "chat-cleared"}))
             .await;
         Ok(Some(cleared))
@@ -432,9 +404,8 @@ impl Room {
 
     /// The chat lock, for a caller that deletes chat inside its own
     /// transaction (trim). It passes [`ChatBuffer::ids`] into that transaction,
-    /// calls [`ChatBuffer::discard_unstored`] once it commits, credits the
-    /// bytes it returns and broadcasts `chat-cleared` before
-    /// dropping the guard.
+    /// calls [`ChatBuffer::discard`] once it commits and broadcasts
+    /// `chat-cleared` before dropping the guard.
     pub async fn chat_lock(&self) -> tokio::sync::MutexGuard<'_, ChatBuffer> {
         self.chat.lock().await
     }
@@ -526,28 +497,17 @@ mod tests {
     }
 
     #[test]
-    fn discard_returns_the_bytes_it_dropped() {
+    fn discard_empties_the_buffer() {
         let mut buffer = ChatBuffer::default();
         buffer.rows.push(record(1, "abc"));
         buffer.rows.push(record(2, "de"));
         buffer.oldest = Some(tokio::time::Instant::now());
-        let expected = buffer.charged();
-        assert_eq!(expected, 3 + 2 + 2 * CHAT_ROW_OVERHEAD_BYTES);
-        assert_eq!(buffer.discard(), expected);
+        assert_eq!(buffer.ids(), vec![Uuid::from_u128(1), Uuid::from_u128(2)]);
+        assert_eq!(buffer.charged(), 3 + 2 + 2 * CHAT_ROW_OVERHEAD_BYTES);
+        buffer.discard();
         assert!(buffer.rows.is_empty());
         assert!(buffer.oldest.is_none());
-        assert_eq!(buffer.discard(), 0);
-    }
-
-    #[test]
-    fn discard_unstored_skips_rows_the_database_holds() {
-        let mut buffer = ChatBuffer::default();
-        buffer.rows.push(record(1, "abc"));
-        buffer.rows.push(record(2, "de"));
-        assert_eq!(buffer.ids(), vec![Uuid::from_u128(1), Uuid::from_u128(2)]);
-        let dropped = buffer.discard_unstored(&[Uuid::from_u128(1)]);
-        assert_eq!(dropped, 2 + CHAT_ROW_OVERHEAD_BYTES);
-        assert!(buffer.rows.is_empty());
+        assert_eq!(buffer.charged(), 0);
     }
 
     #[test]
@@ -610,16 +570,19 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-    async fn clear_after_a_lost_flush_reply_refunds_each_row_once() {
+    async fn clear_after_a_lost_flush_reply_gives_back_each_row_once() {
         let Some(deployment) =
             super::super::label_replay_tests::deployment("chat-lost-reply-paper").await
         else {
             return;
         };
         let room = deployment.rooms.get(&deployment.slug).await.unwrap();
-        // Lift the owner's figure so a double refund cannot hide at the floor.
-        room.log().charge_storage(1_000_000);
-        let before = room.log().owner_storage_bytes();
+        let owner = deployment.account_id;
+        let before = room
+            .catalog()
+            .durable_usage_bytes(Some(owner))
+            .await
+            .unwrap();
         let rows = vec![record(1, "abc"), record(2, "de")];
         let rows: Vec<ChatRecord> = rows
             .into_iter()
@@ -633,19 +596,31 @@ mod tests {
         for row in &rows {
             room.enqueue_chat(row.clone(), 1, "t").await.unwrap();
         }
-        assert_eq!(room.log().owner_storage_bytes(), before + charge);
         // The flush committed, but its reply was lost, so the rows stay buffered.
         room.catalog()
             .insert_chat_messages(room.document_id, &rows, None)
             .await
             .unwrap();
+        assert_eq!(
+            room.catalog()
+                .durable_usage_bytes(Some(owner))
+                .await
+                .unwrap(),
+            before + charge
+        );
         let cleared = room
             .clear_chat(deployment.account_id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(cleared.bytes, charge);
-        assert_eq!(room.log().owner_storage_bytes(), before);
+        assert_eq!(
+            room.catalog()
+                .durable_usage_bytes(Some(owner))
+                .await
+                .unwrap(),
+            before
+        );
         assert_eq!(room.chat_waiting(), 0);
     }
 
@@ -671,8 +646,6 @@ mod tests {
         row.id = Uuid::now_v7();
         row.created_at = librepaper_engine::storage::postgres::chat_now();
         let charge = row.charged_bytes();
-        // Dropping the soft ledger to zero does not change what PostgreSQL holds.
-        room.log().charge_storage(-room.log().owner_storage_bytes());
         room.enqueue_chat(row, 1, "t").await.unwrap();
         assert_eq!(held().await, Some(CHAT_RESERVATION_CHUNK));
         // A non-forced flush with nothing due writes nothing and keeps the row.
@@ -698,7 +671,6 @@ mod tests {
             return;
         };
         let room = deployment.rooms.get(&deployment.slug).await.unwrap();
-        room.log().charge_storage(-room.log().owner_storage_bytes());
         let mut first = record(1, "abc");
         first.id = Uuid::now_v7();
         first.created_at = librepaper_engine::storage::postgres::chat_now();

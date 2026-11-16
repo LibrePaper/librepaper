@@ -36,6 +36,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         )
         .route("/api/documents/{slug}/restore", post(restore))
         .route("/api/documents/{slug}/history/trim", post(history_trim))
+        .route("/api/documents/{slug}/results", any(results))
         .route("/api/documents/{slug}/authors", get(document_authors))
         .route("/api/documents/{slug}/rename", post(rename))
         .route("/api/documents/{slug}/fork", post(fork))
@@ -54,6 +55,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
             "/api/documents/{slug}/shared",
             post(shared_hidden).delete(shared_hidden),
         )
+        .route("/api/documents/{slug}/leave", post(leave_project))
         .route("/api/documents/{slug}/opened", post(opened))
         .route("/api/documents/{slug}/chat", any(chat_root))
         .route("/api/documents/{slug}/chat/{*tail}", any(chat))
@@ -63,6 +65,10 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         )
         .route("/api/documents/{slug}/assets", any(document_assets))
         .route("/api/documents/{slug}/assets/{sha}", get(document_asset))
+        .route(
+            "/api/documents/{slug}/assets/{sha}/link",
+            get(document_asset_link),
+        )
         .route("/api/documents/{slug}/source-change", post(source_change))
         .route("/api/documents/{slug}/share", any(share))
         .route("/api/documents/{slug}/source", get(source))
@@ -202,7 +208,9 @@ async fn tools_list(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_tools_list(request, &ctx, &slug).await
+    let mut reply = server.handle_tools_list(request, &ctx, &slug).await;
+    mcp::announce_min_skill_version(&mut reply);
+    reply
 }
 
 async fn tool_call(
@@ -211,7 +219,9 @@ async fn tool_call(
     Path((slug, name)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_tool_call(request, &ctx, &slug, &name).await
+    let mut reply = server.handle_tool_call(request, &ctx, &slug, &name).await;
+    mcp::announce_min_skill_version(&mut reply);
+    reply
 }
 
 async fn delete_document(
@@ -316,6 +326,15 @@ async fn history_trim(
     request: Request<Body>,
 ) -> Reply {
     server.handle_history_trim(request, &ctx, &slug).await
+}
+
+async fn results(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_results(request, &ctx, &slug).await
 }
 
 async fn document_authors(
@@ -460,6 +479,17 @@ async fn shared_hidden(
         .await
 }
 
+async fn leave_project(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_leave_project(request.headers(), &ctx.arrival, &slug)
+        .await
+}
+
 async fn opened(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
@@ -521,6 +551,17 @@ async fn document_asset(
 ) -> Reply {
     server
         .handle_asset_read(request.headers(), &ctx, &slug, &sha)
+        .await
+}
+
+async fn document_asset_link(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, sha)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_asset_link(request.headers(), &ctx, &slug, &sha)
         .await
 }
 

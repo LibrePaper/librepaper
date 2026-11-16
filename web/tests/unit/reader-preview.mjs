@@ -28,7 +28,28 @@ assert.equal(quartoPdf.publish({ kind: "pdf", bytes: new Uint8Array([1, 2, 3]) }
 assert.equal(messages.at(-1).type, "preview");
 quartoPdf.dispose();
 
+// The engine's source map reaches the preview message, and is absent from it
+// when the engine did not return one.
+{
+  const htmlMessages = [];
+  const htmlPreview = createFramePreview({
+    slug: "paper",
+    getDocsOrigin: () => "https://docs.example",
+    framePath: () => "raw",
+    setSource: () => {},
+    send: message => htmlMessages.push(message),
+  });
+  htmlPreview.navigate();
+  htmlPreview.markReady();
+  htmlPreview.publish({ kind: "html", html: "<p>a</p>", sources: ["paper.tex", null] });
+  assert.deepEqual(htmlMessages.at(-1).sources, ["paper.tex", null]);
+  htmlPreview.publish({ kind: "html", html: "<p>b</p>" });
+  assert.equal("sources" in htmlMessages.at(-1), false);
+  htmlPreview.dispose();
+}
+
 const readerSource = englishSource(await readFile(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8"));
+const menusSource = englishSource(await readFile(new URL("../../src/components/reader/Menus.svelte", import.meta.url), "utf8"));
 const previewSource = englishSource(await readFile(new URL("../../src/lib/reader/preview-render.js", import.meta.url), "utf8"));
 const viteSource = await readFile(new URL("../../vite.config.js", import.meta.url), "utf8");
 const offlineSource = englishSource(await readFile(new URL("../../src/lib/offline-projects.js", import.meta.url), "utf8"));
@@ -37,7 +58,7 @@ const editorSource = englishSource(await readFile(new URL("../../src/components/
 // Reader links receive renderer capability before their early prepare return,
 // and bind LaTeX to a stable owner across source refreshes.
 assert.match(readerSource, /renderers\.offerLatex\([\s\S]*?if \(!mayEdit\) \{/);
-assert.match(readerSource, /configureLatex\(format, session \|\| readerProjectOwner\)/);
+assert.match(readerSource, /configureLatex\(format, format \? \(session \|\| readerProjectOwner\) : undefined\)/);
 // The source identity stamped on a finished page is the one captured when
 // that render began, never a refreshed project's live identity.
 assert.match(previewSource, /const capturedProjectDigest = start\.projectDigest \|\| ""/);
@@ -49,7 +70,9 @@ assert.match(viteSource, /let watchingBuild = false;[\s\S]*?configResolved\(conf
 assert.match(offlineSource, /request\.onblocked = \(\) => \{[\s\S]*?blocked = true;[\s\S]*?reject\(/);
 assert.match(persistenceSource, /pendingFlush\.catch\(\(\) => \{\}\)\.finally/);
 assert.match(editorSource, /states = new WeakMap\(\);\s*undoManager = null;\s*undoManagerDoc = null/);
-assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && buildPreferences\.output === "pdf"[\s\S]*?\? "pdf"/);
+assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && markdownOutput === "pdf"[\s\S]*?\? "pdf"/);
+assert.match(readerSource, /const quartoPdfOffered = \$derived\(hasDesktop \|\| displayedFormat !== "quarto"\)/);
+assert.match(readerSource, /const markdownOutput = \$derived\(quartoPdfOffered && buildPreferences\.output === "pdf"/);
 assert.match(readerSource, /const frameLoaded = \(\) => \{[\s\S]*?framePreview\.markReady\(\)[\s\S]*?replayPreview\(\)/);
 assert.match(readerSource, /<Preview[\s\S]*?onload=\{frameLoaded\}/);
 assert.doesNotMatch(readerSource, /toastDone\("(?:Quarto |Calepin )?Preview ready"/);
@@ -64,18 +87,23 @@ assert.match(previewSource, /const failed = hasError[\s\S]*?severity: "error"[\s
 assert.match(readerSource, /let localExecution = \$state\(false\)/);
 assert.doesNotMatch(readerSource, /granted\(|local-execution\.js|localExecutionConsent/);
 // Turning the switch changes who renders, so what was in flight stops and the
-// pane is drawn again.
+// pane is drawn again. Quarto has no switch: it runs on an explicit Run.
 assert.match(readerSource, /function toggleLocalExecution\(\) \{\s*localExecution = !localExecution;\s*stopRendering\(\);\s*void paintPreview\(\);/);
+assert.match(readerSource, /async function runCode\(\) \{[\s\S]*?if \(!runDir\.usable\) \{\s*pendingRun = true;\s*runDirPageOpen = true;[\s\S]*?backend: "local", output: toPdf \? "pdf" : "html"/);
+// Switching Run code on opens the Run directory dialog. The navbar and the
+// phone strip no longer show the folder; Settings > Tools does.
+assert.doesNotMatch(readerSource, /RunDirectoryControl|run-directory-strip|runStrip/);
+assert.match(readerSource, /<SettingsDialog [^>]*runDirectory=\{runDir\} onchooserundirectory=\{openRunDirPage\}/);
 // Nothing resets a stored choice of this computer when a document opens, and
 // there is no live preview left to start or stop.
 assert.doesNotMatch(readerSource, /setQuartoPreviewMode|setTypstPreviewMode|startLocalExecution|stopLocalExecution|createLocalPreview/);
-assert.doesNotMatch(readerSource, /livePreviewOwnsPane|liveServing|liveTargets|liveShown|calepin/i);
-assert.doesNotMatch(previewSource, /livePreviewOwnsPane|calepin/i);
+assert.doesNotMatch(readerSource, /livePreviewOwnsPane|liveServing|liveTargets|liveShown/i);
+assert.doesNotMatch(previewSource, /livePreviewOwnsPane/i);
 // The switch sits in the top bar and the View menu, and it is the consent.
-assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?\{#if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
-// The switch is offered in the desktop app, for every editable document whose
-// format is set to this computer.
-assert.match(readerSource, /const runCodeOffered = \$derived\(mayEdit && hasDesktop && buildPreferences\.backend === "local"\)/);
+assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?<RunButton phase=\{runPhase\}[\s\S]*?onrun=\{runCode\}[\s\S]*?\{:else if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
+// The switch is offered in the desktop app, for every document this person may
+// edit outright (not only suggest) whose format is set to this computer.
+assert.match(readerSource, /const runCodeOffered = \$derived\(mayEdit && !suggestOnly && hasDesktop && buildPreferences\.backend === "local"\)/);
 // There is no confirmation dialog any more.
 assert.doesNotMatch(readerSource, /Run code on this computer/);
 // The browser makes Markdown and Quarto PDFs itself, so no card sends the
@@ -86,9 +114,14 @@ assert.doesNotMatch(readerSource, /pdfNeedsLocalTool|pdfNeedsLocalExecution|PDF 
 // `typeof` guard, because the only way to test it was to slice it out of the
 // component into a context that had never declared the name; it is an argument
 // now.
-assert.match(previewSource, /const build = current\.localExecution \? current\.buildPreferences : \{ \.\.\.current\.buildPreferences, backend: "browser" \};/);
-// Quarto with Run code off says what turns the real render on.
-assert.match(readerSource, /Turn on Run code to render on this computer\./);
+assert.match(previewSource, /const explicitRun = format === "quarto" \|\| format === "typst";[\s\S]*?const build = !explicitRun && current\.localExecution \? current\.buildPreferences : \{ \.\.\.current\.buildPreferences, backend: "browser" \};/);
+// Quarto never renders on this computer from the preview, and nothing there
+// shares results any more: that happens from the Run action.
+assert.doesNotMatch(previewSource, /shareRun|runDirectoryReady/);
+// A Quarto document with code says what produces the real output.
+assert.match(readerSource, /Press Run code to run it on this computer/);
+// A Typst draft names a collaborator's run in the diagnostics, since it has no draft line for it.
+assert.match(readerSource, /sourceFormat === "typst" && runResults\?\.calepin && !ownResults \? \{ severity: "info", message: runResults\.note \}/);
 // The paged controls are the preview header's, and the frame is what says
 // what they should read: a zoom the frame could not honour -- a pane too
 // narrow for 150% -- must not leave the header claiming it did.
@@ -97,7 +130,7 @@ assert.match(readerSource, /tell\(\{ type: "viewer-scale", mode \}\)/);
 assert.match(readerSource, /tell\(\{ type: "viewer-tool", tool: next \}\)/);
 // No PDF in the frame, no paged controls in the header: that is what keeps
 // the row honest for a flowing document, which has none of them.
-assert.match(readerSource, /\{#snippet previewControls\(\)\}\s*\{#if viewerView\}/);
+assert.match(readerSource, /\{#snippet previewControls\(\)\}\s*\{#if viewerView \|\| previewDownloads\.length\}/);
 const viewerSource = englishSource(await readFile(new URL("../../src/entries/viewer.js", import.meta.url), "utf8"));
 // Nothing of the frame's own is drawn over the page any more.
 assert.doesNotMatch(viewerSource, /createToolbar/);
@@ -112,7 +145,19 @@ assert.match(frameSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*
 // clears the old payload/export and paints an explicit empty state.
 assert.match(previewSource, /if \(!String\(source\.texts\?\.\[source\.main\] \?\? ""\)\.trim\(\)\) \{/);
 assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
+// An empty document settles the preview. The waiting display gives way to a
+// cover of the Reader's, which works over the PDF viewer too, since that frame
+// ignores an html message.
+assert.match(readerSource, /!failedBeforeRender && !painted\.state\.empty/);
+assert.match(readerSource, /cover=\{painted\.state\.empty \? emptyCover : waitingUp \? waitingCover : undefined\}/);
+// The Run directory is a dialog over the page, not a pane in the preview.
+assert.doesNotMatch(readerSource, /runDirectoryCover/);
+assert.match(readerSource, /\{:else if shown\.document && failedBeforeRender\}/);
+assert.match(readerSource, /\{:else if shown\.document && noCompiler\}/);
+assert.match(readerSource, /<Modal open=\{runDirPageOpen\}[^>]*>\s*<RunDirectoryPrompt [^>]*\{\.\.\.shareProps\}/);
+assert.match(readerSource, /onEmpty: \(\) => \{\s*painted\.reset\(\{ empty: true \}\);\s*renderStatus\.resetFailure\(\);\s*\}/);
+assert.doesNotMatch(previewSource, /This document is empty/);
 assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);
 // HTML/PDF output format choice for markdown and quarto in View menu.
-assert.match(readerSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(displayedFormat\)\}/);
+assert.match(menusSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(outputs\.displayedFormat\)\}/);
 assert.match(readerSource, /async function setMarkdownOutput\(format\)/);

@@ -1,16 +1,19 @@
-import { StreamLanguage } from "@codemirror/language";
-import { markdown } from "@codemirror/lang-markdown";
+import { Compartment, Prec } from "@codemirror/state";
+import { ViewPlugin, keymap } from "@codemirror/view";
+import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { html } from "@codemirror/lang-html";
 import { json } from "@codemirror/lang-json";
 import { yamlFrontmatter } from "@codemirror/lang-yaml";
 import { languages } from "@codemirror/language-data";
 import { LanguageDescription } from "@codemirror/language";
-import { stex } from "@codemirror/legacy-modes/mode/stex";
-import { typstLanguage } from "./typst-mode.js";
+import { typst } from "./typst-language/index.js";
 import { sourceFormatOf } from "./formats.js";
-
-const typst = StreamLanguage.define(typstLanguage);
-const latex = StreamLanguage.define(stex);
+import { pandocExtensions } from "./pandoc-markdown.js";
+import { quartoOptions } from "./quarto-options.js";
+import { latex } from "./latex-language/index.js";
+import { org } from "./org-language/index.js";
+import { bibtex } from "./bibtex-language/index.js";
+import { pipeTableAt, pipeTableKeymap } from "./pipe-table-keymap.js";
 
 /** Resolve an exact language name for a Markdown or Quarto code fence. */
 export function codeLanguage(info) {
@@ -36,33 +39,86 @@ export function codeLanguage(info) {
   return LanguageDescription.matchLanguageName(languages, name, false) || null;
 }
 
-const markdownLanguage = () => yamlFrontmatter({
-  content: markdown({ codeLanguages: codeLanguage }),
+// GitHub-flavoured Markdown (tables, strikethrough, task lists and autolinks) with
+// Pandoc and Quarto syntax (math, fenced divs, citations, attributes).
+// The base is required because markdown() defaults to plain CommonMark.
+const markdownSupport = () => yamlFrontmatter({
+  content: markdown({ base: markdownLanguage, codeLanguages: codeLanguage, extensions: pandocExtensions }),
 });
+
+// Tab, Shift-Tab and Enter move through pipe tables; outside a table they fall through.
+const markdownTables = () => Prec.high(keymap.of(pipeTableKeymap("markdown", pipeTableAt)));
 
 function byFormat(format) {
   switch ((format || "").toLowerCase()) {
     case "latex":
-    case "tex": return latex;
-    case "typst": return typst;
+    case "tex": return latex();
+    case "typst": return typst();
+    case "org": return org();
     case "html": return html();
-    case "quarto":
+    case "quarto": return [markdownSupport(), markdownTables(), quartoOptions];
     case "markdown":
-    case "md": return markdownLanguage();
+    case "md": return [markdownSupport(), markdownTables()];
     default: return [];
   }
 }
 
-/** Select a CodeMirror language from a file path, falling back for unnamed text. */
-export function sourceLanguage(path, fallback = "") {
+/**
+ * The format sourceLanguage() picks for a path: "latex", "typst", "html",
+ * "quarto", "markdown", "json", or "" for plain text.
+ * @param {string} path
+ * @param {string} [fallback] The declared format, for empty paths and .txt.
+ */
+export function sourceFormat(path, fallback = "") {
   const lower = typeof path === "string" ? path.toLowerCase() : "";
   const extension = lower.slice(lower.lastIndexOf("/") + 1);
   const format = sourceFormatOf(extension);
-  if (format) return byFormat(format);
-  if (/\.json$/.test(extension)) return json();
+  if (format) return format;
+  if (/\.json$/.test(extension)) return "json";
 
   // Named files of an unsupported type are plain text. Empty paths and .txt
   // retain the document's declared format, as they did in the editor before.
-  if (extension && !extension.endsWith(".txt")) return [];
-  return byFormat(fallback);
+  if (extension && !extension.endsWith(".txt")) return "";
+  const declared = (fallback || "").toLowerCase();
+  if (declared === "tex") return "latex";
+  if (declared === "md") return "markdown";
+  return declared;
+}
+
+/** The file name at the end of a path, in its original case. */
+function fileNameOf(path) {
+  return typeof path === "string" ? path.slice(path.lastIndexOf("/") + 1) : "";
+}
+
+/**
+ * Language data for a named file the editor has no built-in mode for. A loaded
+ * language is returned as is; otherwise the support is loaded in the background
+ * and swapped in once it arrives, as typst() does.
+ */
+function describedLanguage(filename) {
+  if (!filename) return null;
+  const description = /\.csl$/i.test(filename)
+    ? LanguageDescription.matchLanguageName(languages, "xml", false)
+    : LanguageDescription.matchFilename(languages, filename);
+  if (!description) return null;
+  if (description.support) return description.support;
+  const compartment = new Compartment();
+  const upgrade = ViewPlugin.define((view) => {
+    let alive = true;
+    description.load().then((support) => {
+      if (alive) view.dispatch({ effects: compartment.reconfigure(support) });
+    });
+    return { destroy() { alive = false; } };
+  });
+  return [compartment.of([]), upgrade];
+}
+
+/** Select a CodeMirror language from a file path, falling back for unnamed text. */
+export function sourceLanguage(path, fallback = "") {
+  const format = sourceFormat(path, fallback);
+  if (format === "json") return json();
+  if (format) return byFormat(format);
+  const filename = fileNameOf(path);
+  if (/\.bib$/i.test(filename)) return bibtex();
+  return describedLanguage(filename) ?? [];
 }

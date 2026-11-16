@@ -32,6 +32,7 @@ use super::sync::{
 
 use crate::local::credentials;
 use crate::local::git::{validate, Limit, Output};
+use crate::local::remote_grants::RemoteGrants;
 
 use librepaper_base::http::Credentials;
 use librepaper_sync::{
@@ -468,12 +469,72 @@ async fn run_connect(inner: &Inner, connection: &Connection, url: &str) -> Resul
             "this project is already connected to a repository",
         ));
     }
+    allow_remote(inner, connection, url).await?;
     let made = clone_for(inner, connection, url).await;
     if made.is_err() {
         let _ = std::fs::remove_dir_all(&connection.dir);
     }
     made?;
     status_of(inner, connection).await
+}
+
+/// The refusal for a remote the person has not allowed.
+fn remote_refused(error: &str) -> Failure {
+    refuse_because(403, "remote-not-allowed", error)
+}
+
+/// Asks the person to allow `connection`'s project to use the remote `url`,
+/// naming both, and keeps the answer. Nothing runs against the remote before
+/// this returns, and a refusal stores nothing. A remote the project already
+/// holds a grant for is not asked about again.
+async fn allow_remote(inner: &Inner, connection: &Connection, url: &str) -> Result<(), Failure> {
+    let project = project_url(&connection.link);
+    let grants = RemoteGrants::new(&inner.state_home);
+    if grants.allows(&project, url) {
+        return Ok(());
+    }
+    let question = format!(
+        "Allow {project} to fetch from and push to the Git remote {} with your own credentials? \
+         Choose any folder to allow, or cancel to refuse.",
+        validate::display_url(url)
+    );
+    let allowed = {
+        let Ok(_dialog) = inner.folder_dialog.try_lock() else {
+            return Err((
+                409,
+                json!({"error": "A dialog is already open on this computer."}),
+            ));
+        };
+        inner
+            .approver
+            .approve(&question)
+            .await
+            .map_err(|why| refuse(400, &why))?
+    };
+    if !allowed {
+        return Err(remote_refused(
+            "The Git remote was not allowed on this computer.",
+        ));
+    }
+    grants
+        .allow(&project, url)
+        .map_err(|error| refuse(500, &format!("could not keep the permission: {error}")))
+}
+
+/// Refuses a network operation on the clone's remote unless the person
+/// allowed it when connecting. It never asks.
+fn require_remote_allowed(inner: &Inner, connection: &Connection) -> Result<(), Failure> {
+    let url = read_record(&connection.dir)?.url;
+    let allowed = url.is_some_and(|url| {
+        RemoteGrants::new(&inner.state_home).allows(&project_url(&connection.link), &url)
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(remote_refused(
+            "This Git remote was not allowed on this computer. Disconnect, then connect again.",
+        ))
+    }
 }
 
 /// The clone behind `run_connect`. The clone is made under `PARTIAL` and
@@ -541,9 +602,112 @@ async fn clone_for(inner: &Inner, connection: &Connection, url: &str) -> Result<
 /// What the folder chooser says on a local connection.
 const LOCAL_TITLE: &str = "Choose the git repository for this project";
 
+/// The title of the chooser that confirms a typed path. It opens at that path,
+/// so the person sees the folder they typed and confirms it or picks another.
+const CONFIRM_TITLE: &str = "Confirm the git repository for this project";
+
 /// Asks for a repository on this computer, then connects the project to it. A
-/// cancelled chooser changes nothing and answers the status.
+/// typed `path` is connected at once when the person chose that folder through
+/// Browse, and otherwise confirmed in the chooser, opened at it. A cancelled
+/// chooser changes nothing and answers the status.
 pub(super) async fn handle_connect_local(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let body = match read_json_body::<LocalBody>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    answer(choose_and_connect(inner, origin, &body.project, body.path.as_deref()).await)
+}
+
+/// The body of a local connection: the project, and optionally the path of
+/// its repository as the person typed it.
+#[derive(serde::Deserialize)]
+struct LocalBody {
+    project: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+async fn choose_and_connect(
+    inner: &Inner,
+    origin: Option<&str>,
+    project: &str,
+    typed: Option<&str>,
+) -> Result<Value, Failure> {
+    let connection = open_connection(inner, origin, project)?;
+    match typed.map(str::trim).filter(|path| !path.is_empty()) {
+        Some(typed) => connect_typed(inner, &connection, typed).await,
+        None => {
+            // Refused before the chooser opens, and again once the folder is chosen.
+            refuse_if_connected(&connection)?;
+            let Some(chosen) = pick_folder(inner, LOCAL_TITLE, None).await? else {
+                return status_of(inner, &connection).await;
+            };
+            connect_local(inner, &connection, &chosen).await
+        }
+    }
+}
+
+/// Connects the project to the repository at a path the person typed. The
+/// path must name an existing absolute folder. A folder the person picked
+/// through Browse for this project is connected without a second dialog;
+/// any other is confirmed in the chooser, which opens at it.
+async fn connect_typed(
+    inner: &Inner,
+    connection: &Connection,
+    typed: &str,
+) -> Result<Value, Failure> {
+    let typed = expand_home(typed);
+    if !typed.is_absolute() {
+        return Err(refuse_because(
+            400,
+            "not-absolute",
+            "Enter the full path to the folder.",
+        ));
+    }
+    let missing = || {
+        refuse_because(
+            400,
+            "missing",
+            "That folder does not exist on this computer.",
+        )
+    };
+    if !typed.is_dir() {
+        return Err(missing());
+    }
+    let canonical = plain_path(&typed.canonicalize().map_err(|_| missing())?);
+    refuse_if_connected(connection)?;
+
+    let browsed = {
+        let mut picked = inner.picked.lock().await;
+        if picked.get(&connection.key) == Some(&canonical) {
+            picked.remove(&connection.key);
+            true
+        } else {
+            false
+        }
+    };
+    if browsed {
+        return connect_local(inner, connection, &canonical).await;
+    }
+    let Some(chosen) = pick_folder(inner, CONFIRM_TITLE, Some(canonical.as_path())).await? else {
+        return status_of(inner, connection).await;
+    };
+    connect_local(inner, connection, &chosen).await
+}
+
+/// Asks for a repository on this computer without connecting to it, and
+/// answers the folder chosen. The folder is kept for the project, so a typed
+/// path to it connects without a second dialog. A cancelled chooser answers
+/// `cancelled`.
+pub(super) async fn handle_choose_local(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
     origin: Option<&str>,
@@ -556,31 +720,68 @@ pub(super) async fn handle_connect_local(
         Ok(body) => body,
         Err(response) => return response,
     };
-    answer(choose_and_connect(inner, origin, &body.project).await)
+    answer(browse_local(inner, origin, &body.project).await)
 }
 
-async fn choose_and_connect(
+async fn browse_local(
     inner: &Inner,
     origin: Option<&str>,
     project: &str,
 ) -> Result<Value, Failure> {
     let connection = open_connection(inner, origin, project)?;
-    // Refused before the chooser opens, and again once the folder is chosen.
     refuse_if_connected(&connection)?;
+    let Some(chosen) = pick_folder(inner, LOCAL_TITLE, None).await? else {
+        return Ok(json!({"cancelled": true}));
+    };
+    let canonical = plain_path(
+        &chosen
+            .canonicalize()
+            .map_err(|_| refuse(400, "Select an existing project folder."))?,
+    );
+    inner
+        .picked
+        .lock()
+        .await
+        .insert(connection.key.clone(), canonical.clone());
+    Ok(json!({"path": canonical.to_string_lossy().into_owned()}))
+}
+
+/// Opens the native folder chooser with `title`, at `start` when given, and
+/// answers the folder chosen, or None when the person cancels. Only one chooser
+/// is open at a time.
+async fn pick_folder(
+    inner: &Inner,
+    title: &str,
+    start: Option<&Path>,
+) -> Result<Option<PathBuf>, Failure> {
     let Ok(_dialog) = inner.folder_dialog.try_lock() else {
         return Err((
             409,
             json!({"error": "A folder chooser is already open on this computer."}),
         ));
     };
-    let chosen = match crate::local::folder::choose_directory_with_title(LOCAL_TITLE).await {
-        Ok(chosen) => chosen,
-        Err(why) if why == crate::local::folder::CANCELLED => {
-            return status_of(inner, &connection).await;
-        }
-        Err(why) => return Err(refuse(400, &why)),
+    match crate::local::folder::choose_directory_at(title, start).await {
+        Ok(chosen) => Ok(Some(chosen)),
+        Err(why) if why == crate::local::folder::CANCELLED => Ok(None),
+        Err(why) => Err(refuse(400, &why)),
+    }
+}
+
+/// `path` with a leading `~` replaced by the home folder. Only a `~` on its own
+/// or followed by a separator is replaced.
+fn expand_home(path: &str) -> PathBuf {
+    let separators: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
+    let Some(rest) = path.strip_prefix('~') else {
+        return PathBuf::from(path);
     };
-    connect_local(inner, &connection, &chosen).await
+    if !(rest.is_empty() || rest.starts_with(separators)) {
+        return PathBuf::from(path);
+    }
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    match std::env::var_os(home) {
+        Some(home) => PathBuf::from(home).join(rest.trim_start_matches(separators)),
+        None => PathBuf::from(path),
+    }
 }
 
 fn refuse_if_connected(connection: &Connection) -> Result<(), Failure> {
@@ -883,6 +1084,7 @@ async fn pull_from_repository(
     }
     refuse_uncommitted(&connection, &repo).await?;
     if connection.local_root().is_none() {
+        require_remote_allowed(inner, &connection)?;
         let fetched = pull_remote(&repo).await?;
         if fetched["status"] == "conflicts" {
             return stopped(inner, &connection).await;
@@ -933,6 +1135,9 @@ async fn push_to_repository(
         return Err(merging(inner, &connection).await);
     }
     refuse_uncommitted(&connection, &repo).await?;
+    if connection.local_root().is_none() {
+        require_remote_allowed(inner, &connection)?;
+    }
     let pulled = web_pull(inner, &connection).await?;
     if merge_stopped(&pulled)? {
         return stopped(inner, &connection).await;
@@ -1199,7 +1404,7 @@ mod tests {
                 "user.email=other@example.org",
             ])
             .args(args);
-        for name in git::AMBIENT {
+        for name in librepaper_base::git_env::ambient(false) {
             command.env_remove(name);
         }
         command
@@ -1321,6 +1526,121 @@ mod tests {
             key
         );
         assert!(!connection.connected());
+    }
+
+    /// Answers every question the same way and keeps what it was asked.
+    struct Answer {
+        allow: bool,
+        asked: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Approver for Answer {
+        async fn approve(&self, question: &str) -> Result<bool, String> {
+            self.asked.lock().unwrap().push(question.to_owned());
+            Ok(self.allow)
+        }
+    }
+
+    async fn asking(allow: bool) -> (Fixture, Arc<Answer>) {
+        let approver = Arc::new(Answer {
+            allow,
+            asked: std::sync::Mutex::new(Vec::new()),
+        });
+        let state = tempfile::tempdir().unwrap();
+        let inner = test_support::inner_asking(state.path(), state.path(), approver.clone()).await;
+        let fixture = Fixture {
+            inner,
+            scratch: tempfile::tempdir().unwrap(),
+            _state: state,
+        };
+        (fixture, approver)
+    }
+
+    #[tokio::test]
+    async fn connecting_asks_about_the_remote_and_keeps_the_answer() {
+        if !git_ready().await {
+            return;
+        }
+        let (fixture, approver) = asking(true).await;
+        let bare = bare_remote(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        run_connect(&fixture.inner, &connection, text(&bare))
+            .await
+            .unwrap();
+        let asked = approver.asked.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert!(
+            asked[0].contains(PROJECT) && asked[0].contains(text(&bare)),
+            "{asked:?}"
+        );
+        let grants = RemoteGrants::new(&fixture.inner.state_home);
+        assert!(grants.allows(PROJECT, text(&bare)));
+        // Allowed remotes are not asked about on a later pull or push.
+        assert!(require_remote_allowed(&fixture.inner, &connection).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_declined_remote_stores_nothing_and_runs_no_git() {
+        let (fixture, approver) = asking(false).await;
+        let connection = fixture.connection(PROJECT);
+        // Nothing exists at this address, so any attempt to reach it would
+        // fail as a network error and not as a refusal.
+        let url = "https://127.0.0.1:1/never.git";
+        let (status, body) = run_connect(&fixture.inner, &connection, url)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (status, &body["reason"]),
+            (403, &json!("remote-not-allowed")),
+            "{body}"
+        );
+        assert_eq!(approver.asked.lock().unwrap().len(), 1);
+        assert!(!RemoteGrants::new(&fixture.inner.state_home).allows(PROJECT, url));
+        assert!(!connection.dir.exists());
+    }
+
+    #[tokio::test]
+    async fn fetch_and_push_on_an_ungranted_remote_are_refused() {
+        if !git_ready().await {
+            return;
+        }
+        let (fixture, approver) = asking(true).await;
+        let bare = bare_remote(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        run_connect(&fixture.inner, &connection, text(&bare))
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(fixture.inner.state_home.join("remote-grants")).unwrap();
+        for failure in [
+            pull_from_repository(&fixture.inner, Some(PAGE), PROJECT)
+                .await
+                .unwrap_err(),
+            push_to_repository(&fixture.inner, Some(PAGE), PROJECT)
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                (failure.0, &failure.1["reason"]),
+                (403, &json!("remote-not-allowed")),
+                "{}",
+                failure.1
+            );
+        }
+        // Later operations never ask.
+        assert_eq!(approver.asked.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_grant_covers_one_site_one_project_and_one_remote() {
+        let (fixture, _approver) = asking(true).await;
+        let grants = RemoteGrants::new(&fixture.inner.state_home);
+        let url = "https://github.com/o/r.git";
+        grants.allow(PROJECT, url).unwrap();
+        assert!(grants.allows(PROJECT, url));
+        assert!(!grants.allows("https://other.example/docs/abc123", url));
+        assert!(!grants.allows("https://paper.example/docs/other", url));
+        assert!(!grants.allows(PROJECT, "https://github.com/o/other.git"));
     }
 
     #[tokio::test]
@@ -1604,6 +1924,7 @@ mod tests {
         for path in [
             "connections",
             "connections/local",
+            "connections/local/choose",
             "connections/login",
             "connections/login/complete",
         ] {
@@ -1840,6 +2161,7 @@ mod tests {
                         source_format: String::new(),
                         files: tree.files,
                         texts: files.clone(),
+                        retained: Default::default(),
                     };
                     found(serde_json::to_value(version).unwrap())
                 }
@@ -1855,6 +2177,7 @@ mod tests {
                 project_digest: tree.digest().to_hex(),
                 tree,
                 texts: data.current.clone(),
+                retained: Default::default(),
             };
             return found(serde_json::to_value(head).unwrap());
         }
@@ -1979,6 +2302,107 @@ mod tests {
             .unwrap_err();
         refused("detached", 409)(failure);
         assert!(!connection.connected());
+    }
+
+    #[tokio::test]
+    async fn a_typed_path_must_be_absolute_and_an_existing_folder() {
+        let fixture = Fixture::new().await;
+        let scratch = fixture.scratch.path();
+        let connection = fixture.connection(PROJECT);
+
+        let (status, body) = fixture
+            .send(
+                Method::POST,
+                "connections/local",
+                Some(json!({"project": PROJECT, "path": "relative/folder"})),
+            )
+            .await;
+        assert_eq!(
+            (status, &body["reason"]),
+            (400, &json!("not-absolute")),
+            "{body}"
+        );
+
+        let (status, body) = fixture
+            .send(
+                Method::POST,
+                "connections/local",
+                Some(json!({"project": PROJECT, "path": text(&scratch.join("nowhere"))})),
+            )
+            .await;
+        assert_eq!(
+            (status, &body["reason"]),
+            (400, &json!("missing")),
+            "{body}"
+        );
+        assert!(!connection.connected());
+    }
+
+    #[tokio::test]
+    async fn a_picked_folder_that_is_not_a_repository_is_refused_without_a_dialog() {
+        let fixture = Fixture::new().await;
+        let plain = fixture.scratch.path().join("plain");
+        std::fs::create_dir(&plain).unwrap();
+        let plain = plain.canonicalize().unwrap();
+        let connection = fixture.connection(PROJECT);
+        fixture
+            .inner
+            .picked
+            .lock()
+            .await
+            .insert(connection.key.clone(), plain.clone());
+
+        let (status, body) = fixture
+            .send(
+                Method::POST,
+                "connections/local",
+                Some(json!({"project": PROJECT, "path": text(&plain)})),
+            )
+            .await;
+        assert_eq!(
+            (status, &body["reason"]),
+            (400, &json!("not-repository")),
+            "{body}"
+        );
+        assert!(!connection.connected());
+        assert!(!fixture
+            .inner
+            .picked
+            .lock()
+            .await
+            .contains_key(&connection.key));
+    }
+
+    #[tokio::test]
+    async fn a_picked_repository_connects_by_its_typed_path() {
+        if !git_ready().await {
+            return;
+        }
+        let fixture = Fixture::new().await;
+        let repo = local_repository(fixture.scratch.path());
+        let connection = fixture.connection(PROJECT);
+        fixture
+            .inner
+            .picked
+            .lock()
+            .await
+            .insert(connection.key.clone(), repo.clone());
+
+        let (status, body) = fixture
+            .send(
+                Method::POST,
+                "connections/local",
+                Some(json!({"project": PROJECT, "path": text(&repo)})),
+            )
+            .await;
+        assert_eq!((status, &body["connected"]), (200, &json!(true)), "{body}");
+        assert_eq!(connection.repo(), repo);
+        assert!(!fixture
+            .inner
+            .picked
+            .lock()
+            .await
+            .contains_key(&connection.key));
     }
 
     #[tokio::test]

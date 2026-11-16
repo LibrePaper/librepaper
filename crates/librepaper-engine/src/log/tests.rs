@@ -140,11 +140,31 @@ struct FakeCatalog {
     /// hold a write open and look at what the buffer and the pending
     /// reservations are doing meanwhile, without a sleep anywhere.
     flush_gate: Option<(Arc<Notify>, Arc<Notify>)>,
+    /// Like `flush_gate`, but entered AFTER the flush has taken its share
+    /// off the reservation row: the window between the database commit and
+    /// the sequencer retiring the batches.
+    committed_gate: Option<(Arc<Notify>, Arc<Notify>)>,
+    /// When true, `release_log_reservation` fails and leaves the row.
+    fail_release: std::sync::atomic::AtomicBool,
     /// When true, every `flush_log_row` fails, with no row written and the
     /// sequence left where it was. Distinct from `fail_next_flush`, which is
     /// one-shot and is about an AMBIGUOUS outcome; this is a write that
     /// plainly did not happen.
     fail_every_flush: std::sync::atomic::AtomicBool,
+    /// The durable quota still unreserved. `reserve_log_bytes` grants what
+    /// fits, as the real catalog does, so a test can run the quota down.
+    reserve_room: AtomicI64,
+    /// When set, `reserve_log_bytes` fails before it reserves anything:
+    /// `RESERVE_BUSY` with `Error::Busy`, `RESERVE_OTHER` with another error.
+    reserve_failure: std::sync::atomic::AtomicU8,
+    /// What the (single) reservation row holds.
+    reserved_row: AtomicI64,
+    /// How many times a reservation transaction was asked for.
+    reserve_calls: AtomicI64,
+    /// The (wanted, minimum) of each reservation request, in order.
+    reserve_asks: Mutex<Vec<(i64, i64)>>,
+    /// How many times the reservation row was released.
+    releases: AtomicI64,
 }
 
 impl FakeCatalog {
@@ -161,10 +181,21 @@ impl FakeCatalog {
             sequence_on_ambiguity: AtomicI64::new(0),
             compaction_thresholds: (100, 16 * 1024 * 1024),
             flush_gate: None,
+            committed_gate: None,
+            fail_release: std::sync::atomic::AtomicBool::new(false),
             fail_every_flush: std::sync::atomic::AtomicBool::new(false),
+            reserve_room: AtomicI64::new(i64::MAX),
+            reserve_failure: std::sync::atomic::AtomicU8::new(0),
+            reserved_row: AtomicI64::new(0),
+            reserve_calls: AtomicI64::new(0),
+            reserve_asks: Mutex::new(Vec::new()),
+            releases: AtomicI64::new(0),
         }
     }
 }
+
+const RESERVE_BUSY: u8 = 1;
+const RESERVE_OTHER: u8 = 2;
 
 impl LogCatalog for FakeCatalog {
     fn log_coverage(
@@ -207,10 +238,10 @@ impl LogCatalog for FakeCatalog {
         &'a self,
         _document_id: Uuid,
         row: FlushRow<'a>,
-        _reserved_keys: &'a [Uuid],
-        _reserved_bytes: i64,
+        _reservation: Uuid,
+        reserved_bytes: i64,
         scratch: super::pending::Reservation,
-    ) -> BoxFuture<'a, postgres::Result<i64>> {
+    ) -> BoxFuture<'a, postgres::Result<(i64, Option<i64>)>> {
         if self.fail_next_flush.swap(false, Ordering::SeqCst) {
             if self.lost_flush_committed {
                 let sequence = self.next_sequence.fetch_add(1, Ordering::SeqCst);
@@ -229,6 +260,7 @@ impl LogCatalog for FakeCatalog {
             });
         }
         let gate = self.flush_gate.clone();
+        let committed_gate = self.committed_gate.clone();
         let failing = self.fail_every_flush.load(Ordering::SeqCst);
         Box::pin(async move {
             let _scratch = scratch;
@@ -241,9 +273,67 @@ impl LogCatalog for FakeCatalog {
                     "simulated: this write did not happen".into(),
                 ));
             }
+            let remaining = self
+                .reserved_row
+                .fetch_sub(reserved_bytes, Ordering::SeqCst)
+                - reserved_bytes;
             self.flushed.lock().unwrap().push(row.update_bytes.to_vec());
-            Ok(self.next_sequence.fetch_add(1, Ordering::SeqCst))
+            let sequence = self.next_sequence.fetch_add(1, Ordering::SeqCst);
+            if let Some((entered, release)) = committed_gate {
+                entered.notify_one();
+                release.notified().await;
+            }
+            Ok((sequence, (reserved_bytes > 0).then_some(remaining)))
         })
+    }
+
+    fn reserve_log_bytes<'a>(
+        &'a self,
+        _document_id: Uuid,
+        _reservation_key: Uuid,
+        wanted: i64,
+        minimum: i64,
+    ) -> BoxFuture<'a, postgres::Result<i64>> {
+        self.reserve_calls.fetch_add(1, Ordering::SeqCst);
+        self.reserve_asks.lock().unwrap().push((wanted, minimum));
+        match self.reserve_failure.load(Ordering::SeqCst) {
+            RESERVE_BUSY => return Box::pin(async { Err(postgres::Error::Busy) }),
+            RESERVE_OTHER => {
+                return Box::pin(async { Err(postgres::Error::NotFound) });
+            }
+            _ => {}
+        }
+        if minimum > wanted {
+            return Box::pin(async {
+                Err(postgres::Error::Invalid("invalid chat reservation".into()))
+            });
+        }
+        let granted = wanted.min(self.reserve_room.load(Ordering::SeqCst));
+        if granted < minimum {
+            return Box::pin(async { Err(postgres::Error::Quota(postgres::QuotaScope::Owner)) });
+        }
+        if self.reserve_room.load(Ordering::SeqCst) != i64::MAX {
+            self.reserve_room.fetch_sub(granted, Ordering::SeqCst);
+        }
+        let total = self.reserved_row.fetch_add(granted, Ordering::SeqCst) + granted;
+        Box::pin(async move { Ok(total) })
+    }
+
+    fn release_log_reservation<'a>(
+        &'a self,
+        _document_id: Uuid,
+        _reservation_key: Uuid,
+    ) -> BoxFuture<'a, postgres::Result<()>> {
+        if self.fail_release.load(Ordering::SeqCst) {
+            return Box::pin(async {
+                Err(postgres::Error::Conflict(
+                    "simulated: release failed".into(),
+                ))
+            });
+        }
+        self.releases.fetch_add(1, Ordering::SeqCst);
+        self.reserved_row.store(0, Ordering::SeqCst);
+        Box::pin(async { Ok(()) })
     }
 
     fn log_sequence(&self, _document_id: Uuid) -> BoxFuture<'_, postgres::Result<i64>> {
@@ -275,7 +365,7 @@ impl LogCatalog for FakeCatalog {
         _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         _document_id: Uuid,
         _row: FlushRow<'a>,
-        _reserved_keys: &'a [Uuid],
+        _reservation: Uuid,
         _reserved_bytes: i64,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
         Box::pin(async {
@@ -332,14 +422,12 @@ fn sequencer_sharing_pending(
     Sequencer::from_parts(
         Uuid::new_v4(),
         "test-doc".to_string(),
-        Uuid::nil(),
         catalog,
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
         pending,
         "deployment.peer.test".to_string(),
-        crate::log::ledger::StorageLedger::new(),
         1,
         VersionVector::default(),
         0,
@@ -352,6 +440,161 @@ fn sequencer_sharing_pending(
 }
 
 // -- ingest (§5, §14.2) ---------------------------------------------------
+
+/// Durable quota is reserved in chunks: many small batches cost one
+/// reservation, a flush takes exactly its batches' share off the row, and an
+/// idle sequencer gives the remainder back.
+#[tokio::test]
+async fn small_batches_share_one_chunked_reservation() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    let sequencer = bare_sequencer(catalog.clone());
+    let mut outbox = Outbox::new();
+    for sent in 1..=20 {
+        assert!(matches!(
+            sequencer
+                .ingest(1, "account:writer", "account:writer", sent, outbox.edit())
+                .await,
+            Ingested::Accepted
+        ));
+    }
+    assert_eq!(catalog.reserve_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        catalog.reserved_row.load(Ordering::SeqCst),
+        crate::log::sequencer::LOG_RESERVATION_CHUNK
+    );
+    sequencer.flush(FlushReason::Barrier).await.unwrap();
+    let left = catalog.reserved_row.load(Ordering::SeqCst);
+    assert!(left > 0 && left < crate::log::sequencer::LOG_RESERVATION_CHUNK);
+    // The flush's share came off the row, not off nothing: typing again
+    // still needs no new reservation.
+    sequencer
+        .ingest(1, "account:writer", "account:writer", 21, outbox.edit())
+        .await;
+    assert_eq!(catalog.reserve_calls.load(Ordering::SeqCst), 1);
+    sequencer.flush(FlushReason::Barrier).await.unwrap();
+    sequencer.release_reservation().await;
+    assert_eq!(catalog.reserved_row.load(Ordering::SeqCst), 0);
+    assert_eq!(catalog.releases.load(Ordering::SeqCst), 1);
+}
+
+/// A reservation growth that lands after the flush committed but before the
+/// sequencer retires the batches already sees the row without the flushed
+/// charge. Subtracting that charge again made the sequencer's copy too low;
+/// it resyncs from what the flush left on the row instead.
+#[tokio::test]
+async fn a_growth_between_flush_commit_and_retire_does_not_double_subtract() {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let catalog = Arc::new(FakeCatalog {
+        committed_gate: Some((entered.clone(), release.clone())),
+        ..FakeCatalog::empty()
+    });
+    let sequencer = Arc::new(bare_sequencer(catalog.clone()));
+    let mut outbox = Outbox::new();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:w", "account:w", 1, outbox.edit())
+            .await,
+        Ingested::Accepted
+    ));
+    let flushing = {
+        let sequencer = sequencer.clone();
+        tokio::spawn(async move { sequencer.flush(FlushReason::MaxAge).await })
+    };
+    entered.notified().await;
+    // The row has been drawn down; a batch bigger than the headroom grows it.
+    let chunk = crate::log::sequencer::LOG_RESERVATION_CHUNK;
+    assert!(matches!(
+        sequencer
+            .ingest(
+                1,
+                "account:w",
+                "account:w",
+                2,
+                outbox.edit_at_least(chunk as usize)
+            )
+            .await,
+        Ingested::Accepted
+    ));
+    release.notify_one();
+    flushing.await.unwrap().unwrap().unwrap();
+    // The gate stays in the fake for later flushes; let the next one
+    // through (a stored permit) or it would wait here forever.
+    release.notify_one();
+    // Typing on is accepted, and the row is never driven below what the
+    // buffered batch needs.
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:w", "account:w", 3, outbox.edit())
+            .await,
+        Ingested::Accepted
+    ));
+    assert!(catalog.reserved_row.load(Ordering::SeqCst) > 0);
+    for (wanted, minimum) in catalog.reserve_asks.lock().unwrap().iter() {
+        assert!(
+            minimum <= wanted,
+            "asked for {minimum} at least but {wanted} at most"
+        );
+    }
+    sequencer.flush(FlushReason::Barrier).await.unwrap();
+    assert!(sequencer.release_reservation().await);
+    assert_eq!(catalog.reserved_row.load(Ordering::SeqCst), 0);
+}
+
+/// A failed release keeps the row and says so, so the idle sweep does not
+/// evict a sequencer whose quota is still held.
+#[tokio::test]
+async fn a_failed_release_reports_failure() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    let sequencer = bare_sequencer(catalog.clone());
+    let mut outbox = Outbox::new();
+    sequencer
+        .ingest(1, "account:w", "account:w", 1, outbox.edit())
+        .await;
+    sequencer.flush(FlushReason::Barrier).await.unwrap();
+    catalog.fail_release.store(true, Ordering::SeqCst);
+    assert!(!sequencer.release_reservation().await);
+    catalog.fail_release.store(false, Ordering::SeqCst);
+    assert!(sequencer.release_reservation().await);
+}
+
+/// Near the quota limit the chunk does not fit, so the row grows by the
+/// shortfall alone: a batch that fits is accepted, one that does not is
+/// refused as it would be with a reservation per batch.
+#[tokio::test]
+async fn a_batch_that_fits_only_as_a_shortfall_is_still_accepted() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    let sequencer = bare_sequencer(catalog.clone());
+    let mut outbox = Outbox::new();
+    let edit = outbox.edit();
+    let needed = frame::ROW_HEADER_BYTES as i64 + edit.len() as i64 + 64;
+    // Room for roughly this batch and no chunk. Generous enough for the
+    // framing bytes the real charge adds on top of the payload.
+    catalog.reserve_room.store(needed, Ordering::SeqCst);
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 1, edit)
+            .await,
+        Ingested::Accepted
+    ));
+    let held = catalog.reserved_row.load(Ordering::SeqCst);
+    assert!(held > 0 && held < crate::log::sequencer::LOG_RESERVATION_CHUNK);
+    catalog.reserve_room.store(0, Ordering::SeqCst);
+    // Whatever headroom is left cannot cover a further batch once the quota
+    // is gone entirely, and the refusal comes from the reservation.
+    let mut refused = false;
+    for sent in 2..200 {
+        if let Ingested::Retryable(retry) = sequencer
+            .ingest(1, "account:writer", "account:writer", sent, outbox.edit())
+            .await
+        {
+            assert_eq!(retry.reason, "storage_quota");
+            refused = true;
+            break;
+        }
+    }
+    assert!(refused, "the quota ran out and a batch was never refused");
+}
 
 /// A batch that carries no changes never becomes a row.
 ///
@@ -1418,14 +1661,12 @@ fn join_fixture() -> JoinFixture {
     let sequencer = Sequencer::from_parts(
         Uuid::new_v4(),
         "join-fixture".to_string(),
-        Uuid::nil(),
         catalog,
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
         generous_pending(),
         "deployment.peer.test".to_string(),
-        crate::log::ledger::StorageLedger::new(),
         3,
         v2.clone(),
         0,
@@ -1647,14 +1888,12 @@ fn compaction_fixture(
     let sequencer = Arc::new(Sequencer::from_parts(
         Uuid::new_v4(),
         "compaction-fixture".to_string(),
-        Uuid::nil(),
         catalog.clone(),
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
         generous_pending(),
         "deployment.peer.test".to_string(),
-        crate::log::ledger::StorageLedger::new(),
         3,
         v2.clone(),
         0,
@@ -2012,6 +2251,96 @@ async fn a_snapshot_is_refused_once_the_head_moves_past_the_frontier() {
     assert!(taken.is_some(), "the current frontier was refused");
 }
 
+/// Compaction flushes, then snapshots. An edit that lands in between sits in
+/// the head and the buffer but in no row. The snapshot must still be taken, at
+/// the log vector, so it covers exactly the rows it will delete, and the edit
+/// must survive as a row above `through`.
+#[tokio::test]
+async fn a_snapshot_is_taken_at_the_log_vector_when_an_edit_lands_after_the_flush() {
+    use crate::log::sequencer::SnapshotMode;
+
+    let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
+    sequencer
+        .with_head(|_| ())
+        .await
+        .expect("an empty document builds");
+    let mut outbox = Outbox::new();
+    let first = outbox.edit();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 1, first)
+            .await,
+        Ingested::Accepted
+    ));
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .expect("the first edit flushes");
+    let flushed = sequencer.log_state().await;
+    let covered = sequencer
+        .with_head(|doc| doc.oplog_vv())
+        .await
+        .expect("the head reads");
+
+    // The racing edit: after the flush, before the snapshot.
+    let second = outbox.edit();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 2, second)
+            .await,
+        Ingested::Accepted
+    ));
+    assert_eq!(sequencer.log_state().await.buffered, 1);
+
+    let (through, snapshot, log_vector, _, _) = sequencer
+        .snapshot_at_log_vector(SnapshotMode::Full)
+        .await
+        .expect("the snapshot is exported")
+        .expect("a buffered edit must not starve compaction");
+    assert_eq!(through, flushed.next_sequence - 1);
+    assert_eq!(log_vector, flushed.log_vector);
+    crate::storage::worker::prove_coverage(
+        &snapshot,
+        &log_vector,
+        crate::log::sequencer::CHANGES_UNKNOWN,
+        SnapshotMode::Full,
+        false,
+    )
+    .expect("the snapshot covers exactly the flushed rows");
+    let scratch = LoroDoc::new();
+    scratch.import(&snapshot).expect("the snapshot loads");
+    assert_eq!(
+        scratch.oplog_vv(),
+        covered,
+        "the snapshot holds the racing edit"
+    );
+
+    // The racing edit is still buffered, flushes as a row above `through`, and
+    // the head holds every edit.
+    assert_eq!(sequencer.log_state().await.buffered, 1);
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .expect("the racing edit flushes");
+    let after = sequencer.log_state().await;
+    assert_eq!(after.buffered, 0);
+    assert!(after.next_sequence - 1 > through, "no row above `through`");
+    let head = sequencer
+        .with_head(|doc| doc.oplog_vv())
+        .await
+        .expect("the head reads");
+    assert_eq!(after.log_vector, head.encode(), "an edit was lost");
+    scratch
+        .import(
+            &sequencer
+                .with_head(|doc| doc.export(ExportMode::all_updates()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .expect("the remaining update applies");
+    assert_eq!(scratch.oplog_vv(), head);
+}
+
 /// §10, "subscriber too slow: closed; reconnects and reconciles", and §4.5,
 /// "a subscriber whose queue overflows is closed and reconnects".
 ///
@@ -2169,14 +2498,12 @@ fn sequencer_with_logged_weight(log_bytes: u64, budget: Arc<Budget>) -> Sequence
     Sequencer::from_parts(
         Uuid::new_v4(),
         "test-doc".to_string(),
-        Uuid::nil(),
         Arc::new(FakeCatalog::empty()),
         blobs(),
         Arc::new(Configuration::default()),
         budget,
         generous_pending(),
         "deployment.peer.test".to_string(),
-        crate::log::ledger::StorageLedger::new(),
         1,
         VersionVector::default(),
         log_bytes,
@@ -2388,6 +2715,65 @@ async fn a_refused_update_leaves_no_reservation_behind() {
         sequencer.log_state().await.buffered_charge as u64,
         "the pool holds exactly what the buffer holds",
     );
+}
+
+/// A reservation that cannot get its locks in time refuses the update as
+/// retryable `storage_busy`, takes nothing, and the same update is accepted
+/// once the database is no longer busy.
+#[tokio::test]
+async fn a_busy_reservation_refuses_retryably_and_the_resend_is_accepted() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    let sequencer = bare_sequencer(catalog.clone());
+    let mut outbox = Outbox::new();
+    let edit = outbox.edit();
+
+    catalog
+        .reserve_failure
+        .store(RESERVE_BUSY, Ordering::SeqCst);
+    let refused = sequencer
+        .ingest(1, "account:w", "account:w", 1, edit.clone())
+        .await;
+    match &refused {
+        Ingested::Retryable(retry) => {
+            assert_eq!(retry.reason, "storage_busy");
+            assert!(retry.pressure, "busy storage is back pressure");
+        }
+        other => panic!("expected a retryable refusal, got {other:?}"),
+    }
+    assert_eq!(catalog.reserved_row.load(Ordering::SeqCst), 0);
+    let state = sequencer.log_state().await;
+    assert_eq!(state.buffered, 0, "a refused update was buffered");
+    assert_eq!(state.buffered_charge, 0, "a refused update left a charge");
+
+    catalog.reserve_failure.store(0, Ordering::SeqCst);
+    assert!(matches!(
+        sequencer.ingest(1, "account:w", "account:w", 1, edit).await,
+        Ingested::Accepted
+    ));
+    assert!(catalog.reserved_row.load(Ordering::SeqCst) > 0);
+    assert!(sequencer.log_state().await.buffered > 0);
+}
+
+/// Only a busy reservation is `storage_busy`; any other failure keeps the
+/// quota answer it always had.
+#[tokio::test]
+async fn a_failed_reservation_that_is_not_busy_still_answers_storage_quota() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    let sequencer = bare_sequencer(catalog.clone());
+    let mut outbox = Outbox::new();
+    catalog
+        .reserve_failure
+        .store(RESERVE_OTHER, Ordering::SeqCst);
+    let refused = sequencer
+        .ingest(1, "account:w", "account:w", 1, outbox.edit())
+        .await;
+    match &refused {
+        Ingested::Retryable(retry) => {
+            assert_eq!(retry.reason, "storage_quota");
+            assert!(!retry.pressure);
+        }
+        other => panic!("expected a retryable refusal, got {other:?}"),
+    }
 }
 
 /// Racing documents must not oversubscribe the shared allowance. Every task
@@ -2982,6 +3368,7 @@ async fn a_command_with_no_scratch_is_refused_before_it_opens_a_transaction() {
         .expect("the whole scratch pool");
 
     let authority = Authority {
+        agent_label: String::new(),
         principal_key: "account:a".into(),
         account_id: None,
         link_hash: None,

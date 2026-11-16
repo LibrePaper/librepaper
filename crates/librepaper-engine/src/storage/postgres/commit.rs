@@ -32,4 +32,7 @@ pub struct Authority {
     /// In automation mode the account is used for attribution and session
     /// validity, and only the presented live link grants access.
     pub automation: bool,
+    /// The model label an agent reported for this write. Display only: it
+    /// never grants anything. Empty when none was sent.
+    pub agent_label: String,
 }

@@ -27,7 +27,7 @@ use crate::storage::postgres::{
 use crate::storage::split_page;
 use librepaper_base::config::Configuration;
 use librepaper_base::paths::{admit, Kind};
-use librepaper_base::role::{Ceiling, Role};
+use librepaper_base::role::{AnonymousAccess, Ceiling, Role};
 use librepaper_base::util::parse_timestamp;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -143,6 +143,11 @@ pub struct LinkGrant {
     /// link.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub owner_generation: String,
+    /// Whether a caller who has not signed in may hold this link, when the
+    /// deployment's switch for its role is on. Existing links stay false and
+    /// keep asking for a sign-in.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anonymous: bool,
 }
 
 impl std::fmt::Debug for LinkGrant {
@@ -157,6 +162,7 @@ impl std::fmt::Debug for LinkGrant {
             .field("until", &self.until)
             .field("kind", &self.kind)
             .field("owner_generation", &self.owner_generation)
+            .field("anonymous", &self.anonymous)
             .finish()
     }
 }
@@ -284,6 +290,19 @@ impl IndexEntry {
         self.links
             .iter()
             .find(|link| link.kind == LinkKind::Link && link.hash == link_hash && link.live_at(now))
+    }
+
+    /// Whether a caller who has not signed in may hold this link: the row is
+    /// live, the owner marked it anonymous, and the deployment's switch for
+    /// its role is on.
+    pub fn admits_anonymously(
+        &self,
+        link_hash: &str,
+        now: i64,
+        anonymous: AnonymousAccess,
+    ) -> bool {
+        self.live_link(link_hash, now)
+            .is_some_and(|link| link.anonymous && anonymous.allows(link.granted()))
     }
 
     /// The live agent token row matching a presented digest.
@@ -1070,6 +1089,16 @@ impl Store {
             .map_err(|error| ModifyError::Storage(error.to_string()))
     }
 
+    /// Remove this account's own access to a document, a direct grant or a
+    /// guest pin. Returns false when there was nothing to remove.
+    pub async fn leave_document(&self, slug: &str, account_id: &str) -> Result<bool, ModifyError> {
+        let (document_id, account_id) = self.mark_target(slug, account_id).await?;
+        self.catalog
+            .leave_document(document_id, account_id)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))
+    }
+
     /// Note that this account has just opened this document.
     pub async fn mark_opened(&self, slug: &str, account_id: &str) -> Result<(), ModifyError> {
         let (document_id, account_id) = self.mark_target(slug, account_id).await?;
@@ -1567,6 +1596,7 @@ impl Store {
                     link.budget,
                     link.kind.as_str().to_string(),
                     link.owner_generation.clone(),
+                    link.anonymous && link.kind == LinkKind::Link,
                 ))
             })
             .collect::<Result<Vec<_>, ModifyError>>()?;
@@ -1693,6 +1723,7 @@ async fn entries_from_documents(
                         .unwrap_or_default(),
                     kind: LinkKind::from_column(&link.kind),
                     owner_generation: link.owner_generation,
+                    anonymous: link.anonymous,
                 })
                 .collect();
             let mut guests = Vec::new();

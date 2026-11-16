@@ -69,9 +69,13 @@ directory = "/var/lib/librepaper"
 database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
 # database_connections = 20         # PostgreSQL connection pool size
 
-# Optional. Set true to let people comment without signing in.
+# Optional. Anonymous access, per link. A link works without sign-in only when
+# its owner chose "Anyone with the link" and its switch here is true. All off by default.
 # [access]
-# anonymous_comments = false
+# anonymous_reads    = false  # read links may be opened without signing in
+# anonymous_comments = false  # comment links may be used without signing in
+# anonymous_suggests = false  # reserved: suggest links always need sign-in for now
+# anonymous_edits    = false  # reserved: edit links always need sign-in for now
 
 # Matches the edge network in compose.yaml; do not widen.
 [proxy]
@@ -101,3 +105,8 @@ trusted_networks = ["172.29.0.0/16"]
 # expire_after = "30d"
 # expire_from = "updated"            # or "created"
 # erase_inactive_after = "365d"      # erase accounts with no sign-in for this long, with their documents
+
+# Optional. Links the sign-in page shows as this server's terms of service and privacy policy.
+# [legal]
+# terms_url = "https://example.org/terms.html"
+# privacy_url = "https://example.org/privacy.html"

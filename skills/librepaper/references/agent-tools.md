@@ -1,6 +1,8 @@
 # Tool reference
 
-Summarized from `crates/librepaper-server/src/server/mcp/tools.json`. The live list is authoritative and shows only what the token's role allows. Fetch it with `scripts/lp tools` (it uses the full schemas), or with `GET https://<origin>/api/documents/<slug>/tools?schema=full` and the bearer token. Without `?schema=full` the response is the bridge's version, which omits `operation`.
+The helper's task commands (`read`, `comment`, `suggest`, `insert`, `create`) cover ordinary edits and comments. This reference is for everything else.
+
+Summarized from `crates/librepaper-server/src/server/mcp/tools.json`. The live list is authoritative and shows only what the token's role allows. Fetch it with `scripts/lp tools` (it uses the full schemas; `scripts/lp tools <name>` prints one tool), or with `GET https://<origin>/api/documents/<slug>/tools?schema=full` and the bearer token. Without `?schema=full` the response is the bridge's version, which omits `operation`.
 
 `document_id` appears on every tool: omit it. The endpoint serves one project.
 
@@ -48,10 +50,18 @@ Create or reply to comments, resolve threads, label versions. Required: `action`
 Propose replacements for captured ranges. Required: `view_id`, `operation`, `patches`.
 
 - `patches[]`: `{range_id, replacement, find?}`, 1 to 100. `replacement` is at most 60000 characters. `find` is at most 8192 characters and must be a unique exact substring within the range. A larger change should be split into several patches.
-- `publish`: `"suggestions"` lands at once as pending tracked changes for an editor to accept or reject (Edit role). `"private"` keeps a candidate without changing the document.
+- `publish`: `"suggestions"` lands at once as pending tracked changes for an editor to accept or reject (Suggest role or higher). `"private"` keeps a candidate without changing the document.
 - `batch`: `"atomic"` or `"independent"`. Independent only with `publish: "private"`. A published batch is all-or-nothing.
 - `validation`: `"source"` or `"compile"` (with `path` of the file to render).
 - `dependencies`: extra `range_id`s the patch relies on.
+
+## document_withdraw
+
+Withdraw your own pending tracked changes. Suggest role or higher. Required: `operation`, `change_ids`.
+
+- `change_ids[]`: the ids that `document_propose` returned in `effects` as `[{"kind":"change","id":"..."}]`.
+- Only your own pending changes. Changes by others, or already accepted or rejected, are refused.
+- Result: `effects: [{"kind":"withdrawn","id":...}]`. CLI: `lp withdraw <change_id> [<change_id> ...]`.
 
 ## document_apply
 
@@ -59,12 +69,13 @@ Apply a private candidate as a direct, untracked edit. Only when the user explic
 
 ## document_files
 
-Create or delete text files, untracked, Edit role. Required: `operation`, plus at least one of:
+Create, rename or delete text files, untracked, Edit role. Required: `operation`, plus at least one of:
 
 - `create[]`: `{path, text}`, up to 100 entries. `text` is at most 262144 characters. For a whole new file, use this tool rather than a propose patch.
+- `rename[]`: `{from, to}`, up to 100 entries. The file keeps its identity, so its comments and tracked changes stay attached. Rename a file rather than deleting it and creating another. `to` must be free, and a renamed path cannot also appear in another operation of the same call.
 - `delete[]`: `{path}`, up to 100 entries.
 
-Optional `base_tree`, `consistency`. A created file shows up only in a later `document_read`. Binary files cannot be added.
+Optional `base_tree`, `consistency`. A created or renamed file shows up only in a later `document_read`. Binary files cannot be added.
 
 ## document_result
 

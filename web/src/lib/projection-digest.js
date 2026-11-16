@@ -2,7 +2,7 @@
 //
 // This is a leaf on purpose. `projection.js` needs `loro-crdt` to walk a
 // document, and `renderers.js` needs the whole renderer stack; neither can be
-// imported by the LaTeX worker or by the document preview, which want the
+// imported by the LaTeX worker or by the assistant preview, which want the
 // digest and nothing around it. So the canonical serialization lives here,
 // importing only `digest.js`, and the two heavier modules re-export it.
 // One implementation of the name, reachable from every layer that has to say
@@ -19,9 +19,33 @@ const encoder = new TextEncoder();
 // Rust compares `&str` and sorts `BTreeMap<String, _>` by UTF-8 bytes;
 // JavaScript's `<` compares UTF-16 code units. They disagree exactly once, on
 // a supplementary character against a character in U+E000..U+FFFF, which is
-// reachable with an emoji in a filename. Compare the encoded bytes so the two
-// orders are the same one.
+// reachable with an emoji in a filename.
+//
+// UTF-8 byte order is code point order. UTF-16 code unit order matches it
+// except between a surrogate (U+D800-DFFF, the halves of a code point above
+// U+FFFF) and a unit in U+E000-FFFF: those two ranges are remapped at the
+// first difference. A lone surrogate is encoded by TextEncoder as U+FFFD, so
+// a string that is not well formed takes the encoding path to stay exact.
 export function compareUtf8(left, right) {
+  if (!isWellFormedString(left) || !isWellFormedString(right)) return compareEncoded(left, right);
+  const length = Math.min(left.length, right.length);
+  for (let at = 0; at < length; at += 1) {
+    let a = left.charCodeAt(at);
+    let b = right.charCodeAt(at);
+    if (a === b) continue;
+    if (a >= 0xd800 && b >= 0xd800) {
+      a = a >= 0xe000 ? a - 0x800 : a + 0x2000;
+      b = b >= 0xe000 ? b - 0x800 : b + 0x2000;
+    }
+    return a - b;
+  }
+  return left.length - right.length;
+}
+
+// The reference comparison: encode both strings and compare the bytes. Kept
+// for strings that are not well formed, where the encoder's U+FFFD
+// replacement is what defines the order.
+function compareEncoded(left, right) {
   const a = encoder.encode(left);
   const b = encoder.encode(right);
   const length = Math.min(a.length, b.length);
@@ -29,6 +53,13 @@ export function compareUtf8(left, right) {
     if (a[at] !== b[at]) return a[at] - b[at];
   }
   return a.length - b.length;
+}
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+function isWellFormedString(text) {
+  if (typeof text.isWellFormed === "function") return text.isWellFormed();
+  return !LONE_SURROGATE.test(text);
 }
 
 /// The bytes the digest is taken over: a version marker, the entry line, then
@@ -60,6 +91,14 @@ export function canonicalBytes(projection) {
   return encoder.encode(out);
 }
 
+// A render hashes the same unchanged texts up to three times, and a keystroke
+// changes one text. Remembering the last text and digest per path makes every
+// call cost one hash per changed text. Strings are compared by value: equal
+// strings compare cheaply in practice, and a wrong reuse is impossible because
+// the text itself is the key's check.
+const textDigests = new Map(); // path -> { text, digest }
+const TEXT_DIGESTS_LIMIT = 20000; // projects are far smaller; this only stops unbounded growth across many projects in one tab
+
 /// The name of a renderer tree: `{main, texts, digests}` as the render path
 /// carries it, hashed through the one canonical form above.
 ///
@@ -79,10 +118,22 @@ export async function snapshotDigest(tree) {
   const files = [];
   for (const path of paths) {
     if (Object.prototype.hasOwnProperty.call(texts, path)) {
-      files.push([path, { kind: "text", digest: await sha256HexOfText(String(texts[path])) }]);
+      const text = String(texts[path]);
+      let digest = textDigests.get(path)?.text === text ? textDigests.get(path).digest : undefined;
+      if (digest === undefined) {
+        digest = await sha256HexOfText(text);
+        if (textDigests.size >= TEXT_DIGESTS_LIMIT) textDigests.clear();
+        textDigests.set(path, { text, digest });
+      }
+      files.push([path, { kind: "text", digest }]);
     } else {
       files.push([path, { kind: "asset", digest: String(digests[path]) }]);
     }
   }
   return sha256Hex(canonicalBytes({ main: String(tree?.main || ""), files }));
+}
+
+/// Test-only: forget every remembered text digest.
+export function __resetTextDigests() {
+  textDigests.clear();
 }

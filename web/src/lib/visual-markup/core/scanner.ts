@@ -1,6 +1,6 @@
 import { Range } from './tokens';
 
-export const PAIRS: Record<string, string> = { '{': '}', '[': ']', '(': ')' };
+const PAIRS: Record<string, string> = { '{': '}', '[': ']', '(': ')' };
 
 export function skipSpace(source: string, pos: number, stopAtNewline = false): number {
   while (pos < source.length && /\s/.test(source[pos])) {
@@ -35,25 +35,6 @@ export function matchDelimited(source: string, pos: number, open: string): Range
   }
 
   return depth === 0 ? { from: pos, to: cursor } : null;
-}
-
-export function matchFenced(source: string, pos: number, open: string, close: string): Range | null {
-  if (source.slice(pos, pos + open.length) !== open) return null;
-  let cursor = pos + open.length;
-  while (cursor < source.length) {
-    if (source[cursor] === '\\') {
-      cursor += 2;
-      continue;
-    }
-    if (source.startsWith(close, cursor)) return { from: pos, to: cursor + close.length };
-    cursor++;
-  }
-  return null;
-}
-
-export function matchLine(source: string, pos: number): Range {
-  const end = source.indexOf('\n', pos);
-  return { from: pos, to: end === -1 ? source.length : end };
 }
 
 export function lineStart(source: string, pos: number): number {

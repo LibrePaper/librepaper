@@ -95,14 +95,61 @@ function latexContext(text, position) {
   if (from < position && !KEY.test(text.slice(from, position))) return null;
   return { kind: "latex", from, to: position, query: text.slice(from, position), trigger: latest[0].trim() };
 }
+// An Org citation group opens with [cite:, [cite/t:, [cite/na: and so on.
+const ORG_CITE_OPEN = /\[cite(?:\/[a-z/]+)?:/g;
+const ORG_KEY = /[-\p{L}\p{N}_:.+/]/u;
+// The last citation group opened on the line before `position`, and where its body starts.
+function orgGroup(text, position) {
+  const lineStart = text.lastIndexOf("\n", position - 1) + 1;
+  const prefix = text.slice(lineStart, position);
+  let latest = null;
+  for (const match of prefix.matchAll(ORG_CITE_OPEN)) latest = match;
+  if (!latest) return null;
+  const open = lineStart + latest.index + latest[0].length;
+  return text.slice(open, position).includes("]") ? null : { open };
+}
+function orgContext(text, position) {
+  const group = orgGroup(text, position);
+  if (!group) return null;
+  let from = position;
+  while (from > group.open && ORG_KEY.test(text[from - 1])) from--;
+  if (text[from - 1] !== "@" || from - 1 < group.open) return null;
+  const previous = text[from - 2] || "";
+  if (/[\p{L}\p{N}@/]/u.test(previous)) return null;
+  return { kind: "org", from, to: position, query: text.slice(from, position), trigger: "@" };
+}
+// The end of the citation group around `position`: its "]" when the group is closed, else `position`.
+function orgInsertionPoint(text, position) {
+  const close = text.indexOf("]", position);
+  if (close === -1) return position;
+  const between = text.slice(position, close);
+  return /[\n[]/.test(between) ? position : close;
+}
 export function citationContext(text, position = text.length, format = "markdown") {
   text = string(text);
   position = Math.max(0, Math.min(Number(position), text.length));
+  if (format === "org") return orgContext(text, position);
   return format === "latex" || format === "tex" ? latexContext(text, position) : markupContext(text, position, format);
 }
 export function insertCitation(text, position, key, format = "markdown") {
+  if (format === "org") return insertOrgCitation(string(text), Math.max(0, Math.min(Number(position), string(text).length)), string(key));
   const context = citationContext(text, position, format);
   return context && key ? text.slice(0, context.from) + string(key) + text.slice(context.to) : string(text);
+}
+// Replaces a partial key being typed; otherwise adds the key to the group around the
+// cursor, after a ";"; otherwise starts a new [cite:@key] group at the cursor.
+function insertOrgCitation(text, position, key) {
+  if (!key) return text;
+  const context = orgContext(text, position);
+  if (context) return text.slice(0, context.from) + key + text.slice(context.to);
+  const group = orgGroup(text, position);
+  if (group) {
+    const at = orgInsertionPoint(text, position);
+    const body = text.slice(group.open, at);
+    const separator = body.trim() && !/;\s*$/.test(body) ? ";" : "";
+    return text.slice(0, at) + separator + "@" + key + text.slice(at);
+  }
+  return text.slice(0, position) + `[cite:@${key}]` + text.slice(position);
 }
 export function entryLabel(entry) {
   const value = normalized(entry), names = surnames(value);
@@ -112,13 +159,43 @@ export function entryLabel(entry) {
 export function entryDetail(entry) { const value = normalized(entry); return value.container || value.type || ""; }
 export function bibliographyCompletion({ entries, format }) {
   return (context) => {
-    const found = citationContext(context.state.doc.toString(), context.pos, typeof format === "function" ? format() : format);
+    const kind = typeof format === "function" ? format() : format;
+    const { doc } = context.state;
+    const line = doc.lineAt(context.pos);
+    let base = 0, text;
+    if (kind === "latex" || kind === "tex") {
+      // A \cite argument may wrap, but never across more than a few lines.
+      base = doc.line(Math.max(1, line.number - 20)).from;
+      text = doc.sliceString(base, context.pos);
+    } else if (line.text.slice(0, context.pos - line.from).includes("@")) {
+      text = doc.toString(); // fenced code needs the whole prefix; only after an `@`
+    } else return null;
+    const found = citationContext(text, context.pos - base, kind);
     if (!found) return null;
+    found.from += base;
+    found.to += base;
     const available = typeof entries === "function" ? entries() : entries;
     const ranked = rankEntries(available, found.query);
     if (!ranked.length) return null;
     return { from: found.from, to: found.to, filter: false,
       options: ranked.map((entry) => ({ label: entry.key, displayLabel: entryLabel(entry), detail: entryDetail(entry), info: entryLabel(entry), type: "reference" })) };
+  };
+}
+// A \cite argument that opened on an earlier line and has not been closed.
+const OPEN_CITE = /\\[A-Za-z]*cite[A-Za-z]*\s*(?:\[[^\]]*\]\s*)*\{[^}]*$/;
+/**
+ * Where bibliographyCompletion can answer, for a format: after an "@" on the
+ * line, or in LaTeX inside an unclosed \cite argument, on this line or one of
+ * the 20 before it (the source reads back that far).
+ * @param {string} format
+ * @returns {(before: string, state: import("@codemirror/state").EditorState, pos: number) => boolean}
+ */
+export function bibliographyTrigger(format) {
+  return (before, state, pos) => {
+    if (format !== "latex" && format !== "tex") return before.includes("@");
+    const { doc } = state;
+    const from = doc.line(Math.max(1, doc.lineAt(pos).number - 20)).from;
+    return OPEN_CITE.test(doc.sliceString(from, pos));
   };
 }
 export function selectedBibliographyFiles(source, format) {
@@ -138,6 +215,12 @@ export function selectedBibliographyFiles(source, format) {
     for (const match of string(source).matchAll(/#bibliography\s*\(([^)]*)\)/g)) names.push(...[...match[1].matchAll(/["']([^"']+\.bib)["']/gi)].map((item) => item[1]));
   } else if (format === "latex" || format === "tex") {
     for (const match of string(source).matchAll(/\\(?:addbibresource|bibliography)\s*(?:\[[^]]*\])?\{([^}]+)\}/g)) names.push(...match[1].split(",").map((name) => name.trim()).filter(Boolean));
+  } else if (format === "org") {
+    // One path per #+BIBLIOGRAPHY: line, optionally quoted.
+    for (const match of string(source).matchAll(/^[ \t]*#\+BIBLIOGRAPHY:[ \t]*(.*?)[ \t]*\r?$/gim)) {
+      const name = match[1].replace(/^["']|["']$/g, "").trim();
+      if (name) names.push(name);
+    }
   }
   return [...new Set(names)].sort();
 }
@@ -148,7 +231,20 @@ export function bibliographyCacheKey({ main = "", format = "", source = "", text
     /^\s*bibliography\s*:/i.test(line) || /^\s*-\s*[^#].*\.bib\s*$/i.test(line) ||
     /#bibliography\s*\(|\\(?:addbibresource|bibliography)\b/.test(line) || /^\s*(?:---|\.\.\.)\s*$/.test(line) || /\/\*|\*\//.test(line)
       ? [`${index + 1}:${line}`] : []).join("\n");
-  return JSON.stringify({ main: string(main), format: string(format), config, selected: selectedBibliographyFiles(source, format), bib: bibliographyFiles({ texts }).map((path) => [path, string(texts[path])]) });
+  return JSON.stringify({ main: string(main), format: string(format), config, selected: selectedBibliographyFiles(source, format), bib: bibliographyFiles({ texts }).map((path) => [path, string(texts[path]).length, contentHash(string(texts[path]))]) });
+}
+// A 53-bit hash of a text, so that the key holds a number where it once held
+// the whole file. Together with the length, a collision is not a concern.
+function contentHash(text) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
 
 function collisionSuffix(index) {
@@ -218,6 +314,21 @@ export function bibliographyRegistration(source, path = "references.bib", format
     const lead = source.endsWith("\n") ? "" : "\n";
     return { from: source.length, to: source.length, insert: `${lead}#bibliography("${path}")\n` };
   }
+  if (format === "org") {
+    if (selectedBibliographyFiles(source, format).length) return null;
+    const eol = source.includes("\r\n") ? "\r\n" : "\n";
+    const line = `#+BIBLIOGRAPHY: ${/\s/.test(path) ? `"${path}"` : path}`;
+    // The header is the run of #+KEY: lines at the top; the new line goes after its last line.
+    const lines = source.split("\n");
+    let count = 0;
+    while (count < lines.length && /^#\+[A-Za-z_0-9-]+:/.test(lines[count])) count++;
+    if (!count) return { from: 0, to: 0, insert: line + eol };
+    // The last line of a file without a final line break holds the header's end.
+    if (count === lines.length) return { from: source.length, to: source.length, insert: eol + line };
+    let from = 0;
+    for (let i = 0; i < count; i++) from += lines[i].length + 1;
+    return { from, to: from, insert: line + eol };
+  }
   if (selectedBibliographyFiles(source, "markdown").length) return null;
   const line = `bibliography: ${path}\n`;
   if (/^---\s*\r?\n/.test(source)) {
@@ -261,8 +372,7 @@ export function planZoteroImport({ source, targetPath, texts, item, format = "ma
 }
 export class BibliographyCache {
   constructor(limit = 4) { this.limit = limit; this.values = new Map(); }
-  get(request, analyze) {
-    const key = bibliographyCacheKey(request);
+  get(request, analyze, key = bibliographyCacheKey(request)) {
     if (this.values.has(key)) { const value = this.values.get(key); this.values.delete(key); this.values.set(key, value); return value; }
     const promise = Promise.resolve().then(() => analyze(request)).then((result) => ({ entries: (result?.entries || []).map(normalized), diagnostics: result?.diagnostics || [] })).catch((error) => { this.values.delete(key); throw error; });
     this.values.set(key, promise);

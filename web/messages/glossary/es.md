@@ -100,7 +100,7 @@ Menu paths in sentences use ">" with spaces and each title as written above. Exa
 | access | acceso |  |
 | history | historial |  |
 | version | versión |  |
-| bookmark | marcador | Named saved version. Not "favorito". |
+| named version | versión con nombre | Replaces "bookmark" and "saved version". Verb: "nombrar". Not "favorito". |
 | compare | comparar |  |
 | restore | restaurar |  |
 | branch | rama |  |
@@ -278,7 +278,7 @@ Menu paths in sentences use ">" with spaces and each title as written above. Exa
 | Custom | Personalizado |  |
 | System | Sistema | Theme option: "Sistema". |
 | Automatic | Automático | Agrees in gender. |
-| Bookmark | Marcador |  |
+| Named version | Versión con nombre | History. Replaces "Bookmark" |
 | Tag | Etiqueta |  |
 | Branch | Rama |  |
 | Account | Cuenta |  |

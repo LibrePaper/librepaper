@@ -35,7 +35,7 @@ function marksFor(state, { spans, only = null }) {
     marks.push(
       Decoration.mark({
         class: "cm-authorship",
-        attributes: { title: span.title, style: `--author: ${span.colour}` },
+        attributes: { "data-tip": span.title, "data-tip-wait": "long", style: `--author: ${span.colour}` },
       }).range(from, to),
     );
   }

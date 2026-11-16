@@ -99,6 +99,21 @@ const STARTER: Starter = Starter {
                 "/examples/tutorial-quarto/sections/rendering.qmd"
             )),
         ),
+        // Org
+        (
+            "librepaper.org",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-org/librepaper.org"
+            )),
+        ),
+        (
+            "sections/rendering.org",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-org/sections/rendering.org"
+            )),
+        ),
         // Shared by every format. The copies in the other tutorial directories are identical.
         (
             "librepaper-icon.png",
@@ -147,6 +162,7 @@ impl Server {
         // has no request actor, so carry the identity that sign-in already
         // authenticated through every catalogue admission and checkpoint.
         let actor = librepaper_engine::storage::postgres::Authority {
+            agent_label: String::new(),
             principal_key: account.handle.clone(),
             account_id: Some(account.id),
             session_generation: Some(account.session_generation),

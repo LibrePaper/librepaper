@@ -6,6 +6,7 @@
 // both pass `web/tests/fixtures/opening.json`.
 
 import { formatOf } from "./formats.js";
+import { orgTree } from "./source-trees.js";
 import { compareUtf8 } from "./projection-digest.js";
 
 function baseName(path) {
@@ -35,7 +36,20 @@ function join(folder, name) {
 
 // The text with every LaTeX comment removed. A comment starts at a `%` that
 // an even number of backslashes precedes.
+const strippedCache = new Map();
 function stripLatexComments(body) {
+  // Comment stripping runs for each file several times per preview-target
+  // pass, so the last few results are reused. Kept small: every keystroke
+  // makes a new body, and a body can be megabytes.
+  let out = strippedCache.get(body);
+  if (out === undefined) {
+    if (strippedCache.size >= 8) strippedCache.clear();
+    out = stripComments(body);
+    strippedCache.set(body, out);
+  }
+  return out;
+}
+function stripComments(body) {
   return body
     .split("\n")
     .map((line) => {
@@ -109,6 +123,31 @@ function typstNames(body) {
   return found.sort((a, b) => a.start - b.start).map((entry) => entry.name);
 }
 
+// The names `#+INCLUDE:` and `#+SETUPFILE:` point at. The keyword is
+// case-insensitive, and the target is the first argument, optionally in double
+// quotes. A `::search` suffix names a place inside the file, not another file,
+// so it is dropped; a URL is not a file of the project and is ignored.
+function orgNames(body) {
+  const names = [];
+  orgTree(body)?.iterate({
+    enter(ref) {
+      if (ref.name !== "Keyword") return;
+      const key = ref.node.getChild("KeywordKey");
+      const value = ref.node.getChild("KeywordValue");
+      if (!key || !value) return;
+      const name = body.slice(key.from, key.to).toLowerCase();
+      if (name !== "include" && name !== "setupfile") return;
+      const argument = body.slice(value.from, value.to);
+      const target = argument.startsWith('"')
+        ? argument.slice(1).split('"')[0]
+        : argument.split(/\s+/)[0];
+      const file = target.split("::")[0].trim();
+      if (file && !file.includes("://")) names.push(file);
+    },
+  });
+  return names;
+}
+
 function shortcodeNames(body) {
   const names = [];
   let rest = body;
@@ -128,6 +167,7 @@ function shortcodeNames(body) {
 function includedNames(format, body) {
   if (format === "latex") return latexNames(stripLatexComments(body));
   if (format === "typst") return typstNames(body);
+  if (format === "org") return orgNames(body);
   if (format === "quarto" || format === "markdown") return shortcodeNames(body);
   return [];
 }
@@ -190,6 +230,7 @@ export function rendersAlone(path, texts, includers = includersOf(texts)) {
     case "latex":
       return Object.hasOwn(texts, path) && hasDocumentClass(texts[path]);
     case "typst":
+    case "org":
       return !included;
     case "quarto":
     case "markdown":

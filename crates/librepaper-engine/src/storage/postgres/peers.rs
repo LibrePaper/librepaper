@@ -15,7 +15,8 @@ use super::{PostgresCatalog, Result};
 pub struct PeerAuthor {
     pub peer: u64,
     pub account_id: Option<Uuid>,
-    /// The label of the agent token or share link that wrote the peer, a
+    /// The model label an agent reported when it wrote the peer comes first,
+    /// then the label of the agent token or share link that wrote the peer, a
     /// registered account's current display name, the label stored when the
     /// peer was first seen, or empty, in that order. An anonymous visitor's
     /// stored label is their pseudonym in this document, which is what the
@@ -95,11 +96,15 @@ impl PostgresCatalog {
 
     /// Every recorded peer of a document with a display name resolved now.
     /// Names are resolved at read time, so a renamed account or a relabelled
-    /// agent token shows its current name on every peer it wrote.
+    /// agent token shows its current name on every peer it wrote. The model
+    /// label an agent reported when it wrote the peer comes first, then the
+    /// token or link label, and so on: a relabelled token still shows its
+    /// current name on peers that reported no model.
     pub async fn document_peer_authors(&self, document_id: Uuid) -> Result<Vec<PeerAuthor>> {
         let rows: Vec<PeerRow> = sqlx::query_as(
             "SELECT p.peer, p.author_account_id, p.first_seen,
-                    COALESCE(NULLIF(sl.label,''),
+                    COALESCE(NULLIF(CASE WHEN p.link_hash IS NOT NULL THEN p.author_label END,''),
+                             NULLIF(sl.label,''),
                              CASE WHEN a.kind = 'registered' THEN a.display_name END,
                              NULLIF(p.author_label,''), a.display_name, '') AS name,
                     (p.link_hash IS NOT NULL) AS agent

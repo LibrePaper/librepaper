@@ -11,10 +11,11 @@
 //! hidden on Windows. This is process hygiene, not a security boundary: the
 //! tool runs with the caller's permissions.
 
-use std::io;
+use std::io::{self, Read, Write};
 use std::process::Stdio;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::retry::RetryPolicy;
 use crate::tasks::Shutdown;
@@ -266,9 +267,136 @@ async fn kill_and_reap(child: &mut Child, pid: Option<u32>) {
 /// whole tree can be killed.
 fn prepare(command: &mut Command) {
     command.kill_on_drop(true);
-    hide_console(command.as_std_mut());
+    prepare_std(command.as_std_mut());
+}
+
+fn prepare_std(command: &mut std::process::Command) {
+    hide_console(command);
     #[cfg(unix)]
-    command.process_group(0);
+    std::os::unix::process::CommandExt::process_group(command, 0);
+}
+
+/// `supervise` for a caller that is not async, such as the sync crate, which
+/// may be running inside an async task and so cannot block on a runtime. It
+/// keeps the same output caps, the same ending rules and the same group kill,
+/// with threads in place of tasks. The cancel token in `limits` is not
+/// watched. A reader still blocked after the grace period is left to finish
+/// on its own; its output past that point is dropped.
+pub fn supervise_blocking(
+    mut cmd: std::process::Command,
+    stdin: Option<Vec<u8>>,
+    limits: Limits,
+) -> Run {
+    if limits.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+        return Run::without_output(Ending::Canceled);
+    }
+    if limits.timeout == Some(Duration::ZERO) {
+        return Run::without_output(Ending::TimedOut);
+    }
+    prepare_std(&mut cmd);
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => return Run::without_output(Ending::SpawnFailed(error)),
+    };
+    let pid = Some(child.id());
+    if let (Some(bytes), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        // Written from its own thread, so a command that answers before it
+        // has read everything cannot leave both sides waiting.
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&bytes);
+        });
+    }
+    let stdout_keep = limits.keep;
+    let stderr_keep = limits.stderr_keep.unwrap_or(limits.keep);
+    let out: Shared = Shared::default();
+    let err: Shared = Shared::default();
+    let (done, finished) = mpsc::channel::<()>();
+    let mut readers = 0;
+    if let Some(pipe) = child.stdout.take() {
+        collect_blocking(pipe, stdout_keep, out.clone(), done.clone());
+        readers += 1;
+    }
+    if let Some(pipe) = child.stderr.take() {
+        collect_blocking(pipe, stderr_keep, err.clone(), done.clone());
+        readers += 1;
+    }
+    drop(done);
+
+    let (waited, status) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = waited.send(child.wait());
+    });
+    let answer = match limits.timeout {
+        Some(limit) => status.recv_timeout(limit),
+        None => status
+            .recv()
+            .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+    };
+    let ending = match answer {
+        Ok(Ok(status)) => {
+            if limits.kill_group {
+                kill_tree(pid);
+            }
+            Ending::Exited(status.code().unwrap_or(-1))
+        }
+        Ok(Err(error)) => {
+            kill_tree(pid);
+            Ending::SpawnFailed(error)
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            kill_tree(pid);
+            // The waiting thread reaps the child once it is dead.
+            let _ = status.recv();
+            Ending::TimedOut
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            kill_tree(pid);
+            Ending::SpawnFailed(io::Error::other("the thread waiting for the child ended"))
+        }
+    };
+
+    let deadline = Instant::now() + READER_GRACE;
+    for _ in 0..readers {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if finished.recv_timeout(left).is_err() {
+            break;
+        }
+    }
+    let (stdout, stdout_truncated) = lock(&out).finish(stdout_keep);
+    let (stderr, stderr_truncated) = lock(&err).finish(stderr_keep);
+    Run {
+        ending,
+        stdout,
+        stderr,
+        truncated: stdout_truncated || stderr_truncated,
+    }
+}
+
+/// `collect` on a thread: reads `reader` to end-of-file into `shared`, then
+/// tells `done`.
+fn collect_blocking<R: Read + Send + 'static>(
+    mut reader: R,
+    keep: Keep,
+    shared: Shared,
+    done: mpsc::Sender<()>,
+) {
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 16 * 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => lock(&shared).push(&chunk[..count], keep),
+            }
+        }
+        let _ = done.send(());
+    });
 }
 
 /// Starts the command, trying again briefly when the executable is busy. A
@@ -481,5 +609,85 @@ mod tests {
         .await;
         assert!(matches!(run.ending, Ending::SpawnFailed(_)));
         assert!(run.stdout.is_empty() && run.stderr.is_empty());
+    }
+
+    #[cfg(unix)]
+    fn std_sh(script: &str) -> std::process::Command {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blocking_captures_the_exit_code_both_streams_and_stdin() {
+        let run = supervise_blocking(
+            std_sh("echo out; echo err >&2; exit 3"),
+            None,
+            limits(Keep::Head(1024)),
+        );
+        assert!(matches!(run.ending, Ending::Exited(3)), "{:?}", run.ending);
+        assert_eq!(run.stdout, b"out\n");
+        assert_eq!(run.stderr, b"err\n");
+        assert!(!run.truncated);
+
+        let run = supervise_blocking(
+            std_sh("cat"),
+            Some(b"round trip".to_vec()),
+            limits(Keep::Head(1024)),
+        );
+        assert!(matches!(run.ending, Ending::Exited(0)));
+        assert_eq!(run.stdout, b"round trip");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blocking_timeout_kills_the_group_and_keeps_the_output() {
+        let mut limits = limits(Keep::Head(1024));
+        limits.timeout = Some(Duration::from_millis(500));
+        let started = Instant::now();
+        // A background child of the shell, as a hook's child would be.
+        let run = supervise_blocking(std_sh("sleep 30 & echo $!; sleep 30"), None, limits);
+        assert!(matches!(run.ending, Ending::TimedOut), "{:?}", run.ending);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let pid = String::from_utf8(run.stdout).unwrap().trim().to_string();
+        assert!(!pid.is_empty());
+        let gone = (0..50).any(|_| {
+            let alive = std::process::Command::new("/bin/sh")
+                .args(["-c", &format!("kill -0 {pid} 2>/dev/null")])
+                .status()
+                .unwrap()
+                .success();
+            if alive {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            !alive
+        });
+        assert!(gone, "the child of the timed out command survived");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blocking_caps_follow_head_and_tail() {
+        let script = "printf first; head -c 200000 /dev/zero | tr '\\0' x; printf last";
+        let run = supervise_blocking(std_sh(script), None, limits(Keep::Tail(4)));
+        assert!(matches!(run.ending, Ending::Exited(0)));
+        assert_eq!(run.stdout, b"last");
+        assert!(run.truncated);
+
+        let run = supervise_blocking(std_sh(script), None, limits(Keep::Head(5)));
+        assert!(matches!(run.ending, Ending::Exited(0)));
+        assert_eq!(run.stdout, b"first");
+        assert!(run.truncated);
+    }
+
+    #[test]
+    fn blocking_missing_executable_is_a_spawn_failure() {
+        let run = supervise_blocking(
+            std::process::Command::new("nonexistent-librepaper-test-executable"),
+            None,
+            limits(Keep::Head(16)),
+        );
+        assert!(matches!(run.ending, Ending::SpawnFailed(_)));
     }
 }

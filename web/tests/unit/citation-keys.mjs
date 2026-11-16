@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
-import { citedKeys, typstLabels, unknownCitations } from "../../src/lib/citation-keys.js";
+import { citedKeys, unknownCitations } from "../../src/lib/citation-keys.js";
+import { indexTexts, labelList } from "../../src/lib/document-index/labels.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+await loadTypstSyntaxForTests();
 
 const keys = (text, format, options) => citedKeys(text, format, options).map((cite) => cite.key);
+
+// The typst labels of a set of sources, as the citation checker reads them.
+const typstLabelSet = (texts) => new Set(labelList(indexTexts(texts), texts, { formats: new Set(["typst"]) }).map((label) => label.id));
 
 // LaTeX: offsets of each key in a multi-key cite.
 assert.deepEqual(citedKeys("See \\citep{a, b} now.", "latex"), [
@@ -24,7 +31,7 @@ assert.deepEqual(citedKeys("see @smith.", "markdown"), [{ key: "smith", from: 5,
 assert.deepEqual(keys("@smith", "html"), []);
 
 // Typst, with labels from the project.
-const labels = typstLabels({ "a.typ": "= Intro <sec-intro>\n<fig:x>", "b.bib": "<nope>" });
+const labels = typstLabelSet({ "a.typ": "= Intro <sec-intro>\n<fig:x>", "b.bib": "<nope>" });
 assert.deepEqual([...labels].sort(), ["fig:x", "sec-intro"]);
 assert.deepEqual(
   keys("See @smith. #cite(<jones>) and @sec-intro // @ignored\n`@raw` @fine", "typst", { labels }),
@@ -32,14 +39,14 @@ assert.deepEqual(
 );
 // A label used as a citation argument is not a declaration.
 const missingSource = "#cite(<missing>)\n@smith";
-const missingLabels = typstLabels({ "main.typ": missingSource });
+const missingLabels = typstLabelSet({ "main.typ": missingSource });
 assert.equal(missingLabels.has("missing"), false);
 assert.deepEqual(
   unknownCitations({ text: missingSource, format: "typst", entries: [{ key: "smith" }], labels: missingLabels }).map((cite) => cite.key),
   ["missing"],
 );
 // A heading label still suppresses the matching @key.
-assert.deepEqual(keys("= Intro <intro>\n@intro", "typst", { labels: typstLabels({ "a.typ": "= Intro <intro>\n@intro" }) }), []);
+assert.deepEqual(keys("= Intro <intro>\n@intro", "typst", { labels: typstLabelSet({ "a.typ": "= Intro <intro>\n@intro" }) }), []);
 // A multiline raw block is masked, so @example does not count.
 const fenced = "```\n@example\n```\nSee @smith";
 assert.deepEqual(citedKeys(fenced, "typst"), [{ key: "smith", from: fenced.indexOf("@smith") + 1, to: fenced.indexOf("@smith") + 6 }]);
@@ -56,3 +63,5 @@ assert.deepEqual(
   ["Smith"],
 );
 assert.deepEqual(citedKeys("= Intro <intro>\n#cite(<intro>) and @intro", "typst", { labels: new Set(["intro"]) }).map((cite) => cite.key), ["intro"]);
+// A backtick in a line comment does not open a raw span, and @hidden in the comment is not a citation.
+assert.deepEqual(keys("// a ` tick @hidden\nSee @smith and `code`", "typst"), ["smith"]);

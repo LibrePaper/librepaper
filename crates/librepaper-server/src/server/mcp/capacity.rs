@@ -114,6 +114,7 @@ mod tests {
             bearer: true,
             auth_failed: false,
             token: None,
+            anonymous_ok: false,
         }
     }
 

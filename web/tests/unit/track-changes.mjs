@@ -13,12 +13,15 @@
 // against their oracles, and two peers editing at once must converge.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { LoroDoc, LoroMap, LoroText } from "loro-crdt";
+import { Cursor, LoroDoc, LoroMap, LoroText } from "loro-crdt";
 import {
   CHANGES,
+  PRUNE_ORIGIN,
   accept,
+  adoptResolved,
   listChanges,
   planEdits,
+  plannedWrite,
   prune,
   recordEdits,
   reject,
@@ -26,10 +29,14 @@ import {
   rejectRestoring,
   resolveChanges,
   resolveFile,
+  resolveFileCached,
+  shiftResolved,
   trackedSplice,
   untrackedSplice,
   writePlanned,
+  writtenState,
 } from "../../src/lib/track-changes.js";
+import { planEditsReference } from "../helpers/plan-edits-reference.mjs";
 
 const fixtures = JSON.parse(
   readFileSync(new URL("../fixtures/track-changes.json", import.meta.url), "utf8"),
@@ -277,6 +284,48 @@ for (const f of fixtures.filter((x) => x.state.changes.length === 0 && x.state.g
   const second = all.find((c) => c.file === "f2");
   assert.deepEqual([second.inserted, second.deleted], ["!", ""]);
   assert.equal(resolveChanges(doc, "f1").length, 1);
+}
+
+// ---------------------------------------------------------------------------
+// An emoji typed in the browser (Kata nef2)
+//
+// An ASCII insertion of two units at 4 in "café ☕ naïve" records [4, 6]. The same
+// insertion of one emoji, which is two UTF-16 units too, was seen to leave no
+// change behind. Three stages, each checked on its own so that one failure
+// names the layer: the pure planner, the records writePlanned writes, and
+// the offsets those records resolve to.
+{
+  const original = "café ☕ naïve";
+  const inserts = [
+    ["a control of two ASCII units", "XY"],
+    ["one emoji", "😀"],
+  ];
+  for (const [label, insert] of inserts) {
+    const planned = planEdits(original, { changes: [], gaps: [] }, [{ from: 4, to: 4, insert }], ME, { now: 1, mintId: () => "new-1" });
+    const plannedSpans = planned.changes.filter((c) => c.state !== "removed").map(({ id, from, to }) => ({ id, from, to }));
+
+    const doc = makeDoc(original);
+    const ids = track(doc, 4, 4, insert);
+    const records = ids.map((id) => {
+      const record = doc.getMap(CHANGES).get(id);
+      const at = (key) => {
+        const bytes = record?.get(key);
+        return bytes instanceof Uint8Array ? doc.getCursorPos(Cursor.decode(bytes)).offset : null;
+      };
+      return { id, start: at("start"), end: at("end") };
+    });
+    const resolved = resolveFile(doc, "f1").changes.map(({ id, from, to }) => ({ id, from, to }));
+    const report = `${label}: text ${JSON.stringify(textOf(doc))}\n  planner: ${JSON.stringify(plannedSpans)}\n  written ids: ${JSON.stringify(ids)}, cursors it stored: ${JSON.stringify(records)}\n  resolveFile: ${JSON.stringify(resolved)}`;
+
+    assert.deepEqual(plannedSpans, [{ id: "new-1", from: 4, to: 4 + insert.length }], `planner layer wrong\n${report}`);
+    assert.equal(ids.length, 1, `writePlanned wrote no change record\n${report}`);
+    assert.equal(textOf(doc), "café" + insert + " ☕ naïve", `text wrong\n${report}`);
+    assert.deepEqual(
+      resolved.map(({ from, to }) => ({ from, to })),
+      [{ from: 4, to: 4 + insert.length }],
+      `cursor layer wrong (the planner was right if its line above shows the span)\n${report}`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1386,6 +1435,387 @@ twoPeers("touching");
   const rows = listChanges(doc);
   assert.deepEqual(rows.map((r) => [r.file, r.who, r.deleted, r.inserted]), [["f1", "alice", "c", ""]]);
   assert.equal([...doc.getMap(CHANGES).values()].every((v) => !(v instanceof LoroMap)), true);
+}
+
+// ---------------------------------------------------------------------------
+// The resolved state is cached per document version
+
+const shape = (s) => JSON.stringify({
+  changes: s.changes.map((c) => [c.id, c.from, c.to]),
+  gaps: s.gaps.map((g) => [g.at, g.fragments.map((f) => [f.id, f.change, f.text, f.rank])]),
+});
+
+// The state the editor reaches after an untracked edit, whichever way it takes:
+// shifted when the edit touches no record, else planned, written and read back.
+function untrackedKeystroke(doc, edit) {
+  const text = doc.getMap("files").get("f1");
+  const snapshot = resolveFileCached(doc, "f1");
+  const before = text.toString();
+  if (edit.to > edit.from) text.delete(edit.from, edit.to - edit.from);
+  if (edit.insert) text.insert(edit.from, edit.insert);
+  const shifted = shiftResolved(snapshot, [edit]);
+  if (shifted) {
+    adoptResolved(doc, "f1", shifted);
+    return true;
+  }
+  const plan = planEdits(before, snapshot, [edit], { who: "", author: "" }, { now: Date.now(), mintId: () => crypto.randomUUID(), untracked: true });
+  writePlanned(doc, "f1", plan);
+  return false;
+}
+
+// Randomized: after 200 untracked edits, many of them at record boundaries, the
+// cached state equals a fresh resolve every time.
+{
+  const rng = random(9);
+  const doc = makeDoc("the quick brown fox jumps over the lazy dog ".repeat(40), 1);
+  for (let i = 0; i < 60; i++) {
+    const at = 10 + i * 25 + (i % 7);
+    if (i % 2) track(doc, at, at + 6, "", BOB);
+    else track(doc, at, at, "new", ME);
+  }
+  let shiftedCount = 0;
+  for (let i = 0; i < 200; i++) {
+    const state = resolveFileCached(doc, "f1");
+    const len = doc.getMap("files").get("f1").length;
+    let from;
+    if (rng.rnd() < 0.5 && state.changes.length) {
+      const c = state.changes[rng.pick(state.changes.length)];
+      from = [c.from, c.to, c.from - 1, c.to + 1, c.from + 1][rng.pick(5)];
+    } else from = rng.pick(len);
+    from = Math.max(0, Math.min(len - 10, from));
+    const del = rng.rnd() < 0.4 ? rng.pick(6) : 0;
+    const insert = rng.rnd() < 0.7 ? "xyz".slice(0, 1 + rng.pick(3)) : "";
+    if (!del && !insert) continue;
+    if (untrackedKeystroke(doc, { from, to: from + del, insert })) shiftedCount += 1;
+    doc.commit();
+    assert.equal(shape(resolveFileCached(doc, "f1")), shape(resolveFile(doc, "f1")), `edit ${i} at ${from}`);
+  }
+  assert.ok(shiftedCount > 20, `the shift path ran ${shiftedCount} times`);
+}
+
+// A change imported from another document moves the version, so the cached
+// state is not served for it.
+{
+  const a = makeDoc("hello world again", 1);
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  track(a, 6, 11, "", ME);
+  const first = resolveFileCached(a, "f1");
+  assert.equal(resolveFileCached(a, "f1"), first);
+  track(b, 0, 0, "oh ", BOB);
+  a.import(b.export({ mode: "update" }));
+  const second = resolveFileCached(a, "f1");
+  assert.notEqual(second, first);
+  assert.equal(shape(second), shape(resolveFile(a, "f1")));
+}
+
+// shiftResolved gives up on an edit that touches a span or a gap, and moves
+// whatever lies after an edit that does not.
+{
+  const doc = makeDoc("0123456789abcdefghij", 1);
+  track(doc, 10, 10, "NEW", ME);
+  track(doc, 3, 5, "", BOB);
+  const state = resolveFile(doc, "f1");
+  const [gap] = state.gaps;
+  const [span] = state.changes.filter((c) => c.to > c.from);
+  assert.equal(shiftResolved(state, [{ from: span.from + 1, to: span.from + 1, insert: "q" }]), null);
+  assert.equal(shiftResolved(state, [{ from: span.to, to: span.to, insert: "q" }]), null);
+  assert.equal(shiftResolved(state, [{ from: gap.at, to: gap.at, insert: "q" }]), null);
+  assert.equal(shiftResolved(state, [{ from: gap.at - 1, to: gap.at, insert: "" }]), null);
+  const moved = shiftResolved(state, [{ from: 0, to: 0, insert: "ab" }]);
+  assert.equal(moved.gaps[0].at, gap.at + 2);
+  assert.equal(moved.gaps[0].id, `gap@${gap.at + 2}`);
+  const movedSpan = moved.changes.find((c) => c.id === span.id);
+  assert.deepEqual([movedSpan.from, movedSpan.to], [span.from + 2, span.to + 2]);
+  const between = shiftResolved(state, [{ from: gap.at + 2, to: gap.at + 4, insert: "" }]);
+  assert.equal(between.gaps[0].at, gap.at);
+  assert.equal(between.changes.find((c) => c.id === span.id).from, span.from - 2);
+}
+
+// A change whose span was deleted again keeps only its fragment. Its cursors
+// stay stale, and once the mark has rested prune drops them: the row is read at
+// its gap from then on and nothing is stale.
+{
+  const doc = makeDoc("the quick brown fox", 1);
+  track(doc, 4, 9, "", ME);
+  track(doc, 4, 4, "slow", ME);
+  const inserted = resolveFile(doc, "f1").changes.find((c) => c.to > c.from);
+  track(doc, inserted.from, inserted.to, "", ME);
+  const id = inserted.id;
+  const now = Date.now();
+  assert.equal(resolveFile(doc, "f1").changes.some((c) => c.id === id), true);
+  prune(doc, now);
+  doc.commit();
+  prune(doc, now + 120_000);
+  doc.commit();
+  const record = doc.getMap(CHANGES).get(id);
+  assert.equal(record.get("start") instanceof Uint8Array, false);
+  assert.equal(record.get("end") instanceof Uint8Array, false);
+  const after = resolveFile(doc, "f1");
+  const row = after.changes.find((c) => c.id === id);
+  assert.ok(row, "the row is still listed");
+  assert.equal(row.from, after.gaps[0].at);
+  assert.equal(row.to, row.from);
+  assert.equal(after.changes.some((c) => c.stale) || after.gaps.some((g) => g.stale), false);
+  assert.equal(record.get("stale"), undefined);
+}
+
+// Prune resolves every file before it writes: resolving a stale cursor commits
+// what is pending, so a write followed by another file's resolve would escape
+// the caller's origin. The heals of two files stay pending until the caller
+// commits them once, under the prune origin.
+{
+  const doc = new LoroDoc();
+  for (const id of ["f1", "f2"]) {
+    doc.getMap("files").setContainer(id, new LoroText()).insert(0, "the quick brown fox");
+    trackedSplice(doc, id, 4, 9, "slow", ME, {});
+  }
+  doc.commit();
+  for (const id of ["f1", "f2"]) {
+    const row = resolveFile(doc, id).changes.find((c) => c.to > c.from);
+    doc.getMap("files").get(id).delete(row.from, 1);
+    doc.getMap("files").get(id).delete(row.to - 2, 1);
+  }
+  doc.commit();
+  const now = Date.now();
+  for (const id of ["f1", "f2"]) assert.equal(resolveFile(doc, id).changes.some((c) => c.stale) || resolveFile(doc, id).gaps.some((g) => g.stale), true);
+  prune(doc, now);
+  doc.commit();
+  assert.equal(doc.getPendingTxnLength(), 0);
+  const events = [];
+  const off = doc.subscribe((e) => events.push(e));
+  prune(doc, now + 120_000);
+  assert.ok(doc.getPendingTxnLength() > 0, "prune left its writes pending");
+  assert.equal(events.length, 0, "nothing committed during prune");
+  doc.commit({ origin: PRUNE_ORIGIN });
+  await Promise.resolve();
+  off();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].origin, PRUNE_ORIGIN);
+  for (const id of ["f1", "f2"]) {
+    const after = resolveFile(doc, id);
+    assert.equal(after.changes.some((c) => c.stale) || after.gaps.some((g) => g.stale), false);
+  }
+}
+
+// The planner agrees with the frozen copy of itself from before it was made
+// linear, on random states with overlapping spans, several gaps to one point,
+// own and other people's changes and fragments, and random batches of edits,
+// tracked and not. The output is compared whole, order and states included.
+{
+  const rng = random(31);
+  const text = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const people = [ME, BOB, ALICE];
+  let cases = 0;
+  for (let round = 0; round < 600; round++) {
+    const changes = [];
+    const count = rng.pick(9);
+    for (let i = 0; i < count; i++) {
+      const who = people[rng.pick(3)];
+      const from = rng.pick(text.length);
+      const to = rng.rnd() < 0.3 ? from : Math.min(text.length, from + 1 + rng.pick(14));
+      changes.push({ id: `c${i}`, who: who.who, author: who.author, run: null, at: 1, from, to, ...(rng.rnd() < 0.1 ? { orphan: true } : {}) });
+    }
+    const gaps = [];
+    let fragmentCount = 0;
+    for (let i = 0, n = rng.pick(7); i < n; i++) {
+      const at = rng.rnd() < 0.3 && gaps.length ? gaps[rng.pick(gaps.length)].at : rng.pick(text.length + 1);
+      const fragments = [];
+      for (let j = 0, m = 1 + rng.pick(3); j < m; j++) {
+        const owner = changes.length && rng.rnd() < 0.9 ? changes[rng.pick(changes.length)].id : "ghost";
+        const stored = rng.rnd() < 0.5;
+        fragments.push({ change: owner, text: "d".repeat(1 + rng.pick(3)), ...(stored ? { id: `f${fragmentCount++}`, rank: j * 2 } : {}) });
+      }
+      gaps.push({ id: `g${i}`, at, fragments });
+    }
+    // Spans ordered as the resolver gives them, or in no order at all.
+    if (rng.rnd() < 0.5) changes.sort((a, b) => a.from - b.from || a.to - b.to);
+    const edits = [];
+    let at = 0;
+    for (let i = 0, n = 1 + rng.pick(3); i < n && at <= text.length; i++) {
+      const from = at + rng.pick(Math.max(1, Math.floor((text.length - at) / 2)));
+      const to = Math.min(text.length, from + (rng.rnd() < 0.5 ? 0 : rng.pick(rng.rnd() < 0.3 ? 30 : 4)));
+      const insert = rng.rnd() < 0.6 ? "xyz".slice(0, 1 + rng.pick(3)) : "";
+      edits.push({ from, to, insert });
+      at = to + 1;
+    }
+    const me = people[rng.pick(2)];
+    const untracked = rng.rnd() < 0.25;
+    const run = async (plan) => {
+      let n = 0;
+      try {
+        return plan(text, structuredClone({ changes, gaps }), structuredClone(edits), me, { now: 5, mintId: () => "new-" + ++n, untracked });
+      } catch (error) {
+        return { threw: String(error) };
+      }
+    };
+    assert.deepEqual(await run(planEdits), await run(planEditsReference), `round ${round}`);
+    cases += 1;
+  }
+  assert.equal(cases, 600);
+}
+
+// Tracked typing as the editor does it: each keystroke is planned against the
+// cached state, written with the gaps no step touched left alone, and the state
+// that was written is adopted. It must equal a fresh resolve every time.
+function trackedKeystroke(doc, edits) {
+  const text = doc.getMap("files").get("f1");
+  const snapshot = resolveFileCached(doc, "f1");
+  const before = text.toString();
+  let adj = 0;
+  for (const e of edits) {
+    if (e.to > e.from) text.delete(e.from + adj, e.to - e.from);
+    if (e.insert) text.insert(e.from + adj, e.insert);
+    adj += e.insert.length - (e.to - e.from);
+  }
+  const plan = planEdits(before, snapshot, edits, ME, { now: Date.now(), mintId: () => crypto.randomUUID() });
+  const touched = new Set();
+  for (const item of [...plan.changes, ...plan.gaps]) if (item.state !== "kept") touched.add(item.id);
+  const state = { changes: plan.changes.filter((c) => c.state !== "removed"), gaps: plan.gaps.filter((g) => g.state !== "removed") };
+  const result = { adopted: false, kept: 0 };
+  if (touched.size) {
+    const planned = plannedWrite(snapshot, state, touched);
+    result.kept = planned.gaps.filter((g) => g.state === "kept").length;
+    const written = writePlanned(doc, "f1", planned);
+    const adopted = writtenState(doc, planned, written, snapshot, edits);
+    if (adopted) {
+      adoptResolved(doc, "f1", adopted);
+      result.adopted = true;
+    }
+  }
+  doc.commit();
+  return result;
+}
+
+{
+  const rng = random(77);
+  const doc = makeDoc("the quick brown fox jumps over the lazy dog ".repeat(40), 1);
+  for (let i = 0; i < 60; i++) {
+    const at = 10 + i * 25 + (i % 7);
+    if (i % 2) track(doc, at, at + 6, "", i % 4 === 1 ? BOB : ME);
+    else track(doc, at, at, "new", i % 4 === 0 ? ME : ALICE);
+  }
+  let adopted = 0;
+  let kept = 0;
+  for (let i = 0; i < 200; i++) {
+    const state = resolveFileCached(doc, "f1");
+    const len = doc.getMap("files").get("f1").length;
+    let from;
+    if (rng.rnd() < 0.7 && state.changes.length) {
+      const c = state.changes[rng.pick(state.changes.length)];
+      from = [c.from, c.to, c.from - 1, c.to + 1, c.from + 1][rng.pick(5)];
+    } else from = rng.pick(len);
+    from = Math.max(0, Math.min(len - 30, from));
+    const edits = [];
+    const del = rng.rnd() < 0.4 ? rng.pick(20) : 0;
+    const insert = rng.rnd() < 0.7 ? "xyz".slice(0, 1 + rng.pick(3)) : "";
+    if (!del && !insert) continue;
+    edits.push({ from, to: from + del, insert });
+    if (rng.rnd() < 0.2) {
+      const second = from + del + 3 + rng.pick(10);
+      edits.push({ from: second, to: second + rng.pick(3), insert: rng.rnd() < 0.5 ? "q" : "" });
+    }
+    const result = trackedKeystroke(doc, edits);
+    if (result.adopted) adopted += 1;
+    kept += result.kept;
+    const cached = resolveFileCached(doc, "f1");
+    const fresh = resolveFile(doc, "f1");
+    assert.equal(shape(cached), shape(fresh), `keystroke ${i} at ${from}`);
+    assert.deepEqual(cached.changes.map((c) => [c.id, c.who, c.run, c.at]), fresh.changes.map((c) => [c.id, c.who, c.run, c.at]), `keystroke ${i} rows`);
+  }
+  assert.ok(adopted > 100, `the written state was adopted ${adopted} times`);
+  assert.ok(kept > 1000, `untouched gaps were kept ${kept} times`);
+}
+
+// A gap no step touched is not written again, and a gap the edit reaches is.
+// The ranks of two fragment records are altered behind the planner's back: the
+// one far from the keystroke is still altered afterwards, the one beside it was
+// written from the plan.
+{
+  const doc = makeDoc("the quick brown fox jumps over the lazy dog ".repeat(12), 1);
+  track(doc, 20, 25, "", ME);
+  track(doc, 200, 205, "", ME);
+  track(doc, 400, 405, "", ME);
+  const text = doc.getMap("files").get("f1");
+  const snapshot = resolveFileCached(doc, "f1");
+  assert.equal(snapshot.gaps.length, 3);
+  const [far, near] = [snapshot.gaps[0], snapshot.gaps[1]];
+  const rank = (id) => doc.getMap(CHANGES).get(id).get("rank");
+  const farId = far.fragments[0].id;
+  const nearId = near.fragments[0].id;
+  doc.getMap(CHANGES).get(farId).set("rank", 99);
+  doc.getMap(CHANGES).get(nearId).set("rank", 99);
+  doc.commit();
+  const before = text.toString();
+  text.insert(near.at, "Z");
+  const edits = [{ from: near.at, to: near.at, insert: "Z" }];
+  const plan = planEdits(before, snapshot, edits, ME, { now: 9, mintId: () => crypto.randomUUID() });
+  const touched = new Set();
+  for (const item of [...plan.changes, ...plan.gaps]) if (item.state !== "kept") touched.add(item.id);
+  const state = { changes: plan.changes.filter((c) => c.state !== "removed"), gaps: plan.gaps.filter((g) => g.state !== "removed") };
+  const planned = plannedWrite(snapshot, state, touched);
+  const stateOf = (id) => planned.gaps.find((g) => g.state !== "removed" && g.fragments.some((f) => f.id === id)).state;
+  assert.equal(stateOf(farId), "kept");
+  assert.equal(stateOf(nearId), "set");
+  // The far gap's snapshot counterpart is not listed for removal, and no
+  // fragment that is live in a gap that stays is deleted.
+  assert.equal(planned.gaps.filter((g) => g.state === "removed").some((g) => g.fragments.some((f) => f.id === farId)), false);
+  writePlanned(doc, "f1", planned);
+  assert.equal(rank(farId), 99);
+  assert.notEqual(rank(nearId), 99);
+  assert.ok(doc.getMap(CHANGES).get(farId) instanceof LoroMap);
+}
+
+// A kept change is not written, so its place is what its cursors say, which
+// the plan can get wrong: a deletion just before an own insertion leaves the
+// planner with an empty record at the deletion, while the cursors moved with
+// the text and still hold the two characters. The state is then not adopted, or
+// is the one a fresh resolve gives.
+{
+  const doc = makeDoc("the quick brown fox jumps over the lazy dog", 1);
+  track(doc, 10, 10, "ab", ME);
+  const row = resolveFile(doc, "f1").changes.find((c) => c.to > c.from);
+  const text = doc.getMap("files").get("f1");
+  const snapshot = resolveFileCached(doc, "f1");
+  const before = text.toString();
+  const edits = [{ from: row.from - 1, to: row.from, insert: "" }];
+  text.delete(row.from - 1, 1);
+  const plan = planEdits(before, snapshot, edits, ME, { now: 9, mintId: () => crypto.randomUUID() });
+  const touched = new Set();
+  for (const item of [...plan.changes, ...plan.gaps]) if (item.state !== "kept") touched.add(item.id);
+  const state = { changes: plan.changes.filter((c) => c.state !== "removed"), gaps: plan.gaps.filter((g) => g.state !== "removed") };
+  const planned = plannedWrite(snapshot, state, touched);
+  const written = writePlanned(doc, "f1", planned);
+  const adopted = writtenState(doc, planned, written, snapshot, edits);
+  doc.commit();
+  if (adopted) assert.equal(shape(adopted), shape(resolveFile(doc, "f1")));
+  else assert.equal(adopted, null);
+  const again = makeDoc("the quick brown fox jumps over the lazy dog", 3);
+  track(again, 10, 10, "ab", ME);
+  const at = resolveFile(again, "f1").changes.find((c) => c.to > c.from).from;
+  trackedKeystroke(again, [{ from: at - 1, to: at, insert: "" }]);
+  assert.equal(shape(resolveFileCached(again, "f1")), shape(resolveFile(again, "f1")));
+}
+
+// A fragment whose cursor lies inside another change's span, as concurrent
+// edits leave it, reads at the span's start. A keystroke that splits the span
+// sends it back to its cursor, so the written state is not adopted for it and
+// the next read resolves.
+{
+  const doc = makeDoc("abcdefghijklmnop", 1);
+  const text = doc.getMap("files").get("f1");
+  putRecord(doc, "span", { kind: "change", file: "f1", who: "alice", author: "Alice", run: null, at: 1, start: text.getCursor(1, -1).encode(), end: text.getCursor(4, 1).encode() });
+  putRecord(doc, "gone", { kind: "change", file: "f1", who: "bob", author: "Bob", run: null, at: 1, start: null, end: null });
+  putRecord(doc, "frag", { kind: "fragment", file: "f1", who: "bob", author: "Bob", run: null, at: 1, change: "gone", text: "zz", rank: 0, start: text.getCursor(3, -1).encode() });
+  doc.commit();
+  const before = resolveFile(doc, "f1");
+  const gap = before.gaps.find((g) => g.fragments.some((f) => f.id === "frag"));
+  assert.equal(gap.at, 1, "the fragment reads at the span's start");
+  assert.equal(gap.relocated, true, "and its gap says it was moved there");
+  const result = trackedKeystroke(doc, [{ from: 2, to: 3, insert: "Q" }]);
+  assert.equal(result.adopted, false, "a relocated gap is not adopted");
+  assert.equal(shape(resolveFileCached(doc, "f1")), shape(resolveFile(doc, "f1")));
 }
 
 console.log("track-changes: ok");

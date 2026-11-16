@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { EXPORT_TARGETS, exportAvailability, exportFile, madeLocally, unrunCells } from "../../src/lib/reader/exports.js";
+import { loadTypstSyntaxForTests } from "../helpers/typst-syntax.mjs";
+
+// The Typst adapter lists figures only once its parser is loaded.
+await loadTypstSyntaxForTests();
 
 const all = (...formats) => (format) => formats.includes(format);
 
@@ -36,6 +40,17 @@ const all = (...formats) => (format) => formats.includes(format);
   assert.equal(exportAvailability("latex", "rtf", rich).ok, false);
 }
 
+// Org renders to HTML; its Word file goes through Pandoc. Its PDF goes through Pandoc and LaTeX, or Pandoc and Typst without a LaTeX compiler.
+{
+  const org = { pandoc: true, compiler: all("org", "latex") };
+  for (const target of EXPORT_TARGETS) assert.deepEqual(exportAvailability("org", target, org), { ok: true }, `org to ${target}`);
+  assert.deepEqual(exportAvailability("org", "pdf", { pandoc: true, compiler: all("org", "typst") }), { ok: true }, "org PDF through Typst");
+  assert.equal(exportAvailability("org", "pdf", { pandoc: true, compiler: all("org") }).ok, false, "no LaTeX and no Typst, no Org PDF");
+  assert.equal(exportAvailability("org", "pdf", { pandoc: false, compiler: all("org", "latex", "typst") }).ok, false, "no Pandoc, no Org PDF");
+  assert.equal(exportAvailability("org", "docx", { pandoc: false, compiler: all("org") }).ok, false);
+  assert.equal(exportAvailability("org", "html", { pandoc: true, compiler: all("latex", "typst") }).ok, false, "the HTML page needs the Org renderer");
+}
+
 // A format that renders on this computer offers the files its command makes, whatever this browser can render.
 {
   // A deployment with no browser LaTeX, and Pandoc.
@@ -51,9 +66,10 @@ const all = (...formats) => (format) => formats.includes(format);
   assert.equal(exportAvailability("latex", "html", { ...withLatex, local: true }).ok, true);
   assert.equal(exportAvailability("latex", "docx", { ...withLatex, local: true }).ok, true);
   assert.equal(exportAvailability("latex", "docx", { pandoc: false, compiler: all("latex"), local: true }).ok, false, "a Word file needs Pandoc when the command does not make it");
-  // Typst the same.
+  // The Typst commands (Calepin) make a PDF and an HTML page; the Word file follows the browser rule.
   assert.equal(exportAvailability("typst", "pdf", { pandoc: true, compiler: all("latex"), local: true }).ok, true);
-  assert.equal(exportAvailability("typst", "html", { pandoc: true, compiler: all("latex"), local: true }).ok, false);
+  assert.equal(exportAvailability("typst", "html", { pandoc: true, compiler: all("latex"), local: true }).ok, true);
+  assert.equal(exportAvailability("typst", "docx", { pandoc: true, compiler: all("latex"), local: true }).ok, false);
   // Quarto has no browser engine on a deployment without one, and its commands make every output.
   const bare = { pandoc: false, compiler: all() };
   for (const target of EXPORT_TARGETS) {
@@ -138,6 +154,23 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   assert.equal(run.calls[0].options.from, "html");
   assert.equal(render.calls[2].tree.main, "site/index.pandoc.typ");
   assert.equal(file.name, "paper.pdf");
+}
+
+// A local export sends the tree as given: no run figures, no placeholders.
+{
+  const render = makeRender({ pdf: Uint8Array.of(1), diagnostics: [] });
+  const tree = { main: "doc/main.qmd", texts: { "doc/main.qmd": "![a](plot.png)\n" }, assets: {} };
+  const file = await exportFile({ ...base, target: "pdf", format: "quarto", tree, local: true, resultsFiles: [{ path: "doc/plot.png", base64: "AA==" }], render, run: makeRun() });
+  assert.deepEqual(file.missing, []);
+  assert.deepEqual(render.calls[0].tree.assets, {});
+}
+
+// A target the command does not make falls back to the browser, so it is filled even when local.
+{
+  const render = makeRender({ html: "<p>made</p>", diagnostics: [] });
+  const tree = { main: "doc/main.typ", texts: { "doc/main.typ": "#image(\"plot.png\")\n" }, assets: {} };
+  await exportFile({ ...base, target: "docx", format: "typst", tree, local: true, resultsFiles: [{ path: "doc/plot.png", base64: "AA==" }], render, run: makeRun() }).catch(() => {});
+  assert.ok("doc/plot.png" in render.calls[0].tree.assets, "the run's figure is in the tree");
 }
 
 // HTML routes.

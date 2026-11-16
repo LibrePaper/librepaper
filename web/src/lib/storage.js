@@ -28,6 +28,8 @@ export function write(key, value) {
 // Every agent chat transcript is kept under this prefix, one key per document.
 export const AGENT_SESSION_PREFIX = "librepaper.agent.session.";
 export const VIEWED = "librepaper-viewed";
+// Names the list older versions wrote for the share-link note. Kept so sign-out still clears it.
+export const SHARE_INTRO = "librepaper-share-intro";
 export const LINKED = "librepaper-linked";
 // Whether PDF pages are drawn inverted while the application is dark. A habit
 // of the person reading rather than of the document.
@@ -55,6 +57,8 @@ export const EDITOR_LINE_HEIGHT = "librepaper-editor-line-height";
 export const EDITOR_COMPLETION = "librepaper-editor-completion";
 // Whether typing an opening bracket adds the closing one.
 export const EDITOR_BRACKETS = "librepaper-editor-brackets";
+// Whether LaTeX files close \begin with its \end and indent inside environments.
+export const EDITOR_LATEX_ASSIST = "librepaper-editor-latex-assist";
 // Which checker underlines the source: "off", "browser" or "harper". Prose files only. Older builds stored true or false.
 export const EDITOR_SPELLCHECK = "librepaper-editor-spellcheck";
 // The English dialect Harper checks against: "american", "british", "canadian", "australian" or "indian".
@@ -135,6 +139,17 @@ export function keyFor(slug) {
   return key;
 }
 
+/// Forgets the link key this browser holds for a document, in memory and in
+/// storage, so reopening it from history does not quietly rejoin.
+export function forgetKey(slug) {
+  memoryKeys.delete(slug);
+  const keys = read(KEYS, {});
+  if (keys && typeof keys === "object" && slug in keys) {
+    delete keys[slug];
+    write(KEYS, keys);
+  }
+}
+
 /// The link to hand somebody: the one that was shared, key and all, so a link
 /// copied from the reader is the link that was given. The key goes in the path,
 /// as /docs/<slug>/<key>, so chat apps that drop the fragment still keep it.
@@ -152,3 +167,4 @@ export function markViewed(slug) {
   seen[slug] = new Date().toISOString();
   write(VIEWED, seen);
 }
+

@@ -94,6 +94,7 @@ fn projection_wire(
     let librepaper_document::document::projection::Projected {
         projection,
         mut texts,
+        retained,
     } = projected;
     texts.retain(|path, _| {
         projection
@@ -112,6 +113,7 @@ fn projection_wire(
         source_format: source_format.to_string(),
         files: projection.files,
         texts,
+        retained,
     };
     serde_json::to_value(snapshot).expect("a snapshot serializes")
 }
@@ -518,9 +520,10 @@ impl Server {
             Ok(auth) => auth.entry,
             Err(refusal) => return access::deny(&refusal),
         };
-        let room = match self.rooms.get(slug).await {
-            Ok(room) => room,
-            Err(error) => return refused("open the room", &error),
+        // The room is not opened: its admission and anchor backfill are work
+        // this read does not need, because the document id is all it wants.
+        let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {
+            return plain(404, "not found");
         };
         let (after, limit, named) = query
             .map(|raw| {
@@ -542,12 +545,12 @@ impl Server {
         let page = if named {
             self.store
                 .catalog
-                .named_label_page(room.document_id, after, limit)
+                .named_label_page(document_id, after, limit)
                 .await
         } else {
             self.store
                 .catalog
-                .label_page(room.document_id, after, limit)
+                .label_page(document_id, after, limit)
                 .await
         };
         let rows = match page {
@@ -558,8 +561,11 @@ impl Server {
             .then(|| rows.last().map(|row| row.sequence))
             .flatten();
         let labels: Vec<_> = rows.iter().map(label_wire).collect();
-        let state = room.log().log_state().await;
-        let head = match head_digest(&state.head_vector) {
+        let head_vector = match self.rooms.registry().head_vector(document_id).await {
+            Ok(vector) => vector,
+            Err(error) => return refused("read the head", &error.into()),
+        };
+        let head = match head_digest(&head_vector) {
             Ok(head) => head,
             Err(error) => {
                 return refused(
@@ -602,22 +608,19 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        if let Err(refusal) = self
+        let entry = match self
             .authorize::<access::rung::Edit>(context, headers, slug, None)
             .await
         {
-            return access::deny(&refusal);
-        }
-        let room = match self.rooms.get(slug).await {
-            Ok(room) => room,
-            Err(error) => return refused("open the room", &error),
+            Ok(auth) => auth.entry,
+            Err(refusal) => return access::deny(&refusal),
         };
-        let authors = match self
-            .store
-            .catalog
-            .document_peer_authors(room.document_id)
-            .await
-        {
+        // The room is not opened: its admission and anchor backfill are work
+        // this read does not need, because the document id is all it wants.
+        let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {
+            return plain(404, "not found");
+        };
+        let authors = match self.store.catalog.document_peer_authors(document_id).await {
             Ok(authors) => authors,
             Err(error) => return refused("read the catalogue", &error.into()),
         };
@@ -1301,22 +1304,12 @@ impl Server {
                 };
                 // Only the owner's trim deletes chat. An editor's trim leaves it alone.
                 if outcome.chat_cleared {
-                    let waiting = chat.discard_unstored(&outcome.chat_stored_buffered);
+                    chat.discard();
                     room.chat_discarded();
-                    room.log().charge_storage(-outcome.chat_bytes);
-                    room.log().charge_storage(-waiting);
                     room.broadcast_chat(None, &json!({"type": "chat-cleared"}))
                         .await;
                 }
                 drop(chat);
-                // The ledger is a coarse running total, so move it by what was freed.
-                // A failed lookup leaves it alone: admission reloads the owner's total from the catalogue.
-                if let Ok(Some(document)) = self.store.catalog.document(room.document_id).await {
-                    self.rooms.registry().ledger().charge(
-                        document.owner_id,
-                        -(outcome.version_bytes + outcome.figure_bytes),
-                    );
-                }
                 write_json(
                     200,
                     &json!({
@@ -1399,5 +1392,43 @@ mod head_digest_tests {
             head_digest(&plain.encode()).unwrap(),
             head_digest(&with_zero.encode()).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod retained_wire_tests {
+    use super::*;
+
+    fn wire(retained: &[(&str, &str)]) -> Value {
+        let projected = librepaper_document::document::projection::Projected {
+            retained: retained
+                .iter()
+                .map(|(path, body)| (path.to_string(), body.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        projection_wire(
+            MomentMetadata {
+                sha: "label-1",
+                at: "",
+                by: "",
+                label: None,
+                reason: "",
+            },
+            "store",
+            "markdown",
+            projected,
+        )
+    }
+
+    #[test]
+    fn the_history_response_carries_retained_texts() {
+        let body = wire(&[("analysis.R", "x <- 1")]);
+        assert_eq!(body["retained"]["analysis.R"], "x <- 1");
+    }
+
+    #[test]
+    fn the_history_response_omits_retained_when_there_are_none() {
+        assert!(wire(&[]).get("retained").is_none());
     }
 }

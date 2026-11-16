@@ -1,5 +1,6 @@
 <script>
-  import PanelHeader from "../PanelHeader.svelte";
+  import PanelTabs from "../PanelTabs.svelte";
+  import IconButton from "../IconButton.svelte";
   import { m } from "../../lib/paraglide/messages.js";
   import { provenanceSentence } from "../../lib/latex/status-text.js";
 
@@ -27,6 +28,8 @@
     // whose summary already says why passes false so its full output stays
     // folded.
     logOpen = undefined,
+    // Asks the agent to fix one diagnostic. Absent where no agent is offered.
+    onagent = undefined,
   } = $props();
   const errors = $derived(diagnostics.filter((item) => item.severity !== "warning" && item.severity !== "info"));
   const warnings = $derived(diagnostics.filter((item) => item.severity === "warning"));
@@ -66,8 +69,9 @@
   }
 </script>
 
-<section class="panel" aria-label={m.diagnostics_section_label()}>
-  <PanelHeader title={m.common_diagnostics()} />
+<section class="panel panel-tabbed" aria-label={m.diagnostics_section_label()}>
+  <PanelTabs id="diagnostics" title={m.common_diagnostics()}>
+  <div class="diagnostics-body">
   {#if provenance}
     <details class="mb-4">
       <summary class="panel-section-title">{m.diagnostics_compiled_with()}</summary>
@@ -102,13 +106,16 @@
               <span class="badge lp-tone-{group.tone}">
                 {group.tone === "error" ? m.common_error() : group.tone === "warning" ? m.common_warning() : m.diagnostics_badge_note()}
               </span>
+              {#if onagent}
+                <IconButton icon="bot" label={m.diagnostics_fix_with_agent()} onclick={() => onagent(item)} />
+              {/if}
             </div>
             <p class="whitespace-pre-wrap break-words">{item.message}</p>
             {#if item.file || item.line > 0}
               <div class="panel-meta mt-2 break-all">
                 {#if canOpen(item)}
                   <button type="button" class="anchor text-left" onclick={() => onopen?.(item)}
-                          title={m.diagnostics_go_to_location()}>
+                          data-tip={m.diagnostics_go_to_location()}>
                     {item.file || entry}:{item.line}{item.column > 0 ? `:${item.column}` : ""}
                   </button>
                 {:else}
@@ -149,7 +156,20 @@
       </ul>
     </details>
   {/if}
+  </div>
+  </PanelTabs>
 </section>
 
 <style>
+  /* The pane does not scroll; this body does. */
+  .diagnostics-body { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+  .diagnostic-head :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
+  .diagnostic-head :global(.icon-control svg) { width: 16px; height: 16px; }
+  /* Phones: the location link, the actions and the disclosure summaries are
+     finger-sized. */
+  @media (max-width: 767px) {
+    .anchor { display: inline-flex; align-items: center; min-height: 2.75rem; }
+    summary { min-height: 2.75rem; }
+    .btn { min-height: 2.75rem; }
+  }
 </style>

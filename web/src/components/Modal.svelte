@@ -8,19 +8,23 @@
   // is: a card in the middle of a dimmed page, with a heading, whatever it is
   // asking, and its buttons at the bottom right.
   //
-  // The behaviour is Skeleton's, which is Zag's: focus moves in on open and
-  // back to where it came from on close, it is trapped while the dialog is
-  // open, Escape and the cross at the top right close, the page behind does
-  // not scroll, and the heading names the dialog for a screen reader. Five hand-written <dialog> elements
-  // did some of that and none of them did all of it.
+  // The behaviour is Skeleton's, which is Zag's: focus moves in on open, it
+  // is trapped while the dialog is open, Escape and the cross at the top right
+  // close, the page behind does not scroll, and the heading names the dialog
+  // for a screen reader. Five hand-written <dialog> elements did some of that
+  // and none of them did all of it.
+  //
+  // Focus on open goes to the first field in the body; a dialog with no field
+  // puts it on its action, and a page with neither on its first control. It
+  // never goes to the cross. Focus on close goes back to the element that had
+  // it when the dialog opened, or, when that element has gone, to the editor
+  // if one is on screen. Callers do not move focus themselves.
   //
   // `confirm` is how a dialog asks for an answer: give it a label and what to
   // do, and the footer is written here -- Cancel, then the action, in that
-  // order, everywhere -- and the action is what has focus when the dialog
-  // opens, so a dialog that asks one question is answered with Enter. A
-  // dialog whose body is a <form id="..."> passes that id as `confirm.form`
-  // instead: the action submits the form, so Enter in any of its fields
-  // commits too, and focus is left to the field the form autofocuses.
+  // order, everywhere. A dialog whose body is a <form id="..."> passes that id
+  // as `confirm.form` instead: the action submits the form, so Enter in any of
+  // its fields commits too.
   //
   // `cancelLabel` renames the way out where "Cancel" would be wrong ("Skip",
   // "Sign in"), and `confirm.cancel: false` drops it for a dialog that only
@@ -140,11 +144,34 @@
   });
 
   let confirmButton = $state(null);
-  // A form dialog has a field to type in; Zag's default lands on it. Only the
-  // question-shaped dialogs move focus to the action. A dialog whose first
-  // control is not what it is for, such as a palette behind its Close button,
-  // names its own with `initialFocus`.
-  const initialFocusEl = $derived(initialFocus ?? (confirm && !confirm.form ? () => confirmButton : undefined));
+  let bodyEl = $state(null);
+  const FIELD = "input:not([disabled]):not([type=hidden]), textarea:not([disabled]), select:not([disabled])";
+  // Zag's own default is the first tabbable in the card, which is the cross,
+  // so the choice is made here. A palette whose first control is not what it
+  // is for names its own with `initialFocus`.
+  function openingFocus() {
+    const field = bodyEl?.querySelector(FIELD);
+    if (field) return field;
+    if (confirm) return confirmButton;
+    return bodyEl?.querySelector("button:not([disabled]), a[href]") ?? bodyEl?.closest('[role="dialog"]') ?? undefined;
+  }
+  const initialFocusEl = $derived(initialFocus ?? openingFocus);
+
+  // The element that had focus when the dialog opened. Zag returns focus to
+  // it by default, but a menu item that opened the dialog is gone by the time
+  // the dialog closes, and Zag would then return focus to nothing. So this
+  // checks the opener is still on screen and falls back to the editor if not.
+  let opener = null;
+  function usable(element) {
+    return element instanceof HTMLElement && element !== document.body && element.isConnected && element.getClientRects().length > 0;
+  }
+  function returnFocus() {
+    if (usable(opener)) return opener;
+    // On a touch device focusing the editor raises the virtual keyboard.
+    if (matchMedia("(pointer: coarse)").matches) return undefined;
+    const editor = document.querySelector(".cm-content");
+    return editor && editor.getClientRects().length > 0 ? editor : undefined;
+  }
 
   // Closing hands focus back to the opener. Mark that element so it draws no
   // ring until the next key press or until it loses focus.
@@ -165,12 +192,15 @@
     setTimeout(() => document.removeEventListener("focusin", onfocusin, true), 300);
   }
 
-  // Runs once per close, however it happens: the cross, Escape, an action,
-  // or a parent setting `open` to false.
+  // Runs once per open and once per close, however it happens: the cross,
+  // Escape, an action, or a parent setting `open`.
   let wasOpen = false;
   $effect(() => {
     if (wasOpen && !open) quietReturnedFocus();
-    if (open && !wasOpen) expanded = false;
+    if (open && !wasOpen) {
+      expanded = false;
+      opener = document.activeElement;
+    }
     wasOpen = open;
   });
 </script>
@@ -182,7 +212,7 @@
      removes the question of where the dialog happens to be mounted. -->
 <!-- Zag hears Escape on the document before anything inside the dialog does.
      `onEscapeKeyDown` lets the content keep a press by cancelling it. -->
-<Dialog {open} {initialFocusEl} {onEscapeKeyDown} onOpenChange={(event) => { open = event.open; if (!open) onclose?.(); }}>
+<Dialog {open} {initialFocusEl} finalFocusEl={returnFocus} {onEscapeKeyDown} onOpenChange={(event) => { open = event.open; if (!open) onclose?.(); }}>
   <Portal>
     {#if !page}
       <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
@@ -199,7 +229,7 @@
               <Dialog.Title class="modal-page-title">{title}</Dialog.Title>
             </div>
           </header>
-          <div class="modal-page-body">
+          <div class="modal-page-body" bind:this={bodyEl}>
             {@render children?.()}
           </div>
         {:else}
@@ -220,7 +250,7 @@
               <IconButton icon="x" label={m.common_close()} tone="plain" size="btn-icon-sm" onclick={close} />
             </header>
           </div>
-          <div class={compact ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "flex min-h-0 flex-col gap-3 overflow-y-auto"}>
+          <div bind:this={bodyEl} class={compact ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "flex min-h-0 flex-col gap-3 overflow-y-auto"}>
             {@render children?.()}
           </div>
         {/if}

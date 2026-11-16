@@ -88,6 +88,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
             },
             vec![("paper.md".into(), SOURCE.as_bytes().to_vec())],
             Authority {
+                agent_label: String::new(),
                 account_id: Some(account.id),
                 principal_key: "isolation-owner".into(),
                 session_generation: Some(account.session_generation),

@@ -7,7 +7,7 @@
   import { readRecent, readFavorites, withRecent, withFavorite, saveRecent, saveFavorites } from "../lib/symbols/memory.js";
   import { m } from "../lib/paraglide/messages.js";
 
-  /** @typedef {"html" | "quarto" | "markdown" | "latex" | "typst"} SymbolFormat */
+  /** @typedef {"html" | "quarto" | "markdown" | "org" | "latex" | "typst"} SymbolFormat */
 
   // The symbols picker. A click inserts the symbol into the open file and the
   // picker stays open for the next one, so the reader owns neither closing nor

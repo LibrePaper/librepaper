@@ -2,7 +2,7 @@
 //! opaque binding identifier returns to that site. Dialogs are cancellable,
 //! time bounded, and serialized by the service.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The error every chooser reports when the person closes it without a choice.
 pub const CANCELLED: &str = "Folder selection was cancelled.";
@@ -35,9 +35,11 @@ pub fn run_folder_picker_helper() -> bool {
         return false;
     }
     let title = args.next().and_then(|arg| arg.into_string().ok());
+    // The folder the chooser opens at is optional; a non-UTF-8 path is fine.
+    let start = args.next().map(PathBuf::from);
     let response = match title {
         Some(title) if args.next().is_none() => {
-            std::panic::catch_unwind(|| choose_directory_sync(&title))
+            std::panic::catch_unwind(|| choose_directory_sync(&title, start.as_deref()))
                 .unwrap_or_else(|_| Err("The folder chooser failed.".into()))
                 .map(|path| match path {
                     Some(path) => {
@@ -76,34 +78,50 @@ pub async fn choose_backup_directory(origin: &str) -> Result<PathBuf, String> {
 
 /// The native folder chooser, with `title` shown on it.
 pub async fn choose_directory_with_title(title: &str) -> Result<PathBuf, String> {
+    choose_directory_at(title, None).await
+}
+
+/// The native folder chooser, with `title` shown on it, opened at `start` when
+/// given. The person still picks the folder; `start` only sets where it opens.
+pub async fn choose_directory_at(title: &str, start: Option<&Path>) -> Result<PathBuf, String> {
     #[cfg(target_os = "macos")]
     {
-        choose_directory_macos(title).await
+        choose_directory_macos(title, start).await
     }
     #[cfg(windows)]
     {
-        choose_directory_rfd(title).await
+        choose_directory_rfd(title, start).await
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        choose_directory_portal(title).await
+        choose_directory_portal(title, start).await
     }
 }
 
 #[cfg(target_os = "macos")]
-async fn choose_directory_macos(title: &str) -> Result<PathBuf, String> {
+async fn choose_directory_macos(title: &str, start: Option<&Path>) -> Result<PathBuf, String> {
     let executable = super::paths::current_executable()
         .map_err(|error| format!("Could not start the folder chooser: {error}"))?;
     let mut command = tokio::process::Command::new(executable);
     command.arg(PICKER_HELPER_ARG).arg(title);
+    if let Some(start) = start {
+        command.arg(start);
+    }
     run_picker_process(command, PICKER_TIMEOUT).await
 }
 
 /// Synchronous picker used only by the private helper process. It must run on
 /// that process's main thread, before its async runtime is created.
 #[cfg(target_os = "macos")]
-pub(crate) fn choose_directory_sync(title: &str) -> Result<Option<PathBuf>, String> {
-    let selected = rfd::FileDialog::new().set_title(title).pick_folder();
+pub(crate) fn choose_directory_sync(
+    title: &str,
+    start: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    let mut dialog = rfd::FileDialog::new().set_title(title);
+    if let Some(start) = start {
+        dialog = dialog.set_directory(start);
+    }
+    let selected = dialog.pick_folder();
     if let Some(path) = selected {
         if !path.is_absolute() || !path.is_dir() {
             return Err("Select an existing project folder.".into());
@@ -115,11 +133,12 @@ pub(crate) fn choose_directory_sync(title: &str) -> Result<Option<PathBuf>, Stri
 }
 
 #[cfg(windows)]
-async fn choose_directory_rfd(title: &str) -> Result<PathBuf, String> {
-    let handle = rfd::AsyncFileDialog::new()
-        .set_title(title)
-        .pick_folder()
-        .await;
+async fn choose_directory_rfd(title: &str, start: Option<&Path>) -> Result<PathBuf, String> {
+    let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
+    if let Some(start) = start {
+        dialog = dialog.set_directory(start);
+    }
+    let handle = dialog.pick_folder().await;
 
     let Some(handle) = handle else {
         return Err(CANCELLED.into());
@@ -357,7 +376,7 @@ mod picker_protocol_tests {
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
-async fn choose_directory_portal(_title: &str) -> Result<PathBuf, String> {
+async fn choose_directory_portal(_title: &str, _start: Option<&Path>) -> Result<PathBuf, String> {
     #[cfg(target_os = "linux")]
     {
         use ashpd::desktop::file_chooser::SelectedFiles;
@@ -366,6 +385,8 @@ async fn choose_directory_portal(_title: &str) -> Result<PathBuf, String> {
             .title(Some(_title))
             .directory(true)
             .modal(true)
+            .current_folder::<&Path>(_start)
+            .map_err(|_| "Could not open the folder chooser at that folder.".to_string())?
             .send()
             .await
             .map_err(|_| {

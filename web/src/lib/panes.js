@@ -48,6 +48,10 @@ export const px = (rem, at = unit) => Math.round(rem * at);
 // What the document keeps beside a source dragged as wide as it will go.
 export const DOCUMENT_MIN = 22.5; // rem
 
+// What the source keeps beside the document when a reader drags the column
+// wide. Too narrow to edit comfortably, but still there to drag back or click.
+export const SOURCE_SQUEEZED = 10; // rem
+
 // The width of a separator, which is room neither pane has.
 export const GRIP = 0.375; // rem
 
@@ -83,7 +87,7 @@ export const PANES = {
     fraction: false,
     reset: 22.5, // rem, a comfortable comment card
     min: 15, // rem, about the narrowest a comment card reads at
-    max: 0.6, // of the window, so what it sits beside always keeps 40%
+    max: 0.8, // of the window, and less if what it sits beside runs out of room first
     // And on a narrow window, less: see `shareOf`.
     narrow: 0.38,
   },
@@ -128,18 +132,19 @@ export function surface(state) {
   return state.width - separators(state) - column(state);
 }
 
-/// The column, in pixels, within what the rest of the window can
-/// spare -- which is what is left after the source and the document have the
-/// least each of them can be read at. A window too narrow for all three used
-/// to leave the column its full width and crush the document to a strip;
-/// the column is the pane that gives way, down to its own minimum.
+/// The column, in pixels, within what the rest of the window can spare: the
+/// least the document can be read at, and beside it whatever is left of the
+/// source. The reader chose this width by hand and can have most of the window,
+/// so in a split the source gives way, to `SOURCE_SQUEEZED`. A window too narrow
+/// for even that takes the column down to its own minimum, because the document
+/// is not crushed to a strip.
 function clampSidebar(width, state) {
   const shown = showing(state);
   const spare =
     state.width -
     separators(state) -
     px(ACTIVITY_WIDTH) -
-    (shown.source ? px(PANES.editor.min) : 0) -
+    (shown.source ? px(shown.document ? SOURCE_SQUEEZED : PANES.editor.min) : 0) -
     (shown.document ? px(DOCUMENT_MIN) : 0);
   const floor = px(PANES.sidebar.min);
   const ceiling = Math.max(

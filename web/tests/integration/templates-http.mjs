@@ -33,7 +33,6 @@ try {
   form.append("file", new Blob(["= Hello\n#include \"chapters/one.typ\"\n"]), "main.typ");
   form.append("file", new Blob(["Chapter one\n"]), "chapters/one.typ");
   form.append("title", "Source");
-  form.append("main", "main.typ");
   const created = await fetch(`${base}/api/documents`, { method: "POST", headers: { "x-librepaper-client": "1", cookie }, body: form });
   assert.ok(created.ok, `upload: ${created.status}`);
   const source = await created.json();
@@ -79,12 +78,30 @@ try {
   const listed = (await api("/api/templates")).body.templates;
   assert.deepEqual(slugs(listed), [template.slug]);
   assert.equal(listed[0].source_format, "typst");
+  // One template fits the page, so there is nothing to continue: the server
+  // answers `next_cursor` only when a further template exists.
   const templatePage = await api("/api/templates?limit=1");
   assert.equal(templatePage.status, 200);
-  assert.match(templatePage.body.next_cursor.after_id, /^[0-9a-f-]{36}$/i);
-  const templateCursor = new URLSearchParams(templatePage.body.next_cursor);
-  const nextTemplatePage = await api(`/api/templates?${templateCursor}`);
-  assert.deepEqual(nextTemplatePage.body.templates, []);
+  assert.deepEqual(slugs(templatePage.body.templates), [template.slug]);
+  assert.equal(templatePage.body.next_cursor, undefined, "the last page has no continuation");
+  // With a second template, a page of one carries a cursor; following it
+  // returns the other template and ends.
+  const second = await api(`/api/documents/${source.slug}/template`, { method: "POST", body: { title: "Second template", request_id: randomUUID() } });
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  const firstPage = await api("/api/templates?limit=1");
+  assert.equal(firstPage.body.templates.length, 1);
+  assert.match(firstPage.body.next_cursor.after_id, /^[0-9a-f-]{36}$/i);
+  assert.ok(firstPage.body.next_cursor.after_updated, "the cursor carries the update time");
+  const nextTemplatePage = await api(`/api/templates?limit=1&${new URLSearchParams(firstPage.body.next_cursor)}`);
+  assert.equal(nextTemplatePage.status, 200);
+  assert.deepEqual(
+    [...slugs(firstPage.body.templates), ...slugs(nextTemplatePage.body.templates)].sort(),
+    [template.slug, second.body.slug].sort(),
+    "the two pages together list both templates",
+  );
+  assert.equal(nextTemplatePage.body.next_cursor, undefined);
+  const secondDeleted = await api(`/api/documents/${second.body.slug}/delete`, { method: "POST" });
+  assert.ok(secondDeleted.status < 300, `delete: ${secondDeleted.status}`);
 
   const projects = (await api("/api/list")).body.documents;
   assert.ok(slugs(projects).includes(source.slug), "the source stays a project");

@@ -56,6 +56,11 @@ If `assets.lock` is unchanged, there is no mirror update to publish.
    mirrors, checks GitHub release visibility, and runs the Chromium tutorial
    smoke without loading credentials or changing the bucket. Resolve failures,
    then run `tools/assets/mirror publish` to upload.
+
+   When only a wasm module or font pin moved, run
+   `tools/assets/mirror publish --no-latex` instead. It publishes the pinned
+   files alone and skips the LaTeX check, smoke test and upload, so `MIRROR`
+   is not needed.
 5. Commit the reviewed `assets.lock` pin changes and build/deploy a server
    binary with those pins. Publish assets before deploying that binary.
 
@@ -75,6 +80,7 @@ If `assets.lock` is unchanged, there is no mirror update to publish.
 
 - SOPS file: `tools/deploy/keys.yaml`. Keys: `LIBREPAPER_MIRROR_S3_ENDPOINT`, `LIBREPAPER_MIRROR_S3_REGION`,
   `LIBREPAPER_MIRROR_S3_ACCESS_KEY_ID`, `LIBREPAPER_MIRROR_S3_SECRET_ACCESS_KEY`, `LIBREPAPER_MIRROR_S3_BUCKET`.
+- Credentials come from `tools/deploy/keys.yaml` via SOPS. Set `LIBREPAPER_AGE_KEY_CMD` to a command that prints your personal age identity (for example `age --decrypt ~/.config/sops/age/identity.age`) when `SOPS_AGE_KEY_CMD` points at a machine key; the identity is unlocked once.
 - Overrides: `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`,
   `AWS_SECRET_ACCESS_KEY`. Set `S3_PUBLIC_BASE_URL` for a custom endpoint or region.
 - Use a dedicated OVH S3 user; let the publisher create the bucket under that

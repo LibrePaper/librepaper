@@ -1,7 +1,7 @@
 import { EditorState, Extension, Facet, Range as CMRange, RangeSet, StateField } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, WidgetType } from '@codemirror/view';
 import { Language, TokenStyle } from '../core/language';
-import { Tokenizer } from '../core/tokenizer';
+import { tokenizeSource } from '../core/tokenize';
 import { Range, Token } from '../core/tokens';
 import { createWidget } from './widget-registry';
 import { PillWidget } from './widgets';
@@ -10,7 +10,6 @@ import { m } from "../../paraglide/messages.js";
 export interface BuildOptions {
   language: Language;
   showCommands: boolean;
-  maxDepth?: number;
 }
 
 export interface BuildResult {
@@ -154,17 +153,40 @@ function bodyTokens(parsed: Token[]): Token[] {
   return body > 0 ? parsed.slice(body) : parsed;
 }
 
+// The lines a selection or a reveal range touches, before any widening.
+function seedLines(state: EditorState): Set<number> {
+  const doc = state.doc;
+  const seed = new Set<number>();
+  for (const range of [...revealingSelection(state), ...state.facet(revealRanges)]) {
+    const last = doc.lineAt(Math.min(range.to, doc.length)).number;
+    for (let n = doc.lineAt(Math.min(range.from, doc.length)).number; n <= last; n++) seed.add(n);
+  }
+  return seed;
+}
+
+function sameSet(a: Set<number>, b: Set<number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const n of a) if (!b.has(n)) return false;
+  return true;
+}
+
+// Whether two states of one document, parsed to `parsed`, reveal the same
+// lines. The revealed lines are the only way the selection reaches
+// buildDecorations (widgets read no selection), so equal sets mean equal
+// output. The unwidened lines are compared first: a move within a line, the
+// common case, is settled without walking the tokens.
+export function sameReveal(before: EditorState, after: EditorState, language: Language, parsed: Token[]): boolean {
+  if (sameSet(seedLines(before), seedLines(after))) return true;
+  return sameSet(revealedLines(before, language, parsed), revealedLines(after, language, parsed));
+}
+
 // The lines drawn as plain source: every line a selection or a reveal range
 // touches, widened to the whole of any block that is drawn as more than one
 // line (an environment, list, callout, code block, figure, table, widget).
 // The document environment covers the whole body and never widens.
 export function revealedLines(state: EditorState, language: Language, parsed: Token[]): Set<number> {
   const doc = state.doc;
-  const revealed = new Set<number>();
-  for (const range of [...revealingSelection(state), ...state.facet(revealRanges)]) {
-    const last = doc.lineAt(Math.min(range.to, doc.length)).number;
-    for (let n = doc.lineAt(Math.min(range.from, doc.length)).number; n <= last; n++) revealed.add(n);
-  }
+  const revealed = seedLines(state);
 
   const blocks: Array<[number, number]> = [];
   const visit = (list: Token[]) => {
@@ -208,7 +230,7 @@ export function revealedLines(state: EditorState, language: Language, parsed: To
 
 export function buildDecorations(state: EditorState, options: BuildOptions, tokens?: Token[]): BuildResult {
   const source = state.doc.toString();
-  const parsed = tokens ?? new Tokenizer(options.language, { maxDepth: options.maxDepth }).tokenize(source);
+  const parsed = tokens ?? tokenizeSource(options.language, source) ?? [];
 
   const decorations: CMRange<Decoration>[] = [];
   const atomic: CMRange<Decoration>[] = [];
@@ -399,11 +421,90 @@ export function buildDecorations(state: EditorState, options: BuildOptions, toke
     }
   }
 
+  if (!options.showCommands) markBlankLines(state, decorations, revealed);
+
   return {
     decorations: Decoration.set(decorations, true),
     atomic: RangeSet.of(atomic, true),
     tokens: parsed
   };
+}
+
+const LINE_ELEMENT = 1;
+const LINE_ZERO = 2;
+const LINE_BLANK = 3;
+// A line that carries its own spacing: a widget block or a heading.
+const LINE_SPACED = 4;
+
+// A blank source line is paragraph spacing, not a line of text. Each unrevealed
+// whitespace-only line outside any styled or replaced block gets cm-lv-blank; the
+// rest of a run also gets -extra (collapsed), and a line beside a spaced element
+// (a heading, widget or pill, which pads itself) gets -tight. Other styled
+// lines, such as theorems and lists, have no padding, so they do not collapse a blank.
+// The kinds come from the decorations already built, so nothing is re-parsed.
+function markBlankLines(state: EditorState, decorations: CMRange<Decoration>[], revealed: Set<number>): void {
+  const doc = state.doc;
+  const kind = new Uint8Array(doc.lines + 2);
+
+  for (const range of decorations) {
+    const spec = range.value.spec;
+    if (spec.block) {
+      // A hidden run with no summary is zero height; a widget or pill is a spaced element.
+      // An environment's header (Theorem, Proof, Abstract) is a widget without padding of
+      // its own, so it is a plain element and the blank line before it keeps its height.
+      const header = String((spec.widget as { className?: unknown } | undefined)?.className ?? '').includes('cm-lp-envhead');
+      const mark = !spec.widget ? LINE_ZERO : header ? LINE_ELEMENT : LINE_SPACED;
+      const last = doc.lineAt(range.to).number;
+      // A spaced line outranks a plain one, which outranks a zero-height line.
+      for (let n = doc.lineAt(range.from).number; n <= last; n++) {
+        if (kind[n] !== LINE_SPACED && (mark === LINE_SPACED || kind[n] !== LINE_ELEMENT)) kind[n] = mark;
+      }
+    } else if (range.from === range.to && spec.class !== undefined && !spec.widget) {
+      const n = doc.lineAt(range.from).number;
+      if (spec.class === 'cm-lv-syntax-line') {
+        if (kind[n] === 0) kind[n] = LINE_ZERO;
+      } else if (kind[n] !== LINE_SPACED) {
+        const isSpaced = spec.class.includes('cm-lv-heading');
+        kind[n] = isSpaced ? LINE_SPACED : LINE_ELEMENT;
+      }
+    }
+  }
+
+  for (let n = 1; n <= doc.lines; n++) {
+    if (kind[n] === 0 && !revealed.has(n) && /^\s*$/.test(doc.line(n).text)) kind[n] = LINE_BLANK;
+  }
+
+  // The nearest line that is neither zero height nor blank, from a line outward,
+  // is a spaced element.
+  const spaced = (from: number, step: number): boolean => {
+    for (let n = from; n >= 1 && n <= doc.lines; n += step) {
+      if (kind[n] === LINE_ZERO) continue;
+      return kind[n] === LINE_SPACED;
+    }
+    return false;
+  };
+
+  let n = 1;
+  while (n <= doc.lines) {
+    if (kind[n] !== LINE_BLANK) {
+      n++;
+      continue;
+    }
+    // A run of blank lines, zero-height lines between them included.
+    const first = n;
+    let end = n;
+    for (let m = n + 1; m <= doc.lines && (kind[m] === LINE_BLANK || kind[m] === LINE_ZERO); m++) {
+      if (kind[m] === LINE_BLANK) end = m;
+    }
+    const tight = spaced(first - 1, -1) || spaced(end + 1, 1);
+    for (let m = first; m <= end; m++) {
+      if (kind[m] !== LINE_BLANK) continue;
+      const extra = m !== first;
+      const name = `cm-lv-blank${extra ? ' cm-lv-blank-extra' : ''}${tight && !extra ? ' cm-lv-blank-tight' : ''}`;
+      decorations.push(Decoration.line({ class: name }).range(doc.line(m).from));
+    }
+    n = end + 1;
+  }
 }
 
 // Block pills with only whitespace between them, none of it on a revealed line,

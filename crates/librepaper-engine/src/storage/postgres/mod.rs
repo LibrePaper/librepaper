@@ -28,6 +28,7 @@ pub use persistence::PersistenceConnection;
 mod peers;
 pub use peers::PeerAuthor;
 mod repository;
+mod results;
 mod tags;
 mod usage;
 mod write_tx;
@@ -56,6 +57,7 @@ pub use ownership::WriterLease;
 pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, DocumentStorage, NewAccount, NewAsset, NewDocument,
 };
+pub use results::{ResultsBlob, ResultsRecord, ResultsRoom, ResultsWrite};
 pub use tags::{built_in_refusal, DocumentTagRecord, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
@@ -368,6 +370,12 @@ pub enum Error {
     Conflict(String),
     #[error("{0}")]
     Quota(QuotaScope),
+    /// A write gave up waiting for a row lock another transaction held
+    /// (SQLSTATE `55P03`, `lock_not_available`). Nothing was written. This
+    /// is a temporary condition, not a quota problem and not a fault: the
+    /// same write is worth trying again shortly.
+    #[error("storage is busy; try again shortly")]
+    Busy,
     #[error("account upload rate exceeded")]
     RateLimited,
     #[error("{0}")]
@@ -545,6 +553,7 @@ mod tests {
                           policy_comment,
                           automation| {
             Authority {
+                agent_label: String::new(),
                 principal_key: account_id
                     .map_or_else(|| "visitor:test".into(), |id| id.to_string()),
                 account_id,
@@ -678,6 +687,7 @@ mod tests {
                     None,
                     "link".into(),
                     String::new(),
+                    false,
                 )],
             )
             .await
@@ -736,6 +746,7 @@ mod tests {
                     None,
                     "link".into(),
                     String::new(),
+                    false,
                 )],
             )
             .await
@@ -1015,6 +1026,7 @@ mod tests {
             .await
             .unwrap();
         let actor = |account: &AccountRecord| Authority {
+            agent_label: String::new(),
             principal_key: account.id.to_string(),
             account_id: Some(account.id),
             session_generation: Some(account.session_generation),
@@ -1214,6 +1226,7 @@ mod tests {
                 .flush_log_row(
                     first.id,
                     FlushRow {
+                        file_count: None,
                         expected_update_sequence: 0,
                         update_bytes: b"1234",
                         vector: b"v1",
@@ -1233,6 +1246,7 @@ mod tests {
                 .flush_log_row(
                     fork.id,
                     FlushRow {
+                        file_count: None,
                         expected_update_sequence: 0,
                         update_bytes: b"5678",
                         vector: b"v1",
@@ -1282,6 +1296,7 @@ mod tests {
                 .flush_log_row(
                     first.id,
                     FlushRow {
+                        file_count: None,
                         expected_update_sequence: 1,
                         update_bytes: b"x",
                         vector: b"v2",
@@ -1303,6 +1318,7 @@ mod tests {
                 .flush_log_row(
                     refused_project.id,
                     FlushRow {
+                        file_count: None,
                         expected_update_sequence: 0,
                         update_bytes: b"x",
                         vector: b"v1",
@@ -1531,6 +1547,7 @@ mod tests {
             .flush_log_row(
                 first.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 0,
                     update_bytes: b"framed-batch-one",
                     vector: b"vector-one",
@@ -1556,6 +1573,7 @@ mod tests {
         // a retry with the same id returns the row a previous attempt wrote.
         let anchor = document_anchor(sequence, b"frontier-bytes".to_vec());
         let unauthorized = Authority {
+            agent_label: String::new(),
             principal_key: collaborator.id.to_string(),
             account_id: Some(collaborator.id),
             session_generation: Some(collaborator.session_generation),
@@ -1654,6 +1672,7 @@ mod tests {
             body: "Done".into(),
         };
         let owner_actor = Authority {
+            agent_label: String::new(),
             principal_key: account.id.to_string(),
             account_id: Some(account.id),
             session_generation: Some(account.session_generation),
@@ -1811,6 +1830,52 @@ mod tests {
             .unwrap());
         assert!(catalog.finish_account_erasure(erased.id).await.unwrap());
         assert!(catalog.account(erased.id).await.unwrap().is_none());
+
+        drop(_writer);
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn leaving_removes_only_the_callers_own_grant_once() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        truncate(&catalog).await;
+
+        let owner = seed_account(&catalog, "leave-owner").await;
+        let document = seed_document(&catalog, owner.id, "leave").await;
+        let collaborator = seed_account(&catalog, "leave-collaborator").await;
+        catalog
+            .set_grant(document.id, collaborator.id, Role::Editor)
+            .await
+            .unwrap();
+
+        assert!(catalog
+            .leave_document(document.id, collaborator.id)
+            .await
+            .unwrap());
+        assert!(!catalog
+            .grants(document.id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|grant| grant.account_id == collaborator.id));
+        assert_eq!(
+            catalog
+                .access_role(document.id, Some(collaborator.id), None)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(!catalog
+            .leave_document(document.id, collaborator.id)
+            .await
+            .unwrap());
 
         drop(_writer);
         catalog.close().await;
@@ -2402,6 +2467,7 @@ mod tests {
                 None,
                 "link".into(),
                 String::new(),
+                false,
             )
         };
 
@@ -2519,6 +2585,7 @@ mod tests {
                     None,
                     "agent".into(),
                     "3".into(),
+                    false,
                 )],
             )
             .await
@@ -2633,11 +2700,17 @@ mod tests {
             .unwrap();
 
         let counts = catalog.listing_counts(&[paper.id]).await.unwrap();
-        assert_eq!(counts.len(), 1, "a document with no label still has a row");
+        assert_eq!(counts.len(), 1, "a fresh document still has a row");
         assert_eq!(counts[0].comments, 0);
         assert_eq!(
             counts[0].file_count, None,
-            "a project with no label does not claim to hold zero files",
+            "a project never opened does not claim to hold zero files",
+        );
+        catalog.stamp_file_count(paper.id, 3).await.unwrap();
+        assert_eq!(
+            catalog.listing_counts(&[paper.id]).await.unwrap()[0].file_count,
+            Some(3),
+            "the listing reads the count the sequencer stamped",
         );
         assert!(
             catalog.listing_counts(&[]).await.unwrap().is_empty(),
@@ -2722,6 +2795,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 0,
                     update_bytes: b"batch-one",
                     vector: b"vector-one",
@@ -2744,6 +2818,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 0,
                     update_bytes: b"batch-one",
                     vector: b"vector-one",
@@ -2767,6 +2842,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 1,
                     update_bytes: b"batch-two",
                     vector: b"vector-two",
@@ -2827,6 +2903,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 0,
                     update_bytes: &framed,
                     vector: &real_vector,
@@ -2850,14 +2927,12 @@ mod tests {
         let sequencer = Sequencer::from_parts(
             document.id,
             document.slug.clone(),
-            uuid::Uuid::nil(),
             catalog_arc,
             blobs,
             config,
             budget,
             pending,
             "deployment-test-peer".into(),
-            crate::log::ledger::StorageLedger::new(),
             2,
             loro::VersionVector::default(),
             0,
@@ -2959,6 +3034,7 @@ mod tests {
                 .flush_log_row(
                     document.id,
                     FlushRow {
+                        file_count: None,
                         expected_update_sequence: expected,
                         update_bytes: &bytes,
                         vector: &vector,
@@ -3167,6 +3243,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 0,
                     update_bytes: &row1,
                     vector: &v1.encode(),
@@ -3179,6 +3256,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 1,
                     update_bytes: &row2,
                     vector: &v2.encode(),
@@ -3191,6 +3269,7 @@ mod tests {
             .flush_log_row(
                 document.id,
                 FlushRow {
+                    file_count: None,
                     expected_update_sequence: 2,
                     update_bytes: &row3,
                     vector: &v3.encode(),
@@ -3230,7 +3309,6 @@ mod tests {
             budget,
             pending,
             "deployment-test-peer".into(),
-            crate::log::ledger::StorageLedger::new(),
             Arc::new(std::sync::OnceLock::new()),
         )
         .await
@@ -3426,13 +3504,13 @@ mod tests {
             budget,
             pending,
             "deployment-test-peer".into(),
-            crate::log::ledger::StorageLedger::new(),
             Arc::new(std::sync::OnceLock::new()),
         )
         .await
         .unwrap();
 
         let authority = Authority {
+            agent_label: String::new(),
             principal_key: account.id.to_string(),
             account_id: Some(account.id),
             link_hash: None,

@@ -1,0 +1,10 @@
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["https://app.librepaper.org"],
+      "AllowedMethods": ["GET"],
+      "AllowedHeaders": [],
+      "MaxAgeSeconds": 3600
+    }
+  ]
+}

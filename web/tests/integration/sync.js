@@ -11,7 +11,7 @@
 // Run by `make test`, against the examples as they are actually published.
 import { existsSync, readFileSync } from "node:fs";
 import { documentPlaceFor, sourcePlaceFor, sourcePlaceInTree } from "../../src/lib/sync.js";
-import { renderCitations, renderHtml, renderTypst } from "../helpers/render.js";
+import { renderCitations, renderHtml, renderQuarto, renderTypst } from "../helpers/render.js";
 
 // A caret every few characters is enough to catch a whole line going missing,
 // and keeps this a second rather than a minute.
@@ -27,6 +27,9 @@ const EXAMPLES = [
   ["docs/examples/tutorial-markdown/librepaper.md", renderCitations, "markdown"],
   ["docs/examples/tutorial-typst/librepaper.typ", renderTypst, "typst"],
   ["docs/examples/tutorial-html/librepaper.html", renderHtml, "html"],
+  // The Quarto tutorial cites too, and is drafted before it is rendered, so
+  // it goes through the same path the browser takes for a bibliography.
+  ["docs/examples/tutorial-quarto/librepaper.qmd", renderQuarto, "quarto"],
 ];
 
 // Where a caret can be. In markdown and typst, anywhere below the front
@@ -83,6 +86,13 @@ function renderInputOf(source, format) {
   }
   // Without the .bib the citation renders as an unresolved key, which is a
   // different document from the one a reader is shown.
+  if (format === "quarto") {
+    return { main: "librepaper.qmd", texts: {
+      "librepaper.qmd": source,
+      "sections/rendering.qmd": beside("tutorial-quarto", "sections/rendering.qmd"),
+      "references.bib": beside("tutorial-quarto", "references.bib"),
+    }, assets: { "librepaper-icon.png": beside("tutorial-quarto", "librepaper-icon.png") } };
+  }
   if (format === "markdown") {
     return { main: "librepaper.md", texts: {
       "librepaper.md": source,

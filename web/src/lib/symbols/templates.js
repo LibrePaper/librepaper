@@ -252,6 +252,9 @@ export function templateInsertion(template, values = {}, context = {}) {
       // Quarto numbers only a labelled equation, so an unnamed one gets a generated label.
       else if (numbered && format === "quarto") text = `$$${body}$$ {#${uniqueLabel(label || "equation", context, "eq")}}`;
       else text = `$$${body}$$`;
+    } else if (format === "org") {
+      // Org's \( \) and \[ \] delimiters are unambiguous, unlike $ in prose.
+      text = inline ? `\\(${body}\\)` : `\\[\n${body}\n\\]`;
     } else if (!latexEnvironment) text = inline ? `$${body}$` : `\\[\n${body}\n\\]`;
   }
   const from = context.selection?.from, to = context.selection?.to;

@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use librepaper::paths::Rules;
-use librepaper::projection::{project, Projection};
+use librepaper::projection::{project, Projected};
 use loro::{LoroDoc, LoroText, LoroValue};
 use serde_json::{json, Map, Value};
 
@@ -95,7 +95,8 @@ fn build(case: &Value) -> LoroDoc {
 /// The expectation block, as the corpus spells it. Diagnostics carry no `why`
 /// here: the sentence is shown to a person and the two implementations word
 /// it for their own callers, while the tag and the subject are the contract.
-fn expectation(projection: &Projection) -> Value {
+fn expectation(projected: &Projected) -> Value {
+    let projection = &projected.projection;
     let files: Vec<Value> = projection
         .files
         .iter()
@@ -117,11 +118,17 @@ fn expectation(projection: &Projection) -> Value {
             value
         })
         .collect();
-    json!({
+    let mut expected = json!({
         "files": files,
         "diagnostics": diagnostics,
         "digest": projection.digest().to_hex(),
-    })
+    });
+    // Present only when something is retained, so the older cases stay as
+    // they were: path -> text.
+    if !projected.retained.is_empty() {
+        expected["retained"] = json!(projected.retained);
+    }
+    expected
 }
 
 #[test]
@@ -146,7 +153,7 @@ fn the_shared_corpus_projects_the_same_way_on_both_sides() {
         let name = case["name"].as_str().unwrap_or("<unnamed>");
         let doc = build(case);
         let projected = project(&doc, &rules);
-        let actual = expectation(&projected.projection);
+        let actual = expectation(&projected);
         // Every placed text is readable at its emitted path, which is what a
         // render and an export depend on.
         for (path, entry) in &projected.projection.files {

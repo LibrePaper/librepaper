@@ -8,15 +8,15 @@
 // a context set by the bar cannot be seen from the snippet the page hands it,
 // which is exactly where the menus are written.
 //
-// On a phone the words are hidden and a menu is opened from the Panels
-// trigger instead; it then opens where that trigger's panel was, not under
-// its hidden word.
+// On a phone the words are hidden and the Reader opens its commands in a
+// full-screen list instead; the bar stays mounted for its dialogs and
+// shortcuts, and a menu shown from a given anchor opens there, not under its
+// hidden word.
 let opened = $state(null);
 let anchor = $state(null);
 
-// This is the one box every menu on a phone opens in, hanging from the right
-// edge of the Panels trigger; the hamburger panel and the menus chosen from it
-// share it so choosing File does not move the panel.
+// The one box a menu opens in when it hangs from a trigger that is not its own
+// word: the right edge of the trigger, so choosing a menu does not move it.
 export const PANEL_POSITIONING = /** @type {const} */ ({
   placement: "bottom-end",
   gutter: 8,
@@ -59,13 +59,33 @@ export const menubar = {
   // Left and right walk the row and wrap, from the trigger or from inside an
   // open panel. A sub-menu keeps the two keys it needs; Menubar.svelte checks
   // for one before the row walks. Walking the row from a menu opened out of
-  // the Panels trigger keeps that box.
+  // another trigger keeps that box.
   step(delta) {
     const items = triggers();
     const here = items.findIndex((item) => item.dataset.menubar === opened);
     if (here < 0 || !items.length) return false;
     opened = items[(here + delta + items.length) % items.length].dataset.menubar;
     return true;
+  },
+  // With no menu open, the arrows still walk the row, but only from a word that
+  // has the focus: they move the focus to the next word and open nothing. The
+  // Down, Enter and Space keys that open a word are the trigger's own.
+  focusStep(delta) {
+    const items = triggers();
+    const here = items.indexOf(/** @type {HTMLButtonElement} */ (document.activeElement));
+    if (here < 0) return false;
+    items[(here + delta + items.length) % items.length].focus();
+    return true;
+  },
+  // Puts the keyboard on the first line of the menu that is open. A menu the
+  // pointer or Down opens gets this from Zag; one shown from here is not asked,
+  // so the same ArrowDown a person presses on an open menu is sent to its panel.
+  // Waits a frame, because the panel is drawn after the state changes.
+  enter() {
+    requestAnimationFrame(() => {
+      const panel = document.querySelector('[data-scope="menu"][data-part="content"][data-state="open"]');
+      panel?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    });
   },
   get anchor() {
     return anchor;

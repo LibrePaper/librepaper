@@ -1,0 +1,70 @@
+#+TITLE: Learn LibrePaper with Org
+#+AUTHOR: LibrePaper
+#+bibliography: references.bib
+
+#+NAME: fig:icon
+#+CAPTION: The LibrePaper icon, loaded as a relative project asset.
+#+ATTR_HTML: :width 24%
+#+ATTR_LATEX: :width 0.22\linewidth
+[[file:librepaper-icon.png]]
+
+Welcome to LibrePaper. Edit this sentence in the browser and watch the preview update. Your Org source, comments, highlights, and labels travel with the document.
+
+This project holds the same tutorial in every format LibrePaper edits. Open =librepaper.md=, =librepaper.typ=, =librepaper.tex=, =librepaper.html= or =librepaper.qmd= from the file list to see how each one works, and compare them with this copy. They share =librepaper-icon.png= and =references.bib=.
+
+| Format   | Main file         | Section                   |
+|----------+-------------------+---------------------------|
+| Markdown | =librepaper.md=   | =sections/rendering.md=   |
+| Typst    | =librepaper.typ=  | =sections/rendering.typ=  |
+| LaTeX    | =librepaper.tex=  | =sections/rendering.tex=  |
+| HTML     | =librepaper.html= | =sections/rendering.html= |
+| Quarto   | =librepaper.qmd=  | =sections/rendering.qmd=  |
+| Org      | =librepaper.org=  | =sections/rendering.org=  |
+
+* Source and preview
+
+This file is Org. LibrePaper renders it to HTML in the browser with its own pinned Org module. The server synchronizes and stores the source; it does not compile the document. The command-line project export copies source and assets; it does not render documents or export comments.
+
+* A small scientific example
+
+For a sample of size $n$, the standard error of a mean is
+
+\begin{equation}
+SE = \frac{s}{\sqrt{n}}
+\label{eq:standard-error}
+\end{equation}
+
+A formula is a rule a machine can be made to follow, the point Ada Lovelace made when she described the Analytical Engine weaving algebraic patterns [cite:@lovelace1843]. Type ~@~ in the editor to cite another entry from =references.bib=.
+
+Org has an include directive, so this copy pulls the rendering section in at the line below, as the Typst copy does with =#include=. Markdown has no include directive, which is why the Markdown copy links to the same section instead.
+
+#+INCLUDE: "sections/rendering.org"
+
+[[fig:icon]] is a relative project asset. Change its width with =#+ATTR_HTML=, then make a label so a collaborator can compare the edit with the previous version. The equation above carries the label =eq:standard-error=, the same label the LaTeX copy references.
+
+* What Org adds
+
+Org keeps structure in plain text. A headline is a line that starts with stars, and *bold*, /italic/, ~code~ and =verbatim= each use a pair of markers. Textual citations such as [cite/t:@lovelace1843] name the author in the sentence, while [cite:@lovelace1843] puts the citation in parentheses. Source blocks keep code together with its language:
+
+#+BEGIN_SRC R
+mean(c(2, 4, 6, 8))
+#+END_SRC
+
+Try changing the four values and leave a comment on this paragraph. Org's syntax reaches further than this copy uses.[fn:1]
+
+Checklist for a first session:
+
+- [X] Open this file in the browser
+- [ ] Change the caption of the icon
+- [ ] Add a label to the equation and reference it in prose
+- [ ] Leave a comment on this paragraph
+
+* Working with other clients
+
+An Org document renders to one HTML page in the browser, and readers need no local toolchain. For printed layout, choose File > Export: Org documents export to PDF through Pandoc and LaTeX. The [[#rendering][rendering guide]] explains where each step happens. A project export creates an independent local copy of source and assets, and readers render the shared source in their browser.
+
+* References
+
+#+print_bibliography:
+
+[fn:1] The Org manual at https://orgmode.org/manual/ documents the rest of the syntax.

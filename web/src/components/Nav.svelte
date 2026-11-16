@@ -4,7 +4,9 @@
   import Menubar from "./Menubar.svelte";
   import Avatar from "./Avatar.svelte";
   import Icon from "./Icon.svelte";
+  import SwitchServerDialog from "./SwitchServerDialog.svelte";
   import { signInHref, signOut } from "../lib/api.js";
+  import { desktop } from "../lib/desktop/client.js";
   import { m } from "../lib/paraglide/messages.js";
 
   // The bar every page wears: whatever the page puts in the middle, and who
@@ -19,7 +21,19 @@
   // with the pane it describes.
   //
   // `signIn` drops the Sign in link for the page that link leads to.
-  let { me = {}, children = undefined, menus = undefined, tools = undefined, phoneMenu = false, hidden = false, signIn = true } = $props();
+  //
+  // `phoneShell` is the Reader's phone header, shown over the views that are
+  // not tabs: a back control and the title take the room, and the account and
+  // the menubar give way (the account is in the More sheet, the menubar stays
+  // mounted for its dialogs and shortcuts). `phoneBare` hides the header on the
+  // tab screens, where the bottom bar replaces it; the nav stays mounted.
+  let { me = {}, children = undefined, menus = undefined, tools = undefined, phoneMenu = false, phoneShell = false, phoneBare = false, hidden = false, signIn = true } = $props();
+
+  // The desktop app can point its window at another LibrePaper server, so the
+  // bar says which one it is on and offers to change it. A browser has no such
+  // choice, and sees none of it.
+  const inDesktop = Boolean(desktop());
+  let switching = $state(false);
 </script>
 
 <!-- The way past the bar. Every page puts twenty-odd controls between the
@@ -29,7 +43,7 @@
      invisible otherwise, which is the only time anyone needs it. -->
 <a class="skip-link" href="#main">{m.nav_skip_to_content()}</a>
 
-<nav class="flex items-center justify-between gap-4" class:phone-menu={phoneMenu} class:bar-hidden={hidden}>
+<nav class="flex items-center justify-between gap-4" class:phone-menu={phoneMenu} class:phone-shell={phoneShell} class:phone-bare={phoneBare} class:bar-hidden={hidden}>
   <div class="nav-identity flex min-w-0 items-center gap-3">
     {#if children}
       <span class="nav-trail flex min-w-0 items-center gap-3">
@@ -49,13 +63,16 @@
          its own phone Menu moves the account into it, so this hides there.
          The provider it signed in with is a small logo badge on the corner of
          the circle, and the menu and the label say it in words. -->
-    <span class="nav-account flex items-center">
+    <span class="nav-account flex items-center gap-2">
       {#if me.name}
         {@const shown = me.provider === "github" ? `@${me.name}` : me.name}
         {@const provider = me.providers?.find((p) => p.id === me.provider)}
         {@const label = provider?.label || me.provider || ""}
-        <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(); }}>
-          <Menu.Trigger class="account icon-control" aria-label={label ? m.nav_account_menu_label_provider({ shown, provider: label }) : m.nav_account_menu_label({ shown })} title={label ? `${shown} · ${label}` : shown}>
+        <Menu onSelect={(chosen) => {
+          if (chosen.value === "signout") void signOut();
+          else if (chosen.value === "switchserver") switching = true;
+        }}>
+          <Menu.Trigger class="account icon-control" aria-label={label ? m.nav_account_menu_label_provider({ shown, provider: label }) : m.nav_account_menu_label({ shown })} data-tip={label ? `${shown} · ${label}` : shown}>
             <span class="account-avatar">
               <Avatar name={me.name} key={me.handle || me.name} size={7} title="" />
               {#if provider}
@@ -76,15 +93,27 @@
           <ExplorerMenu>
             <div class="account-who" aria-hidden="true">{shown}</div>
             {#if label}<div class="account-provider" aria-hidden="true">{m.nav_signed_in_with({ provider: label })}</div>{/if}
+            {#if inDesktop}<div class="account-server">{location.host}</div>{/if}
+            {#if inDesktop}<Menu.Item value="switchserver" class="menuitem">{m.nav_switch_server()}</Menu.Item>{/if}
             <Menu.Item value="signout" class="menuitem">{m.common_sign_out()}</Menu.Item>
           </ExplorerMenu>
         </Menu>
-      {:else if signIn && me.providers?.length}
-        <a class="btn btn-sm lp-control-brand" href={signInHref()}>{m.common_sign_in()}</a>
+      {:else}
+        {#if signIn && me.providers?.length}
+          <a class="btn btn-sm lp-control-brand" href={signInHref()}>{m.common_sign_in()}</a>
+        {/if}
+        {#if inDesktop && signIn}
+          <button type="button" class="btn btn-sm lp-control-tonal-brand nav-server" aria-label={m.nav_switch_server_label({ host: location.host })} onclick={() => (switching = true)}>
+            {location.host}
+            <Icon name="chevron-down" size={14} />
+          </button>
+        {/if}
       {/if}
     </span>
   </div>
 </nav>
+
+{#if inDesktop && signIn}<SwitchServerDialog bind:open={switching} />{/if}
 
 <style>
   .skip-link { position: absolute; left: calc(var(--spacing) * 2); top: calc(var(--spacing) * -12); z-index: 200; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3); border-radius: var(--radius-base); background: var(--color-brand); color: var(--color-on-brand); font-size: var(--text-sm); transition: top 0.15s; }
@@ -98,7 +127,10 @@
   :global(.account:hover), :global(.account[data-state="open"]) { box-shadow: 0 0 0 2px var(--color-border); }
   /* Who the menu belongs to: a label above the one action, not an action. */
   .account-who { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2) calc(var(--spacing) * 0.5); font-size: var(--text-xs); color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .account-provider { padding: 0 calc(var(--spacing) * 2) calc(var(--spacing) * 1.5); font-size: var(--text-xs); color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .account-provider, .account-server { padding: 0 calc(var(--spacing) * 2) calc(var(--spacing) * 1.5); font-size: var(--text-xs); color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The desktop app's server, on the bar while signed out: a button that says
+     where the window is pointed and opens the switcher. */
+  .nav-server { gap: calc(var(--spacing) * 1); }
   /* The provider badge: a 12px disc on the bottom-right of the circle, with
      the mark inside it at 9px. */
   .account-avatar { position: relative; display: inline-grid; line-height: 0; }
@@ -109,7 +141,7 @@
      it from being reached. */
   .nav-identity { overflow: hidden; }
   .nav-trail { flex: 0 1 auto; }
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .nav-identity { flex: 0 1 auto; }
     .nav-actions { gap: var(--spacing); }
     .phone-menu .nav-account { display: none; }
@@ -127,7 +159,7 @@
     .nav-identity { gap: var(--spacing); flex-shrink: 1; min-width: 0; }
     .nav-trail { display: none; }
   }
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .nav-trail { display: none; }
     /* The same 8px between the hamburger and the two faces as between the
        two faces themselves: one row of thumb-sized controls. */
@@ -145,5 +177,19 @@
       visibility: hidden;
       pointer-events: none;
     }
+    /* The Reader's phone header: the trail (back, then the title) takes
+       everything the tools leave and truncates, and the tools keep their
+       width at the end. */
+    nav.phone-shell {
+      gap: 0;
+      padding-top: env(safe-area-inset-top);
+      padding-left: max(calc(var(--spacing) * 1), env(safe-area-inset-left));
+      padding-right: max(calc(var(--spacing) * 1), env(safe-area-inset-right));
+    }
+    .phone-shell .nav-identity { flex: 1 1 auto; min-width: 0; gap: 0; }
+    .phone-shell .nav-trail { display: flex; flex: 1 1 0; min-width: 0; gap: 0; }
+    .phone-shell .nav-actions { flex: none; gap: 0; }
+    .phone-shell .nav-account { display: none; }
+    nav.phone-bare { display: none; }
   }
 </style>

@@ -103,7 +103,10 @@ answer({ files: { artifact: page } });
 const quarto = await renderers.render({ main: "paper.qmd", texts: { "paper.qmd": "# Test" }, assets: {} }, "Test", { project: "paper", buildPreferences: { backend: "local", output: "html" } });
 assert.equal(submitted.format, "quarto");
 assert.equal(submitted.output, "html");
-assert.equal(quarto.html, "<h1>ok</h1>");
+// The preview's copy is in the house style; the export is the render as it came.
+assert.equal(quarto.exportHtml, "<h1>ok</h1>");
+assert.ok(quarto.html.includes("<h1>ok</h1>"), "the preview's page keeps the render's body");
+assert.match(quarto.html, /<style data-lp-house>/, "the preview's page carries the house stylesheet");
 assert.equal(quarto.pdf, null);
 
 answer({ files: { artifact: pdf } });

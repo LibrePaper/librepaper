@@ -4,7 +4,7 @@
 //
 // The categories are the same on every page: the landing page and a project.
 // App-scoped page: General. Browser-scoped pages: Editor, Rendering.
-// Computer-scoped pages: Tools. Account-scoped pages: Backups, Account.
+// Computer-scoped pages: Tools, AI agents. Account-scoped pages: Backups, Account.
 
 import { desktop } from "../../lib/desktop/client.js";
 import { m } from "../../lib/paraglide/messages.js";
@@ -39,6 +39,7 @@ export const CATEGORIES = [
       { id: "editor-keys", says: m.common_key_bindings(), terms: m.registry_editor_keys_terms() },
       { id: "editor-completion", says: m.common_autocomplete(), terms: m.registry_editor_completion_terms() },
       { id: "editor-brackets", says: m.common_close_brackets(), terms: m.registry_editor_brackets_terms() },
+      { id: "editor-latex-assist", says: m.editorsettings_latex_assist(), terms: m.registry_editor_latex_assist_terms() },
       { id: "editor-check", says: m.common_code_check(), terms: m.registry_editor_check_terms() },
       { id: "editor-proofing", says: m.common_grammar_and_spelling(), terms: m.registry_editor_proofing_terms() },
       { id: "editor-dialect", says: m.common_english_dialect(), terms: m.registry_editor_dialect_terms() },
@@ -71,6 +72,14 @@ export const CATEGORIES = [
       { id: "tools-programs", says: m.common_programs(), terms: m.registry_tools_programs_terms() },
       { id: "tools-zotero", says: "Zotero", terms: m.registry_tools_zotero_terms() },
       { id: "tools-activity", says: m.common_activity(), terms: m.registry_tools_activity_terms() },
+    ],
+  },
+  {
+    id: "agents", says: m.registry_agents(), offered: always,
+    note: m.common_this_computer(),
+    entries: [
+      { id: "agents-list", says: m.common_agents_on_this_computer(), terms: m.registry_agents_list_terms() },
+      { id: "agents-add", says: m.registry_agents_add(), terms: m.registry_agents_add_terms() },
     ],
   },
   {

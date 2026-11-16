@@ -1,5 +1,5 @@
 // A browser-level check for the visual mode formatting toolbar: bold, italic,
-// underline, headings and lists, in each of the three markup formats.
+// underline, headings and lists, in each of the four markup formats.
 //
 // A plain CodeMirror view is mounted with the visual layer on, and the
 // formatting actions are applied to it through applyFormat and read back with
@@ -77,12 +77,27 @@ const formats = {
     number: /^\d+\. (.+)$/,
     environment: {},
   },
+  org: {
+    wrap: {
+      bold: [(text) => `*${text}*`],
+      italic: [(text) => `/${text}/`],
+      underline: [(text) => `_${text}_`],
+      mono: [(text) => `~${text}~`],
+      inlineMath: [(text) => `\\(${text}\\)`],
+    },
+    heading: (level, text) => `${"*".repeat(level)} ${text}`,
+    bullet: /^- (.+)$/,
+    number: /^\d+\. (.+)$/,
+    environment: {},
+  },
 };
 
 // Runs in the page. It refers only to names the generated entry defines
 // (EditorView, EditorState, visualMarkup, applyFormat, formatState), so its
 // source is copied into the entry as it stands. It drives the editor and
 // returns one snapshot per step; the Node side decides what each one must say.
+// visualMarkup draws LaTeX only; Markdown, Org and Typst mount a plain view, as in the paper view, where the
+// toolbar reads the source instead of the layer's tokens.
 async function formatCheck(format, sample) {
   let view = null;
   const mount = () => {

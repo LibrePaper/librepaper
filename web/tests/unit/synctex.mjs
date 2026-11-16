@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { gzipSync } from "node:zlib";
-import { lineAt, parse } from "../../src/lib/synctex.js";
+import { lineAt, offsetOfLine, parse } from "../../src/lib/synctex.js";
 
 const fixture = `SyncTeX Version:1
 Input:1:/work/main.tex
@@ -39,5 +39,14 @@ assert.equal(await parse(new TextEncoder().encode("not synctex"), ["main.tex"]),
 assert.equal(lineAt("one\ntwo\nthree", 0), 1);
 assert.equal(lineAt("one\ntwo\nthree", 5), 2);
 assert.equal(lineAt("one\ntwo\nthree", 999), 3);
+
+// offsetOfLine is the inverse of lineAt: the start of a 1-based line, clamped
+// to the last line when the record points past the end.
+assert.equal(offsetOfLine("one\ntwo\nthree", 1), 0);
+assert.equal(offsetOfLine("one\ntwo\nthree", 2), 4);
+assert.equal(offsetOfLine("one\ntwo\nthree", 3), 8);
+assert.equal(offsetOfLine("one\ntwo\nthree", 99), 8);
+assert.equal(offsetOfLine("one\ntwo\nthree", 0), 0);
+assert.equal(lineAt("one\ntwo\nthree", offsetOfLine("one\ntwo\nthree", 2)), 2);
 
 console.log("synctex: gzip parsing, path normalization and both spatial queries pass");

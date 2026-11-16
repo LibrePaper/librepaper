@@ -76,6 +76,9 @@ export const ICONS = {
   book: [["path", "M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"]],
   "panel-left": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M9 3v18"]],
   "panel-right": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M15 3v18"]],
+  // Lucide's book-open, for the preview's two-pages-side-by-side toggle, and contrast, for inverting the pages.
+  "book-open": [["path", "M12 7v14"], ["path", "M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"]],
+  contrast: [["circle", { cx: 12, cy: 12, r: 10 }], ["path", "M12 18a6 6 0 0 0 0-12v12z"]],
   "columns-2": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M12 3v18"]],
   // Lucide's panel-left-open, for the column at the left of the window. Not
   // panel-left, which is the "source only" arrangement's and would say the
@@ -90,10 +93,23 @@ export const ICONS = {
   folder: [
     ["path", "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"],
   ],
+  // Lucide folder-open, for the button that opens a folder.
+  "folder-open": [
+    ["path", "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"],
+  ],
   image: [
     ["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2, ry: 2 }],
     ["circle", { cx: 9, cy: 9, r: 2 }],
     ["path", "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"],
+  ],
+  // Lucide image-off, for a picture the project does not have.
+  "image-off": [
+    ["line", { x1: 2, x2: 22, y1: 2, y2: 22 }],
+    ["path", "M10.41 10.41a2 2 0 1 1-2.83-2.83"],
+    ["line", { x1: 13.5, x2: 6, y1: 13.5, y2: 21 }],
+    ["line", { x1: 18, x2: 21, y1: 12, y2: 15 }],
+    ["path", "M3.59 3.59A1.99 1.99 0 0 0 3 5v14a2 2 0 0 0 2 2h14c.55 0 1.052-.22 1.41-.59"],
+    ["path", "M21 15V5a2 2 0 0 0-2-2H9"],
   ],
   download: [
     ["path", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"],
@@ -165,6 +181,14 @@ export const ICONS = {
   link: [
     ["path", "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"],
     ["path", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"],
+  ],
+  // Lucide's link-2-off, for revoking a share link: the link is broken, and
+  // nothing in it is being deleted.
+  "link-off": [
+    ["path", "M9 17H7A5 5 0 0 1 7 7"],
+    ["path", "M15 7h2a5 5 0 0 1 4 8"],
+    ["line", { x1: 8, x2: 12, y1: 12, y2: 12 }],
+    ["line", { x1: 2, x2: 22, y1: 2, y2: 22 }],
   ],
   check: [["path", "M20 6 9 17l-5-5"]],
   "check-check": [["path", "M18 6 7 17l-5-5"], ["path", "m22 10-7.5 7.5L13 16"]],
@@ -325,9 +349,51 @@ export const ICONS = {
   "send-horizontal": [["path", "M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z"], ["path", "M6 12h16"]],
   // Lucide's square, for stopping a running reply.
   square: [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }]],
+  // Lucide's loader-circle, spun while a local run is going.
+  "loader-circle": [["path", "M21 12a9 9 0 1 1-6.219-8.56"]],
+  play: [["polyline", { points: "6 3 20 12 6 21 6 3" }]],
   // Lucide's arrow-down, for jumping to the newest message.
   "arrow-down": [["path", "M12 5v14"], ["path", "m19 12-7 7-7-7"]],
   "arrow-up": [["path", "M12 19V5"], ["path", "m5 12 7-7 7 7"]],
+  // Lucide's list-tree, for the document outline.
+  "list-tree": [
+    ["path", "M21 12h-8"],
+    ["path", "M21 6H8"],
+    ["path", "M21 18h-8"],
+    ["path", "M3 6v4c0 1.1.9 2 2 2h3"],
+    ["path", "M3 10v6c0 1.1.9 2 2 2h3"],
+  ],
+  // Lucide's file-pen-line, for a document that can be edited.
+  "file-pen-line": [
+    ["path", "m18 5-2.414-2.414A2 2 0 0 0 14.172 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2"],
+    ["path", "M21.378 12.626a1 1 0 0 0-3.004-3.004l-4.01 4.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"],
+    ["path", "M8 18h1"],
+  ],
+  // Lucide's house, for going back to the projects.
+  house: [
+    ["path", "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"],
+    ["path", "M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
+  ],
+  // Lucide's circle-help, for the help menu.
+  "circle-help": [
+    ["circle", { cx: 12, cy: 12, r: 10 }],
+    ["path", "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"],
+    ["path", "M12 17h.01"],
+  ],
+  // Lucide's file, for a plain file with no type of its own.
+  file: [
+    ["path", "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"],
+    ["path", "M14 2v5a1 1 0 0 0 1 1h5"],
+  ],
+  // Lucide's ellipsis: the same three dots as more-horizontal, for a button
+  // that opens more options.
+  ellipsis: [["circle", { cx: 5, cy: 12, r: 1 }], ["circle", { cx: 12, cy: 12, r: 1 }], ["circle", { cx: 19, cy: 12, r: 1 }]],
+  // Lucide's redo-2, the mirror of undo-2.
+  "redo-2": [
+    ["path", "m15 14 5-5-5-5"],
+    ["path", "M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"],
+  ],
+  // Stops a running agent.
 };
 
 const SVG = "http://www.w3.org/2000/svg";

@@ -65,6 +65,7 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
     );
     let store = Store::open_with_catalog(blobs.clone(), config, catalog.clone(), registry);
     let actor = Authority {
+        agent_label: String::new(),
         principal_key: owner.handle.clone(),
         account_id: Some(owner.id),
         session_generation: Some(owner.session_generation),
@@ -234,6 +235,7 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
     );
     let store = Store::open_with_catalog(blobs.clone(), config, catalog.clone(), registry);
     let actor = Authority {
+        agent_label: String::new(),
         principal_key: owner.handle.clone(),
         account_id: Some(owner.id),
         session_generation: Some(owner.session_generation),

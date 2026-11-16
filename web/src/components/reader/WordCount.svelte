@@ -23,7 +23,7 @@
     {#if count.document.files.length > 1}
       <ul class="word-files">
         {#each count.document.files as file (file.path)}
-          <li title={file.path}>
+          <li data-tip-wait="long" data-tip={file.path}>
             <span>{basename(file.path)}</span>
             <span class="word-file-count">{file.words.toLocaleString(locale())}</span>
           </li>

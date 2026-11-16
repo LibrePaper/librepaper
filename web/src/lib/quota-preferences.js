@@ -16,6 +16,17 @@ export const trimHistory = (slug) =>
       return body;
     });
 
+export const deleteSharedResults = (slug) =>
+  fetch(`/api/documents/${encodeURIComponent(slug)}/results`, {
+    method: "DELETE",
+    headers: SHELL_HEADERS,
+  })
+    .then(async (response) => {
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `${response.status}`);
+      return body;
+    });
+
 export function storageBytes(value) {
   if (!Number.isFinite(value) || value < 0) return m.common_unavailable();
   const units = [m.quota_preferences_unit_b(), m.quota_preferences_unit_kib(), m.quota_preferences_unit_mib(), m.quota_preferences_unit_gib(), m.quota_preferences_unit_tib()];

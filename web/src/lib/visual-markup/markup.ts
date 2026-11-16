@@ -1,10 +1,12 @@
 import './languages/latex';
 import './languages/typst';
 import './languages/markdown';
+import './languages/org';
 
 export { latex, setMacroSignatures } from './languages/latex';
 export { typst } from './languages/typst';
 export { markdown } from './languages/markdown';
+export { org } from './languages/org';
 
 export {
   ConfigService,
@@ -37,8 +39,7 @@ export type { ToolbarEntry, ToolbarItem, ToolbarSpace, ToolbarSplit } from './co
 export { EMPTY_SCOPE, scopeAt } from './core/scope';
 export type { EditorScope } from './core/scope';
 
-export { Tokenizer } from './core/tokenizer';
-export type { TokenizeOptions } from './core/tokenizer';
+export { tokenizeSource } from './core/tokenize';
 export { textOf, tokenAt, walk } from './core/tokens';
 export type { Range, Token, TokenKind } from './core/tokens';
 
@@ -53,7 +54,7 @@ export type { ImageFetcher, ImageResolver } from './view/images';
 export { createEditableMath, preloadMath } from './view/math-field';
 export { applyVariables, createTheme, cssVariables } from './view/theme';
 
-export { refreshVisual, setVisualState, visualDefaults, visualExtension, visualTokens, VisualCodeMirrorEditor } from './view/visual-editor';
+export { refreshVisual, setVisualState, stepIntoBlocksPlugin, visualDefaults, visualExtension, visualTokens, VisualCodeMirrorEditor } from './view/visual-editor';
 export type { VisualEditorOptions } from './view/visual-editor';
 
 export { createMathHoverExtension, mathHover, MathHoverManager, setMathHoverEnabled } from './view/math-hover';

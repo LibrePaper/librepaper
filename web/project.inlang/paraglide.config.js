@@ -7,5 +7,7 @@ import { defineConfig } from "@inlang/paraglide-js";
 
 export default defineConfig({
   outdir: "./src/lib/paraglide",
+  // Tests import the on-disk modules, so keep the physical layout.
+  outputStructure: "message-modules",
   strategy: ["localStorage", "preferredLanguage", "baseLocale"],
 });

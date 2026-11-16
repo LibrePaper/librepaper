@@ -1,0 +1,1889 @@
+[
+  {
+    "body": {
+      "from": 2,
+      "to": 72
+    },
+    "from": 0,
+    "kind": "comment",
+    "to": 72
+  },
+  {
+    "from": 72,
+    "kind": "text",
+    "to": 73
+  },
+  {
+    "body": {
+      "from": 75,
+      "to": 155
+    },
+    "from": 73,
+    "kind": "comment",
+    "to": 155
+  },
+  {
+    "from": 155,
+    "kind": "text",
+    "to": 156
+  },
+  {
+    "args": [
+      {
+        "from": 165,
+        "to": 190
+      }
+    ],
+    "from": 156,
+    "kind": "command",
+    "meta": {
+      "path": "@preview/marginalia:0.3.1",
+      "statement": "true"
+    },
+    "name": "import",
+    "to": 234
+  },
+  {
+    "from": 234,
+    "kind": "text",
+    "to": 236
+  },
+  {
+    "body": {
+      "from": 238,
+      "to": 310
+    },
+    "from": 236,
+    "kind": "comment",
+    "to": 310
+  },
+  {
+    "from": 310,
+    "kind": "text",
+    "to": 311
+  },
+  {
+    "body": {
+      "from": 313,
+      "to": 351
+    },
+    "from": 311,
+    "kind": "comment",
+    "to": 351
+  },
+  {
+    "from": 351,
+    "kind": "text",
+    "to": 352
+  },
+  {
+    "body": {
+      "from": 364,
+      "to": 421
+    },
+    "from": 352,
+    "kind": "command",
+    "meta": {
+      "name": "note",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 421
+  },
+  {
+    "from": 421,
+    "kind": "text",
+    "to": 423
+  },
+  {
+    "body": {
+      "from": 436,
+      "to": 447
+    },
+    "from": 423,
+    "kind": "command",
+    "meta": {
+      "name": "title",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 447
+  },
+  {
+    "from": 447,
+    "kind": "text",
+    "to": 448
+  },
+  {
+    "body": {
+      "from": 462,
+      "to": 474
+    },
+    "from": 448,
+    "kind": "command",
+    "meta": {
+      "name": "author",
+      "params": "",
+      "statement": "true"
+    },
+    "name": "let",
+    "to": 474
+  },
+  {
+    "from": 474,
+    "kind": "text",
+    "to": 476
+  },
+  {
+    "from": 476,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "document"
+    },
+    "name": "set",
+    "to": 519
+  },
+  {
+    "from": 519,
+    "kind": "text",
+    "to": 520
+  },
+  {
+    "from": 520,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "page"
+    },
+    "name": "set",
+    "to": 549
+  },
+  {
+    "from": 549,
+    "kind": "text",
+    "to": 551
+  },
+  {
+    "body": {
+      "from": 553,
+      "to": 613
+    },
+    "from": 551,
+    "kind": "comment",
+    "to": 613
+  },
+  {
+    "from": 613,
+    "kind": "text",
+    "to": 614
+  },
+  {
+    "from": 614,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "",
+      "template": "marginalia.setup"
+    },
+    "name": "show",
+    "to": 764
+  },
+  {
+    "from": 764,
+    "kind": "text",
+    "to": 766
+  },
+  {
+    "from": 766,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "text"
+    },
+    "name": "set",
+    "to": 813
+  },
+  {
+    "from": 813,
+    "kind": "text",
+    "to": 814
+  },
+  {
+    "from": 814,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "par"
+    },
+    "name": "set",
+    "to": 869
+  },
+  {
+    "from": 869,
+    "kind": "text",
+    "to": 870
+  },
+  {
+    "from": 870,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "math.equation"
+    },
+    "name": "show",
+    "to": 933
+  },
+  {
+    "from": 933,
+    "kind": "text",
+    "to": 934
+  },
+  {
+    "body": {
+      "from": 936,
+      "to": 1009
+    },
+    "from": 934,
+    "kind": "comment",
+    "to": 1009
+  },
+  {
+    "from": 1009,
+    "kind": "text",
+    "to": 1010
+  },
+  {
+    "from": 1010,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "table"
+    },
+    "name": "show",
+    "to": 1046
+  },
+  {
+    "from": 1046,
+    "kind": "text",
+    "to": 1047
+  },
+  {
+    "from": 1047,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "heading"
+    },
+    "name": "set",
+    "to": 1076
+  },
+  {
+    "from": 1076,
+    "kind": "text",
+    "to": 1077
+  },
+  {
+    "from": 1077,
+    "kind": "command",
+    "meta": {
+      "statement": "true",
+      "target": "heading.where(level: 1)"
+    },
+    "name": "show",
+    "to": 1186
+  },
+  {
+    "from": 1186,
+    "kind": "text",
+    "to": 1188
+  },
+  {
+    "body": {
+      "from": 1190,
+      "to": 1202
+    },
+    "from": 1188,
+    "kind": "comment",
+    "to": 1202
+  },
+  {
+    "from": 1202,
+    "kind": "text",
+    "to": 1203
+  },
+  {
+    "args": [
+      {
+        "from": 1221,
+        "to": 1226
+      }
+    ],
+    "body": {
+      "from": 1209,
+      "to": 1226
+    },
+    "children": [
+      {
+        "from": 1209,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1214
+      },
+      {
+        "from": 1214,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1215
+      },
+      {
+        "from": 1215,
+        "kind": "text",
+        "to": 1219
+      },
+      {
+        "from": 1219,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1221
+      },
+      {
+        "from": 1221,
+        "kind": "text",
+        "to": 1226
+      }
+    ],
+    "from": 1203,
+    "kind": "command",
+    "meta": {
+      "arg:size": "26pt",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "text",
+    "named": {
+      "size": {
+        "from": 1215,
+        "to": 1219
+      }
+    },
+    "to": 1227
+  },
+  {
+    "from": 1227,
+    "kind": "text",
+    "to": 1228
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 1239,
+      "to": 1239
+    },
+    "from": 1228,
+    "kind": "command",
+    "meta": {
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "linebreak",
+    "to": 1240
+  },
+  {
+    "from": 1240,
+    "kind": "text",
+    "to": 1241
+  },
+  {
+    "args": [
+      {
+        "from": 1264,
+        "to": 1270
+      }
+    ],
+    "body": {
+      "from": 1247,
+      "to": 1270
+    },
+    "children": [
+      {
+        "from": 1247,
+        "kind": "raw",
+        "name": "argument",
+        "to": 1253
+      },
+      {
+        "from": 1253,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1254
+      },
+      {
+        "body": {
+          "from": 1255,
+          "to": 1261
+        },
+        "from": 1254,
+        "kind": "raw",
+        "name": "string",
+        "to": 1262
+      },
+      {
+        "from": 1262,
+        "kind": "raw",
+        "name": "separator",
+        "to": 1264
+      },
+      {
+        "from": 1264,
+        "kind": "text",
+        "to": 1270
+      }
+    ],
+    "from": 1241,
+    "kind": "command",
+    "meta": {
+      "arg:style": "\"italic\"",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "text",
+    "named": {
+      "style": {
+        "from": 1254,
+        "to": 1262
+      }
+    },
+    "to": 1271
+  },
+  {
+    "from": 1271,
+    "kind": "text",
+    "to": 1272
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 1283,
+      "to": 1283
+    },
+    "from": 1272,
+    "kind": "command",
+    "meta": {
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "linebreak",
+    "to": 1284
+  },
+  {
+    "from": 1284,
+    "kind": "text",
+    "to": 1285
+  },
+  {
+    "args": [
+      {
+        "from": 1311,
+        "to": 1357
+      }
+    ],
+    "body": {
+      "from": 1301,
+      "to": 1301
+    },
+    "children": [
+      {
+        "body": {
+          "from": 1312,
+          "to": 1356
+        },
+        "from": 1311,
+        "kind": "raw",
+        "name": "string",
+        "to": 1357
+      }
+    ],
+    "from": 1285,
+    "kind": "command",
+    "meta": {
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "datetime.today.display",
+    "to": 1358
+  },
+  {
+    "from": 1358,
+    "kind": "text",
+    "to": 1360
+  },
+  {
+    "args": [
+      {
+        "from": 1363,
+        "to": 1366
+      }
+    ],
+    "body": {
+      "from": 1363,
+      "to": 1366
+    },
+    "children": [
+      {
+        "from": 1363,
+        "kind": "text",
+        "to": 1366
+      }
+    ],
+    "from": 1360,
+    "kind": "command",
+    "meta": {
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "v",
+    "to": 1367
+  },
+  {
+    "from": 1367,
+    "kind": "text",
+    "to": 1369
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 1380,
+      "to": 1393
+    },
+    "children": [
+      {
+        "from": 1380,
+        "kind": "text",
+        "to": 1393
+      }
+    ],
+    "from": 1369,
+    "kind": "command",
+    "meta": {},
+    "name": "smallcaps",
+    "to": 1394
+  },
+  {
+    "from": 1394,
+    "kind": "text",
+    "to": 1513
+  },
+  {
+    "from": 1513,
+    "kind": "command",
+    "meta": {
+      "key": "tufte1983"
+    },
+    "name": "ref",
+    "to": 1523
+  },
+  {
+    "from": 1523,
+    "kind": "text",
+    "to": 1524
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 1530,
+      "to": 1610
+    },
+    "children": [
+      {
+        "from": 1530,
+        "kind": "text",
+        "to": 1610
+      }
+    ],
+    "from": 1524,
+    "kind": "command",
+    "meta": {},
+    "name": "note",
+    "to": 1611
+  },
+  {
+    "from": 1611,
+    "kind": "text",
+    "to": 1613
+  },
+  {
+    "body": {
+      "from": 1615,
+      "to": 1623
+    },
+    "children": [
+      {
+        "from": 1615,
+        "kind": "text",
+        "to": 1623
+      }
+    ],
+    "from": 1613,
+    "kind": "heading",
+    "level": 1,
+    "to": 1623
+  },
+  {
+    "from": 1623,
+    "kind": "text",
+    "to": 1766
+  },
+  {
+    "body": {
+      "from": 1767,
+      "to": 1797
+    },
+    "display": true,
+    "from": 1766,
+    "kind": "math",
+    "meta": {
+      "close": "$",
+      "open": "$"
+    },
+    "to": 1798
+  },
+  {
+    "from": 1798,
+    "kind": "text",
+    "to": 1926
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 1947,
+      "to": 2025
+    },
+    "children": [
+      {
+        "from": 1947,
+        "kind": "text",
+        "to": 2025
+      }
+    ],
+    "from": 1926,
+    "kind": "command",
+    "meta": {
+      "arg:counter": "none"
+    },
+    "name": "note",
+    "named": {
+      "counter": {
+        "from": 1941,
+        "to": 1945
+      }
+    },
+    "to": 2026
+  },
+  {
+    "from": 2026,
+    "kind": "text",
+    "to": 2028
+  },
+  {
+    "body": {
+      "from": 2030,
+      "to": 2036
+    },
+    "children": [
+      {
+        "from": 2030,
+        "kind": "text",
+        "to": 2036
+      }
+    ],
+    "from": 2028,
+    "kind": "heading",
+    "level": 1,
+    "to": 2036
+  },
+  {
+    "from": 2036,
+    "kind": "text",
+    "to": 2210
+  },
+  {
+    "args": [
+      {
+        "from": 2221,
+        "to": 2695
+      }
+    ],
+    "body": {
+      "from": 2218,
+      "to": 2771
+    },
+    "children": [
+      {
+        "from": 2218,
+        "kind": "raw",
+        "name": "separator",
+        "to": 2221
+      },
+      {
+        "args": [
+          {
+            "from": 2343,
+            "to": 2369
+          },
+          {
+            "from": 2375,
+            "to": 2418
+          },
+          {
+            "from": 2424,
+            "to": 2450
+          },
+          {
+            "from": 2456,
+            "to": 2504
+          },
+          {
+            "from": 2506,
+            "to": 2512
+          },
+          {
+            "from": 2514,
+            "to": 2536
+          },
+          {
+            "from": 2542,
+            "to": 2567
+          },
+          {
+            "from": 2569,
+            "to": 2575
+          },
+          {
+            "from": 2577,
+            "to": 2595
+          },
+          {
+            "from": 2601,
+            "to": 2621
+          },
+          {
+            "from": 2623,
+            "to": 2629
+          },
+          {
+            "from": 2631,
+            "to": 2658
+          },
+          {
+            "from": 2664,
+            "to": 2690
+          }
+        ],
+        "body": {
+          "from": 2227,
+          "to": 2694
+        },
+        "children": [
+          {
+            "from": 2227,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2232
+          },
+          {
+            "from": 2232,
+            "kind": "raw",
+            "name": "argument",
+            "to": 2240
+          },
+          {
+            "from": 2240,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2241
+          },
+          {
+            "from": 2241,
+            "kind": "text",
+            "to": 2245
+          },
+          {
+            "from": 2245,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2247
+          },
+          {
+            "from": 2247,
+            "kind": "text",
+            "to": 2251
+          },
+          {
+            "from": 2251,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2253
+          },
+          {
+            "from": 2253,
+            "kind": "text",
+            "to": 2258
+          },
+          {
+            "from": 2258,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2264
+          },
+          {
+            "from": 2264,
+            "kind": "raw",
+            "name": "argument",
+            "to": 2270
+          },
+          {
+            "from": 2270,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2271
+          },
+          {
+            "from": 2271,
+            "kind": "text",
+            "to": 2276
+          },
+          {
+            "from": 2276,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2278
+          },
+          {
+            "from": 2278,
+            "kind": "text",
+            "to": 2283
+          },
+          {
+            "from": 2283,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2285
+          },
+          {
+            "from": 2285,
+            "kind": "text",
+            "to": 2290
+          },
+          {
+            "from": 2290,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2296
+          },
+          {
+            "from": 2296,
+            "kind": "raw",
+            "name": "argument",
+            "to": 2303
+          },
+          {
+            "from": 2303,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2304
+          },
+          {
+            "from": 2304,
+            "kind": "text",
+            "to": 2308
+          },
+          {
+            "from": 2308,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2314
+          },
+          {
+            "from": 2314,
+            "kind": "raw",
+            "name": "argument",
+            "to": 2320
+          },
+          {
+            "from": 2320,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2321
+          },
+          {
+            "from": 2321,
+            "kind": "text",
+            "to": 2322
+          },
+          {
+            "from": 2322,
+            "kind": "raw",
+            "name": "argument",
+            "to": 2324
+          },
+          {
+            "from": 2324,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2325
+          },
+          {
+            "from": 2325,
+            "kind": "text",
+            "to": 2328
+          },
+          {
+            "from": 2328,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2330
+          },
+          {
+            "from": 2330,
+            "kind": "raw",
+            "name": "argument",
+            "to": 2332
+          },
+          {
+            "from": 2332,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2333
+          },
+          {
+            "from": 2333,
+            "kind": "text",
+            "to": 2337
+          },
+          {
+            "from": 2337,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2343
+          },
+          {
+            "args": [],
+            "body": {
+              "from": 2355,
+              "to": 2368
+            },
+            "children": [
+              {
+                "from": 2355,
+                "kind": "raw",
+                "name": "argument",
+                "to": 2362
+              },
+              {
+                "from": 2362,
+                "kind": "raw",
+                "name": "separator",
+                "to": 2363
+              },
+              {
+                "from": 2363,
+                "kind": "text",
+                "to": 2368
+              }
+            ],
+            "from": 2343,
+            "kind": "command",
+            "meta": {
+              "arg:stroke": "0.8pt",
+              "args": "code",
+              "raw": "true"
+            },
+            "name": "table.hline",
+            "named": {
+              "stroke": {
+                "from": 2363,
+                "to": 2368
+              }
+            },
+            "to": 2369
+          },
+          {
+            "from": 2369,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2375
+          },
+          {
+            "args": [
+              {
+                "from": 2388,
+                "to": 2396
+              },
+              {
+                "from": 2398,
+                "to": 2406
+              },
+              {
+                "from": 2408,
+                "to": 2417
+              }
+            ],
+            "body": {
+              "from": 2388,
+              "to": 2417
+            },
+            "children": [
+              {
+                "body": {
+                  "from": 2389,
+                  "to": 2395
+                },
+                "children": [
+                  {
+                    "body": {
+                      "from": 2390,
+                      "to": 2394
+                    },
+                    "children": [
+                      {
+                        "from": 2390,
+                        "kind": "text",
+                        "to": 2394
+                      }
+                    ],
+                    "from": 2389,
+                    "kind": "command",
+                    "name": "strong",
+                    "to": 2395
+                  }
+                ],
+                "from": 2388,
+                "kind": "group",
+                "name": "content",
+                "to": 2396
+              },
+              {
+                "from": 2396,
+                "kind": "raw",
+                "name": "separator",
+                "to": 2398
+              },
+              {
+                "body": {
+                  "from": 2399,
+                  "to": 2405
+                },
+                "children": [
+                  {
+                    "body": {
+                      "from": 2400,
+                      "to": 2404
+                    },
+                    "children": [
+                      {
+                        "from": 2400,
+                        "kind": "text",
+                        "to": 2404
+                      }
+                    ],
+                    "from": 2399,
+                    "kind": "command",
+                    "name": "strong",
+                    "to": 2405
+                  }
+                ],
+                "from": 2398,
+                "kind": "group",
+                "name": "content",
+                "to": 2406
+              },
+              {
+                "from": 2406,
+                "kind": "raw",
+                "name": "separator",
+                "to": 2408
+              },
+              {
+                "body": {
+                  "from": 2409,
+                  "to": 2416
+                },
+                "children": [
+                  {
+                    "body": {
+                      "from": 2410,
+                      "to": 2415
+                    },
+                    "children": [
+                      {
+                        "from": 2410,
+                        "kind": "text",
+                        "to": 2415
+                      }
+                    ],
+                    "from": 2409,
+                    "kind": "command",
+                    "name": "strong",
+                    "to": 2416
+                  }
+                ],
+                "from": 2408,
+                "kind": "group",
+                "name": "content",
+                "to": 2417
+              }
+            ],
+            "from": 2375,
+            "kind": "command",
+            "meta": {
+              "args": "code",
+              "raw": "true"
+            },
+            "name": "table.header",
+            "to": 2418
+          },
+          {
+            "from": 2418,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2424
+          },
+          {
+            "args": [],
+            "body": {
+              "from": 2436,
+              "to": 2449
+            },
+            "children": [
+              {
+                "from": 2436,
+                "kind": "raw",
+                "name": "argument",
+                "to": 2443
+              },
+              {
+                "from": 2443,
+                "kind": "raw",
+                "name": "separator",
+                "to": 2444
+              },
+              {
+                "from": 2444,
+                "kind": "text",
+                "to": 2449
+              }
+            ],
+            "from": 2424,
+            "kind": "command",
+            "meta": {
+              "arg:stroke": "0.5pt",
+              "args": "code",
+              "raw": "true"
+            },
+            "name": "table.hline",
+            "named": {
+              "stroke": {
+                "from": 2444,
+                "to": 2449
+              }
+            },
+            "to": 2450
+          },
+          {
+            "from": 2450,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2456
+          },
+          {
+            "body": {
+              "from": 2457,
+              "to": 2503
+            },
+            "children": [
+              {
+                "from": 2457,
+                "kind": "text",
+                "to": 2503
+              }
+            ],
+            "from": 2456,
+            "kind": "group",
+            "name": "content",
+            "to": 2504
+          },
+          {
+            "from": 2504,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2506
+          },
+          {
+            "body": {
+              "from": 2507,
+              "to": 2511
+            },
+            "children": [
+              {
+                "from": 2507,
+                "kind": "text",
+                "to": 2511
+              }
+            ],
+            "from": 2506,
+            "kind": "group",
+            "name": "content",
+            "to": 2512
+          },
+          {
+            "from": 2512,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2514
+          },
+          {
+            "body": {
+              "from": 2515,
+              "to": 2535
+            },
+            "children": [
+              {
+                "from": 2515,
+                "kind": "text",
+                "to": 2535
+              }
+            ],
+            "from": 2514,
+            "kind": "group",
+            "name": "content",
+            "to": 2536
+          },
+          {
+            "from": 2536,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2542
+          },
+          {
+            "body": {
+              "from": 2543,
+              "to": 2566
+            },
+            "children": [
+              {
+                "from": 2543,
+                "kind": "text",
+                "to": 2566
+              }
+            ],
+            "from": 2542,
+            "kind": "group",
+            "name": "content",
+            "to": 2567
+          },
+          {
+            "from": 2567,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2569
+          },
+          {
+            "body": {
+              "from": 2570,
+              "to": 2574
+            },
+            "children": [
+              {
+                "from": 2570,
+                "kind": "text",
+                "to": 2574
+              }
+            ],
+            "from": 2569,
+            "kind": "group",
+            "name": "content",
+            "to": 2575
+          },
+          {
+            "from": 2575,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2577
+          },
+          {
+            "body": {
+              "from": 2578,
+              "to": 2594
+            },
+            "children": [
+              {
+                "from": 2578,
+                "kind": "text",
+                "to": 2594
+              }
+            ],
+            "from": 2577,
+            "kind": "group",
+            "name": "content",
+            "to": 2595
+          },
+          {
+            "from": 2595,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2601
+          },
+          {
+            "body": {
+              "from": 2602,
+              "to": 2620
+            },
+            "children": [
+              {
+                "from": 2602,
+                "kind": "text",
+                "to": 2620
+              }
+            ],
+            "from": 2601,
+            "kind": "group",
+            "name": "content",
+            "to": 2621
+          },
+          {
+            "from": 2621,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2623
+          },
+          {
+            "body": {
+              "from": 2624,
+              "to": 2628
+            },
+            "children": [
+              {
+                "from": 2624,
+                "kind": "text",
+                "to": 2628
+              }
+            ],
+            "from": 2623,
+            "kind": "group",
+            "name": "content",
+            "to": 2629
+          },
+          {
+            "from": 2629,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2631
+          },
+          {
+            "body": {
+              "from": 2632,
+              "to": 2657
+            },
+            "children": [
+              {
+                "from": 2632,
+                "kind": "text",
+                "to": 2657
+              }
+            ],
+            "from": 2631,
+            "kind": "group",
+            "name": "content",
+            "to": 2658
+          },
+          {
+            "from": 2658,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2664
+          },
+          {
+            "args": [],
+            "body": {
+              "from": 2676,
+              "to": 2689
+            },
+            "children": [
+              {
+                "from": 2676,
+                "kind": "raw",
+                "name": "argument",
+                "to": 2683
+              },
+              {
+                "from": 2683,
+                "kind": "raw",
+                "name": "separator",
+                "to": 2684
+              },
+              {
+                "from": 2684,
+                "kind": "text",
+                "to": 2689
+              }
+            ],
+            "from": 2664,
+            "kind": "command",
+            "meta": {
+              "arg:stroke": "0.8pt",
+              "args": "code",
+              "raw": "true"
+            },
+            "name": "table.hline",
+            "named": {
+              "stroke": {
+                "from": 2684,
+                "to": 2689
+              }
+            },
+            "to": 2690
+          },
+          {
+            "from": 2690,
+            "kind": "raw",
+            "name": "separator",
+            "to": 2694
+          }
+        ],
+        "from": 2221,
+        "kind": "table",
+        "meta": {
+          "arg:align": "(left, right, left)",
+          "arg:columns": "(1fr, auto, auto)",
+          "arg:inset": "(x: 6pt, y: 5pt)",
+          "arg:stroke": "none",
+          "args": "code",
+          "raw": "true"
+        },
+        "name": "table",
+        "named": {
+          "align": {
+            "from": 2271,
+            "to": 2290
+          },
+          "columns": {
+            "from": 2241,
+            "to": 2258
+          },
+          "inset": {
+            "from": 2321,
+            "to": 2337
+          },
+          "stroke": {
+            "from": 2304,
+            "to": 2308
+          }
+        },
+        "to": 2695
+      },
+      {
+        "from": 2695,
+        "kind": "raw",
+        "name": "separator",
+        "to": 2699
+      },
+      {
+        "from": 2699,
+        "kind": "raw",
+        "name": "argument",
+        "to": 2707
+      },
+      {
+        "from": 2707,
+        "kind": "raw",
+        "name": "separator",
+        "to": 2708
+      },
+      {
+        "body": {
+          "from": 2709,
+          "to": 2768
+        },
+        "children": [
+          {
+            "from": 2709,
+            "kind": "text",
+            "to": 2768
+          }
+        ],
+        "from": 2708,
+        "kind": "group",
+        "meta": {
+          "figureCaption": "true"
+        },
+        "name": "content",
+        "to": 2769
+      },
+      {
+        "from": 2769,
+        "kind": "raw",
+        "name": "separator",
+        "to": 2771
+      }
+    ],
+    "from": 2210,
+    "kind": "command",
+    "meta": {
+      "arg:caption": "[Three books on information design, in order of publication.]",
+      "args": "code",
+      "figure": "true",
+      "figureTable": "true",
+      "raw": "true"
+    },
+    "name": "figure",
+    "named": {
+      "caption": {
+        "from": 2708,
+        "to": 2769
+      }
+    },
+    "to": 2772
+  },
+  {
+    "from": 2772,
+    "kind": "text",
+    "to": 2774
+  },
+  {
+    "body": {
+      "from": 2776,
+      "to": 2791
+    },
+    "children": [
+      {
+        "from": 2776,
+        "kind": "text",
+        "to": 2791
+      }
+    ],
+    "from": 2774,
+    "kind": "heading",
+    "level": 1,
+    "to": 2791
+  },
+  {
+    "from": 2791,
+    "kind": "text",
+    "to": 2884
+  },
+  {
+    "from": 2884,
+    "kind": "command",
+    "meta": {
+      "key": "tufte2006"
+    },
+    "name": "ref",
+    "to": 2894
+  },
+  {
+    "from": 2894,
+    "kind": "text",
+    "to": 3006
+  },
+  {
+    "args": [
+      {
+        "from": 3021,
+        "to": 3160
+      }
+    ],
+    "body": {
+      "from": 3018,
+      "to": 3239
+    },
+    "children": [
+      {
+        "from": 3018,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3021
+      },
+      {
+        "args": [],
+        "body": {
+          "from": 3076,
+          "to": 3159
+        },
+        "children": [
+          {
+            "from": 3076,
+            "kind": "text",
+            "to": 3081
+          },
+          {
+            "args": [
+              {
+                "from": 3088,
+                "to": 3104
+              }
+            ],
+            "body": {
+              "from": 3106,
+              "to": 3155
+            },
+            "children": [
+              {
+                "args": [],
+                "body": {
+                  "from": 3123,
+                  "to": 3154
+                },
+                "children": [
+                  {
+                    "from": 3123,
+                    "kind": "text",
+                    "to": 3154
+                  }
+                ],
+                "from": 3106,
+                "kind": "command",
+                "meta": {
+                  "arg:size": "9pt"
+                },
+                "name": "text",
+                "named": {
+                  "size": {
+                    "from": 3118,
+                    "to": 3121
+                  }
+                },
+                "to": 3155
+              }
+            ],
+            "from": 3081,
+            "kind": "command",
+            "meta": {},
+            "name": "align",
+            "to": 3156
+          },
+          {
+            "from": 3156,
+            "kind": "text",
+            "to": 3159
+          }
+        ],
+        "from": 3021,
+        "kind": "command",
+        "meta": {
+          "arg:height": "3.2cm",
+          "arg:stroke": "0.5pt + gray",
+          "arg:width": "100%"
+        },
+        "name": "rect",
+        "named": {
+          "height": {
+            "from": 3047,
+            "to": 3052
+          },
+          "stroke": {
+            "from": 3062,
+            "to": 3074
+          },
+          "width": {
+            "from": 3033,
+            "to": 3037
+          }
+        },
+        "to": 3160
+      },
+      {
+        "from": 3160,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3164
+      },
+      {
+        "from": 3164,
+        "kind": "raw",
+        "name": "argument",
+        "to": 3172
+      },
+      {
+        "from": 3172,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3173
+      },
+      {
+        "body": {
+          "from": 3174,
+          "to": 3236
+        },
+        "children": [
+          {
+            "from": 3174,
+            "kind": "text",
+            "to": 3236
+          }
+        ],
+        "from": 3173,
+        "kind": "group",
+        "name": "content",
+        "to": 3237
+      },
+      {
+        "from": 3237,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3239
+      }
+    ],
+    "from": 3006,
+    "kind": "command",
+    "meta": {
+      "arg:caption": "[A margin figure keeps its caption beside the text it supports.]",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "notefigure",
+    "named": {
+      "caption": {
+        "from": 3173,
+        "to": 3237
+      }
+    },
+    "to": 3240
+  },
+  {
+    "from": 3240,
+    "kind": "text",
+    "to": 3242
+  },
+  {
+    "args": [],
+    "body": {
+      "from": 3253,
+      "to": 3446
+    },
+    "children": [
+      {
+        "from": 3253,
+        "kind": "text",
+        "to": 3446
+      }
+    ],
+    "from": 3242,
+    "kind": "command",
+    "meta": {},
+    "name": "wideblock",
+    "to": 3447
+  },
+  {
+    "from": 3447,
+    "kind": "text",
+    "to": 3449
+  },
+  {
+    "args": [
+      {
+        "from": 3463,
+        "to": 3479
+      }
+    ],
+    "body": {
+      "from": 3463,
+      "to": 3530
+    },
+    "children": [
+      {
+        "body": {
+          "from": 3464,
+          "to": 3478
+        },
+        "from": 3463,
+        "kind": "raw",
+        "name": "string",
+        "to": 3479
+      },
+      {
+        "from": 3479,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3481
+      },
+      {
+        "from": 3481,
+        "kind": "raw",
+        "name": "argument",
+        "to": 3487
+      },
+      {
+        "from": 3487,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3488
+      },
+      {
+        "body": {
+          "from": 3489,
+          "to": 3499
+        },
+        "from": 3488,
+        "kind": "raw",
+        "name": "string",
+        "to": 3500
+      },
+      {
+        "from": 3500,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3502
+      },
+      {
+        "from": 3502,
+        "kind": "raw",
+        "name": "argument",
+        "to": 3508
+      },
+      {
+        "from": 3508,
+        "kind": "raw",
+        "name": "separator",
+        "to": 3509
+      },
+      {
+        "body": {
+          "from": 3510,
+          "to": 3529
+        },
+        "from": 3509,
+        "kind": "raw",
+        "name": "string",
+        "to": 3530
+      }
+    ],
+    "from": 3449,
+    "kind": "command",
+    "meta": {
+      "arg:style": "\"chicago-author-date\"",
+      "arg:title": "\"References\"",
+      "args": "code",
+      "raw": "true"
+    },
+    "name": "bibliography",
+    "named": {
+      "style": {
+        "from": 3509,
+        "to": 3530
+      },
+      "title": {
+        "from": 3488,
+        "to": 3500
+      }
+    },
+    "to": 3531
+  },
+  {
+    "from": 3531,
+    "kind": "text",
+    "to": 3532
+  }
+]

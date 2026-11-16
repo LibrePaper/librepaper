@@ -432,7 +432,7 @@ export function searchSymbols(query, symbols) {
 /**
  * The bare spelling of a symbol in one format, without any wrapping.
  * @param {object} symbol
- * @param {"latex"|"markdown"|"quarto"|"typst"|"html"} format
+ * @param {"latex"|"markdown"|"quarto"|"org"|"typst"|"html"} format
  * @param {{inMath?: boolean}} [options]
  * @returns {string}
  */
@@ -443,7 +443,7 @@ export function symbolText(symbol, format, { inMath = true } = {}) {
   return symbol.latex;
 }
 
-const WRAPPED = new Set(["latex", "markdown", "quarto", "typst"]);
+const WRAPPED = new Set(["latex", "markdown", "quarto", "org", "typst"]);
 
 /**
  * Adds a space where a spelling would run into the text beside it. In LaTeX,
@@ -457,7 +457,7 @@ const WRAPPED = new Set(["latex", "markdown", "quarto", "typst"]);
  * @returns {string}
  */
 export function separated(text, format, before, after) {
-  if (format === "latex" || format === "markdown" || format === "quarto") {
+  if (format === "latex" || format === "markdown" || format === "quarto" || format === "org") {
     return /\\[A-Za-z]+$/.test(text) && /^[A-Za-z]$/.test(after) ? `${text} ` : text;
   }
   if (format === "typst") {

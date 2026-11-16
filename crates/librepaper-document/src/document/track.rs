@@ -4264,6 +4264,7 @@ mod tests {
             texts: [("main.md".to_string(), "hello big world".to_string())]
                 .into_iter()
                 .collect(),
+            retained: Default::default(),
         };
         let tree = projected.projection.clone();
         unsuggest_texts(&doc, &mut projected);

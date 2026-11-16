@@ -7,6 +7,10 @@ import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
+// The operator's shell may export an age key command (one runs sudo); the
+// publisher would run it to unlock keys.yaml. Tests set their own.
+for (const key of ["SOPS_AGE_KEY", "SOPS_AGE_KEY_CMD", "LIBREPAPER_AGE_KEY_CMD"]) delete process.env[key];
+
 // === LaTeX release checker ===
 
 const directory = mkdtempSync(join(tmpdir(), 'librepaper-mirror-test-'));

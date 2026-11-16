@@ -18,7 +18,7 @@
   import { FORMATS, formatNamed, fillTemplate } from "../lib/starter.js";
   import { BUILT_IN, templateFiles } from "../lib/templates.js";
   import { droppedFiles } from "../lib/file-manager.js";
-  import { expandArchives } from "../lib/project-upload.js";
+  import { belongsInRunDirectory } from "../lib/reader/run-directory.js";
   import { unzip } from "../lib/zip.js";
   import {
     catalog, browse, formatSummary, pickFormat, uniqueName,
@@ -158,6 +158,8 @@
   let unsupported = $state.raw([]);
   let problems = $state.raw([]);
   let notes = $state.raw([]);
+  // Set when an archive held a script or data file, which belongs in the Run directory.
+  let archiveLocal = $state(false);
   let reading = $state(false);
   let strip = $state(true);
   let progress = $state({ loaded: 0, total: 0 });
@@ -169,6 +171,7 @@
   const wrapper = $derived(wrapperOf(staged));
   const paths = $derived(finalPaths(staged, strip && wrapper !== ""));
   const hasDocument = $derived(paths.some((path) => (rules?.extensions || []).some((ext) => path.toLowerCase().endsWith(ext.toLowerCase()))));
+  const localHint = $derived(archiveLocal || unsupported.some(belongsInRunDirectory));
   const totalSize = $derived(staged.reduce((sum, entry) => sum + entry.file.size, 0));
   const stagedTree = $derived(tree(staged.map((entry, index) => ({ path: paths[index], size: entry.file.size }))));
   const stagedPath = $derived(new Map(paths.map((path, index) => [path, staged[index].path])));
@@ -182,6 +185,7 @@
     unsupported = [];
     problems = [];
     notes = [];
+    archiveLocal = false;
     strip = true;
   }
 
@@ -200,12 +204,16 @@
           continue;
         }
         const source = item.path.split("/").at(-1);
+        // Only an archive needs the upload module, which reads the project's
+        // opening file. A page that only drops plain files never loads it.
+        const { expandArchives } = await import("../lib/project-upload.js");
         try {
           const opened = await expandArchives([item], rules, unzip);
           for (const entry of opened.files) incoming.push({ path: entry.path, file: entry.file, source });
           if (opened.skipped?.length) {
             const count = opened.skipped.length;
             fresh.notes.push(m.newproject_skipped_files({ count, source }));
+            if (opened.skipped.some(belongsInRunDirectory)) archiveLocal = true;
           }
           for (const root of opened.roots ?? []) {
             if (root) fresh.notes.push(m.newproject_archive_root_removed({ root }));
@@ -509,7 +517,7 @@
                      checked={selectedId === template.id} onchange={() => (selectedId = template.id)} />
             </td>
             <td class="col-name">{template.name}</td>
-            <td class="col-say" title={template.description}>{template.description || (template.custom ? m.newproject_custom_template() : "")}</td>
+            <td class="col-say" data-tip-wait="long" data-tip={template.description}>{template.description || (template.custom ? m.newproject_custom_template() : "")}</td>
             <td class="col-formats">{formatSummary(template.formats)}</td>
             <td class="col-info">
               <button type="button" class="template-info" aria-label={m.newproject_details_for({ name: template.name })}
@@ -609,6 +617,7 @@
   {#if unsupported.length}
     <p class="np-muted">{m.newproject_unsupported({ names: unsupported.join(", ") })}</p>
   {/if}
+  {#if localHint}<p class="np-muted">{m.common_scripts_stay_local()}</p>{/if}
   {#each notes as note}<p class="np-muted">{note}</p>{/each}
   {#each problems as one}<p class="new-project-error lp-text-error text-sm" role="alert">{one}</p>{/each}
 
@@ -664,7 +673,7 @@
   .np-muted { color: var(--color-text-secondary); font-size: var(--text-sm); margin: 0; }
 
   /* An underline in the brand colour and nothing else, as in the panels. */
-  :global(.np-tabs) { display: flex; gap: calc(var(--spacing) * 6); border-bottom: 1px solid var(--color-pane-edge); margin-bottom: calc(var(--spacing) * 5); }
+  :global(.np-tabs) { display: flex; gap: calc(var(--spacing) * 6); border-bottom: 1px solid var(--color-border-strong); margin-bottom: calc(var(--spacing) * 5); }
   :global(.np-tabs > [role="tab"]) { padding: calc(var(--spacing) * 2) calc(var(--spacing)); cursor: pointer; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
   :global(.np-tabs > [role="tab"][data-selected]) { color: var(--color-link); border-color: var(--color-link); }
   :global(.np-tabs > [role="tab"]:focus-visible) { outline: 2px solid var(--color-focus); outline-offset: 2px; }
@@ -687,7 +696,7 @@
 
   .template-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
   .template-table th { text-align: left; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--color-text-secondary); font-weight: 600; padding: calc(var(--spacing) * 2); }
-  .template-table td { height: 3rem; padding: 0 calc(var(--spacing) * 2); border-top: 1px solid var(--color-pane-edge); vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .template-table td { height: 3rem; padding: 0 calc(var(--spacing) * 2); border-top: 1px solid var(--color-border-strong); vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .template-table tbody tr { cursor: pointer; }
   .template-table tbody tr:hover { background: var(--color-row-hover); }
   .template-table tbody tr.selected { background: var(--color-row-selected); }
@@ -707,7 +716,7 @@
 
   /* Stays in reach on a long catalog without covering any row: it sits in the
      flow after the table and only sticks once the table runs past the window. */
-  .np-create { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: flex-end; gap: calc(var(--spacing) * 4); padding-block: calc(var(--spacing) * 3); background: var(--color-shell); border-top: 1px solid var(--color-pane-edge); }
+  .np-create { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: flex-end; gap: calc(var(--spacing) * 4); padding-block: calc(var(--spacing) * 3); background: var(--color-shell); border-top: 1px solid var(--color-border-strong); }
   .np-selected { align-self: center; }
   .np-create :global(.new-project-create) { margin-left: auto; }
   .np-create :global(.new-project-error) { flex-basis: 100%; margin: 0; }
@@ -729,7 +738,7 @@
   .upload-tree, .upload-tree ul { list-style: none; margin: 0; padding: 0; }
   .upload-tree ul { padding-left: calc(var(--spacing) * 4); }
   .upload-tree .upload-folder-name { display: flex; align-items: center; gap: var(--spacing); padding-block: calc(var(--spacing)); font-weight: 500; }
-  .upload-file { display: flex; align-items: center; gap: calc(var(--spacing) * 3); min-height: 2rem; border-top: 1px solid var(--color-pane-edge); }
+  .upload-file { display: flex; align-items: center; gap: calc(var(--spacing) * 3); min-height: 2rem; border-top: 1px solid var(--color-border-strong); }
   .upload-file-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
   .upload-progress { width: 100%; accent-color: var(--color-focus); }
   .np-progress { display: flex; flex-direction: column; gap: calc(var(--spacing)); }
@@ -737,7 +746,7 @@
   .drop-overlay { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: color-mix(in srgb, var(--color-shell) 85%, transparent); border: 3px dashed var(--color-brand); pointer-events: none; }
   .drop-overlay p { margin: 0; font-size: var(--text-xl); font-weight: 600; }
 
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .new-project { padding: calc(var(--spacing) * 4); }
     .np-search { flex-basis: 100%; max-width: none; }
     .np-toolbar .np-field:not(.np-search) { flex: 1 1 8rem; }
@@ -748,7 +757,7 @@
        needs a sideways scroll. */
     .template-table, .template-table tbody { display: block; }
     .template-table thead { display: none; }
-    .template-table tbody tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "pick name info" "pick say info" "pick formats info"; column-gap: calc(var(--spacing) * 2); align-items: center; padding-block: calc(var(--spacing) * 2); border-top: 1px solid var(--color-pane-edge); }
+    .template-table tbody tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "pick name info" "pick say info" "pick formats info"; column-gap: calc(var(--spacing) * 2); align-items: center; padding-block: calc(var(--spacing) * 2); border-top: 1px solid var(--color-border-strong); }
     .template-table td { display: block; width: auto; height: auto; padding: 0; border: 0; }
     .template-table .col-pick { grid-area: pick; width: auto; }
     .template-table .col-name { grid-area: name; width: auto; }

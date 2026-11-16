@@ -1,7 +1,8 @@
 <script>
   import { onMount } from "svelte";
-  import { mode, onMode, paperMode, onPaper } from "../lib/theme.js";
+  import { mode, onMode, onPalette, paperMode, onPaper } from "../lib/theme.js";
   import { createFrameMessageReceiver } from "../lib/frame-messages.js";
+  import { documentFonts } from "../lib/document-fonts.js";
   import { m } from "../lib/paraglide/messages.js";
   // The document, on its own origin, in a frame.
   //
@@ -22,16 +23,15 @@
   // all. What is being previewed is said in the Files pane, by the eye beside
   // the file, rather than spelled out again here.
   //
-  // `notice` is a chip saying why the pane shows what it shows: the file is
-  // locked, or is drawn inside the file that includes it. It sits in its own
-  // slim band under the controls rather than over the frame, for the same
-  // reason the controls do: nothing may cover a page, least of all at phone
-  // width.
+  // `notice` is a chip naming the file the pane shows when the open file is
+  // drawn inside the file that includes it. It sits in its own slim band under
+  // the controls rather than over the frame, for the same reason the controls
+  // do: nothing may cover a page, least of all at phone width.
   //
   // A thin progress line along the top edge signals a render under way without
   // covering the document, and nothing shows for renders under the
   // steady-busy threshold.
-  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls, notice, cover, busy = false, progress = null } = $props();
+  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls, notice, cover, status, dimmed = false, busy = false, progress = null, id = undefined, role = undefined, labelledby = undefined } = $props();
 
   let frame = $state(null);
   let viewport = $state(null);
@@ -54,6 +54,7 @@
     observer.observe(viewport);
     const stopMode = onMode(() => sendTheme());
     const stopPaper = onPaper(() => sendTheme());
+    const stopPalette = onPalette(() => sendTheme());
     const standard = () => document.fullscreenElement === frame;
     const current = () => standard() || /** @type {any} */ (document).webkitFullscreenElement === frame;
     let presenting = false;
@@ -70,6 +71,7 @@
       document.removeEventListener("webkitfullscreenchange", changed);
       stopMode();
       stopPaper();
+      stopPalette();
       window.removeEventListener("message", receiver.receive);
       receiver.dispose();
       observer.disconnect();
@@ -98,7 +100,30 @@
   /// The theme as the frame should show it: the mode, and the paper the
   /// preview is drawn on. Sent when either changes and once the frame loads.
   function sendTheme() {
-    return tell({ type: "theme", mode: mode(), paper: paperMode() });
+    return tell({ type: "theme", mode: mode(), paper: paperMode(), surface: editorSurface() });
+  }
+
+  /// The bundled document fonts, as bytes for the frame to register. Sent when
+  /// the frame loads, not with the theme: no transfer list, so the buffers stay
+  /// here and the next frame load can send them again.
+  async function sendFonts() {
+    const faces = await documentFonts();
+    if (faces.length) tell({ type: "fonts", faces });
+  }
+
+  /// The editor's surface (background and text) as resolved colours, read from
+  /// the theme tokens the editor itself uses, so the preview sits on the same
+  /// ground in every palette. Null when the preview paper stays light in a dark
+  /// app: the frame then keeps the house light paper.
+  function editorSurface() {
+    if (mode() === "dark" && paperMode() === "light") return null;
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;background-color:var(--color-shell);color:var(--color-text)";
+    document.body.append(probe);
+    const style = getComputedStyle(probe);
+    const surface = { paper: style.backgroundColor, ink: style.color };
+    probe.remove();
+    return surface;
   }
 
   /// Presentation mode. A message carries no user activation, so the frame
@@ -120,7 +145,7 @@
 
 </script>
 
-<section class="viewport" class:away bind:this={viewport} inert={away}
+<section class="viewport" class:away bind:this={viewport} inert={away} id={id} role={role} aria-labelledby={labelledby}
          style:--held-width="{heldWidth}px" style:--held-height="{heldHeight}px">
   {#if busy}
     <div class="render-line" role="progressbar" aria-label={m.preview_rendering_label()} aria-valuemin="0" aria-valuemax={progress ? progress.total : undefined} aria-valuenow={progress ? progress.done : undefined}>
@@ -132,6 +157,7 @@
   <!-- Laid over the frame rather than replacing it: the frame keeps its real
        size underneath, so a page drawn while this is up is drawn to fit. -->
   {#if cover}<div class="cover">{@render cover()}</div>{/if}
+  {@render status?.()}
   <!-- allow-same-origin refers to the document's own origin, not this one, so
        the agent can read the document while the document can read nothing
        here. While a separator is being dragged the frame is deafened: it
@@ -147,7 +173,9 @@
         onload?.();
         tell({ type: "reader-ready" });
         sendTheme();
+        sendFonts();
       }}
+      class:dimmed
       style:pointer-events={grabbing ? "none" : null}
       allow="fullscreen"
       sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"
@@ -156,6 +184,14 @@
 </section>
 
 <style>
+  /* The last result stays up, dimmed, while a local run works on the next. */
+  iframe {
+    transition: opacity 150ms ease;
+  }
+  iframe.dimmed {
+    opacity: .55;
+  }
+
   .cover {
     position: absolute;
     inset: 0;
@@ -191,17 +227,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .notice-band :global(.notice-chip button) {
-    display: inline-flex;
-    flex: none;
-    align-items: center;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: inherit;
-    cursor: pointer;
   }
 
   .render-line {

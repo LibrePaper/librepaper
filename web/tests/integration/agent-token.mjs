@@ -111,7 +111,7 @@ try {
   for (const name of ["document_read", "document_comment", "document_result"]) {
     assert.ok(commentTools.includes(name), `a comment token is served ${name}: ${commentTools}`);
   }
-  for (const name of ["document_propose", "document_apply", "document_files"]) {
+  for (const name of ["document_propose", "document_apply", "document_files", "document_withdraw"]) {
     assert.ok(!commentTools.includes(name), `a comment token is not served ${name}: ${commentTools}`);
   }
   const first = await readFirst(commenter);
@@ -145,7 +145,7 @@ try {
   const reader = startBridge(readToken.token);
   const readerTools = await reader.start();
   assert.ok(readerTools.includes("document_read"), `a read token is served document_read: ${readerTools}`);
-  for (const name of ["document_comment", "document_propose", "document_apply", "document_files"]) {
+  for (const name of ["document_comment", "document_propose", "document_apply", "document_files", "document_withdraw"]) {
     assert.ok(!readerTools.includes(name), `a read token is not served ${name}: ${readerTools}`);
   }
   const looked = await readFirst(reader);
@@ -162,6 +162,7 @@ try {
   assert.ok(editTools.includes("document_propose"), `an edit token is served document_propose: ${editTools}`);
   assert.ok(editTools.includes("document_apply"), `an edit token is served document_apply: ${editTools}`);
   assert.ok(editTools.includes("document_files"), `an edit token is served document_files: ${editTools}`);
+  assert.ok(editTools.includes("document_withdraw"), `an edit token is served document_withdraw: ${editTools}`);
   const seen = await readFirst(editor);
   const proposed = await editor.call("document_propose", {
     view_id: seen.viewId, publish: "suggestions", validation: "source",
@@ -194,7 +195,8 @@ try {
   const changes = listChanges(mirror);
   page.close();
   assert.equal(changes.length, 1, `one pending change: ${JSON.stringify(changes)}`);
-  assert.equal(changes[0].inserted, "The suggested paragraph");
+  // Only the words that differ are tracked: the shared " paragraph" is left alone.
+  assert.equal(changes[0].inserted, "The suggested");
 
   // The same edit token now stages privately, then applies. It edits the
   // second paragraph, since the first carries the pending suggestion.

@@ -1,0 +1,38 @@
+[
+  {
+    "args": [
+      {
+        "from": 9,
+        "to": 28
+      }
+    ],
+    "from": 0,
+    "kind": "command",
+    "meta": {
+      "path": "missing-chapter.typ",
+      "statement": "true"
+    },
+    "name": "import",
+    "to": 38
+  },
+  {
+    "from": 38,
+    "kind": "text",
+    "to": 39
+  },
+  {
+    "args": [],
+    "from": 39,
+    "kind": "command",
+    "meta": {
+      "raw": "true"
+    },
+    "name": "chapter",
+    "to": 47
+  },
+  {
+    "from": 47,
+    "kind": "text",
+    "to": 48
+  }
+]

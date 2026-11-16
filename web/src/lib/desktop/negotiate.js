@@ -5,7 +5,7 @@
 // the answer. See SPEC-wire.md 5.2.
 
 /** The version this page speaks. */
-export const PAGE = "3.1.0";
+export const PAGE = "3.2.0";
 
 /** What an app released before `protocol` existed is taken to speak. */
 export const LEGACY_RANGE = Object.freeze({ oldest: 3, current: "3.0.0" });

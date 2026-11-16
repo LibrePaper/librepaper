@@ -4,6 +4,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { includersOf, openingFile, previewTarget, rendersAlone } from "../../src/lib/opening.js";
+import { loadOrgSyntaxForTests } from "../helpers/org-syntax.mjs";
+
+// Org includes are read from org.wasm's tree.
+await loadOrgSyntaxForTests();
 
 const corpus = JSON.parse(
   readFileSync(new URL("../fixtures/opening.json", import.meta.url), "utf8"),

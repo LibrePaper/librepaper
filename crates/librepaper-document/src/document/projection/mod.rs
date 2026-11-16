@@ -104,6 +104,24 @@ impl Diagnostic {
     }
 }
 
+/// A digest of the retained texts, or `None` when there are none. Sorted path,
+/// a NUL, the text length as eight little-endian bytes, then the text, so no
+/// two different maps share an encoding. The projection digest ignores
+/// retained texts; whatever is derived from both must mix this in.
+pub fn retained_digest(retained: &BTreeMap<String, String>) -> Option<Digest> {
+    if retained.is_empty() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    for (path, body) in retained {
+        bytes.extend_from_slice(path.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&(body.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(body.as_bytes());
+    }
+    Some(Digest::of(&bytes))
+}
+
 /// One file in the projected directory.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
@@ -143,6 +161,10 @@ pub struct ProjectSnapshot {
     pub tree: Projection,
     #[serde(default)]
     pub texts: BTreeMap<String, String>,
+    /// Texts kept for a download only: well-formed paths whose extension the
+    /// rules refuse. Absent when there are none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retained: BTreeMap<String, String>,
 }
 
 /// A stated digest that is not the digest of the tree it came with.
@@ -208,6 +230,10 @@ pub struct VersionSnapshot {
     /// The body of each text file.
     #[serde(default)]
     pub texts: BTreeMap<String, String>,
+    /// Texts kept for a download only: well-formed paths whose extension the
+    /// rules refuse. Absent when there are none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retained: BTreeMap<String, String>,
 }
 
 impl VersionSnapshot {
@@ -226,6 +252,10 @@ pub struct HeadSnapshot {
     pub tree: Projection,
     #[serde(default)]
     pub texts: BTreeMap<String, String>,
+    /// Texts kept for a download only: well-formed paths whose extension the
+    /// rules refuse. Absent when there are none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retained: BTreeMap<String, String>,
 }
 
 impl HeadSnapshot {
@@ -313,6 +343,11 @@ pub struct Projected {
     pub projection: Projection,
     /// Text bodies by path.
     pub texts: BTreeMap<String, String>,
+    /// Texts whose path is well formed but whose extension the rules do not
+    /// allow, by path. They are not files of the projection and not in its
+    /// digest; they exist so a download can still include them. A path whose
+    /// collision key equals a placed file's is left out.
+    pub retained: BTreeMap<String, String>,
 }
 
 /// A candidate before reservation: what asked for a path, and which one.
@@ -408,7 +443,9 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
         });
     }
 
-    // 2. Validate paths.
+    // 2. Validate paths. A text refused only for its extension is kept aside
+    //    (by its Loro id, so the choice among equal paths is deterministic).
+    let mut kept_aside: Vec<(String, String, String)> = Vec::new();
     candidates.retain(
         |candidate| match paths::admit(rules, &candidate.requested) {
             Ok(kind) => {
@@ -434,6 +471,14 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
                 }
             }
             Err(why) => {
+                if !candidate.asset {
+                    if let (Ok(shaped), Some(body)) = (
+                        paths::admit_shape(rules, &candidate.requested),
+                        &candidate.text,
+                    ) {
+                        kept_aside.push((candidate.key.clone(), shaped, body.clone()));
+                    }
+                }
                 diagnostics.push(Diagnostic::InvalidPath {
                     id: candidate.key.clone(),
                     path: candidate.requested.clone(),
@@ -516,6 +561,22 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
         );
     }
 
+    // Retained texts: not placed, so no entry and no digest. The real file
+    // wins a collision.
+    kept_aside.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+    let mut retained = BTreeMap::new();
+    for (_, path, body) in kept_aside {
+        // A taken spelling (a placed file or an earlier retained text) moves
+        // the text to `name (2).ext`, `name (3).ext`, ... up to 100.
+        let chosen = std::iter::once(path.clone())
+            .chain((2..=100).map(|nth| crate::document::paths::suffixed(&path, nth)))
+            .find(|candidate| free(&taken, candidate));
+        if let Some(chosen) = chosen {
+            taken.insert(paths::collision_key(&chosen), chosen.clone());
+            retained.insert(chosen, body);
+        }
+    }
+
     // A total order, so that two runs over one document -- and the browser's
     // run beside the server's -- report the same list in the same sequence.
     diagnostics.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
@@ -526,6 +587,7 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
             diagnostics,
         },
         texts,
+        retained,
     }
 }
 
@@ -779,6 +841,7 @@ mod tests {
             source_format: "markdown".into(),
             files: projected.projection.files.clone(),
             texts: projected.texts.clone(),
+            retained: Default::default(),
         };
         let old = serde_json::json!({
             "sha": "label-1",
@@ -809,6 +872,7 @@ mod tests {
             project_digest: digest.clone(),
             tree: projected.projection.clone(),
             texts: projected.texts.clone(),
+            retained: Default::default(),
         };
         let old = serde_json::json!({
             "project_digest": digest,
@@ -858,9 +922,91 @@ mod tests {
             sha: projected.projection.digest().to_hex(),
             tree: projected.projection,
             texts: projected.texts,
+            retained: Default::default(),
         };
         snapshot.verify().unwrap();
         snapshot.sha = "0".repeat(64);
         assert!(snapshot.verify().is_err());
+    }
+
+    #[test]
+    fn a_text_refused_only_for_its_extension_is_retained() {
+        let doc = self::doc();
+        put(&doc, "aaa", "analysis.R", "x <- 1");
+        put(&doc, "bbb", "paper.log", "log");
+        put(&doc, "ccc", "main.md", "kept");
+        put(&doc, "ddd", "../x.R", "climbs");
+        put(&doc, "eee", "a\\b.R", "slash");
+        put(&doc, "fff", "logo.png", "named like an asset");
+        let projected = project(&doc, &rules());
+        assert_eq!(
+            projected.projection.files.keys().collect::<Vec<_>>(),
+            vec!["main.md"]
+        );
+        assert_eq!(
+            projected.retained.keys().collect::<Vec<_>>(),
+            vec!["analysis.R", "paper.log"]
+        );
+        assert_eq!(projected.retained["analysis.R"], "x <- 1");
+        assert!(!projected.texts.contains_key("analysis.R"));
+        // Still diagnosed as before.
+        assert!(projected.projection.diagnostics.iter().any(|d| matches!(
+            d,
+            Diagnostic::InvalidPath { path, .. } if path == "analysis.R"
+        )));
+    }
+
+    #[test]
+    fn retained_texts_with_a_taken_path_get_a_numbered_spelling() {
+        let doc = self::doc();
+        put(&doc, "aaa", "a.R", "first");
+        put(&doc, "bbb", "a.R", "second");
+        put(&doc, "ccc", "Notes.py", "upper");
+        put(&doc, "ddd", "notes.py", "lower");
+        let projected = project(&doc, &rules());
+        assert_eq!(projected.retained["a.R"], "first");
+        assert_eq!(projected.retained["a (2).R"], "second");
+        assert_eq!(projected.retained["Notes.py"], "upper");
+        assert_eq!(projected.retained["notes (2).py"], "lower");
+        assert_eq!(projected.retained.len(), 4);
+    }
+
+    #[test]
+    fn a_retained_text_cannot_be_a_file_where_a_placed_path_needs_a_directory() {
+        let doc = self::doc();
+        put(&doc, "aaa", "scripts.R/readme.md", "placed");
+        put(&doc, "bbb", "scripts.R", "retained");
+        let projected = project(&doc, &rules());
+        assert!(projected
+            .projection
+            .files
+            .contains_key("scripts.R/readme.md"));
+        assert_eq!(projected.retained["scripts (2).R"], "retained");
+        assert_eq!(projected.retained.len(), 1);
+    }
+
+    #[test]
+    fn the_retained_digest_follows_the_texts() {
+        let one = BTreeMap::from([("a.R".to_string(), "x".to_string())]);
+        let same = one.clone();
+        let other = BTreeMap::from([("a.R".to_string(), "y".to_string())]);
+        assert_eq!(retained_digest(&BTreeMap::new()), None);
+        assert_eq!(retained_digest(&one), retained_digest(&same));
+        assert_ne!(retained_digest(&one), retained_digest(&other));
+    }
+
+    #[test]
+    fn a_retained_text_does_not_move_the_digest() {
+        let plain = self::doc();
+        put(&plain, "aaa", "main.md", "kept");
+        let with = self::doc();
+        put(&with, "aaa", "main.md", "kept");
+        put(&with, "bbb", "analysis.R", "x <- 1");
+        let left = project(&plain, &rules());
+        let right = project(&with, &rules());
+        assert_eq!(left.projection.digest(), right.projection.digest());
+        assert_eq!(left.projection.files, right.projection.files);
+        assert!(left.retained.is_empty());
+        assert_eq!(right.retained.len(), 1);
     }
 }

@@ -1291,3 +1291,38 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
   assert.match(result.failure.message, /minted/);
   latex._testing.reset();
 }
+
+// ============================================================================
+// 0. ensureProject: a document with no LaTeX session (Org exported to PDF)
+// gets one, and a configured project is never replaced mid-compile. It runs on
+// its own copy of the module, which has no project yet, so the scenarios above
+// neither feed it a project nor share its worker.
+// ============================================================================
+{
+  const ensure = await import("../../src/lib/latex.js?ensure-project");
+  ensure._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
+  const first = nextProject();
+  ensure.ensureProject(first);
+  const unconfigured = await ensure.compile(tree("main.tex", "org export"));
+  assert.equal(unconfigured.ok, true, JSON.stringify(unconfigured.failure));
+
+  // A running compile survives a second ensureProject: a replacement would
+  // cancel it with "Superseded".
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  worker().texReplies = [
+    async () => {
+      await gate;
+      return { status: 0, pdf: PDF, synctex: null, log: "", outputs: {} };
+    },
+  ];
+  const running = ensure.compile(tree("main.tex", "still running"));
+  await untilMessage(worker(), (m) => m.cmd === "tex");
+  ensure.ensureProject(nextProject());
+  release();
+  const kept = await running;
+  assert.equal(kept.ok, true, JSON.stringify(kept.failure));
+  ensure._testing.reset();
+}

@@ -1,0 +1,217 @@
+[
+  {
+    "body": {
+      "from": 4,
+      "to": 235
+    },
+    "from": 0,
+    "kind": "container",
+    "name": "frontmatter",
+    "to": 238
+  },
+  {
+    "from": 238,
+    "kind": "text",
+    "to": 240
+  },
+  {
+    "body": {
+      "from": 243,
+      "to": 255
+    },
+    "children": [
+      {
+        "from": 243,
+        "kind": "text",
+        "to": 255
+      }
+    ],
+    "from": 240,
+    "kind": "heading",
+    "level": 2,
+    "to": 255
+  },
+  {
+    "from": 255,
+    "kind": "text",
+    "to": 408
+  },
+  {
+    "body": {
+      "from": 409,
+      "to": 419
+    },
+    "from": 408,
+    "kind": "command",
+    "meta": {
+      "bracketed": "true",
+      "text": "@smith2020"
+    },
+    "name": "mdcite",
+    "to": 420
+  },
+  {
+    "from": 420,
+    "kind": "text",
+    "to": 423
+  },
+  {
+    "body": {
+      "from": 426,
+      "to": 433
+    },
+    "children": [
+      {
+        "from": 426,
+        "kind": "text",
+        "to": 433
+      }
+    ],
+    "from": 423,
+    "kind": "heading",
+    "level": 2,
+    "to": 433
+  },
+  {
+    "from": 433,
+    "kind": "text",
+    "to": 569
+  },
+  {
+    "body": {
+      "from": 572,
+      "to": 579
+    },
+    "children": [
+      {
+        "from": 572,
+        "kind": "text",
+        "to": 579
+      }
+    ],
+    "from": 569,
+    "kind": "heading",
+    "level": 2,
+    "to": 579
+  },
+  {
+    "from": 579,
+    "kind": "text",
+    "to": 673
+  },
+  {
+    "body": {
+      "from": 675,
+      "to": 687
+    },
+    "display": true,
+    "from": 673,
+    "kind": "math",
+    "meta": {
+      "close": "$$",
+      "open": "$$"
+    },
+    "to": 689
+  },
+  {
+    "from": 689,
+    "kind": "text",
+    "to": 734
+  },
+  {
+    "from": 734,
+    "kind": "container",
+    "meta": {},
+    "name": "mdtable",
+    "to": 855
+  },
+  {
+    "from": 855,
+    "kind": "text",
+    "to": 857
+  },
+  {
+    "body": {
+      "from": 860,
+      "to": 870
+    },
+    "children": [
+      {
+        "from": 860,
+        "kind": "text",
+        "to": 870
+      }
+    ],
+    "from": 857,
+    "kind": "heading",
+    "level": 2,
+    "to": 870
+  },
+  {
+    "from": 870,
+    "kind": "text",
+    "to": 1079
+  },
+  {
+    "body": {
+      "from": 1080,
+      "to": 1090
+    },
+    "from": 1079,
+    "kind": "command",
+    "meta": {
+      "bracketed": "true",
+      "text": "@jones2019"
+    },
+    "name": "mdcite",
+    "to": 1091
+  },
+  {
+    "from": 1091,
+    "kind": "text",
+    "to": 1094
+  },
+  {
+    "body": {
+      "from": 1097,
+      "to": 1107
+    },
+    "children": [
+      {
+        "from": 1097,
+        "kind": "text",
+        "to": 1107
+      }
+    ],
+    "from": 1094,
+    "kind": "heading",
+    "level": 2,
+    "to": 1107
+  },
+  {
+    "from": 1107,
+    "kind": "text",
+    "to": 1109
+  },
+  {
+    "body": {
+      "from": 1121,
+      "to": 1121
+    },
+    "children": [],
+    "from": 1109,
+    "kind": "container",
+    "meta": {
+      "attrs": "#refs",
+      "classes": "",
+      "id": "refs"
+    },
+    "name": "div",
+    "to": 1124
+  },
+  {
+    "from": 1124,
+    "kind": "text",
+    "to": 1125
+  }
+]

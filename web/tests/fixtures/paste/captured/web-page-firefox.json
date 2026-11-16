@@ -1,0 +1,23 @@
+{
+  "name": "web-page-firefox",
+  "app": null,
+  "browser": "Firefox 158.0",
+  "note": null,
+  "platform": "linux",
+  "session": "wayland",
+  "types": [
+    "text/html",
+    "text/_moz_htmlcontext",
+    "text/_moz_htmlinfo",
+    "text/plain",
+    "UTF8_STRING",
+    "COMPOUND_TEXT",
+    "TEXT",
+    "STRING",
+    "text/x-moz-url-priv",
+    "SAVE_TARGETS"
+  ],
+  "capturedAt": "2026-11-12",
+  "htmlBytes": 3595,
+  "textBytes": 2740
+}

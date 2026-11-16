@@ -64,7 +64,7 @@ const component = createClassComponent({ component: Files, target: document.body
 session.onFiles(() => component.$set({ files: session.list(), folders: session.folders() }));
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 80)); await tick(); };
 const button = (label) => document.querySelector('[aria-label="' + label + '"]');
-const row = (path) => document.querySelector('.explorer-row[title="' + path + '"]');
+const row = (path) => document.querySelector('.explorer-row[data-tip="' + path + '"]');
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const key = (target, key) => target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
 const name = async (label, value) => { const input = button(label); check(input, 'missing input ' + label + ' inputs: ' + [...document.querySelectorAll('input')].map(x=>x.outerHTML).join(' ') + ' menus: ' + [...document.querySelectorAll('[role=menu][data-state=open]')].map(x=>x.outerHTML).join(' ')); input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })); key(input, 'Enter'); await flush(); };
@@ -137,7 +137,7 @@ window.filesCheck = async () => {
   check(lockOne, 'a file that renders alone offers its eye as a button');
   lockOne.click(); await flush();
   check(window.locked === 'chapters/one.tex', 'the eye locks the preview on its file');
-  check(document.querySelector('.explorer-open')?.getAttribute('title') !== 'chapters/one.tex', 'the eye does not open the file');
+  check(document.querySelector('.explorer-open')?.getAttribute('data-tip') !== 'chapters/one.tex', 'the eye does not open the file');
   const unlockOne = row('chapters/one.tex').querySelector('button[aria-label="Unlock the preview"]');
   check(unlockOne, 'the locked row shows the solid eye as a button that unlocks');
   check(!row('chapters/one.tex').querySelector('[aria-label="Lock preview on one.tex"]'), 'a locked row does not also offer the lock');
@@ -206,6 +206,13 @@ window.filesCheck = async () => {
   check(warning?.textContent.includes('snowflake.log') && warning.textContent.includes('.tex') && warning.textContent.includes('.png'),
     'unsupported upload warning names the file and allowed extensions');
   check(warning.classList.contains('upload-warning'), 'unsupported upload warning uses warning tone');
+  check(![...document.querySelectorAll('.upload-warning')].some((node) => node.textContent.includes('Scripts and data stay')), 'a skipped log file gets no scripts hint');
+  const scriptUpload = new DataTransfer();
+  scriptUpload.items.add(new File(['x <- 1'], 'analysis.R', { type: 'text/plain' }));
+  row('empty').dispatchEvent(new DragEvent('drop', { dataTransfer: scriptUpload, bubbles: true, cancelable: true }));
+  await flush();
+  check([...document.querySelectorAll('.upload-warning')].some((node) => node.textContent.includes('Scripts and data stay on your computer')), 'a skipped script says where scripts belong');
+  check(!session.list().some((file) => file.path.endsWith('analysis.R')), 'the script is not uploaded');
   row('empty').dispatchEvent(new DragEvent('drop', { dataTransfer: upload, bubbles: true, cancelable: true }));
   await flush();
   const both = [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Keep both' && button.getClientRects().length);
@@ -361,7 +368,7 @@ window.shareSidebarCheck = async () => {
 window.panelTypographyCheck = async () => {
   const samples = [];
   const mounted = [];
-  for (const [component, props] of [[Files, {}], [Diagnostics, {}]]) {
+  for (const [component, props] of [[Files, {}]]) {
     const host = document.createElement('div');
     host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
     document.body.append(host);
@@ -383,7 +390,7 @@ window.panelTypographyCheck = async () => {
   // so that the strip is flush to the top of the panel and runs its full
   // width. The reader must not be able to tell the two arrangements apart:
   // what a pane holds has to sit exactly where a plain panel's contents sit.
-  for (const [component, props] of [[Collaboration, {}], [Agent, { open: true, slug: 'paper', canShare: true }]]) {
+  for (const [component, props] of [[Collaboration, {}], [Diagnostics, {}], [Agent, { open: true, slug: 'paper', canShare: true }]]) {
     const host = document.createElement('div');
     host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
     document.body.append(host);

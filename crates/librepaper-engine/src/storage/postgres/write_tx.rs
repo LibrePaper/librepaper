@@ -84,7 +84,32 @@ impl PostgresCatalog {
     /// Begins a metered write transaction, checks the fence, then takes
     /// `locks` in the fixed order of `Lock`.
     pub(super) async fn begin_write(&self, fence: Fence, locks: &[Lock]) -> Result<WriteTx> {
+        self.begin_write_waiting(fence, locks, None).await
+    }
+
+    /// `begin_write` that waits at most `lock_wait` for each lock. With
+    /// `None` it is exactly `begin_write`: the server's own lock timeout
+    /// applies. With a duration, the transaction runs
+    /// `SET LOCAL lock_timeout` first, before the fence check and before any
+    /// lock is requested, so every lock wait in this transaction is bounded.
+    /// `LOCAL` ends with the transaction, so the pooled connection does not
+    /// keep the setting. A wait that runs out is `Error::Busy`.
+    pub(super) async fn begin_write_waiting(
+        &self,
+        fence: Fence,
+        locks: &[Lock],
+        lock_wait: Option<std::time::Duration>,
+    ) -> Result<WriteTx> {
         let mut tx = self.begin_metered().await?;
+        if let Some(wait) = lock_wait {
+            // `SET` takes no bind parameters; the value is a number we built.
+            sqlx::query(&format!(
+                "SET LOCAL lock_timeout = '{}ms'",
+                wait.as_millis()
+            ))
+            .execute(&mut *tx)
+            .await?;
+        }
         match fence {
             Fence::Required => self.check_writer_epoch(&mut tx).await?,
             Fence::Exempt(_reason) => {}

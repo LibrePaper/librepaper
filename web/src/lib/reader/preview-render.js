@@ -1,4 +1,6 @@
 import { m } from "../paraglide/messages.js";
+import { figureSyntaxReady, referencedFigures } from "../figure-references.js";
+import { fillFigures, referenceFigures } from "../missing-figures.js";
 
 // One render of the document, from the source in this tab.
 //
@@ -23,8 +25,8 @@ import { m } from "../paraglide/messages.js";
 // context that declared some of those names and not others. They are
 // arguments now, and the guards are gone with them.
 
-/** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string> }} PreviewTree */
-/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, projectDigest?: string }} PreviewFacts */
+/** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, quartoResults?: { cells: unknown[], inlines?: unknown[], note?: string } | null, calepinResults?: { files: any[] } | null }} PreviewTree */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, runDirectory?: string, runResults?: { path?: string, updatedAt?: string, note?: string, cells?: unknown[], inlines?: unknown[], files?: any[] } | null, runDirectoryHas?: Set<string> | null, latexContinuous?: boolean, projectDigest?: string }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
 /** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
@@ -38,11 +40,11 @@ import { m } from "../paraglide/messages.js";
  * snapshotDigest: (tree: PreviewTree) => Promise<string>,
  * diagnosticContext: (item: NonNullable<PreviewResult["diagnostics"]>[number] | {severity: string, message: string}, tree: PreviewTree, identity: string) => NonNullable<PreviewResult["diagnostics"]>[number],
  * parseSynctex?: (data: Uint8Array | string, files: string[]) => Promise<unknown>,
- * rememberPreview?: (path: string, page: { kind: "html", html: string } | { kind: "pdf", sha: string, bytes: Uint8Array }, identity: string) => void,
- * lastPage?: (path: string) => Promise<{ kind: string, identity?: string, bytes?: Uint8Array, html?: string } | null>,
+ * rememberPreview?: (path: string, page: { kind: "html", html: string, sources?: Array<string | null> } | { kind: "pdf", sha: string, bytes: Uint8Array }, identity: string) => void,
+ * lastPage?: (path: string) => Promise<{ kind: string, identity?: string, bytes?: Uint8Array, html?: string, sources?: Array<string | null> } | null>,
  * onRendered?: (identity: string, projectDigest: string) => void, onEmpty?: () => void,
  * facts: () => PreviewFacts, tree: () => PreviewTree,
- * gather: (digests: Record<string, string>) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string> }, missing: string[] }>,
+ * gather: (digests: Record<string, string>, options?: { urls?: boolean | "reference" }) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string>, references: Array<{ sha: string, type: string, bytes: Uint8Array }> }, missing: string[] }>,
  * heading: (tree: PreviewTree) => Promise<string>, takeManual?: () => boolean, manualPending?: () => boolean,
  * onsynctex?: (map: unknown | null) => void, send?: (message: { type: string, html?: string }) => void,
  * clearDebounce?: () => void, refreshFrame?: () => void, debug?: (message: string, ...details: unknown[]) => void,
@@ -93,6 +95,8 @@ export function createPreviewRenderer({
   clearDebounce = () => {},
   /// The frame is showing something this render does not own.
   refreshFrame = () => {},
+  /// A finished render on this computer whose HTML can be shared as results.
+  /// It is fire-and-forget: the render does not wait for it.
   debug = () => {},
 }) {
   /// The renders that finished during this visit, by entry path, newest last.
@@ -151,6 +155,13 @@ export function createPreviewRenderer({
     const capturedProjectDigest = start.projectDigest || "";
     let identity = "";
     const format = renderers.previewFormatOf(source.main);
+    // The saved output of a collaborator's run, for the draft to show under
+    // its code cells. A Typst draft gets the files Calepin stored. Set on
+    // every render so a stale one never lingers. Only the file the results
+    // were made from gets them.
+    const saved = start.runResults && start.runResults.path === source.main ? start.runResults : null;
+    source.quartoResults = format === "quarto" && saved?.cells ? { cells: saved.cells, inlines: saved.inlines ?? null, note: saved.note } : null;
+    source.calepinResults = format === "typst" && saved?.files ? { files: saved.files } : null;
     debug("preview: tree", source.main, format, Object.keys(source.texts || {}).length);
     // The collaboration session exists before its first document state arrives.
     // Rendering that placeholder used to call the renderer registry with an
@@ -165,7 +176,7 @@ export function createPreviewRenderer({
       framePreview.clear?.();
       onRendered("", capturedProjectDigest);
       onEmpty();
-      send({ type: "preview", html: "<!doctype html><meta charset=utf-8><title>Empty document</title><main style='font:16px system-ui;padding:2rem'>This document is empty.</main>" });
+      send({ type: "preview", html: "<!doctype html><meta charset=utf-8>" });
       diagnostics.rendered({ page: false, diagnostics: [] });
       return;
     }
@@ -177,6 +188,15 @@ export function createPreviewRenderer({
     const markdownPdf = ["markdown", "quarto"].includes(format) && start.buildPreferences.output === "pdf";
     const paged = (renderers.producesPdf(format) && !htmlPreview) || markdownPdf;
     const slow = format === "latex";
+    // A render on this computer runs the document's code, which can take a
+    // minute, and gives no sign of its own: it says it is running whatever
+    // the output, the way a paged compile does. Quarto and Typst never render
+    // there from here: their code runs only on an explicit Run.
+    const explicitRun = format === "quarto" || format === "typst";
+    const announced = paged || htmlPreview
+      || (!explicitRun && start.localExecution && start.buildPreferences?.backend === "local");
+    // Compiling while typing: a result for older text is still worth showing.
+    const continuousHtml = htmlPreview && format === "latex" && Boolean(start.latexContinuous);
     // Shared by both guard points so asset fetching and compilation reject
     // against the same captured navigation, source policy, and main path.
     const capturedMain = source.main;
@@ -184,7 +204,7 @@ export function createPreviewRenderer({
       ticket,
       capturedNavigation,
       capturedSource,
-      strictSource: slow || format === "quarto",
+      strictSource: (slow && !continuousHtml) || format === "quarto",
       capturedMain: source.main,
     };
     try {
@@ -192,13 +212,15 @@ export function createPreviewRenderer({
       // the shortcut below. It is only looked at here; the compile takes it.
       const manualWaiting = manualPending();
       /** @param {string} id */
-      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution]);
+      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution, start.runDirectory ?? "", start.runResults?.updatedAt ?? "", [...(start.runDirectoryHas ?? [])].sort().join("\0")]);
       const held = finished.get(source.main);
+      /** @type {string | undefined} */
+      let early;
       if (held && !manualWaiting) {
         // The identity depends on the texts, their digests and the main path,
         // not on the bytes of any figure, so taking it before the figures are
         // gathered gives the value the compile would have taken.
-        const early = await snapshotDigest(source);
+        early = await snapshotDigest(source);
         if (coordinator.superseded(guard) || facts().disposed) return;
         if (keyOf(early) === held.key) {
           // Unchanged since it was drawn: no spinner, no compile, no fetch.
@@ -221,7 +243,7 @@ export function createPreviewRenderer({
             if (!record || at.disposed || capturedNavigation !== at.navigation || at.everPainted || !at.paintsTheFrame) return;
             framePreview.publish(record.kind === "pdf"
               ? { kind: "pdf", sha: record.identity, bytes: new Uint8Array(record.bytes).slice() }
-              : { kind: "html", html: record.html });
+              : { kind: "html", html: record.html, ...(Array.isArray(record.sources) ? { sources: record.sources } : {}) });
           }, () => {});
         }
       }
@@ -231,33 +253,56 @@ export function createPreviewRenderer({
       // difference between this and a pane that blanks for four seconds.
       // The spinner starts before the figures are fetched, because fetching
       // them is part of the wait.
-      if (paged || htmlPreview) status.begin({ clearFailure: !facts().everPainted });
+      if (announced) status.begin({ clearFailure: !facts().everPainted });
       // The figures, if this document has any. A figure not yet here is
       // awaited before the first compile that needs it, and the page that is
       // already up stays up meanwhile: rendering without them would produce a
       // document with holes in it and replace it a moment later, which reads
       // as a flicker rather than as progress.
+      // The raster figures and PDFs a flow page refers to, which the frame
+      // needs once. They travel with the page, and the frame sends them ahead
+      // of the HTML that names them.
+      let figures = [];
       if (Object.keys(source.digests || {}).length) {
-        const { held, missing } = await gather(source.digests);
+        // Data URLs are only for flow pages that embed figures as HTML
+        // (Markdown, Org, Quarto draft, authored HTML). Typst and LaTeX take
+        // the bytes and ignore URLs, and a paged render never embeds them, so
+        // those skip building the URLs. A flow page names its raster figures
+        // and PDFs by reference instead, so each keystroke's HTML stays small.
+        const needsUrls = !paged && format !== "typst" && format !== "latex";
+        const { held, missing } = await gather(source.digests, { urls: needsUrls ? "reference" : false });
         debug("preview: assets", Object.keys(held.assets || {}).length, missing);
         if (coordinator.superseded(guard)) return;
-        // A flow page remains useful when an image blob is unavailable:
-        // render its text and let the image appear missing. Paged formats
-        // still require a complete tree.
-        if (paged || (format === "latex" && htmlPreview)) {
-          if (missing.length) {
-            throw new Error(m.preview_render_missing_figures({ count: missing.length, names: missing.join(", ") }));
-          }
-        }
+        // A figure whose blob is unavailable draws as a placeholder below,
+        // for every format: no render is blocked on a missing figure.
         source.assets = held.assets;
         // Authored figure URLs and cached Quarto output assets are both part
         // of this render. Keep both inventories when the figure collector
         // returns its authenticated blob URLs.
         source.urls = { ...(source.urls || {}), ...held.urls };
+        figures = held.references ?? [];
       }
+      // Every figure the document names resolves to something: a project
+      // file, a figure of the last run, or a placeholder. Never a hole.
+      const parsers = figureSyntaxReady(source);
+      if (parsers) {
+        await parsers;
+        if (coordinator.superseded(guard)) return;
+      }
+      const { missing: missingFigures } = fillFigures(source, {
+        references: referencedFigures(source),
+        resultsFiles: saved?.files ?? null,
+      });
+      // The live flow page names run figures by reference, as project
+      // figures, so its HTML does not carry their bytes on every keystroke.
+      if (!paged && format !== "typst" && format !== "latex") figures = [...figures, ...await referenceFigures(source)];
+      if (coordinator.superseded(guard)) return;
       // Keep a transient source identity for diagnostics and race checks. It
-      // is never sent to the server as a rendering name or persisted result.
-      identity = await snapshotDigest(source);
+      // is never sent to the server as a rendering name; shared results are a
+      // separate upload of a local run's output, which this person can turn off.
+      // The figures only add `assets` and `urls`, which the digest does not
+      // read, so a digest taken above is still this tree's identity.
+      identity = early ?? await snapshotDigest(source);
       debug("preview: rendering", format, identity);
       if (facts().disposed) return;
       const manual = takeManual();
@@ -271,8 +316,10 @@ export function createPreviewRenderer({
       // Run code is a switch that is off whenever a document opens and is
       // never stored. While it is off, a format set to this computer is
       // drawn by this browser's own renderer, and a document never runs on
-      // this computer without consent.
-      const build = current.localExecution ? current.buildPreferences : { ...current.buildPreferences, backend: "browser" };
+      // this computer without consent. Quarto and Typst have no switch: they
+      // are always drawn here as a draft, and their code runs only when Run
+      // is pressed.
+      const build = !explicitRun && current.localExecution ? current.buildPreferences : { ...current.buildPreferences, backend: "browser" };
       rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug });
       debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
       if (facts().disposed) return;
@@ -281,8 +328,19 @@ export function createPreviewRenderer({
       // or Typst run on this computer can show its whole log. Each render replaces the last one,
       // including with "" when this one produced none.
       else status.recordLog(rendered?.log || "");
-      const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, log } = rendered;
-      const contextual = (said || []).map((item) => diagnosticContext(item, source, identity));
+      const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, log, sources } = rendered;
+      // Quarto and Typst figures can come from the author's Run directory, so
+      // the editor's file warning is replaced by one that says which it is.
+      const figureWarnings = (format === "quarto" || format === "typst")
+        ? missingFigures.map((figure) => ({
+          severity: "warning",
+          message: start.runDirectoryHas?.has(figure.path)
+            ? m.preview_render_figure_in_run_directory({ name: figure.name })
+            : m.preview_render_figure_not_found({ name: figure.name }),
+          file: figure.file, line: figure.line, column: 1, end_line: figure.line, end_column: 1,
+        }))
+        : [];
+      const contextual = [...(said || []), ...figureWarnings].map((item) => diagnosticContext(item, source, identity));
       // An in-flight preview may finish after another keystroke: HTML and
       // Typst may show that intermediate progress while the queued render
       // catches up. Navigation and main-file changes still invalidate it;
@@ -320,7 +378,7 @@ export function createPreviewRenderer({
           key: keyOf(identity),
           page: pdf
             ? { kind: /** @type {const} */ ("pdf"), sha: identity, bytes: new Uint8Array(buffer.slice(0)) }
-            : { kind: /** @type {const} */ ("html"), html },
+            : { kind: /** @type {const} */ ("html"), html, ...(Array.isArray(sources) ? { sources } : {}), ...(figures.length ? { figures } : {}) },
           diagnostics: contextual,
           latex: format === "latex" && !htmlPreview ? rendered : null,
           log: rendered?.log || "",
@@ -384,7 +442,7 @@ export function createPreviewRenderer({
       // fetched, which is this page's problem rather than the author's.
       const at = facts();
       const stillCurrent = capturedNavigation === at.navigation
-        && (!(paged || slow) || capturedSource === at.source);
+        && (!(paged || slow) || continuousHtml || capturedSource === at.source);
       if (coordinator.isNewer(ticket) && stillCurrent && error.name !== "Superseded") {
         // The same string the status is set to, said once: what the reader is
         // told and what the diagnostics record must not be able to differ.
@@ -401,7 +459,7 @@ export function createPreviewRenderer({
       // afterwards must not turn it off under a newer one. This render may
       // have committed its own ticket by now, so the test is "nothing newer
       // committed", not "not yet committed".
-      if ((paged || htmlPreview) && coordinator.atLeastCommitted(ticket)) status.finish();
+      if (announced && coordinator.atLeastCommitted(ticket)) status.finish();
     }
   }
   return render;

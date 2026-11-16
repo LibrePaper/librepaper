@@ -191,6 +191,30 @@ function readStore(database, store, method, ...args) {
   assert.equal((await readStore(database, "projects", "get", key)).shellReady, true);
 }
 
+// A shell cached by an older build is not ready for a newer one: the newer build
+// has chunks the old cache lacks, so remembering the project clears the mark.
+{
+  const indexedDB_ = fakeIndexedDB();
+  const server = "https://example.test";
+  const metadata = { server, document_id: "55555555-5555-4555-8555-555555555555", slug: "build", created_at: "" };
+  const identity = { server, documentId: metadata.document_id, slug: "build", createdAt: "" };
+  const database = await openFake(indexedDB_);
+  const seeding = database.transaction(["states"], "readwrite");
+  const seeded = new Promise((resolve) => { seeding.oncomplete = resolve; });
+  seeding.objectStore("states").put({ version: 3 }, projectIdentityKey(projectIdentity(identity)));
+  await seeded;
+  globalThis.__APP_VERSION__ = "0.0.68";
+  try {
+    await rememberProject(metadata, indexedDB_);
+    await markShellReady(identity, indexedDB_);
+    assert.equal((await rememberProject(metadata, indexedDB_)).shellReady, true);
+    globalThis.__APP_VERSION__ = "0.0.69";
+    assert.equal((await rememberProject(metadata, indexedDB_)).shellReady, undefined);
+  } finally {
+    delete globalThis.__APP_VERSION__;
+  }
+}
+
 // The documents origin is remembered with the project, so a cached open can
 // show the preview. Metadata without one stores none.
 {

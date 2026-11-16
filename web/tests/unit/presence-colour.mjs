@@ -1,6 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PRESENCE_COLOURS, presenceColour } from "../../src/lib/presence-colour.js";
+import { PRESENCE_COLOURS, personSeed, presenceColour } from "../../src/lib/presence-colour.js";
+
+test("a signed-in person is seeded by their account, whatever their name", () => {
+  // The same account in two tabs, under two spellings of its name, is one
+  // seed and so one colour.
+  const seed = personSeed({ accountId: "acc-1", name: "Ada" });
+  assert.equal(seed, "account:acc-1");
+  assert.equal(personSeed({ accountId: "acc-1", name: "Ada Lovelace" }), seed);
+  assert.equal(presenceColour(personSeed({ accountId: "acc-1", name: "A. L." })), presenceColour(seed));
+});
+
+test("an anonymous person is seeded by their name, and nothing otherwise", () => {
+  assert.equal(personSeed({ name: "Grace" }), "name:Grace");
+  assert.equal(personSeed({ accountId: "", name: "Grace" }), "name:Grace");
+  assert.equal(personSeed({ name: "   " }), "");
+  assert.equal(personSeed({}), "");
+});
+
+test("a seeded colour is kept unless a person present already wears it", () => {
+  // Taken colours are the people actually in the file. Nobody else present
+  // means the seed's own colour, whatever else the document has seen.
+  const seed = personSeed({ accountId: "acc-1" });
+  const mine = presenceColour(seed);
+  assert.equal(presenceColour(seed, []), mine);
+  const others = PRESENCE_COLOURS.filter((colour) => colour !== mine);
+  assert.equal(presenceColour(seed, others), mine);
+  // Somebody present is wearing it: this person moves to the next free hue.
+  const moved = presenceColour(seed, [mine]);
+  assert.notEqual(moved, mine);
+  assert.ok(PRESENCE_COLOURS.includes(moved));
+});
 
 test("a person keeps one colour, and it is one the stylesheet draws", () => {
   const mine = presenceColour("vincent");

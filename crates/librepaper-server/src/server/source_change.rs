@@ -9,7 +9,7 @@ use super::*;
 use librepaper_room::room::agent::OperationKey;
 use librepaper_room::room::source_change::{
     AgentError, Consistency, CreateFile, DeleteFile, Dependency, Origin, Patch, PutBinary,
-    SourceChange,
+    RenameFile, SourceChange,
 };
 
 /// The longest a push message may be, in characters.
@@ -30,6 +30,8 @@ struct ChangeInput {
     delete: Vec<DeleteFile>,
     #[serde(default)]
     put_binary: Vec<PutBinary>,
+    #[serde(default)]
+    rename: Vec<RenameFile>,
 }
 
 /// Who pushes and what the version is called. `author` is a name the caller
@@ -126,6 +128,7 @@ impl Server {
             create: input.change.create,
             delete: input.change.delete,
             put_binary: input.change.put_binary,
+            rename: input.change.rename,
             request_digest: librepaper_base::digest::Digest::of(&body).to_hex(),
             message: Some(input.sync.message),
             author: input.sync.author,

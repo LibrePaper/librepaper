@@ -1,6 +1,6 @@
 import { EditorState } from '@codemirror/state';
 import { Language } from './language';
-import { Tokenizer } from './tokenizer';
+import { tokenizeOrEmpty } from './tokenize';
 import { Token } from './tokens';
 
 export interface EditorScope {
@@ -15,7 +15,7 @@ export const EMPTY_SCOPE: EditorScope = { inTable: false, inColor: false };
 
 export function scopeAt(state: EditorState, pos: number, language: Language): EditorScope {
   const source = state.doc.toString();
-  const tokens = new Tokenizer(language).tokenize(source);
+  const tokens = tokenizeOrEmpty(language, source);
   const scope: EditorScope = { inTable: false, inColor: false };
   const colors = language.colorCommands ?? [];
 
@@ -23,7 +23,8 @@ export function scopeAt(state: EditorState, pos: number, language: Language): Ed
     for (const token of list) {
       if (pos < token.from || pos > token.to) continue;
 
-      if (token.kind === 'table') {
+      // Org and Markdown pipe tables are `mdtable` containers; the rest are tables by kind.
+      if (token.kind === 'table' || token.name === 'mdtable') {
         scope.inTable = true;
         scope.table = token;
         scope.tableEditable = language.table?.editable?.(source, token) ?? true;

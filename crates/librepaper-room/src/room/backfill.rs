@@ -242,6 +242,7 @@ async fn owner_authority(room: &Room) -> Result<Authority, WriteError> {
         .await?
         .ok_or(WriteError::NotFound)?;
     Ok(Authority {
+        agent_label: String::new(),
         principal_key: owner.id.to_string(),
         account_id: Some(owner.id),
         link_hash: None,

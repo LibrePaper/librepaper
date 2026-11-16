@@ -74,10 +74,14 @@ pub(crate) struct ResolvedConfig {
     session_lifetime_text: Option<String>,
     pub(crate) publishers: Policy,
     pub(crate) commenters: Policy,
+    /// Which link roles may be held without signing in.
+    pub(crate) anonymous: librepaper_base::role::AnonymousAccess,
     pub(crate) simulate_activity: Option<u32>,
     pub(crate) expire_after: Option<String>,
     pub(crate) expire_from: Option<String>,
     pub(crate) erase_inactive_after: Option<String>,
+    pub(crate) legal_terms_url: Option<String>,
+    pub(crate) legal_privacy_url: Option<String>,
     pub(crate) asset_mirror: String,
     pub(crate) metrics_address: Option<SocketAddr>,
     pub(crate) log_filter: String,
@@ -119,6 +123,7 @@ impl fmt::Debug for ResolvedConfig {
             .field("session_lifetime", &self.session_lifetime)
             .field("publishers", &self.publishers)
             .field("commenters", &self.commenters)
+            .field("anonymous", &self.anonymous)
             .field("simulate_activity", &self.simulate_activity)
             .field("expire_after", &self.expire_after)
             .field("expire_from", &self.expire_from)
@@ -153,6 +158,7 @@ struct Raw {
     access: Access,
     limits: Limits,
     retention: Retention,
+    legal: Legal,
     assets: Assets,
     metrics: Metrics,
     proxy: Proxy,
@@ -249,7 +255,10 @@ struct Custom {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Access {
+    anonymous_reads: Option<Input<bool>>,
     anonymous_comments: Option<Input<bool>>,
+    anonymous_suggests: Option<Input<bool>>,
+    anonymous_edits: Option<Input<bool>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -269,6 +278,12 @@ struct Retention {
     expire_after: Option<Input<String>>,
     expire_from: Option<Input<String>>,
     erase_inactive_after: Option<Input<String>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Legal {
+    terms_url: Option<Input<String>>,
+    privacy_url: Option<Input<String>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -453,6 +468,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "access",
             "limits",
             "retention",
+            "legal",
             "assets",
             "metrics",
             "proxy",
@@ -551,7 +567,16 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             }
         }
     }
-    section(v, "access", &["anonymous_comments"])?;
+    section(
+        v,
+        "access",
+        &[
+            "anonymous_reads",
+            "anonymous_comments",
+            "anonymous_suggests",
+            "anonymous_edits",
+        ],
+    )?;
     section(
         v,
         "limits",
@@ -571,6 +596,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         "retention",
         &["expire_after", "expire_from", "erase_inactive_after"],
     )?;
+    section(v, "legal", &["terms_url", "privacy_url"])?;
     section(v, "assets", &["mirror"])?;
     section(v, "metrics", &["address"])?;
     section(v, "proxy", &["trusted_networks"])?;
@@ -737,6 +763,13 @@ pub(crate) fn load_with_postgres_env(
         raw.access.anonymous_comments,
         false,
     )?;
+    let anonymous_reads = r.value("access.anonymous_reads", raw.access.anonymous_reads, false)?;
+    let anonymous_suggests = r.value(
+        "access.anonymous_suggests",
+        raw.access.anonymous_suggests,
+        false,
+    )?;
+    let anonymous_edits = r.value("access.anonymous_edits", raw.access.anonymous_edits, false)?;
     let expire_after = r.optional("retention.expire_after", raw.retention.expire_after)?;
     let erase_inactive_after = r.optional(
         "retention.erase_inactive_after",
@@ -747,6 +780,14 @@ pub(crate) fn load_with_postgres_env(
         raw.retention.expire_from,
         "updated".into(),
     )?);
+    let legal_terms_url = r
+        .optional("legal.terms_url", raw.legal.terms_url)?
+        .map(|value| check_legal_url("legal.terms_url", &value))
+        .transpose()?;
+    let legal_privacy_url = r
+        .optional("legal.privacy_url", raw.legal.privacy_url)?
+        .map(|value| check_legal_url("legal.privacy_url", &value))
+        .transpose()?;
     let asset_mirror = r.value(
         "assets.mirror",
         raw.assets.mirror,
@@ -893,10 +934,18 @@ pub(crate) fn load_with_postgres_env(
             public: anonymous_comments,
             ..lists.commenters
         },
+        anonymous: librepaper_base::role::AnonymousAccess {
+            reads: anonymous_reads,
+            comments: anonymous_comments,
+            suggests: anonymous_suggests,
+            edits: anonymous_edits,
+        },
         simulate_activity,
         expire_after,
         expire_from,
         erase_inactive_after,
+        legal_terms_url,
+        legal_privacy_url,
         asset_mirror,
         metrics_address,
         log_filter,
@@ -1218,6 +1267,24 @@ fn check_issuers(providers: &[OidcProvider]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Legal links are shown to every reader, so they must be absolute https URLs
+/// of at most 2048 characters with no control characters.
+fn check_legal_url(key: &str, value: &str) -> Result<String, String> {
+    let refused = || {
+        format!(
+            "{key} must be an absolute https:// URL of at most 2048 characters with no control characters"
+        )
+    };
+    if value.chars().count() > 2048 || value.chars().any(char::is_control) {
+        return Err(refused());
+    }
+    let parsed = url::Url::parse(value).map_err(|_| refused())?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err(refused());
+    }
+    Ok(value.to_owned())
 }
 
 /// Labels are shown on the sign-in page, so blank, long and control
@@ -1657,9 +1724,30 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     value(
         &mut out,
         &c.sources,
+        "access.anonymous_reads",
+        "anonymous_reads",
+        &c.anonymous.reads.to_string(),
+    );
+    value(
+        &mut out,
+        &c.sources,
         "access.anonymous_comments",
         "anonymous_comments",
         &c.commenters.public.to_string(),
+    );
+    value(
+        &mut out,
+        &c.sources,
+        "access.anonymous_suggests",
+        "anonymous_suggests",
+        &c.anonymous.suggests.to_string(),
+    );
+    value(
+        &mut out,
+        &c.sources,
+        "access.anonymous_edits",
+        "anonymous_edits",
+        &c.anonymous.edits.to_string(),
     );
     section(&mut out, "limits");
     value(
@@ -1740,6 +1828,21 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "retention.erase_inactive_after",
         "erase_inactive_after",
         c.erase_inactive_after.as_deref(),
+    );
+    section(&mut out, "legal");
+    optional(
+        &mut out,
+        &c.sources,
+        "legal.terms_url",
+        "terms_url",
+        c.legal_terms_url.as_deref(),
+    );
+    optional(
+        &mut out,
+        &c.sources,
+        "legal.privacy_url",
+        "privacy_url",
+        c.legal_privacy_url.as_deref(),
     );
     section(&mut out, "assets");
     value(
@@ -2346,6 +2449,33 @@ client_secret = { file = "missing-oauth-secret" }
         assert_eq!(unset.erase_inactive_after, None);
     }
     #[test]
+    fn legal_links_are_read_from_legal() {
+        let loaded = load_text(
+            "[legal]\nterms_url = \"https://example.org/terms.html\"\nprivacy_url = \"https://example.org/privacy.html\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.legal_terms_url.as_deref(),
+            Some("https://example.org/terms.html")
+        );
+        assert_eq!(
+            loaded.legal_privacy_url.as_deref(),
+            Some("https://example.org/privacy.html")
+        );
+    }
+    #[test]
+    fn legal_links_are_none_when_unset() {
+        let loaded = load_text("").unwrap();
+        assert_eq!(loaded.legal_terms_url, None);
+        assert_eq!(loaded.legal_privacy_url, None);
+    }
+    #[test]
+    fn legal_links_must_be_https() {
+        let error =
+            load_text("[legal]\nterms_url = \"http://example.org/terms.html\"\n").unwrap_err();
+        assert!(error.contains("legal.terms_url"), "{error}");
+    }
+    #[test]
     fn display_redacts_database_and_auth_and_is_toml() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
@@ -2450,6 +2580,31 @@ client_secret = { file = "missing-oauth-secret" }
         let loaded = load_text("[access]\nanonymous_comments = true\n").unwrap();
         assert!(loaded.commenters.public);
         assert!(!load_text("").unwrap().commenters.public);
+    }
+
+    #[test]
+    fn anonymous_switches_parse_default_false_and_round_trip() {
+        let loaded = load_text("").unwrap();
+        assert_eq!(
+            loaded.anonymous,
+            librepaper_base::role::AnonymousAccess::default()
+        );
+        let loaded = load_text(
+            "[access]\nanonymous_reads = true\nanonymous_comments = true\nanonymous_suggests = true\nanonymous_edits = true\n",
+        )
+        .unwrap();
+        assert!(loaded.anonymous.reads && loaded.anonymous.comments);
+        assert!(loaded.anonymous.suggests && loaded.anonymous.edits);
+        let shown = show_resolved(&loaded);
+        for key in [
+            "anonymous_reads = true",
+            "anonymous_comments = true",
+            "anonymous_suggests = true",
+            "anonymous_edits = true",
+        ] {
+            assert!(shown.contains(key), "{shown}");
+        }
+        assert!(load_text("[access]\nanonymous_writes = true\n").is_err());
     }
 
     fn oidc_ids(loaded: &ResolvedConfig) -> Vec<&str> {

@@ -1,11 +1,11 @@
 ---
 name: librepaper
-description: Work with LibrePaper, the browser editor for LaTeX, Typst, Quarto, Markdown and HTML projects. Covers acting on a project through an `lpt_` agent token (reading, commenting, proposing tracked changes, editing, the librepaper MCP server and `mcp__librepaper` tools), syncing a folder or Git repository with `librepaper pull` and `librepaper push` or the GitHub sync Action, setting up and running a self-hosted server with the Docker Compose kit (librepaper.toml, sign-in providers, limits, upgrades, logs, resource use, abuse reports and moderation, backups and restore drills), and contributing to the LibrePaper code (building, testing, security review). Use when the user pastes an `lpt_` token, asks to proofread, review, comment on or edit a LibrePaper document, mentions `librepaper mcp`, `librepaper pull` or `push`, `LibrePaper/sync-action`, `./manage`, `librepaper.toml`, `admin moderate`, the admin console, or works in the LibrePaper repository.
+description: Work with LibrePaper, the browser editor for LaTeX, Typst, Quarto, Markdown, Org and HTML projects. Covers acting on a project through an `lpt_` agent token (reading, commenting, proposing tracked changes, editing, the librepaper MCP server and `mcp__librepaper` tools), syncing a folder or Git repository with `librepaper pull` and `librepaper push` or the GitHub sync Action, setting up and running a self-hosted server with the Docker Compose kit (librepaper.toml, sign-in providers, limits, upgrades, logs, resource use, abuse reports and moderation, backups and restore drills), and contributing to the LibrePaper code (building, testing, security review). Use when the user pastes an `lpt_` token, asks to proofread, review, comment on or edit a LibrePaper document, mentions `librepaper mcp`, `librepaper pull` or `push`, `LibrePaper/sync-action`, `./manage`, `librepaper.toml`, `admin moderate`, the admin console, or works in the LibrePaper repository.
 ---
 
 # LibrePaper
 
-LibrePaper edits and renders HTML, Markdown, Typst, LaTeX and Quarto projects in the browser, with sharing, live comments and tracked changes. The official instance is `app.librepaper.org`. Anyone can run their own server with the Docker Compose kit that ships with every release. The code is at `https://github.com/LibrePaper/librepaper`.
+LibrePaper edits and renders HTML, Markdown, Org, Typst, LaTeX and Quarto projects in the browser, with sharing, live comments and tracked changes. The official instance is `app.librepaper.org`. Anyone can run their own server with the Docker Compose kit that ships with every release. The code is at `https://github.com/LibrePaper/librepaper`.
 
 ## Which file to load
 

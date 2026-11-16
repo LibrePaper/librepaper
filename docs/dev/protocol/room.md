@@ -9,7 +9,9 @@ Automation sends its document credential in `X-LibrePaper-Key` and may send
 `X-LibrePaper-Automation: 1`. Link-bounded requests must include the
 automation marker when a browser session is also present. Document access is
 rechecked for socket operations. Signed-in comments use account attribution;
-anonymous link users receive a stable link pseudonym.
+anonymous link users exist only when the link's owner chose "Anyone with the
+link" and the deployment's `[access]` switch for the link's role is on. They
+receive a stable link pseudonym and never edit or suggest.
 
 ## Snapshot and annotation reads
 
@@ -95,6 +97,16 @@ send or receive source CRDT updates. Source synchronization is editor-only.
   - `doc-rows {vector, durableVector, updates}` when stored rows remain;
   - `doc-state` with `base` (or `ref` and `digest` for a large baseline),
     followed by `doc-rows` when the client lacks the compacted base.
+- The inline limit (`session.inline_state_max`) covers the whole join payload,
+  base and rows together. When the rows would push it over, `doc-rows` carries
+  `ref` and `digest` instead of `updates`. A client opts in with
+  `"rowsRef": true` in `doc-open`; without it the rows stay inline whatever
+  their size, so older clients are unaffected and the protocol string does not
+  change. The referenced blob is fetched, authorised (editor rung, same slug)
+  and digest-checked exactly like a referenced base, and holds each batch behind
+  its length as a big-endian `u32`. The client imports the batches after the
+  base, in the same order as inline rows. A `410` restarts the join with a new
+  `doc-open`.
 - `updates` is an array of independently encoded Loro batches; the client
   applies it with `importBatch`. `base`, when present, is one independent blob
   imported before the array. After import, the client exports
@@ -132,6 +144,7 @@ send or receive source CRDT updates. Source synchronization is editor-only.
   | `log_quota` | yes | Document log awaits compaction; counts toward socket closure. |
   | `document_buffer` | yes | Unsaved document buffer is full; pressure exemption. |
   | `pending_budget` | yes | Deployment pending-work budget is full; pressure exemption. |
+  | `storage_busy` | yes | The server could not reserve quota for the update in time because storage accounting was busy; pressure exemption. |
   | `refused` | no | Non-retryable ceiling; counts toward socket closure. |
 
 Other room frames include `doc-label`, annotation action results, and

@@ -188,6 +188,87 @@ try {
   assert.equal(trusted.status, 200, "the configured server can use the management API");
   await captureSettingsScreenshot();
 
+  async function waitForEnabledButton(label, scopeId) {
+    await until(`${label} action enabled`, () => b.evaluate(`(() => {
+      const scope = ${JSON.stringify(scopeId)}
+        ? document.querySelector(${JSON.stringify(scopeId)})?.closest("section")
+        : document;
+      if (!scope) return false;
+      return [...scope.querySelectorAll("button")].some((button) =>
+        button.textContent.trim() === ${JSON.stringify(label)} && !button.disabled
+      );
+    })()`), 10000);
+  }
+  const agentLabel = "Claude";
+  await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "AI agents").click()`);
+  await until("agents heading visible", () => b.evaluate("Boolean(document.querySelector('#agents-list-heading'))"), 10000);
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#agents-list-heading").closest("section");
+    const addButton = [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Add agent" && item.type !== "submit");
+    addButton?.click();
+  })()`);
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#agents-list-heading").closest("section");
+    section.querySelector('input[name="label"]').value = "Claude";
+    section.querySelector('input[name="label"]').dispatchEvent(new Event("input", { bubbles: true }));
+    section.querySelector('input[name="command"]').value = "librepaper-no-such-executable-for-test --version";
+    section.querySelector('input[name="command"]').dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await waitForEnabledButton("Add agent", "#agents-list-heading");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#agents-list-heading").closest("section");
+    [...section.querySelectorAll("button[type='submit']")].find((item) => item.textContent.trim() === "Add agent").click();
+  })()`);
+  await until("invalid executable error", () => b.evaluate(`
+    [...document.querySelector("#agents-list-heading").closest("section").querySelectorAll('[role="alert"]')]
+      .some((node) => node.textContent.trim().length > 0)
+  `), 5000);
+  await new Promise((done) => setTimeout(done, 5500));
+  assert.equal(await b.evaluate(`
+    (() => {
+      const section = document.querySelector("#agents-list-heading").closest("section");
+      return [...section.querySelectorAll('[role="alert"]')].some((node) => node.textContent.trim().length > 0)
+        && section.querySelector('input[name="label"]').value === "Claude"
+        && section.querySelector('input[name="command"]').value === "librepaper-no-such-executable-for-test --version";
+    })()
+  `), true, "agent server error and inputs survive polling");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#agents-list-heading").closest("section");
+    const field = section.querySelector('input[name="command"]');
+    field.value = ${JSON.stringify(process.execPath)};
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    [...section.querySelectorAll("button[type='submit']")].find((item) => item.textContent.trim() === "Add agent").click();
+  })()`);
+  let agentId = "";
+  await until("custom agent added through Settings", async () => {
+    const response = await apiState();
+    if (!response.ok) return false;
+    const agent = (await response.json()).custom_agents.find((item) => item.label === agentLabel);
+    if (!agent) return false;
+    agentId = agent.id;
+    return b.evaluate(`(() => {
+      const section = document.querySelector("#agents-list-heading").closest("section");
+      return [...section.querySelectorAll(".setting-title")].filter((item) => item.textContent === ${JSON.stringify(agentLabel)}).length === 1;
+    })()`);
+  }, 10000);
+  await waitForEnabledButton("Remove", "#agents-list-heading");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#agents-list-heading").closest("section");
+    const row = [...section.querySelectorAll(".setting-row")].find((item) =>
+      [...item.querySelectorAll(".setting-title")].some((title) => title.textContent.trim() === ${JSON.stringify(agentLabel)}));
+    [...row.querySelectorAll("button")].find((button) => button.textContent.trim() === "Remove").click();
+  })()`);
+  // Removing an agent asks first, in a dialog whose action is also Remove.
+  // Settings is a dialog too, and its rows have Remove buttons of their own,
+  // so the question is looked for in the dialog on top: the last one opened.
+  const confirmRemove = `[...([...document.querySelectorAll('[role="dialog"][data-state="open"]')].at(-1)?.querySelectorAll("footer button") || [])].find((button) => button.textContent.trim() === "Remove")`;
+  await until("remove agent asks first", () => b.evaluate(`Boolean(${confirmRemove})`), 5000);
+  await b.evaluate(`${confirmRemove}.click()`);
+  await until("custom agent removed through Settings", async () => {
+    const response = await apiState();
+    return response.ok && !(await response.json()).custom_agents.some((item) => item.id === agentId);
+  }, 10000);
+
   await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "Rendering").click()`);
   await b.evaluate('window.showSettingsCategory("rendering")');
   const quartoField = "#render-quarto-html [aria-label='HTML command for quarto']";

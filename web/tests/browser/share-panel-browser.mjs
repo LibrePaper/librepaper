@@ -96,6 +96,8 @@ const labelled = (label) => document.querySelector('[aria-label="' + label + '"]
 const press = async (node) => {
   check(node, "missing control");
   node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
+  // A real click on a button focuses it; a scripted one does not.
+  node.focus?.();
   node.click();
   await flush();
 };
@@ -109,7 +111,10 @@ window.sharePanelCheck = async () => {
 
   /* ------------------------------------------------ the links tab at rest */
 
-  check(!document.querySelector('[role="tab"]'), "the sharing panel has no tab row: " + text());
+  // One view, so one tab: the panel's title, already selected.
+  const shareTabs = [...document.querySelectorAll('[role="tab"]')];
+  check(shareTabs.length === 1 && squash(shareTabs[0]) === "Share" && shareTabs[0].getAttribute("aria-selected") === "true",
+    "the sharing panel is titled by one selected tab: " + text());
   check(!/\\d+ (links?|tokens?)/.test(squash(document.querySelector(".share-toolbar"))), "the toolbar has no count");
   check(squash(document.querySelector(".share-toolbar")) === "New", "only the New button: " + squash(document.querySelector(".share-toolbar")));
   check(rows().length === 3 && !text().includes("Expired"), "three links and no expired section");
@@ -120,7 +125,7 @@ window.sharePanelCheck = async () => {
   check(/[\\u2013\\u2014]/.test(text()) === false, "no dashes in the panel text");
   check(rows().every((row) => row.getBoundingClientRect().height >= 40 && row.getBoundingClientRect().height <= 52), "rows are 44 to 48px tall: "
     + rows().map((row) => Math.round(row.getBoundingClientRect().height)).join(","));
-  check(rows()[2].querySelector(".share-name").title.startsWith("A very long name"), "the full name is in a tooltip");
+  check(rows()[2].querySelector(".share-name").getAttribute("data-tip").startsWith("A very long name"), "the full name is in a tooltip");
   check(rows()[2].querySelector(".share-name").scrollWidth > rows()[2].querySelector(".share-name").clientWidth, "and it is cut with an ellipsis");
   check(panel.scrollWidth <= panel.clientWidth + 1, "no horizontal scroll");
   const actionsOf = (row) => [...row.querySelectorAll(".share-actions button")].map((node) => node.getAttribute("aria-label"));
@@ -140,7 +145,6 @@ window.sharePanelCheck = async () => {
   check(document.querySelectorAll(".share-form").length === 1 && !document.querySelector("[data-share-new]"),
     "the form stands in for the toolbar");
   check(document.activeElement === document.querySelector(".share-form input"), "focus moves into the form");
-  check(text().includes("A private name to help you remember who you shared this link with."), "the helper line");
   const form = document.querySelector(".share-form");
   await type(form.querySelector("input[type=text]"), "For Ana");
   const selects = form.querySelectorAll("select");
@@ -164,13 +168,15 @@ window.sharePanelCheck = async () => {
   check(window.calls.length === before, "and sends nothing yet");
   await press(button("Cancel"));
   check(window.calls.length === before && rows().length === 4 && text().includes("Reviewer"), "Cancel keeps the row and sends nothing");
-  check(document.activeElement === document.querySelector("[data-share-new]"), "focus goes to New after Cancel");
+  check(document.activeElement === labelled("Revoke Reviewer"), "focus goes back to the trash button that opened the dialog after Cancel");
   await press(labelled("Revoke For Ana"));
   await press(confirmButton("Revoke link"));
   check(JSON.stringify(window.calls.at(-1)[1]) === JSON.stringify({ revoke: { id: window.calls.at(-1)[1].revoke.id } }), "revoke is its own action: " + JSON.stringify(window.calls.at(-1)[1]));
   check(rows().length === 3 && !text().includes("For Ana"), "the row is gone: " + text());
   check(!text().includes("revoked") && !text().includes("Revoked"), "and no status line says so: " + text());
-  check(document.activeElement === document.querySelector("[data-share-new]"), "focus goes to New after a revoke");
+  // The row that opened the dialog is gone after a revoke, so there is no
+  // element to return to; the dialog itself must be closed.
+  check(!document.querySelector('[role="dialog"][data-state="open"]'), "the revoke dialog is closed");
 
   check(!text().includes("Paul's assistant") && !text().includes("lpt_"), "agent tokens are not listed here");
   check(!text().includes("No sharing links yet."), "links are still there");

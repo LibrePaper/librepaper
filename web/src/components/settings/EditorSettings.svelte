@@ -13,6 +13,8 @@
     oncompletion,
     brackets = true,
     onbrackets,
+    latexAssist = true,
+    onlatexassist,
     proofing = "browser",
     onproofing,
     dialect = "american",
@@ -108,6 +110,14 @@
   <button type="button" role="switch" class="switch" aria-checked={brackets} aria-label={m.common_close_brackets()}
           data-state={brackets ? "checked" : "unchecked"} onclick={() => onbrackets?.(!brackets)}>
     <span class="switch-thumb" data-state={brackets ? "checked" : "unchecked"}></span>
+  </button>
+</SettingRow>
+
+<SettingRow id="editor-latex-assist" title={m.editorsettings_latex_assist()}
+            description={m.editorsettings_latex_assist_description()}>
+  <button type="button" role="switch" class="switch" aria-checked={latexAssist} aria-label={m.editorsettings_latex_assist()}
+          data-state={latexAssist ? "checked" : "unchecked"} onclick={() => onlatexassist?.(!latexAssist)}>
+    <span class="switch-thumb" data-state={latexAssist ? "checked" : "unchecked"}></span>
   </button>
 </SettingRow>
 

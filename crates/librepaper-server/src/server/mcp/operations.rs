@@ -4,6 +4,7 @@ use librepaper_room::room::agent::{self, OperationKey};
 use librepaper_room::room::source_change::{
     self, Origin, Patch, SourceChange, SourceFile, SourceTree,
 };
+use librepaper_room::room::withdraw;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct CandidateGrant {
@@ -576,6 +577,10 @@ impl Server {
                 )
                 .await
             }
+            "document_withdraw" => {
+                self.mcp_withdraw(slug, actor, &current, headers, arrival, args, &key, &digest)
+                    .await
+            }
             "document_apply" => {
                 if !current.at_least(Role::Editor) {
                     return Err(Failure::new(
@@ -632,14 +637,14 @@ impl Server {
                     request_digest: digest,
                     ..Default::default()
                 };
-                self.mcp_commit_change(auth, slug, actor, &current, name, request)
+                self.mcp_commit_change(auth, slug, actor, &current, headers, name, request)
                     .await
             }
             "document_files" => {
                 if !current.at_least(Role::Editor) {
                     return Err(Failure::new(
                         "permission_changed",
-                        "editor access is required to create or delete files",
+                        "editor access is required to create, rename or delete files",
                     ));
                 }
                 let consistency = serde_json::from_value(
@@ -653,6 +658,9 @@ impl Server {
                         .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
                 let delete: Vec<source_change::DeleteFile> =
                     serde_json::from_value(args.get("delete").cloned().unwrap_or(json!([])))
+                        .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
+                let rename: Vec<source_change::RenameFile> =
+                    serde_json::from_value(args.get("rename").cloned().unwrap_or(json!([])))
                         .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
                 // Without a digest the change applies to the document as it
                 // is now. Collisions and missing files are still refused.
@@ -675,10 +683,11 @@ impl Server {
                     consistency,
                     create,
                     delete,
+                    rename,
                     request_digest: digest,
                     ..Default::default()
                 };
-                self.mcp_commit_change(auth, slug, actor, &current, name, request)
+                self.mcp_commit_change(auth, slug, actor, &current, headers, name, request)
                     .await
             }
             "document_comment" => {
@@ -710,16 +719,18 @@ impl Server {
         slug: &str,
         actor: &str,
         current: &Viewer,
+        headers: &HeaderMap,
         name: &str,
         request: SourceChange,
     ) -> Result<Value, Failure> {
-        let authority = current
+        let mut authority = current
             .agent_authority(self.ceiling_for(&current.id), actor.to_string())
             .map_err(|InvalidCredential| {
                 failure(source_change::AgentError::Conflict(
                     "document access changed".into(),
                 ))
             })?;
+        authority.authority.agent_label = super::agent_label(headers).unwrap_or_default();
         let room = self
             .rooms
             .get(slug)
@@ -841,10 +852,10 @@ impl Server {
         parent_request_id: &str,
     ) -> Result<Value, Failure> {
         let publish = args["publish"].as_str().unwrap_or("suggestions");
-        if publish == "suggestions" && !who.at_least(Role::Editor) {
+        if publish == "suggestions" && !who.at_least(Role::Suggester) {
             return Err(Failure::new(
                 "permission_changed",
-                "editor access is required to publish tracked changes",
+                "suggester access is required to publish tracked changes",
             ));
         }
         let view_id = args["view_id"].as_str().unwrap_or_default();
@@ -1087,10 +1098,10 @@ impl Server {
             result["render"] = json!(render);
         }
         if candidate.publish == "suggestions" {
-            if !who.at_least(Role::Editor) {
+            if !who.at_least(Role::Suggester) {
                 return Err(Failure::new(
                     "permission_changed",
-                    "editor access required to finish this proposal",
+                    "suggester access is required to finish this proposal",
                 ));
             }
             let creator = self.mcp_display_name(headers, arrival, who, actor, slug);
@@ -1204,6 +1215,98 @@ impl Server {
         // already stored under the recheck at the top of `mcp_operation_inner`,
         // and the final recheck runs once more before the result is returned.
         Ok(result)
+    }
+
+    /// Rejects the caller's own pending tracked changes. The command checks
+    /// ownership against head, so a change by anyone else is refused there.
+    #[allow(clippy::too_many_arguments)]
+    async fn mcp_withdraw(
+        &self,
+        slug: &str,
+        actor: &str,
+        current: &Viewer,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        args: &Value,
+        key: &OperationKey,
+        digest: &str,
+    ) -> Result<Value, Failure> {
+        if !current.at_least(Role::Suggester) {
+            return Err(Failure::new(
+                "permission_changed",
+                "suggester access is required to withdraw tracked changes",
+            ));
+        }
+        let change_ids: Vec<String> = args["change_ids"]
+            .as_array()
+            .ok_or_else(|| Failure::new("invalid_params", "change_ids must be an array"))?
+            .iter()
+            .map(|id| {
+                id.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| Failure::new("invalid_params", "change_ids must be strings"))
+            })
+            .collect::<Result<_, _>>()?;
+        let creator = self.mcp_display_name(headers, arrival, current, actor, slug);
+        let room = self
+            .rooms
+            .get(slug)
+            .await
+            .map_err(|e| Failure::new("unavailable", e.to_string()))?;
+        if let Some(why) = room.unreadable().await {
+            return Err(Failure::new("unavailable", why));
+        }
+        let request_id = super::comments::parse_uuid(
+            &super::comments::comment_uuid(&format!("withdraw\0{}", key.scoped_request_id(actor))),
+            "withdraw id",
+        )?;
+        let mut cmd = withdraw::AgentWithdrawCommand::new(
+            room.catalog().clone(),
+            room.document_id,
+            request_id,
+            change_ids,
+            format!("agent:{creator}"),
+            uuid::Uuid::parse_str(&current.id.id).ok(),
+            creator,
+        )
+        .map_err(|error| Failure::new("invalid_params", error))?;
+        let authority =
+            current
+                .authority(self.ceiling_for(&current.id))
+                .map_err(|InvalidCredential| {
+                    Failure::new("permission_changed", "your access changed")
+                })?;
+        let operation_receipt =
+            self.mcp_operation_receipt(actor, key, digest, "document_withdraw", room.document_id)?;
+        let operation = key.clone();
+        let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
+            &mut cmd,
+            operation_receipt,
+            move |outcome: &withdraw::WithdrawReceipt| {
+                let effects = outcome
+                    .withdrawn
+                    .iter()
+                    .map(|id| json!({"kind":"withdrawn","id":id}))
+                    .collect::<Vec<_>>();
+                json!({"tool":"document_withdraw","operation":operation,"status":"committed","effects":effects})
+            },
+        );
+        let (outcome, replay) = room
+            .command_reporting_replay(&authority, &mut cmd)
+            .await
+            .map_err(super::comments::command_failure)?;
+        let effects = outcome
+            .withdrawn
+            .iter()
+            .map(|id| json!({"kind":"withdrawn","id":id}))
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "operation": key,
+            "status": "committed",
+            "effects": effects,
+            "replay": replay,
+            "next": "These tracked changes are gone from the document; the text they replaced is back."
+        }))
     }
 
     async fn mcp_result(

@@ -25,7 +25,6 @@
   import Modal from "./Modal.svelte";
   import TagSwatches from "./TagSwatches.svelte";
   import NewProject from "./NewProject.svelte";
-  import SettingsDialog from "./settings/SettingsDialog.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
   import Toasts from "./Toasts.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
@@ -42,21 +41,37 @@
   import { tagColour } from "../lib/tag-colours.js";
   import { FORMATS } from "../lib/starter.js";
   import { localProjects } from "../lib/offline-projects.js";
+  import { forgetKey } from "../lib/storage.js";
   import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
-  import { readDefaultPreview } from "../lib/build-preferences.js";
+  import { buildPreferenceUser, readDefaultPreview } from "../lib/build-preferences.js";
   import { warmReader } from "../lib/warm-reader.js";
   import { m } from "../lib/paraglide/messages.js";
+  import { lazyComponent } from "../lib/lazy-component.svelte.js";
 
   let { initialSettings = "" } = $props();
   const preferences = createPreferences();
+  // The settings dialog is only shown on request, so its code is loaded when
+  // it is first opened. `settingsOpen` can be true before the module arrives
+  // (an initial settings request, a menu or shortcut), and the dialog shows
+  // as soon as it is mounted.
+  const lazy = {
+    settings: lazyComponent(() => import("./settings/SettingsDialog.svelte")),
+  };
   let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "general"));
   function openSettings(category = "general") {
     settingsCategory = category;
     settingsOpen = true;
   }
+  $effect(() => {
+    if (!settingsOpen) return;
+    lazy.settings.load().catch(() => {
+      settingsOpen = false;
+      say(m.reader_panel_unavailable(), { kind: "problem", id: "landing:settings-unavailable" });
+    });
+  });
 
   // The desktop app asks for Settings from its menu and from Ctrl or Cmd+,.
   $effect(() => {
@@ -121,10 +136,8 @@
   const takenTitles = $derived(documents.filter((doc) => mine(doc)).map((doc) => doc.title));
   let confirming = $state(false);
   let confirmText = $state("");
-  // The trash confirms twice over: once to put a project there, once to empty
-  // it. The sentence differs, and so does what the button does, so the dialog
-  // carries which of the two it is asking.
-  let confirmKind = $state("trash");
+  // Only emptying the trash asks first. Putting a project there is undone from
+  // its toast, so it does not.
   let pendingDeletion = [];
   // The project being renamed, and the name being typed for it.
   let renaming = $state(null);
@@ -145,6 +158,13 @@
   // request pending until the server confirms it so a failed write cannot
   // make the row disappear locally.
   let sharedVisibilityPending = $state(new Set());
+  // What the one confirmation dialog is for: emptying the trash ("purge") or
+  // leaving a project somebody shared ("leave"). Its title and button follow it.
+  let pendingAction = $state("purge");
+  // The shared project waiting for its Leave to be confirmed.
+  let pendingLeave = $state(null);
+  // Leaves still on their way to the server, by slug.
+  let leavePending = $state(new Set());
 
   // Which columns each place has. The table itself is DataTable's; what
   // differs between the places is this list, which is data rather than three
@@ -163,7 +183,7 @@
   // title takes whatever the checkbox and the menu leave.
   let narrow = $state(false);
   $effect(() => {
-    const query = window.matchMedia("(max-width: 760px)");
+    const query = window.matchMedia("(max-width: 767px)");
     const watch = () => (narrow = query.matches);
     watch();
     query.addEventListener("change", watch);
@@ -744,7 +764,7 @@
   function warmDocuments() {
     void warmReader({
       formats: [...new Set(documents.map((doc) => doc?.source_format).filter(Boolean))],
-      latexOutput: readDefaultPreview({ origin: location.origin, user: me.id }, "latex"),
+      latexOutput: readDefaultPreview({ origin: location.origin, user: buildPreferenceUser(me) }, "latex"),
     });
   }
 
@@ -767,33 +787,23 @@
 
   /* ----------------------------------------------------------- the trash */
 
-  // Deleting has never destroyed anything immediately: the project is marked
-  // and a purge is queued a week out, and until it runs everything is still
-  // here. So this says what it does, and the trash says how long is left.
+  // Putting a project in the trash is recoverable: the project is marked and a
+  // purge is queued a week out, and until it runs everything is still here. So
+  // it happens at once, and the toast offers to put the projects back. Only
+  // emptying the trash asks first.
   async function deleteSelected() {
     const slugs = [...selected];
     if (!slugs.length) return;
-    confirmText = m.landing_trash_selected({ count: slugs.length });
-    confirmKind = "trash";
-    pendingDeletion = slugs;
-    confirming = true;
+    await moveToTrash(slugs);
   }
 
-  // The same confirmation for one row as for a selection of them: deleting is
-  // deleting, and the sentence that says where the project goes is the point
-  // of the step.
+  // One row and a selection of them take the same path.
   function askDelete(doc) {
-    confirmText = m.landing_trash_one({ title: doc.title });
-    confirmKind = "trash";
-    pendingDeletion = [doc.slug];
-    confirming = true;
+    void moveToTrash([doc.slug]);
   }
 
-  async function reallyDelete() {
-    const slugs = pendingDeletion;
+  async function moveToTrash(slugs) {
     const wasSelected = new Set(slugs.filter((slug) => selected.has(slug)));
-    confirming = false;
-    pendingDeletion = [];
     const results = await Promise.all(
       slugs.map(async (slug) => {
         try {
@@ -823,11 +833,23 @@
       say(m.landing_delete_failed({ count: failed.length }), { kind: "problem", id: "landing:delete" });
     }
     if (succeeded.length) {
-      say(m.landing_trashed({ count: succeeded.length }), { id: "landing:trashed" });
+      say(m.landing_trashed({ count: succeeded.length }), {
+        id: "landing:trashed",
+        action: { label: m.common_undo(), onClick: () => void undoTrash(succeeded) },
+      });
     }
     await showList();
-    // A template is a project, so trashing one from the picker or from the
-    // Templates place takes this path, and what it was listed in is stale.
+    await refreshTemplatesIfListed();
+  }
+
+  async function undoTrash(slugs) {
+    await putBack(slugs);
+    await refreshTemplatesIfListed();
+  }
+
+  // A template is a project, so trashing one from the picker or from the
+  // Templates place takes this path, and what it was listed in is stale.
+  async function refreshTemplatesIfListed() {
     if (newTab || place === "templates") await loadTemplates();
   }
 
@@ -858,7 +880,7 @@
     confirmText = many
       ? m.landing_purge_many({ count: slugs.length })
       : m.landing_purge_one({ title: docs[0].title });
-    confirmKind = "purge";
+    pendingAction = "purge";
     pendingDeletion = slugs;
     confirming = true;
   }
@@ -879,8 +901,52 @@
     }
   }
 
+  // Leaving removes your access, so it is confirmed first, in the same dialog
+  // the trash uses.
+  function askLeave(doc) {
+    if (mine(doc) || leavePending.has(doc.slug)) return;
+    confirmText = m.landing_leave_confirm({ title: doc.title });
+    pendingAction = "leave";
+    pendingLeave = doc;
+    confirming = true;
+  }
+
+  function confirmPending() {
+    return pendingAction === "leave" ? reallyLeave(pendingLeave) : reallyPurge();
+  }
+
+  async function reallyLeave(doc) {
+    confirming = false;
+    pendingLeave = null;
+    if (!doc || leavePending.has(doc.slug)) return;
+    leavePending = new Set(leavePending).add(doc.slug);
+    try {
+      const response = await fetch(`/api/documents/${doc.slug}/leave`, { method: "POST", headers: SHELL_HEADERS });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => ({}))).error;
+        throw new Error(detail || m.landing_leave_failed());
+      }
+      documents = documents.filter((each) => each.slug !== doc.slug);
+      selected = new Set([...selected].filter((slug) => slug !== doc.slug));
+      // Otherwise opening the link from history would quietly rejoin the project.
+      forgetKey(doc.slug);
+      say(m.landing_left_project({ title: doc.title }), { id: "landing:left" });
+    } catch (error) {
+      say(error?.message || m.landing_leave_failed(), { kind: "problem", id: "landing:leave" });
+    } finally {
+      const pending = new Set(leavePending);
+      pending.delete(doc.slug);
+      leavePending = pending;
+    }
+  }
+
   async function restoreSelected() {
-    const slugs = [...selected];
+    await putBack([...selected]);
+  }
+
+  // Puts the given projects back out of the trash. The toolbar and the undo
+  // of a trash toast both come here.
+  async function putBack(slugs) {
     if (!slugs.length) return;
     const back = await eachOf(slugs, "untrash");
     trashed = trashed.filter((each) => !back.has(each.slug));
@@ -989,6 +1055,7 @@
       else if (action === "new-tag" || action.startsWith("tag:")) tagChosen(action, [doc]);
       else if (action === "hide-shared") void setSharedVisibility(doc, true);
       else if (action === "show-shared") void setSharedVisibility(doc, false);
+      else if (action === "leave") askLeave(doc);
       else if (action === "trash") askDelete(doc);
       else if (action === "restore") void restore(doc);
       else if (action === "purge") askPurge([doc]);
@@ -1304,7 +1371,7 @@
               </div>
               <div class="tags-menu-divider" role="separator"></div>
               <Menu.Item value="new-tag" class="menuitem project-action-item" data-rail-action="new-tag">
-                <Icon name="plus" size="1rem" /><span class="menuitem-label">{m.common_new_tag()}</span>
+                <Icon name="plus" size="1rem" /><span class="menuitem-label">{m.landing_new_tag_ellipsis()}</span>
               </Menu.Item>
               {#if userTags.length}
                 <Menu.Item value="manage-tags" class="menuitem project-action-item" data-rail-action="manage-tags">
@@ -1328,7 +1395,7 @@
         {#if narrow && ["projects", "shared", "favorites", "templates", "tag"].includes(place)}
           <span class="compact-sort">
             <Icon name="arrow-up-down" />
-            <select id="project-sort" class="select" value={compactSort} aria-label={m.common_sort()} title={m.common_sort()}
+            <select id="project-sort" class="select" value={compactSort} aria-label={m.common_sort()} data-tip={m.common_sort()}
                     onchange={(event) => chooseCompactSort(event.currentTarget.value)}>
               <option value="updated:desc">{m.landing_sort_updated_desc()}</option>
               <option value="updated:asc">{m.landing_sort_updated_asc()}</option>
@@ -1394,7 +1461,7 @@
               </Menu>
             {/if}
             <button type="button" class="btn btn-sm lp-tone-error" onclick={deleteSelected}>
-              <Icon name="trash" size={16} /> {m.common_delete()}
+              <Icon name="trash" size={16} /> {m.common_move_to_trash()}
             </button>
           {/if}
           <IconButton icon="x" label={m.landing_clear_selection()} onclick={() => (selected = new Set())} />
@@ -1416,7 +1483,7 @@
         {columns}
         rows={shown}
         rowKey={(doc) => doc.slug}
-        rowClass={(doc) => (selected.has(doc.slug) ? "picked" : "")}
+        rowSelected={(doc) => selected.has(doc.slug)}
         className="projects-table"
         label={placeName}
         {sortBy}
@@ -1472,7 +1539,7 @@
               {#if chips.length}
                 <span class="tag-chips" class:compact={narrow}>
                   {#each chipsShown as tag (tag.id)}
-                    <button type="button" class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}" title={tag.name}
+                    <button type="button" class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}" data-tip-wait="long" data-tip={tag.name}
                             aria-label={m.landing_show_tagged_aria({ name: tag.name })} onclick={() => goToTag(tag.id)}><span class="tag-chip-name">{tag.name}</span></button>
                   {/each}
                   {#if chips.length > chipsShown.length}
@@ -1507,7 +1574,7 @@
             <!-- Relative, with the date itself in the tooltip. Six copies of
                  today's date answer nothing; "12 min ago" answers the
                  question the column is here for. -->
-            <span title={isoDay(place === "recent" ? doc.opened_at : doc.updated_at)}>
+            <span data-tip-wait="long" data-tip={isoDay(place === "recent" ? doc.opened_at : doc.updated_at)}>
               {since(place === "recent" ? doc.opened_at : doc.updated_at)}
             </span>
           {:else if column.key === "actions"}
@@ -1559,6 +1626,11 @@
                       <span class="menuitem-label">{hasTag(doc, "favorites") ? m.landing_favorite_remove() : m.landing_favorite_add()}</span>
                     </Menu.Item>
                     {@render tagItems((tag) => hasTag(doc, tag.id))}
+                    {#if !mine(doc)}
+                      <Menu.Item value="leave" class="menuitem project-action-item" data-project-action="leave" disabled={leavePending.has(doc.slug)}>
+                        <Icon name="log-out" size="1rem" /><span class="menuitem-label">{m.landing_leave_project()}</span>
+                      </Menu.Item>
+                    {/if}
                     {#if mine(doc)}
                       <Menu.Item value="trash" class="menuitem project-action-item" data-project-action="trash">
                         <Icon name="trash" size="1rem" /><span class="menuitem-label">{m.common_move_to_trash()}</span>
@@ -1603,6 +1675,11 @@
                 {#if mine(doc)}
                   <IconButton icon="trash" colour="lp-text-muted lp-hover-error"
                               title={m.common_move_to_trash()} label={m.landing_move_to_trash_aria({ title: doc.title })} onclick={() => askDelete(doc)} />
+                {:else}
+                  <!-- Somebody else's project cannot be thrown away, only left. -->
+                  <IconButton icon="log-out" colour="lp-text-muted lp-hover-error"
+                              title={m.landing_leave_project()} label={m.landing_leave_project_aria({ title: doc.title })}
+                              disabled={leavePending.has(doc.slug)} onclick={() => askLeave(doc)} />
                 {/if}
                 <Menu onSelect={(chosen) => tagChosen(chosen.value, [doc])}
                       positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
@@ -1677,13 +1754,18 @@
   </Page>
 {/if}
 
-<SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} account={me}
-                keys={preferences.state.keys} onkeys={preferences.setKeys}
-                completion={preferences.state.completion} oncompletion={preferences.setCompletion}
-                brackets={preferences.state.brackets} onbrackets={preferences.setBrackets}
-                proofing={preferences.state.proofing} onproofing={preferences.setProofing}
-                dialect={preferences.state.dialect} ondialect={preferences.setDialect}
-                check={preferences.state.check} oncheck={preferences.setCheck} />
+{#if lazy.settings.component}
+  {@const SettingsDialog = lazy.settings.component}
+  <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} account={me}
+                  userId={buildPreferenceUser(me)}
+                  keys={preferences.state.keys} onkeys={preferences.setKeys}
+                  completion={preferences.state.completion} oncompletion={preferences.setCompletion}
+                  brackets={preferences.state.brackets} onbrackets={preferences.setBrackets}
+                  latexAssist={preferences.state.latexAssist} onlatexassist={preferences.setLatexAssist}
+                  proofing={preferences.state.proofing} onproofing={preferences.setProofing}
+                  dialect={preferences.state.dialect} ondialect={preferences.setDialect}
+                  check={preferences.state.check} oncheck={preferences.setCheck} />
+{/if}
 
 <Modal open={Boolean(renaming)} title={m.landing_rename_title()}
        description={m.landing_rename_description()}
@@ -1769,13 +1851,9 @@
        confirm={{ label: m.landing_delete_tag(), tone: "error", onclick: reallyDeleteTag, oncancel: () => (tagToDelete = null) }}></Modal>
 
 <Modal bind:open={confirming}
-       title={confirmKind === "purge" ? m.landing_delete_for_good_question() : m.landing_trash_question()}
+       title={pendingAction === "leave" ? m.landing_leave_project() : m.landing_delete_for_good_question()}
        description={confirmText}
-       confirm={{
-         label: confirmKind === "purge" ? m.landing_delete_for_good() : m.common_move_to_trash(),
-         tone: "error",
-         onclick: confirmKind === "purge" ? reallyPurge : reallyDelete,
-       }}></Modal>
+       confirm={{ label: pendingAction === "leave" ? m.landing_leave_confirm_button() : m.landing_delete_for_good(), tone: "error", onclick: confirmPending }}></Modal>
 
 <Toasts />
 
@@ -1806,9 +1884,8 @@
      as a row, because everything on this page was outlined before and the
      effect was that nothing on it was more important than anything else. */
   :global(.projects-table th) { border: 0; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--color-text-secondary); font-weight: 600; }
-  :global(.projects-table td) { border: 0; border-top: 1px solid var(--color-pane-edge); vertical-align: middle; }
+  :global(.projects-table td) { border: 0; border-top: 1px solid var(--color-border-strong); vertical-align: middle; }
   :global(.projects-table tbody tr:hover) { background: var(--color-subtle); }
-  :global(.projects-table tbody tr.picked) { background: var(--color-row-selected); }
 
   /* The one column that has to say more than its width allows. Every other
      width is in the column list at the head of this file. */
@@ -1888,7 +1965,7 @@
   /* The metadata columns a phone has no room for: the listing is read there
      to find a project, and neither how many files it has, who owns it, nor
      when it changed belongs in the compact row. */
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     .place-heading { font-size: var(--text-lg); }
     .compact-sort { display: inline-grid; position: relative; place-items: center; width: 2rem; height: 2rem; color: var(--color-text-secondary); }
     .compact-sort :global(svg) { width: 1.125rem; height: 1.125rem; }

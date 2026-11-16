@@ -20,9 +20,14 @@
 //
 // The top-level await is the point: every importer of this module is reached
 // through a dynamic `import()`, so awaiting here holds only the chunk that
-// actually needs a CRDT, and a reader who never edits never loads it at all.
+// actually needs a CRDT. Modules the reader loads statically (anchors, track
+// changes) must not import `loro-crdt`; they read the classes from
+// `loro-classes.js`, which this module fills once the wasm is ready.
 import init from "loro-crdt/web/loro_wasm.js";
+import { Cursor, LoroMap } from "loro-crdt/web";
+import { setLoroClasses } from "./loro-classes.js";
 
 await init();
+setLoroClasses({ Cursor, LoroMap });
 
 export * from "loro-crdt/web";

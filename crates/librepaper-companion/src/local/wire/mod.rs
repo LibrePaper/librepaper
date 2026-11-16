@@ -5,7 +5,7 @@
 /// Breaking changes go up here.
 pub const MAJOR: u32 = 3;
 /// Additions go up here, and reset with the major.
-pub const MINOR: u32 = 1;
+pub const MINOR: u32 = 2;
 /// Fixes that a page must rely on go up here, and reset with the major or minor.
 pub const PATCH: u32 = 0;
 /// The oldest major this binary still answers.

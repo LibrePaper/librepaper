@@ -11,18 +11,17 @@
   import * as figures from "../lib/figures.js";
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
-  import { CURRENT } from "../lib/history-endpoints.js";
-  import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
+  import { CURRENT, NOTHING } from "../lib/history-endpoints.js";
   import ComparisonBar from "./reader/ComparisonBar.svelte";
   import { createComparison } from "../lib/reader/comparison.svelte.js";
   import { createWebGit } from "../lib/reader/web-git.svelte.js";
   import { createWebConnection } from "../lib/reader/web-connection.svelte.js";
-  import { diagnosticContext } from "../lib/diagnostic-context.js";
-  import { passageContext } from "../lib/source-passage.js";
-  import { capturePreviewTree } from "../lib/preview-tree.js";
+  import { diagnosticContext } from "../lib/assistant-review.js";
+  import { passageContext, sourcePassage } from "../lib/assistant.js";
+  import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
-  import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
+  import { parse as parseSynctex, lineAt as synctexLineAt, offsetOfLine as synctexOffsetOfLine } from "../lib/synctex.js";
   import * as localQuarto from "../lib/desktop/client.js";
   import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
   import { basename } from "../lib/file-manager.js";
@@ -30,8 +29,13 @@
   import { createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
   import { createLiveChat } from "../lib/reader/live-chat.svelte.js";
-  import { createReaderCollaboration } from "../lib/reader/collaboration.js";
+  import { createOpening } from "../lib/reader/opening.svelte.js";
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
+  import { createProjectionSource } from "../lib/reader/projection-source.svelte.js";
+  import { createPainted } from "../lib/reader/painted.svelte.js";
+  import { createPreviewTarget } from "../lib/reader/preview-target.svelte.js";
+  import { createArrangement } from "../lib/reader/arrangement.svelte.js";
+  import { createPhone } from "../lib/reader/phone.svelte.js";
   import { createJumps, isBackChord } from "../lib/reader/jumps.svelte.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
@@ -41,43 +45,41 @@
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import {
-    SHELL_HEADERS,
     authHeaders,
     configOrRemembered,
     keyHeaders,
     me as whoami,
     post,
     signInHref,
+    signOut,
   } from "../lib/api.js";
   import {
     LINKED,
     PDF_INVERT,
+    linkFor,
     markViewed,
     read,
     takeLinkKey,
     write,
   } from "../lib/storage.js";
   import { localDataForgotten } from "../lib/signed-out.js";
-  import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, RATIOS, clamp, measure, pixels, px, showing } from "../lib/panes.js";
+  import { ACTIVITY_WIDTH, PANES, clamp, measure, pixels, px } from "../lib/panes.js";
   import { slotId, tabsFor } from "../lib/panels.js";
-  import { APPLE, availability, captured, commandFor, menuKeys, writing } from "../lib/commands.js";
+  import { APPLE, availability, captured, commandFor, labelOf, menuKeys, writing } from "../lib/commands.js";
   // Aliased because this file has its own setSize for the pane sizes.
   import { size as textSize, setSize as setTextSize, DEFAULT_SIZE } from "../lib/editor-type.js";
 
   import { tick, untrack } from "svelte";
+  import { lazyComponent } from "../lib/lazy-component.svelte.js";
   import { onMode } from "../lib/theme.js";
-  import { Menu } from "@skeletonlabs/skeleton-svelte";
-  import MenubarMenu from "./MenubarMenu.svelte";
   import { menubar } from "../lib/menubar.svelte.js";
   import Nav from "./Nav.svelte";
   import FormatToolbar from "./FormatToolbar.svelte";
   import Icon from "./Icon.svelte";
-  import ExplorerMenu from "./ExplorerMenu.svelte";
   import IconButton from "./IconButton.svelte";
   import { DOCUMENTATION_URL } from "../lib/site-links.js";
   import { VISUAL_FORMATS } from "../lib/visual-markup/formats.js";
   import Modal from "./Modal.svelte";
-  import CommandPalette from "./CommandPalette.svelte";
   import Toasts from "./Toasts.svelte";
   import { say, toaster } from "../lib/toast.svelte.js";
   import { archive, docxFile, entryDownload, projectFiles, saveBlob } from "../lib/reader/downloads.js";
@@ -87,47 +89,71 @@
   import Preview from "./Preview.svelte";
   import PreviewControls from "./PreviewControls.svelte";
   import { onPageZoom } from "../lib/desktop/zoom.js";
+  import { agentWaitingBadge } from "../lib/agent-permission.js";
   import Grip from "./Grip.svelte";
-  import SettingsDialog from "./settings/SettingsDialog.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
   import DesktopMismatch from "./DesktopMismatch.svelte";
-  import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
+    import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
+  import { leaf } from "../lib/reader/run-directory.js";
+  import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
+  import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import { locale } from "../lib/locale.js";
+  import { createSharedResults, publishProblem } from "../lib/reader/shared-results.svelte.js";
+  import { splitResults, staleCells, tagCells } from "../lib/quarto-results.js";
+  import { isCalepinRecord, recordOf as calepinRecordOf, staleChunks, usesCalepin } from "../lib/calepin-results.js";
+  import { figureSyntaxReady, referencedFigures } from "../lib/figure-references.js";
+  import { resultsFigureUrl } from "../lib/missing-figures.js";
+  import { pdfRunRecord, runFiguresOf, wantedPaths, withRunFigures } from "../lib/run-figures.js";
+  import RunButton from "./reader/RunButton.svelte";
+  import RunStatus from "./reader/RunStatus.svelte";
   import Avatar from "./Avatar.svelte";
+  import { presenceJumpTarget } from "../lib/presence-jump.js";
   import { extractOutline } from "../lib/outline.js";
+  import { onOrgSyntax, onTypstSyntax } from "../lib/source-trees.js";
   import { countWordsIn, documentWords, sectionWords } from "../lib/word-count.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
-  import { previewTarget, rendersAlone, openingFile, includersOf } from "../lib/opening.js";
+  import { previewTarget } from "../lib/opening.js";
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
+  import { createSourceSchedule } from "../lib/reader/source-schedule.js";
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
   import { provide } from "../lib/support/providers.js";
   import { createSteadyBusy } from "../lib/reader/steady-busy.js";
   import { waitStageOf } from "../lib/reader/wait-stage.js";
   import PreviewWaiting from "./reader/PreviewWaiting.svelte";
   import { previewNotes } from "../lib/reader/preview-notes.js";
+  import { readPlace, savePlace } from "../lib/reader/place.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import { VERBS, motivationFor } from "../lib/annotating.js";
   import InsertMenu from "./InsertMenu.svelte";
-  import SymbolPalette from "./SymbolPalette.svelte";
-  import MathPalette from "./MathPalette.svelte";
+  import Menus from "./reader/Menus.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
-  import CompactPanelMenu from "./layout/CompactPanelMenu.svelte";
+  import TabBar from "./mobile/TabBar.svelte";
+  import ModeSwitch from "./mobile/ModeSwitch.svelte";
+  import MoreSheet from "./mobile/MoreSheet.svelte";
+  import CommandView from "./mobile/CommandView.svelte";
+  import KeyboardBar from "./mobile/KeyboardBar.svelte";
+  import Presence from "./mobile/Presence.svelte";
+  import { createOverlayHistory } from "../lib/mobile/overlay-history.js";
+  import { watchKeyboard } from "../lib/mobile/keyboard.js";
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
   import WordCount from "./reader/WordCount.svelte";
-  import Agent from "./reader/Agent.svelte";
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
   import Share from "./reader/Share.svelte";
-  import Git from "./reader/Git.svelte";
   import Diagnostics from "./reader/Diagnostics.svelte";
-  import History from "./reader/History.svelte";
-  import { loadAuthors } from "../lib/authorship.js";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
+  import SaveTemplateDialog from "./reader/SaveTemplateDialog.svelte";
+  import DeleteCommentsDialog from "./reader/DeleteCommentsDialog.svelte";
+  import ClearChatDialog from "./reader/ClearChatDialog.svelte";
+  import IdentityDialog from "./reader/IdentityDialog.svelte";
   import { m } from "../lib/paraglide/messages.js";
+  // Opt-in timing marks for the typing bench (web/tools/typing-bench.mjs).
+  import { perfEnd, perfStart } from "../lib/perf-marks.js";
 
   // The demo sandbox at /try runs wholly in this browser. Its slug and
   // document URL are the ones in lib/try-project.js, which is imported only
@@ -161,25 +187,175 @@
   let frameSrc = $state(null);
   // Non-editors render this allowlisted current-state projection. It has the
   // same shape as the editor adapter but contains no CRDT or history payload.
-  let currentProject = $state(null);
+  // Its fetch, etag and refresh schedule are owned by the projection source;
+  // what stays here is what the Reader does when one lands or fails.
+  const projection = createProjectionSource({
+    slug: SLUG,
+    key: KEY,
+    active: () => !mayEdit,
+    hidden: () => hidden,
+    onProject: (next) => {
+      workspace.fromProject(next);
+      // Readers load the project whole too, on every projection that lands.
+      warmFigures();
+      changeRows = readerChangeRows(next.changes);
+      if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
+      // A reader opens on the file the project opens on, whichever that is
+      // now. The target puts its format in place and paints the page this
+      // browser last drew for it.
+      target.update();
+      schedule.bump();
+      outlineRevision += 1;
+      lifecycle.settle();
+      void paintPreview();
+    },
+    onProblem: (message) => {
+      // Never leave the pane spinning on a project this browser has not yet
+      // shown anything for: a reader with no source of its own has nothing
+      // else to paint while this stays broken, so the loading state ends here.
+      if (!projection.state.project) lifecycle.settle();
+      say(message, { kind: "problem", id: "reader:project-load" });
+    },
+  });
   const readerProjectOwner = {};
-  let projectEtag = "";
-  let projectFetch = null;
-  let projectRefreshPending = false;
-  let projectRefreshTimer = null;
   let renderedProjectDigest = $state("");
-  // Set only when this browser has never successfully shown a projection for
-  // this document: an empty pane has nothing else to say for itself, so this
-  // is what the document pane below renders instead of staying blank while
-  // `settled` silently ends the loading state (§2.2).
-  let projectUnreadable = $state("");
   // One page is kept per file, so the key names the file as well as the project.
   const previewCacheKey = (path) => `${SLUG}:${doc?.created_at || "unknown"}|${path}`;
   const lastCachedPage = async (path) => lastPreview(previewCacheKey(path));
   const cachePage = (path, page, identity) => rememberPreview(previewCacheKey(path), page, identity);
-  // Set when the page was opened from this browser's copy because the server
-  // could not be reached, so the page says it may be missing newer changes.
-  let openedLocally = $state(false);
+  // The opening sequence, and what it knows once it has run: the role, the
+  // socket, whether the work is safe, who else is here, the session and the
+  // room. Every effect is a callback, and every callback is lazy, so the
+  // things they name may be declared further down. The state is read here
+  // under the names the page has always used; every write goes through
+  // `lifecycle`.
+  const lifecycle = createOpening({
+    slug: SLUG,
+    key: KEY,
+    standalone: DEMO,
+    getIdentity: () => identity,
+    // Only a signed-in person has an account; the id is empty for anybody else.
+    getAccountId: () => (me.provider ? me.id || "" : ""),
+    disposed: () => readerDisposed,
+    onMessage: receive,
+    seed: DEMO
+      ? async (active) => {
+        const { seedTryProject } = await import("../lib/try-project.js");
+        if (readerDisposed) return;
+        await seedTryProject(active);
+      }
+      : null,
+    roleKnown: (document_) => {
+      const offeredRenderers = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
+      renderers.offerLatex(offeredRenderers.includes("latex"));
+      // The workspace guards its own writes, so it is told once, here, where
+      // the permission is settled.
+      ws.canEdit = mayEdit && !suggestOnly;
+      timeline.state.canEdit = mayEdit && !suggestOnly;
+      // Access was reduced, so this browser should stop offering an editable copy
+      // of a project it may no longer edit. A copy opened from this browser has no
+      // server answer behind its role, so it is kept as it is.
+      if (!mayEdit && !openedLocally) {
+        forgetProject({ server: location.origin, documentId: document_.document_id, slug: SLUG, createdAt: document_.created_at })
+          .catch(() => {});
+      }
+      // A panel this visit has already moved to may not be one this role is
+      // offered. A phone keeps the view it opened on.
+      if (panel && !tabs.some((tab) => tab.id === panel)) {
+        const view = mobileView;
+        arrangement.showPanel(home);
+        arrangement.state.mobileView = view;
+      }
+    },
+    formatKnown: (format) => {
+      target.state.format = format;
+      scopeLocalApp();
+    },
+    canRender: (format) => Boolean(renderers.outputKind(format)),
+    noRenderer: (format) => {
+      say(m.readerc_no_renderer({ format }), { kind: "problem", id: "reader:no-renderer" });
+    },
+    refreshProjection: () => projection.refresh(),
+    editorReady: (format) => {
+      // Load the browser renderer for readers as well as editors; this is all
+      // transient and does not create a server-side result. Started after the
+      // collaboration module is in, because the editor cannot open without its
+      // CRDT and the engine (ten megabytes for Typst) would otherwise share the
+      // connection with it: the engine finishes no later this way, and the
+      // editor opens about a second sooner on a slow link.
+      if (format) {
+        warmEngine(format);
+      }
+      // The directory arrives after the session does. A session object alone is
+      // not a snapshot.
+      // No chooser and no saved distribution: `latex.configure` tells the
+      // controller which project this is and what it is allowed to do, and the
+      // first `paintPreview` (from `startEditing` below, or an edit) is what
+      // actually starts loading the engine. `session.latexSettings()` needs the
+      // session that `start` just built, which is why this comes after
+      // it rather than beside the old restore-a-distribution code above.
+      configureLatex(sourceFormat);
+      // A document its author may edit opens ready to be worked on: that is what
+      // they came for.
+      if (mayEdit) startEditing();
+    },
+    onConnected: (up) => {
+      if (!up) {
+        pendingChat?.disconnect();
+        outbox.disconnected();
+      }
+      // A publish that happened while this browser was not listening was
+      // announced to nobody: the offer is pushed over this very socket. So
+      // the way back up is where a reader asks whether they missed one.
+      if (up && !mayEdit) void projection.refresh();
+      // Shared results changed or deleted while the socket was down were
+      // announced to nobody either.
+      if (up && runsExplicitly) void refreshResults();
+    },
+    onSession: (active) => {
+      changesUnsubscribe?.();
+      // The changes live beside the text in the document, so any commit
+      // can move them, an accept or reject included, and that is not a text
+      // event. Imports from other peers arrive here as well.
+      changesUnsubscribe = active?.doc.subscribe(refreshReview) || null;
+      // The attachments of an editor are derived from the document, so they
+      // are followed on every commit.
+      followAnnotations?.();
+      followAnnotations = active ? annotations.follow(active.doc) : null;
+      refreshReview();
+      workspace.attach(active);
+      refreshFiles();
+      refreshPeers();
+      // A restored document can already contain its complete tree when
+      // the session is handed over, so no later source event is guaranteed.
+      // Render once from that hydrated tree after Svelte has applied the
+      // format and file-list state.
+      void tick().then(() => {
+        if (!readerDisposed && active === session) void paintPreview();
+      });
+    },
+    onFiles: (events, active, by) => filesChanged(events, active, by),
+    onAwareness: () => { if (!readerDisposed) refreshPeers(); },
+    onDocumentChanged: () => {
+      location.reload();
+    },
+    localStorageFailed: (error) => {
+      say(m.readerc_local_storage_failed({ error }), { kind: "problem", id: "reader:local-storage-failed" });
+    },
+    paint: () => { paintPreview(); },
+    openFailed: (error) => {
+      say(error.message || m.reader_open_failed(), { kind: "problem", id: "reader:open-failed" });
+    },
+  });
+  const mayEdit = $derived(lifecycle.state.mayEdit);
+  const connected = $derived(lifecycle.state.connected);
+  const persistence = $derived(lifecycle.state.persistence);
+  const peers = $derived(lifecycle.state.peers);
+  const settled = $derived(lifecycle.state.settled);
+  const openedLocally = $derived(lifecycle.state.openedLocally);
+  const session = $derived(lifecycle.session);
+  const collaboration = $derived(lifecycle.collaboration);
+  const atRisk = $derived(lifecycle.atRisk);
   /** @type {ReaderUser} */
   let me = $state({ id: "" });
   const backupStatus = $derived(backupStatusStore.status);
@@ -187,27 +363,32 @@
   // reader is shown commenting as. A Google account's handle is its email and
   // belongs on neither.
   let identity = $derived(me.name || "");
-  let canModerate = $derived(Boolean(doc.can_moderate));
-  let connected = $state(false);
+  // A suggester has a live editing session, but every change to the text is a
+  // tracked change: nothing else about the project is theirs to change.
+  let suggestOnly = $derived(doc.role === "suggester");
+  let canModerate = $derived(Boolean(doc.can_moderate) && !suggestOnly);
   // Whether this tab is the one in front of the reader. Only background work
   // consults it; nothing about the document depends on being looked at.
   let hidden = $state(typeof document !== "undefined" && document.visibilityState === "hidden");
   const liveChat = createLiveChat({ slug: SLUG, key: KEY });
   const chatState = liveChat.state;
   let unreadChat = $state(false);
+  // Whether an agent session is waiting for the person's permission. Reported
+  // by the Agent panel; the badge on its tab says so while the panel is hidden.
+  let agentWaiting = $state(false);
+  // Whether the Agent panel is in view; set below, once `panel` and `shown` exist.
+  let agentInView = $state(false);
   let pendingChat;
-  let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
+  let mayChat = $derived(["commenter", "suggester", "editor", "owner"].includes(doc.role));
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
   // named on the document. A reader who arrived by link is offered neither,
   // which is most of the point of a blind review.
   let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
   let canPublish = $derived(["editor", "owner"].includes(doc.role));
-
-  // Whether this browser's work is safe, which is a different question from
-  // whether the socket is up. `pending` counts the updates the server has not
-  // yet said it has written; `local` says the document is in this browser's
-  // own storage, which is what makes a reload safe while the socket is down.
-  let persistence = $state({ pending: 0, local: false, localPending: 0, localError: "", joined: false });
+  // The key a change is recorded under by this browser (see `trackingMe`),
+  // which a suggester may reject by. Empty when nobody has named them, so an
+  // anonymous change is never taken for their own.
+  let ownWho = $derived(me.id || identity || doc.commenting_as || "");
 
   /* --------------------------------------------------------------- anchoring */
 
@@ -265,23 +446,65 @@
   // code runs is not a preference and is never stored: it is off each time a
   // document opens.
   let localExecution = $state(false);
+  // A Quarto or Typst document's code runs only when Run is pressed. Between
+  // runs the preview is the browser's draft with the last run's output under
+  // each cell (or, for Typst, the files Calepin stored).
+  let runPhase = $state("idle");
+  // The page the last successful run made, kept so "View last run's output"
+  // can show it on demand. `path` is the run's main file.
+  let lastRunPage = $state.raw(null);
+  // When the running Run began, for the preview corner's elapsed time.
+  let runStartedAt = $state(0);
+  let ownResults = $state.raw(null);
+  let staleCount = $state(0);
+  // Each Run takes a number; Stop moves the counter on, so a call that was
+  // stopped can tell, after any await, that it no longer owns the state.
+  let runGeneration = 0;
+  // The log of the last completed Run. The next draft render replaces the
+  // render status's log with its own, so Diagnostics reads this one instead.
+  let runLog = $state("");
+  // What the last completed Run said about the document, such as a file its
+  // code reads from the Run directory that is missing. Kept here for the same
+  // reason as the log: the next draft render would otherwise erase it.
+  let runDiagnostics = $state.raw([]);
+  // A Run to PDF keeps no per-cell results, so its time is kept on its own.
+  let lastPdfRunAt = $state("");
+  const lastRunAt = $derived(
+    (ownResults?.updatedAt ?? "") > lastPdfRunAt ? ownResults?.updatedAt ?? "" : lastPdfRunAt,
+  );
+  // The running Run's controller, so Stop can end the job before it starts as
+  // well as while it runs. Not reactive: nothing renders from it.
+  let runAbort = null;
+  // A Quarto or Typst document needs a folder to run its code in. Its code
+  // never runs on this computer until Run is pressed and a folder is set.
+  let runDirectory = $state("");
+  const runDirectoryReady = $derived(runDirectory !== "");
+  // Run was pressed before a folder was set: choosing one carries on with it.
+  let pendingRun = false;
+  function setRunDirectory(path) {
+    const next = path || "";
+    if (next === runDirectory) return;
+    runDirectory = next;
+    if (next && pendingRun && !readerDisposed) {
+      pendingRun = false;
+      void runCode();
+    }
+  }
+  // The Run button's menu and the Run directory dialog share this state.
+  const runDir = createRunDirectory(SLUG, setRunDirectory);
 
   async function setLatexOutput(format) {
     const next = format === "html" ? "html" : "pdf";
     if (latexOutput === next) return;
     buildSettings.state.latexOutput = next;
     setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { output: next }));
-    navigationGeneration += 1;
+    target.bump();
     renderers.cancelPreview({ keepWarm: true });
     latex.cancel();
     framePreview?.clear();
-    deliveredKind = "";
-    everPainted = false;
-    everPaintedShown = false;
-    pageDrawn = false;
+    painted.reset({ keepSynctex: true });
     renderStatus.resetFailure();
-    clearTimeout(previewTimer);
-    previewTimer = null;
+    schedule.cancel();
     await tick();
     if (!readerDisposed) void paintPreview();
   }
@@ -289,7 +512,8 @@
   // Run code is the consent to run a document's code on this computer. It is
   // off whenever a document opens and is never remembered. While it is on, a
   // format set to this computer renders there; the pane is drawn again
-  // because the renderer that draws it changes hands.
+  // because the renderer that draws it changes hands. Quarto and Typst have no
+  // switch: their code runs once, on an explicit Run.
   function toggleLocalExecution() {
     localExecution = !localExecution;
     stopRendering();
@@ -299,7 +523,7 @@
   // Everything in flight stops: a render that finishes after the renderer, or
   // the reader, has changed must not reach the pane.
   function stopRendering() {
-    navigationGeneration += 1;
+    target.bump();
     renderers.cancelPreview({ keepWarm: true });
     latex.cancel();
   }
@@ -311,7 +535,7 @@
     setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { output: typstOutput }));
     // Invalidate every pending delivery. A PDF that finishes after this
     // gesture must never replace the HTML frame.
-    navigationGeneration += 1;
+    target.bump();
     void paintPreview();
   }
 
@@ -319,18 +543,15 @@
   // others. Pages are made in this browser, through Pandoc and Typst.
   async function setMarkdownOutput(format) {
     const next = format === "html" ? "html" : "pdf";
+    if (next === "pdf" && !quartoPdfOffered) return;
     if (markdownOutput === next) return;
     setBuildPreferences(updateBuildPreferences(buildScope(), sourceFormat, { output: next }));
-    navigationGeneration += 1;
+    target.bump();
     renderers.cancelPreview({ keepWarm: true });
     framePreview?.clear();
-    deliveredKind = "";
-    everPainted = false;
-    everPaintedShown = false;
-    pageDrawn = false;
+    painted.reset({ keepSynctex: true });
     renderStatus.resetFailure();
-    clearTimeout(previewTimer);
-    previewTimer = null;
+    schedule.cancel();
     await tick();
     if (!readerDisposed) void paintPreview();
   }
@@ -368,9 +589,11 @@
   function pushCommentMarks() {
     if (!editor || !session) return;
     const list = [];
+    const ids = new Map();
     for (const comment of comments) {
       if (comment.sourceStart == null || comment.sourceEnd == null || !comment.sourcePath) continue;
-      const file = session.idOf(comment.sourcePath);
+      if (!ids.has(comment.sourcePath)) ids.set(comment.sourcePath, session.idOf(comment.sourcePath));
+      const file = ids.get(comment.sourcePath);
       if (!file) continue;
       list.push({
         id: String(comment.id),
@@ -425,17 +648,41 @@
   // A comment attached by hand is painted from its source range and from
   // nothing else, since its rendered quotation names the passage it used to be
   // about. Its page match is dropped before the fallback runs.
-  function anchorComments(list) {
-    anchorAll(docText || "", list, docText === null ? null : docView);
+  // `rendered: false` skips the search of the rendered text, for a pass where
+  // that text has not changed since the last full pass (the attachments were
+  // derived again, which is all that moved).
+  // Comments whose current placement is the source-passage fallback below, so a
+  // `rendered: false` pass can place again the ones whose hand attachment went.
+  const fallbackPlaced = new WeakSet();
+  function anchorComments(list, { rendered = true } = {}) {
+    if (rendered) {
+      for (const comment of list) fallbackPlaced.delete(comment);
+      const t = perfStart();
+      anchorAll(docText || "", list, docText === null ? null : docView);
+      perfEnd("lp:reader:anchorAll", t);
+    } else {
+      const released = list.filter((comment) => fallbackPlaced.has(comment) && !comment.attachment?.attached_by_hand);
+      for (const comment of released) fallbackPlaced.delete(comment);
+      const t = perfStart();
+      if (released.length) anchorAll(docText || "", released, docText === null ? null : docView);
+      perfEnd("lp:reader:anchorAll", t);
+    }
     if (mayEdit) {
+      const t = perfStart();
       placeSources(session, list);
+      perfEnd("lp:reader:placeSources", t);
       for (const comment of list) {
         if (!comment.attachment?.attached_by_hand) continue;
         comment.start = comment.end = null;
         comment.orphaned = true;
+        // Its quotation placement is suppressed now, whether or not the source
+        // fallback below finds the passage, so it is placed by the quotation
+        // again once the attachment goes.
+        fallbackPlaced.add(comment);
       }
     }
     if (mayEdit && docText !== null) {
+      const t = perfStart();
       let tree = null;
       for (const comment of list) {
         if (comment.start != null || comment.sourceStart == null || !comment.sourcePath) continue;
@@ -448,8 +695,10 @@
           comment.start = range.start;
           comment.end = range.end;
           comment.orphaned = false;
+          fallbackPlaced.add(comment);
         }
       }
+      perfEnd("lp:reader:sourceFallback", t);
     }
     for (const comment of list) applyAnchorFlags(comment);
   }
@@ -457,23 +706,33 @@
   function reanchor() {
     if (!frameReady || !commentsReady || docText === null) return;
     anchorComments(comments);
+    let t = perfStart();
     annotations.publish();
+    perfEnd("lp:reader:annotationsPublish", t);
+    t = perfStart();
     applyHighlights();
+    perfEnd("lp:reader:highlights", t);
+    t = perfStart();
     pushCommentMarks();
+    perfEnd("lp:reader:commentMarks", t);
   }
 
   // Scroll tracking for mobile bar hide/show: called by scroll listeners and
-  // frame scroll messages. Hide the bar when scrolling down past threshold,
-  // show it when scrolling up or at top.
+  // frame scroll messages. Hide the bars when scrolling down past threshold,
+  // show them when scrolling up or at top. The mode switch, the pane's tool
+  // band and the tab bar step aside together.
   function noteScroll(delta, top, bottom) {
     barHidden = compact ? barHiddenAfter(barHidden, delta, top, bottom) : false;
   }
 
   function fromFrame(message) {
     switch (message.type) {
-      case "ready":
+      case "ready": {
+        const readyStart = perfStart();
         docText = typeof message.text === "string" ? message.text : "";
+        const flatStart = perfStart();
         docView = flatten(docText);
+        perfEnd("lp:reader:flatten", flatStart);
         // The first time the frame says it is there is the first moment
         // anything can be sent to it. A paint made before this went to a
         // window that had not navigated yet and was lost -- which is what a
@@ -486,17 +745,23 @@
         if (first) replayPreview();
         // Whatever was painted before is gone with the rebuilt DOM.
         frameOverlays.reset();
+        const reanchorStart = perfStart();
         reanchor();
+        perfEnd("lp:reader:reanchor", reanchorStart);
+        const selectionStart = perfStart();
         applySelection();
+        perfEnd("lp:reader:selection", selectionStart);
         if (first) {
           void paintPreview();
         }
+        perfEnd("lp:reader:ready", readyStart);
         break;
+      }
       case "viewer-drawn":
         // The pages of the newest delivery are on screen, so the waiting
         // display gives way to them. A paint of an older delivery does not.
         frameHasPage = true;
-        if (message.frameGeneration >= framePreview.deliveredGeneration) pageDrawn = true;
+        if (message.frameGeneration >= framePreview.deliveredGeneration) painted.drawn();
         break;
       case "viewer-state":
         viewerView = message.drawn
@@ -534,6 +799,9 @@
       case "pdf-caret":
         followPdfClick(message.pdf);
         break;
+      case "click":
+        followPreviewClick(message.offset, message.pdf);
+        break;
       case "focus":
         void focusAnnotation(message.id);
         break;
@@ -559,17 +827,19 @@
   // What the bar offers over what is selected. Nothing is offered when
   // nothing is.
   const renderedProjectCurrent = $derived.by(() =>
-    mayEdit || Boolean(renderedProjectDigest && renderedProjectDigest === currentProject?.project_digest),
+    mayEdit || Boolean(renderedProjectDigest && renderedProjectDigest === projection.state.project?.project_digest),
   );
   const shownVerbs = $derived.by(() => pending && renderedProjectCurrent ? VERBS : []);
   let highlightColor = $state(HIGHLIGHT_COLORS[0]);
   let palette = $state(false);
   let pending = $state(null);
+  let assistantRequest = $state(null);
+  let selectionRevision = Promise.resolve("");
   let bar = $state({ shown: false, left: 0, top: 0, center: 0 });
 
-  // Mobile top bar slide behaviour: on phones (compact ≤760px), hide the bar
-  // when scrolling down, show it again when scrolling up. The bar slides
-  // away via transform with CSS transitions.
+  // Mobile bar slide behaviour: on phones (compact, under 768px), the Source
+  // / Document switch at the top collapses when scrolling down and comes back
+  // when scrolling up. The bottom tab bar stays put.
   let barHidden = $state(false);
 
   // What was selected, as the page had it. That is all this browser sends and
@@ -593,6 +863,84 @@
     placeBar(rect);
   }
 
+  // The agent runs only in the desktop app. A browser says so, with a way to get it.
+  function agentNeedsDesktop() {
+    if (hasDesktop) return false;
+    say(m.reader_agent_needs_desktop(), {
+      kind: "note",
+      id: "reader:agent-desktop-only",
+      action: { label: m.common_get_desktop_app(), onClick: () => window.open(localQuarto.INSTALL_URL, "_blank", "noopener") },
+    });
+    return true;
+  }
+
+  function askDiagnostic(item) {
+    if (agentNeedsDesktop()) return;
+    assistantRequest = { id: crypto.randomUUID(), diagnostic: { ...item }, revision: item.revision || "",
+      task: { kind: "fix", scope: item.file || item.path ? "file" : "document" } };
+    arrangement.showPanel("agent");
+    if (width <= 760) arrangement.showMobileView("sidebar");
+  }
+
+  function askCommentAssistant(comment) {
+    if (agentNeedsDesktop()) return;
+    if (!comment?.id) return;
+    const target = comment.original_anchor?.kind === "source_text"
+      ? comment.original_anchor.target : null;
+    const source = target ? {
+      path: comment.sourcePath || session?.paths?.get(target.file_id) || "",
+      exact: target.exact,
+      prefix: target.prefix || "",
+      suffix: target.suffix || "",
+      position: comment.sourceStart ?? target.start_utf16,
+    } : null;
+    // Keep the server-owned comment token separate from source and render
+    // identities. In particular, source_sequence is not a tree digest.
+    const revision = "";
+    const renderDigest = comment.render_digest || "";
+    assistantRequest = {
+      id: crypto.randomUUID(),
+      comment: {
+        id: String(comment.id), body: comment.body || "", exact: shownSelector(comment).exact,
+        revision,
+        render_digest: renderDigest,
+        source, replies: (comment.replies || []).map((reply) => ({ body: reply.body, creator: reply.creator })),
+      },
+      selection: source,
+      revision,
+      comment_id: String(comment.id),
+      render_digest: renderDigest,
+    };
+    arrangement.showPanel("agent");
+    if (width <= 760) arrangement.showMobileView("sidebar");
+  }
+
+  // Candidate previews are rendered from the runner's immutable file snapshot
+  // in this browser. Nothing is written to the shared document; only the
+  // diagnostics and output kind go back over the private assistant channel.
+  async function previewAssistant(request) {
+    // Capture before the first await. Asset fetching and compilation may take
+    // seconds, and a candidate must be checked against the exact base tree
+    // that the runner used when it proposed its revision.
+    const tree = capturePreviewTree(request?.candidate ? candidateTree(request.candidate) : treeNow());
+    if (Object.keys(tree.digests || {}).length) {
+      const held = await figures.gather(SLUG, tree.digests, authHeaders(KEY));
+      tree.assets = held.assets;
+      tree.urls = held.urls;
+    }
+    return previewCandidate({ request, tree, render: renderers.render,
+      title: headingOf, digest: renderers.snapshotDigest });
+  }
+
+  // A task's tracked changes are reviewed in the Changes panel, narrowed to
+  // the ids the task returned. Separate runs of one task all stay on show.
+  async function reviewAssistantResults({ changes: ids = [] }) {
+    const made = changeRows.find((row) => ids.includes(row.id));
+    changesIds = ids.filter((id) => changeRows.some((row) => row.id === id));
+    await arrangement.showPanel("changes");
+    if (made) await revealChange(made);
+  }
+
   // A click on a mark in the source shows the card without taking the
   // keyboard: the editor clicked into the passage to type in it.
   async function focusAnnotation(id, { focus = true } = {}) {
@@ -601,7 +949,7 @@
     selectedAnnotation = String(comment.id);
     const plainHighlight = comment.motivation === "highlighting" && !comment.body && !comment.replies?.length;
     collaborationTab = plainHighlight ? "highlights" : "comments";
-    void showPanel("collaboration");
+    void arrangement.showPanel("collaboration");
     const targetPanel = panel;
     await tick();
     if (panel !== targetPanel) return;
@@ -610,6 +958,16 @@
     if (focus) card?.focus({ preventScroll: true });
     await tick();
     card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  // A click on a tracked change in the source does what a click on a comment
+  // mark does: the row is selected and its panel opened, without taking the
+  // keyboard. The Changes panel brings the row into view.
+  function selectChangeFromSource(id) {
+    const row = changeRows.find((item) => String(item.id) === String(id));
+    if (!row) return;
+    selectedChange = row.id;
+    void arrangement.showPanel("changes");
   }
 
   // Remembers the editor's place before a jump to `file` at `offset`. Nothing
@@ -625,6 +983,25 @@
     jumps.remember(here);
   }
 
+  // A click on a collaborator's avatar goes to where they are: their file and
+  // their caret in it, brought into view and flashed in their colour. This
+  // reader's own caret and selection are left alone. With no caret known, the
+  // file is opened and nothing more. It needs the source pane, so it does
+  // nothing while the source is closed.
+  async function jumpToPerson(person) {
+    if (!editing || !editor || !session) return;
+    const target = presenceJumpTarget({ file: person.file, caret: session.caretOf(person.peer) });
+    if (!target || !fileExists(target.file)) return;
+    rememberPlace(target.file, target.from);
+    if (compact) {
+      arrangement.showMobileView("source");
+      await tick();
+    }
+    if (!editing || !editor) return;
+    ws.openFile = target.file;
+    if (target.from != null) editor.revealPeer(target.file, target.from, target.to, person.colour);
+  }
+
   // Back is not a jump, so the place it leaves is not remembered. It does
   // nothing when the source is not shown, and keeps the place for later.
   function goBack() {
@@ -638,11 +1015,11 @@
   async function revealAnnotation(comment) {
     selectedAnnotation = String(comment.id);
     if (comment.start != null) {
-      showMobileView("document");
+      arrangement.showMobileView("document");
       await tick();
       tell({ type: "reveal", id: comment.id });
     } else if (comment.sourceStart != null && editing) {
-      showMobileView("source");
+      arrangement.showMobileView("source");
       await tick();
     }
     if (shown.source && comment.sourceStart != null && editing && editor) {
@@ -662,7 +1039,9 @@
   function placeBar(rect) {
     if (rect) {
       const frame = document.querySelector(".viewport").getBoundingClientRect();
-      const visibleHeight = window.visualViewport?.height ?? innerHeight;
+      // The phone's tab bar covers the bottom of the visible area, so the
+      // selection bar must not land under it.
+      const visibleHeight = (window.visualViewport?.height ?? innerHeight) - (tabBarShown ? 3.5 * unit : 0);
       bar = {
         shown: true,
         ...placeSelectionBar({
@@ -687,9 +1066,7 @@
   function belowTheBar() {
     const declared = getComputedStyle(document.documentElement).getPropertyValue("--librepaper-bar").trim();
     const height = declared.endsWith("px") ? Number.parseFloat(declared) : (Number.parseFloat(declared) || 3.5) * unit;
-    // The formatting row, when it is showing, sits under the top bar too.
-    const format = /** @type {HTMLElement | null} */ (document.querySelector(".format-bar"))?.offsetHeight ?? 0;
-    return Math.round(height) + format + 9;
+    return Math.round(height) + 9;
   }
 
   // How wide the bar is is only knowable once it is drawn, so the placing
@@ -712,9 +1089,8 @@
   // from rather than reading `pending`, so a stray selection elsewhere in
   // the document cannot move a note that is half written onto other words.
   let composing = $state(null);
-  let identifying = $state(false);
-  let deleting = $state(false);
-  let pendingDelete = $state([]);
+  let identityDialog = $state(null);
+  let deleteCommentsDialog = $state(null);
 
   const needsLogin = $derived(!identity && Boolean(me.comments_need_login));
 
@@ -731,8 +1107,8 @@
       pending,
     };
     collaborationTab = "comments";
-    if (panel !== "collaboration") void showPanel("collaboration");
-    if (compact) showMobileView("sidebar");
+    if (panel !== "collaboration") void arrangement.showPanel("collaboration");
+    if (compact) arrangement.showMobileView("sidebar");
   }
 
   // A verb chosen on the bar over the selection. Highlighting is the one that
@@ -751,7 +1127,7 @@
       return;
     }
     if (!identity && me.providers?.length) {
-      identifying = true;
+      identityDialog?.ask();
       return;
     }
     openDraft();
@@ -778,6 +1154,26 @@
     annotate(which);
   }
 
+  // A remark about the whole document, from the Comments header or the palette.
+  // It names no passage, so there is no selection to make: the draft is opened
+  // as a comment on the document, with nothing to quote.
+  function commentOnDocument() {
+    if (!mayChat) return;
+    if (!renderedProjectCurrent) {
+      say(m.reader_source_rendering(), { kind: "problem", id: "reader:source-rendering" });
+      return;
+    }
+    pending = {
+      exact: "",
+      prefix: "",
+      suffix: "",
+      position: null,
+      whole: true,
+      render_digest: mayEdit ? "" : renderedProjectDigest,
+    };
+    annotate("comment");
+  }
+
   // Picking a colour highlights with it, rather than arming a colour for a
   // second click: the swatches only ever open from Highlight, so the verb is
   // already chosen by the time one is pressed.
@@ -788,7 +1184,7 @@
 
   function submitAnnotation({ motivation, body }) {
     if (!pending || !mayChat) return false;
-    if (!mayEdit && pending.render_digest !== currentProject?.project_digest) {
+    if (!mayEdit && pending.render_digest !== projection.state.project?.project_digest) {
       say(m.reader_source_moved(), { kind: "problem", id: "reader:source-moved" });
       return false;
     }
@@ -812,7 +1208,7 @@
   function sendDraft({ body }) {
     if (!composing) return false;
     const held = composing.pending;
-    const moved = !mayEdit && held.render_digest !== currentProject?.project_digest;
+    const moved = !mayEdit && held.render_digest !== projection.state.project?.project_digest;
     const reselected = moved && pending && pending.render_digest === renderedProjectDigest;
     pending = reselected ? { ...pending } : held;
     if (!submitAnnotation({ motivation: motivationFor("comment"), body })) return false;
@@ -829,20 +1225,11 @@
   const edit = annotations.edit;
 
   function askDelete(comment) {
-    askDeleteMany([comment]);
+    deleteCommentsDialog?.ask([comment]);
   }
 
   function askDeleteMany(items) {
-    if (!items.length) return;
-    pendingDelete = items;
-    deleting = true;
-  }
-
-  function confirmDelete() {
-    const items = pendingDelete;
-    pendingDelete = [];
-    deleting = false;
-    for (const comment of items) annotations.delete(comment);
+    deleteCommentsDialog?.ask(items);
   }
 
   function reply(comment, body, name) {
@@ -877,14 +1264,9 @@
 
   /* -------------------------------------------------------------------- room */
 
-  let collaboration = $state(null);
-  let clearingChat = $state(false);
+  let clearChatDialog = $state(null);
   function askClearChat() {
-    if (chatState.canClear) clearingChat = true;
-  }
-  function confirmClearChat() {
-    clearingChat = false;
-    collaboration?.send({ type: "chat-clear" });
+    if (chatState.canClear) clearChatDialog?.ask();
   }
   function sendLiveChat(text) {
     if (!collaboration || !connected || !mayChat) return Promise.resolve(false);
@@ -896,6 +1278,9 @@
   // arrives here the same way.
   let changeRows = $state([]);
   let selectedChange = $state(null);
+  // The change ids the Changes panel opens filtered to, when a task sent the
+  // reader there.
+  let changesIds = $state([]);
 
   // The 1-based line a character offset falls on. Counting newlines with
   // indexOf avoids building an array of lines for every change.
@@ -1000,7 +1385,7 @@
     // A narrow window shows one pane at a time and the panel is covering it,
     // so the source comes forward. A wide window keeps the layout the reader
     // chose: with the preview alone, the preview goes to the change.
-    if (compact) showMobileView("source");
+    if (compact) arrangement.showMobileView("source");
     await tick();
     if (!editor) return;
     rememberPlace(row.file_id, row.position);
@@ -1016,7 +1401,7 @@
   /// answer from the server. They return a resolved promise so the panel can
   /// advance the same way it would after a round trip.
   function acceptChange(row) {
-    if (mayEdit && row?.id && accept(session.doc, row.id)) settleAnchors([row.file_id]);
+    if (mayEdit && !suggestOnly && row?.id && accept(session.doc, row.id)) settleAnchors([row.file_id]);
     return Promise.resolve();
   }
 
@@ -1045,8 +1430,14 @@
     return ok;
   }
 
+  // Whether this browser may reject a change: any change for an editor, and
+  // for a suggester only their own.
+  function mayReject(row) {
+    return mayEdit && Boolean(row?.id) && (!suggestOnly || (Boolean(ownWho) && row.who === ownWho));
+  }
+
   function rejectChange(row) {
-    if (mayEdit && row?.id) rejectSettled(row);
+    if (mayReject(row)) rejectSettled(row);
     return Promise.resolve();
   }
 
@@ -1055,7 +1446,7 @@
   /// the next one looks at. Resolves to the number rejected.
   function rejectChanges(rows) {
     let count = 0;
-    if (mayEdit) for (const row of rows) if (row?.id && rejectSettled(row)) count += 1;
+    for (const row of rows) if (mayReject(row) && rejectSettled(row)) count += 1;
     return Promise.resolve(count);
   }
 
@@ -1117,7 +1508,7 @@
         outbox.failed(event.temp_id, m.reader_passage_changed());
         if (event.temp_id) annotations.removePending(event.temp_id);
         renderedProjectDigest = event.digest;
-        if (!mayEdit) void refreshCurrentProject();
+        if (!mayEdit) void projection.refresh();
         say(
           m.reader_stale_selection(),
           { kind: "problem", id: "reader:stale-selection" },
@@ -1143,50 +1534,9 @@
       return;
     }
 
-    // The shared document: the state of the session as it stands, one more
-    // change to it, what the server has written, who else is in it, or where
-    // their carets are. A reader receives all of this too -- that is how they
-    // see the current text -- and sends none of it.
-    if (event.type === "doc-state") {
-      const active = session;
-      active
-        ?.start(event)
-        .then(() => {
-          if (active !== session) return;
-          paintPreview();
-        })
-        .catch((error) => {
-          say(error.message || m.reader_open_failed(), { kind: "problem", id: "reader:open-failed" });
-        });
-      peers = event.count || 1;
-      return;
-    }
-    if (event.type === "doc-rows") {
-      // The rows this browser's vector did not cover, plus whatever is still
-      // in the server's buffer (§6.2). It is a join like `doc-state`, and it
-      // is awaited the same way: `doc-rows` can arrive as the whole join
-      // reply on its own, so `session.rows` awaits hydration itself, and it
-      // is sequenced behind any `start` that is still mid-fetch for a
-      // referenced base (project-session.js `joinGate`), so it can no longer
-      // be assumed synchronous.
-      const active = session;
-      active
-        ?.rows(event)
-        .then(() => {
-          if (active !== session) return;
-          paintPreview();
-        })
-        .catch((error) => {
-          say(error.message || m.reader_open_failed(), { kind: "problem", id: "reader:open-failed" });
-        });
-      return;
-    }
-    if (event.type === "doc-gap") {
-      // The server refused a batch because it did not cover what that batch
-      // started from, and dropped it rather than queueing it (§5 step 4).
-      // Nothing is lost: exporting from the vector the server named resends
-      // the refused operations along with anything else it is missing.
-      session?.gap(event.vector);
+    if (lifecycle.receive(event)) return;
+    if (event.type === "results-changed") {
+      if (runsExplicitly) void refreshResults();
       return;
     }
     if (event.type === "source-changed") {
@@ -1195,29 +1545,7 @@
       // projection, carrying the digest this fetch already remembers as the
       // etag (§11). An editor's own `session` hears every edit directly and
       // has nothing to do here.
-      if (!mayEdit) void refreshCurrentProject();
-      return;
-    }
-    if (event.type === "doc-update") {
-      session?.apply(event.update);
-      return;
-    }
-    if (event.type === "doc-presence") {
-      session?.applyPresence(event.update);
-      return;
-    }
-    if (event.type === "doc-ack") {
-      // Retire transmission bookkeeping. An empty catch-up can be acknowledged
-      // while earlier work is still buffered, so this does not prove saving.
-      session?.acknowledge(event.upTo || 0);
-      return;
-    }
-    if (event.type === "doc-durable") {
-      session?.durable(event.vector);
-      return;
-    }
-    if (event.type === "doc-peers") {
-      peers = event.count || 1;
+      if (!mayEdit) void projection.refresh();
       return;
     }
 
@@ -1233,7 +1561,7 @@
     }
 
     if (event.type === "project-changed") {
-      scheduleCurrentProjectRefresh();
+      projection.schedule();
       return;
     }
   }
@@ -1246,6 +1574,33 @@
   // reader joins it too, because that is where the text comes from.
   let Editor = $state(null);
   let editor = $state(null);
+  // Panels and dialogs that are not on screen at open load on first use.
+  const lazy = {
+    agent: lazyComponent(() => import("./reader/Agent.svelte")),
+    git: lazyComponent(() => import("./reader/Git.svelte")),
+    history: lazyComponent(() => import("./reader/History.svelte")),
+    historyWorkspace: lazyComponent(() => import("./reader/HistoryWorkspace.svelte")),
+    settings: lazyComponent(() => import("./settings/SettingsDialog.svelte")),
+    commandPalette: lazyComponent(() => import("./CommandPalette.svelte")),
+    symbols: lazyComponent(() => import("./SymbolPalette.svelte")),
+    math: lazyComponent(() => import("./MathPalette.svelte")),
+  };
+  // Loads every lazy panel and the authorship module, so their code is fetched
+  // and cached. Loading does not show anything: each panel is still gated on
+  // its own open or mounted state. Resolves true only when every chunk loaded,
+  // so the offline copy is not called ready with a panel missing.
+  async function prefetchLazyPanels() {
+    const results = await Promise.allSettled([
+      ...Object.values(lazy).map((entry) => entry.load()),
+      import("../lib/authorship.js"),
+    ]);
+    return results.every((result) => result.status === "fulfilled");
+  }
+  // A panel whose code cannot be fetched (offline, or a release that has moved
+  // on) says so, rather than doing nothing.
+  function lazyFailed() {
+    say(m.reader_panel_unavailable(), { kind: "problem", id: "reader:panel-unavailable" });
+  }
   let insertMenu = $state(null);
   // The palettes are overlays over the editor. Their components are kept so a
   // command can ask the Math overlay to open a template, or the Symbols overlay
@@ -1254,15 +1609,50 @@
   let mathPalette = $state(null);
   let symbolsOpen = $state(false);
   let mathOpen = $state(false);
-  // Raw on purpose: the session is a bag of Loro types and functions, and the
-  // collaboration module hands the same object back in its callbacks, which
-  // are compared to this by identity. A deep proxy would never be equal to it.
-  let session = $state.raw(null);
   let editing = $state(false);
-  let mayEdit = $state(false);
-  let sourceFormat = $state("");
+  // What the preview draws: the file, its format, why it is that one, the
+  // choices when the open file has no preview of its own, and the lock. The
+  // rule is `lib/opening.js`'s; the state and its changes are kept in
+  // preview-target.svelte.js. Every callback is lazy, so the things it names
+  // may be declared further down.
+  const target = createPreviewTarget({
+    texts: () => liveTreeNow().texts,
+    formatOf: (path) => renderers.previewFormatOf(path),
+    open: () => ({ textPath: openTextPath, hasFile: Boolean(openFile) }),
+    lockedPath: () => lockedPath,
+    // A link holder reading a file in place of the preview keeps the preview
+    // as it was underneath, so going back to it shows the same page at once.
+    skip: () => (!session && !projection.state.project) || (!mayEdit && viewing),
+    painted: () => painted,
+    configure: (format) => configureLatex(format, format ? (session || readerProjectOwner) : undefined),
+    warm: (format, text) => warmEngine(format, text),
+    invalidate: () => renderCoordinator.invalidate(),
+    clearFrame: () => framePreview.clear(),
+    navigateFrame: () => { if (docsOrigin) navigateFrame(); },
+    cancelDebounce: () => schedule.cancel(),
+    resetStatus: () => renderStatus.resetFailure(),
+    cleared: () => {
+      renderStatus.clearDocx();
+      diagnosticPainter.rendered({ page: false, diagnostics: [] });
+    },
+    paint: () => { void paintPreview(); },
+    settle: () => tick(),
+    disposed: () => readerDisposed,
+  });
+  // Reads of the preview's state under the names the page has always used.
+  // They are reads only: every write goes through `target`.
+  const previewPath = $derived(target.state.path);
+  const sourceFormat = $derived(target.state.format);
+  // Quarto and Typst run their code only on an explicit Run. Typst runs it
+  // with Calepin.
+  const runsExplicitly = $derived(sourceFormat === "quarto" || sourceFormat === "typst");
+  const previewReason = $derived(target.state.reason);
+  const previewChoices = $derived(target.state.choices);
+  const lockedFile = $derived(target.state.lockedFile);
+  // The paths that render on their own, which is what the eye in Files offers
+  // to lock. Worked out with the target, from the same texts.
+  const aloneSet = $derived(target.state.alone);
 
-  let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
   // The formatting at the caret, from the Editor while visual mode is on.
@@ -1278,10 +1668,6 @@
       ? m.reader_offline_kept_locally()
       : m.reader_offline_reconnecting();
   });
-
-  // A close is only worth interrupting when the work has reached neither this
-  // browser's storage nor the server.
-  const atRisk = $derived(Boolean(mayEdit && (persistence.localError || (persistence.pending && !persistence.local))));
 
   // What the document is called, which is what the rendered page is titled.
   // The title it was published under wins; a document that never had one is
@@ -1308,14 +1694,14 @@
     slug: SLUG,
     key: KEY,
     // Open on what the restore replaced: the version just before the
-    // restore's own row. Compared against now, that is the change the
-    // restore made, and its Restore button is the undo.
+    // restore's own row. The compare-with setting moves to Latest, since that
+    // is what is shown: against now, that is the change the restore made, and
+    // its Restore button is the undo. With no such version, it is the Latest
+    // row alone.
     onrestored: () => {
       const newest = [...timeline.state.labels].sort((a, b) => b.seq - a.seq);
       const beforeSha = newest[0]?.why === "restore" ? newest[1]?.sha || "" : "";
-      return beforeSha
-        ? historySource.compare(beforeSha, CURRENT, beforeSha)
-        : historySource.view("");
+      return historySource.setCompareWith("latest", beforeSha);
     },
     disposed: () => readerDisposed,
   });
@@ -1355,6 +1741,18 @@
       await loadTimelineOrThrow();
       return timeline.state.labels.at(-1)?.sha ?? CURRENT;
     },
+    // The version before this one in the whole history, reading older pages when
+    // it is not loaded yet. The saved list is not used: it skips unsaved versions.
+    previous: async (sha) => {
+      await loadTimelineOrThrow();
+      const at = () => timeline.state.labels.findIndex(point => point.sha === sha);
+      while (at() <= 0 && !timeline.state.complete && !readerDisposed) {
+        await timeline.loadMore();
+        if (timeline.state.moreProblem) throw new Error(timeline.state.moreProblem);
+      }
+      const index = at();
+      return index > 0 ? timeline.state.labels[index - 1].sha : index === 0 ? NOTHING : CURRENT;
+    },
     preferredPath: () => session?.paths?.get(openFile) || "",
     currentTree: () => {
       if (session && session.joined !== false) return session.tree();
@@ -1384,10 +1782,9 @@
     const before = previousHistoryMode;
     previousHistoryMode = mode;
     if (!compact || mode === before) return;
-    if (before === "normal") untrack(() => showMobileView("sidebar"));
-    else if (mode === "normal" && historySource.newer) untrack(() => showMobileView("source"));
+    if (before === "normal") untrack(() => arrangement.showMobileView("sidebar"));
+    else if (mode === "normal" && historySource.newer) untrack(() => arrangement.showMobileView("source"));
   });
-  let navigationGeneration = 0;
   // Which file the reader arrived asking for, when the landing page's search
   // found the project by one of its files. Honoured once the directory has
   // arrived, and once only.
@@ -1419,6 +1816,7 @@
     authorsLoading = true;
     authorsError = "";
     try {
+      const { loadAuthors } = await import("../lib/authorship.js");
       const map = await loadAuthors(SLUG, authHeaders(KEY));
       if (request === authorsRequests) authorsMap = map;
     } catch (error) {
@@ -1429,12 +1827,12 @@
   }
 
   // The timeline and the source workspace share one selection. Selecting a
-  // version compares it with the current source and nothing else: the
-  // document pane always shows the document as it stands.
+  // version shows it beside the other end the compare-with setting picks. The
+  // document pane still shows the document as it stands.
   function viewPoint(sha) {
     beginComparison("history");
     const pending = historySource.view(sha);
-    if (compact) showMobileView("source");
+    if (compact) arrangement.showMobileView("source");
     return pending;
   }
 
@@ -1467,9 +1865,9 @@
   async function restoreEditorArea(view) {
     // Editing does not end once it has begun, so a source pane that was closed
     // is closed by the arrangement and the face that hide it.
-    layout = view.editing ? view.layout : "document";
-    preferredPane = view.editing ? view.preferredPane : "document";
-    mobileView = view.mobileView === "source" && !view.editing ? "document" : view.mobileView;
+    arrangement.state.layout = view.editing ? view.layout : "document";
+    arrangement.state.preferredPane = view.editing ? view.preferredPane : "document";
+    arrangement.state.mobileView = view.mobileView === "source" && !view.editing ? "document" : view.mobileView;
     viewing = view.viewing;
     // A file deleted while the comparison was open is not put back: the
     // workspace has already chosen another, and the editor cannot show a file
@@ -1484,6 +1882,54 @@
     if (readerDisposed) return;
     editor?.goToIn(view.caret.file, view.caret.at);
   }
+
+  // A phone discards a hidden tab and reloads it when the person returns. This
+  // tab's sessionStorage survives that reload, so the place kept while the page
+  // was hidden (face, file, caret and scroll) is put back once. A new tab or
+  // link starts fresh, because sessionStorage is per tab. Nothing goes to the
+  // server: the place belongs to this device.
+  function keepPlace() {
+    if (!editing || !editor || !ws.openFile || ws.figure) return;
+    const here = editor.place?.();
+    if (!here) return;
+    savePlace(SLUG, {
+      openFile: ws.openFile,
+      caret: here.caret,
+      top: here.top,
+      offset: here.offset,
+      link: ARRIVED_FILE,
+      layout: arrangement.state.layout,
+      preferredPane: arrangement.state.preferredPane,
+      mobileView: arrangement.state.mobileView,
+    });
+  }
+  let placeRestored = false;
+  $effect(() => {
+    if (placeRestored || !editing || !editor || !ws.files.length) return;
+    untrack(() => {
+      placeRestored = true;
+      const saved = readPlace(SLUG);
+      // A link that names a file asks to see that file, so it beats the place.
+      // A reload keeps the link in the address bar, so a place kept under the
+      // same link is that reload's and is put back.
+      if (ARRIVED_FILE && saved?.link !== ARRIVED_FILE) return;
+      if (!saved || !ws.files.some((file) => file.id === saved.openFile && file.kind === "text")) return;
+      if (saved.layout) arrangement.state.layout = saved.layout;
+      if (saved.preferredPane) arrangement.state.preferredPane = saved.preferredPane;
+      if (saved.mobileView) arrangement.state.mobileView = saved.mobileView;
+      // ws.openFile is not assigned here. The file prop would then open the file
+      // with focus, which raises the phone keyboard. restorePlace opens it
+      // without focus and calls onfilechange, which sets ws.openFile itself;
+      // the file prop effect then finds the file already showing and returns.
+      // The editor takes the arrangement on the next update, so the place is
+      // put back after a tick.
+      void (async () => {
+        await tick();
+        if (readerDisposed) return;
+        editor?.restorePlace(saved.openFile, saved);
+      })();
+    });
+  });
 
   const restoreBusy = $derived(timeline.state.restoreBusy);
   const restoreMoved = $derived(timeline.state.restoreMoved);
@@ -1536,7 +1982,7 @@
       for (const [path, file] of Object.entries(point.files || {})) {
         if (file?.kind !== "text" && file?.digest) digests[path] = file.digest;
       }
-      const files = await projectFiles({ tree: { texts: point.texts || {}, digests }, folders: [], gather: gatherFigures });
+      const files = await projectFiles({ tree: { texts: point.texts || {}, retained: point.retained || {}, digests }, folders: [], gather: gatherFigures });
       if (downloadingSha !== sha) return; // superseded by a later request
       saveBlob(await archive(files), `${SLUG}-${versionStamp(point.at, sha)}.zip`);
     } catch (error) {
@@ -1554,19 +2000,7 @@
   // its list remains live while the document pane is showing a label, so
   // downloads must use the same source as that list.
   function liveTreeNow() {
-    if (!session) {
-      if (!currentProject) return { main: "", texts: {}, digests: {} };
-      const digests = {};
-      for (const [path, file] of Object.entries(currentProject.tree?.files || {})) {
-        if (file?.kind === "asset" && file.digest) digests[path] = file.digest;
-      }
-      return {
-        main: "",
-        texts: { ...(currentProject.texts || {}) },
-        digests,
-        settings: currentProject.tree?.settings || null,
-      };
-    }
+    if (!session) return projection.tree();
     const tree = session.tree();
     // CodeMirror owns the active Loro binding and exposes the text it is
     // displaying. During a local transaction its view can be one tick ahead
@@ -1591,10 +2025,17 @@
   // and a document belongs on the documents origin, not in this page. The
   // agent republishes its text from there, which re-anchors every comment
   // against what was just typed.
-  let sourceGeneration = 0;
+  const schedule = createSourceSchedule({
+    editing: () => editing,
+    format: () => sourceFormat,
+    latexDebounce: () => latex.debounce(),
+    continuous: () => latexContinuous(),
+    paint: () => paintPreview(),
+    retarget: () => target.update(),
+  });
   const renderCoordinator = createRenderCoordinator({
-    navigation: () => navigationGeneration,
-    source: () => sourceGeneration,
+    navigation: () => target.navigation,
+    source: () => schedule.generation,
     main: () => treeNow().main,
     // Called rather than passed: the renderer is built further down the file,
     // and this closure is what lets the coordinator exist before it.
@@ -1604,18 +2045,27 @@
   /// Fetches the figures a tree's digests point to and reports which of the
   /// requested digests the server did not have, so a caller can decide
   /// whether a hole in the result is tolerable or should fail the whole call.
-  async function gatherFigures(digests) {
-    const held = await figures.gather(SLUG, digests, authHeaders(KEY));
+  /** @param {Record<string, string>} digests @param {{ urls?: boolean | "reference" }} [options] */
+  async function gatherFigures(digests, { urls = true } = {}) {
+    const held = await figures.gather(SLUG, digests, authHeaders(KEY), { urls });
     const missing = Object.keys(digests).filter(
       (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
     );
     return { held, missing };
   }
 
+  /// The figures of the last run, only when that run was of `main`: another
+  /// document's Run directory is not this one's.
+  function resultsFilesFor(main) {
+    const results = runResults;
+    return results && main && results.path === main ? results.files ?? null : null;
+  }
+
   /// A loadable URL for a figure in the open project, for the editor's visual markup.
   async function figureUrlFor(path) {
     const digest = treeNow().digests?.[path];
-    if (!digest) return null;
+    // Not a project file: a figure the last run took from the Run directory.
+    if (!digest) return resultsFigureUrl(resultsFilesFor(previewPath), path);
     const held = await figures.gather(SLUG, { [path]: digest }, authHeaders(KEY));
     return held.urls[path] ?? null;
   }
@@ -1639,7 +2089,7 @@
   // after this script runs.
   let webConnection = $state(null);
   $effect(() => {
-    if (!hasDesktop || !mayEdit) return;
+    if (!hasDesktop || !mayEdit || suggestOnly) return;
     const connection = createWebConnection({
       project: `${location.origin}/docs/${SLUG}`,
       flush: async () => {
@@ -1674,8 +2124,13 @@
     const path = toolbarPath;
     return renderers.formatOf(path) || (path && path === previewPath ? sourceFormat : "");
   });
-  const outlineHeadings = $derived.by(() => panel === "outline" && mayEdit
-    ? extractOutline(outlineSource, outlineFormat) : []);
+  // The outline of the open file. Typst reads the typst module's tree, which
+  // is empty until the module loads; the revision brings the outline back then.
+  const outlineHeadings = $derived.by(() => {
+    void outlineRevision;
+    if (panel !== "outline" || !mayEdit) return [];
+    return extractOutline(outlineSource, outlineFormat);
+  });
   // Word counts for each heading in the Outline panel.
   const outlineSections = $derived.by(() => panel === "outline" && mayEdit
     ? sectionWords(outlineSource, outlineFormat, outlineHeadings) : []);
@@ -1694,11 +2149,6 @@
       selection: range && range.file === openFile ? countWordsIn(editor.text(), outlineFormat, range.from, range.to) : null,
     };
   });
-  // Keep one render in flight and coalesce requests into the latest tree.
-  // This bounds the worker queue while typing, and keeps each LaTeX PDF
-  // tied to the snapshot digest of the tree that produced it.
-  let previewTimer = null;
-
   // What the last compile said. When it is painted is `diagnostics.js`'s
   // rule, and the wait it counts is from the keystroke rather than from the
   // render that noticed the error, so a slow render does not add its own
@@ -1713,18 +2163,9 @@
     deliver: (list) => editor?.setDiagnostics?.(list),
   });
   const diagnosticPainter = diagnosticsController.painter;
-  // Whether the frame has ever shown a page. Until it has, a document that
-  // does not compile has nothing to keep on the screen.
-  let everPainted = false;
-  // The same fact, in a form the markup may read. `everPainted` is a plain
-  // variable on purpose -- it is written from inside a render and read
-  // nowhere near one -- and a reader's "not yet rendered" is the one place
-  // the question is asked from the template.
-  let everPaintedShown = $state(false);
-  // Whether the page for the current target is on the screen. For a PDF that
-  // is the viewer saying it drew; a page that is only delivered is still
-  // blank in a viewer that is loading. Reset wherever `everPaintedShown` is.
-  let pageDrawn = $state(false);
+  // What the preview frame shows, and what it has shown since it last loaded.
+  // The facts and their resets live in painted.svelte.js.
+  const painted = createPainted();
   // Whether the frame shows any page at all since it last loaded, even one
   // of another file. The viewer swaps new pages in only once they are drawn,
   // so such a frame can stay in sight while it draws the next one.
@@ -1734,17 +2175,17 @@
   // viewer that never sends it must not leave the pane waiting for ever.
   const DRAWN_GRACE_MS = 4000;
   $effect(() => {
-    if (!pdfOutput || !everPaintedShown || pageDrawn) return;
-    const timer = setTimeout(() => { pageDrawn = true; }, DRAWN_GRACE_MS);
+    if (!pdfOutput || !painted.state.shown || painted.state.drawn) return;
+    const timer = setTimeout(() => painted.drawn(), DRAWN_GRACE_MS);
     return () => clearTimeout(timer);
   });
   // The renderer engine being downloaded for the preview, or "". LaTeX
   // reports its own loading phase and is never named here.
   let engineLoading = $state("");
-  function warmEngine(format) {
+  function warmEngine(format, source = "") {
     const wanted = format;
     if (!["latex", "html", "text"].includes(format)) engineLoading = format;
-    void renderers.warm(format).then(() => {
+    void renderers.warm(format, source).then(() => {
       if (engineLoading === wanted) engineLoading = "";
     });
   }
@@ -1777,6 +2218,7 @@
     },
     changes: {},
     collaboration: unreadChat ? { says: m.readerb_collaboration_unread(), dot: true } : {},
+    agent: agentWaitingBadge({ waiting: agentWaiting, visible: agentInView }),
   });
 
   // A reader is told nothing about live editor diagnostics. They cannot fix
@@ -1825,6 +2267,11 @@
   const displayedFormat = $derived(
     sourceFormat,
   );
+  // The browser's PDF for Quarto is Pandoc and Typst, not Quarto, so it ignores
+  // the document's `format: pdf` options and shows no code output. Only the
+  // desktop app, which can run Quarto itself, offers it for Quarto. Plain
+  // Markdown keeps PDF everywhere. The stored preference is left alone.
+  const quartoPdfOffered = $derived(hasDesktop || displayedFormat !== "quarto");
   // This browser-only choice affects the pane and is never published. It is
   // not conditioned on the source pane being open: the output starts on the
   // person's default preview for this format (HTML unless they chose PDF in
@@ -1835,7 +2282,7 @@
       (displayedFormat === "latex" && latexOutput === "html")) ? "html" : displayedFormat,
   );
   const previewOutputKind = $derived.by(() =>
-    ["markdown", "quarto"].includes(displayedFormat) && buildPreferences.output === "pdf"
+    ["markdown", "quarto"].includes(displayedFormat) && markdownOutput === "pdf"
       ? "pdf"
       : renderers.outputKind(previewFormat),
   );
@@ -1860,7 +2307,7 @@
   // except the build log, which the user opts into.
   $effect(() => {
     const undo = [
-      provide("document", () => ({ id: doc.document_id, format: sourceFormat, role: doc.role, mayEdit })),
+      provide("document", () => ({ id: doc.document_id, format: sourceFormat, role: doc.role, mayEdit, suggestOnly })),
       provide("account", () => ({ id: me.id, signedIn: Boolean(me.provider) })),
       provide("sync", () => ({
         connected,
@@ -1888,7 +2335,7 @@
           },
         };
       }),
-      provide("buildLog", () => renderStatus.state.lastLog || renderStatus.state.lastLatexResult?.log || ""),
+      provide("buildLog", () => (runsExplicitly && runLog ? runLog : renderStatus.state.lastLog) || renderStatus.state.lastLatexResult?.log || ""),
     ];
     return () => undo.forEach((unregister) => unregister());
   });
@@ -1897,7 +2344,7 @@
   // Which tool builds this document is the build settings' to own; what the
   // page keeps is the consequence -- which output each format is producing,
   // and which preview mode it is in.
-  const buildUserId = $derived(me.provider && me.handle ? `${me.provider}:${me.handle}` : anonymousIdentity());
+  const buildUserId = $derived(buildPreferenceUser(me));
   const buildSettings = createBuildSettings({
     slug: SLUG,
     origin: location.origin,
@@ -1907,10 +2354,47 @@
   const buildPreferences = $derived(buildSettings.state.preferences);
   // Where the toggle is offered: in the desktop app, for every editable
   // document whose format is set to this computer.
-  const runCodeOffered = $derived(mayEdit && hasDesktop && buildPreferences.backend === "local");
+  const runCodeOffered = $derived(mayEdit && !suggestOnly && hasDesktop && buildPreferences.backend === "local");
+  // The Run directory is read whenever a Quarto or Typst document's code may
+  // be run here; reading it only asks the desktop app for the setting.
+  $effect(() => {
+    if (runsExplicitly && runCodeOffered) untrack(() => runDir.load());
+    else untrack(() => runDir.reset());
+  });
+  // The Run directory page, opened from the Run button's menu, and by Run
+  // itself when no folder is set.
+  let runDirPageOpen = $state(false);
+  $effect(() => {
+    if (!(runsExplicitly && runCodeOffered)) runDirPageOpen = false;
+  });
+  function openRunDirPage() {
+    runDirPageOpen = true;
+  }
+  // The Run menu's folder item: the dialog explains a missing or unset folder
+  // and offers the suggestion; otherwise go straight to the system picker.
+  function chooseRunDirectory() {
+    if (!runDir.usable) openRunDirPage();
+    else void runDir.choose();
+  }
+  function closeRunDirPage() {
+    runDirPageOpen = false;
+  }
+  // Dismissing the dialog gives up a Run that was waiting for a folder.
+  function dismissRunDir() {
+    pendingRun = false;
+    runDirPageOpen = false;
+  }
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
-  const markdownOutput = $derived(buildPreferences.output === "pdf" ? "pdf" : "html");
+  // Compile the LaTeX HTML preview while typing: opted in, and only while the
+  // last compile was quick enough to keep up. A source change can arrive while
+  // the page is still being set up, before there is a session; that is never
+  // a reason to compile continuously.
+  function latexContinuous() {
+    return !readerDisposed && Boolean(session) && sourceFormat === "latex" && latexOutput === "html"
+      && readLiveCompile(buildScope(), "latex") && (renderers.latexHtmlLastSeconds() ?? 0) <= 3;
+  }
+  const markdownOutput = $derived(quartoPdfOffered && buildPreferences.output === "pdf" ? "pdf" : "html");
   const buildScope = () => buildSettings.scopeFor(buildUserId);
   $effect(() => {
     const format = sourceFormat;
@@ -1918,6 +2402,365 @@
     if (format) untrack(() => buildSettings.follow({ format, user }));
   });
   const setBuildPreferences = (next) => buildSettings.choose(next, sourceFormat);
+  // Shared results: the output of the last local run of a Quarto or Typst
+  // document (Calepin's files for Typst, cells for Quarto), kept by the server
+  // for collaborators who have no data of their own. Every role fetches it;
+  // only a run on this computer uploads it.
+  const sharedResults = createSharedResults(SLUG, () => authHeaders(KEY));
+  let shareResults = $state(true);
+  $effect(() => {
+    void buildUserId;
+    untrack(() => { shareResults = readShareResults(buildScope(), SLUG); });
+  });
+  function setShareResults(on) {
+    shareResults = writeShareResults(buildScope(), SLUG, on);
+  }
+  async function refreshResults() {
+    const before = sharedResults.state.record?.updatedAt;
+    const next = await sharedResults.refresh();
+    // Deleted (from Settings or by a collaborator): the next run uploads again
+    // even when its output is identical to the last one this tab sent.
+    if (!next) sharedResults.reset();
+    // A run on this computer draws its own output, so it never re-runs
+    // because its own upload came back. A run in progress is never cut short
+    // by a collaborator's results arriving.
+    if (readerDisposed || ownResults || runPhase === "running" || (next?.updatedAt ?? "") === (before ?? "")) return;
+    stopRendering();
+    void paintPreview();
+  }
+  $effect(() => {
+    if (runsExplicitly) untrack(() => { void refreshResults(); });
+  });
+  // The saved output as the draft shows it, with the line that says whose
+  // run it is and when: this person's last run here, else a collaborator's.
+  const runResults = $derived.by(() => {
+    if (!runsExplicitly) return null;
+    const record = ownResults ?? sharedResults.state.record;
+    if (!record) return null;
+    // A Typst document's results are the files Calepin stored; a Quarto
+    // document's are its cells. A record of the other kind is not this
+    // document's.
+    const calepin = isCalepinRecord(record);
+    if (calepin !== (sourceFormat === "typst")) return null;
+    // Run figures ride on both kinds of record; null when there are none.
+    const files = Array.isArray(record.files) && record.files.length ? record.files : null;
+    const when = new Date(record.updatedAt);
+    const date = Number.isNaN(when.getTime()) ? "" : new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" }).format(when);
+    return {
+      cells: calepin ? null : record.cells,
+      inlines: calepin ? null : record.inlines ?? null,
+      files,
+      calepin,
+      own: Boolean(ownResults),
+      uploaderName: ownResults ? "" : String(record.uploaderName || ""),
+      path: String(record.path || ""),
+      updatedAt: String(record.updatedAt || ""),
+      note: ownResults ? m.readerd_results_note_own({ date }) : m.readerd_results_note({ name: record.uploaderName || "", date }),
+    };
+  });
+  // Which referenced figures that are not project files the Run directory
+  // holds, so the draft can say "Run code to include it" for those and a plain
+  // "not in the project" for the rest. Null until the app has answered, and
+  // whenever there is no usable Run directory to ask.
+  let runDirectoryHas = $state.raw(null);
+  let hasAsked = "";
+  $effect(() => {
+    void outlineRevision;
+    void runDirectory;
+    void lastRunAt;
+    const ask = runsExplicitly && hasDesktop && runCodeOffered && runDir.usable && previewPath;
+    if (!ask) {
+      hasAsked = "";
+      if (untrack(() => runDirectoryHas) !== null) runDirectoryHas = null;
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const tree = untrack(() => treeNow());
+      await figureSyntaxReady(tree);
+      if (cancelled) return;
+      const missing = wantedPaths(referencedFigures(tree), tree);
+      const key = JSON.stringify([runDirectory, lastRunAt, missing]);
+      if (key === hasAsked) return;
+      let present = [];
+      if (missing.length) {
+        try {
+          present = await localQuarto.runDirectoryHas(SLUG, missing);
+        } catch {
+          // An older app has no such route: the draft then names no source.
+          if (!cancelled) {
+            hasAsked = "";
+            runDirectoryHas = null;
+          }
+          return;
+        }
+      }
+      if (cancelled || readerDisposed) return;
+      hasAsked = key;
+      const next = new Set(present);
+      const before = runDirectoryHas;
+      runDirectoryHas = next;
+      // The draft's wording for a missing figure depends on the answer.
+      const changed = !before || before.size !== next.size || present.some((path) => !before.has(path));
+      if (changed && runPhase !== "running") {
+        stopRendering();
+        void paintPreview();
+      }
+    }, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  });
+  // Run the document's code once on this computer. For Quarto the page it
+  // makes is not the preview: its cell outputs are split out and spliced under
+  // the draft's cells. For Typst, Calepin's stored files are kept instead, and
+  // the browser's draft reads them back, so the preview stays the draft.
+  async function runCode() {
+    if (runPhase === "running" || readerDisposed) return;
+    if (!runDir.usable) {
+      pendingRun = true;
+      runDirPageOpen = true;
+      return;
+    }
+    runPhase = "running";
+    runStartedAt = Date.now();
+    const mine = ++runGeneration;
+    // What the run was started against: the unmatched fallback page is only
+    // shown if the reader is still looking at the same document.
+    const navigation = target.navigation;
+    const source = schedule.generation;
+    const gone = () => mine !== runGeneration || readerDisposed;
+    const controller = new AbortController();
+    runAbort = controller;
+    // The run's own page replaces the draft, unless the reader moved to
+    // another file or edited since. Bumping the target keeps a draft that is
+    // still in flight from painting over it.
+    const showRunPage = (tree, page) => {
+      if (navigation === target.navigation && source === schedule.generation && tree.main === previewPath) {
+        // The frame now shows something newer than any draft that is
+        // scheduled, running or queued, so they must not paint over it.
+        schedule.cancel();
+        renderCoordinator.claim();
+        target.bump();
+        framePreview?.publish(page);
+      }
+    };
+    try {
+      const tree = capturePreviewTree(treeNow());
+      if (Object.keys(tree.digests || {}).length) {
+        const { held } = await gatherFigures(tree.digests);
+        if (gone()) return;
+        tree.assets = held.assets;
+        tree.urls = { ...(tree.urls || {}), ...held.urls };
+      }
+      const heading = await headingOf(tree);
+      if (gone()) return;
+      const typst = sourceFormat === "typst";
+      // Typst keeps its own output choice; Markdown and Quarto share theirs.
+      const toPdf = typst ? typstOutput !== "html" : buildPreferences.output === "pdf";
+      // Quarto HTML runs carry cell tags, so each output finds its cell even
+      // when Quarto wrote no div for it. The tags are not in the stored record.
+      const runTree = sourceFormat === "quarto" && !toPdf ? tagCells(tree) : tree;
+      // Figures the document shows that are not project files: the app reads
+      // them from the Run directory after the run.
+      await figureSyntaxReady(tree);
+      const wanted = wantedPaths(referencedFigures(tree), tree);
+      const rendered = await renderers.render(runTree, heading, {
+        buildPreferences: { ...buildPreferences, backend: "local", output: toPdf ? "pdf" : "html" },
+        project: SLUG,
+        wanted,
+        ...(typst ? { format: toPdf ? "pdf" : "html" } : {}),
+        signal: controller.signal,
+      });
+      if (gone()) return;
+      // The run's log is what Diagnostics shows, whether it worked or not.
+      runLog = rendered?.log || rendered?.failure?.message || "";
+      runDiagnostics = rendered?.diagnostics || [];
+      if (typst) {
+        const page = toPdf ? rendered?.pdf : rendered?.html;
+        if (rendered?.ok === false || !page) {
+          runPhase = "failed";
+          return;
+        }
+        const record = calepinRecordOf(rendered.results, tree.main);
+        if (record) {
+          // The run's own page is kept whether or not the draft shows it.
+          const recordDigest = toPdf ? await renderers.snapshotDigest(tree) : "";
+          if (gone()) return;
+          lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: recordDigest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
+          // The files Calepin stored go into the browser's own draft, PDF or
+          // HTML, so the preview stays the draft between runs.
+          ownResults = { engine: "calepin", files: record.files, path: tree.main, updatedAt: new Date().toISOString() };
+          runPhase = "idle";
+          stopRendering();
+          void paintPreview();
+          if (shareResults && mayEdit) {
+            void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+          }
+          return;
+        }
+        // The command stored no results (an edited command, say), so there
+        // is nothing for the draft to read: show the run's own page until the
+        // next edit.
+        sharedResults.skip("none");
+        const digest = toPdf ? await renderers.snapshotDigest(tree) : "";
+        if (gone()) return;
+        lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
+        runPhase = "idle";
+        lastPdfRunAt = new Date().toISOString();
+        showRunPage(tree, toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html });
+        return;
+      }
+      if (toPdf) {
+        if (rendered?.ok === false || !rendered?.pdf) {
+          runPhase = "failed";
+          return;
+        }
+        // The PDF is the run's page as it came, with the code's output in it;
+        // there is nothing to split. The next edit repaints the browser PDF
+        // draft as usual, which is intended: the draft cannot show outputs.
+        const digest = await renderers.snapshotDigest(tree);
+        if (gone()) return;
+        lastRunPage = { path: tree.main, page: { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } };
+        // The run's figures are published with the cell outputs of the last
+        // HTML run of this file, which a PDF run cannot split out.
+        const record = pdfRunRecord({ path: tree.main, own: ownResults, shared: sharedResults.state.record, files: runFiguresOf(rendered.results) });
+        ownResults = { cells: record.cells, inlines: record.inlines, files: record.files, path: tree.main, updatedAt: new Date().toISOString() };
+        runPhase = "idle";
+        lastPdfRunAt = new Date().toISOString();
+        showRunPage(tree, { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() });
+        if (shareResults && mayEdit) {
+          void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+        }
+        return;
+      }
+      if (rendered?.ok === false || typeof rendered?.html !== "string") {
+        runPhase = "failed";
+        return;
+      }
+      // Inline values sit in the prose, which the draft can only show when
+      // every one of them came back from the run. Otherwise the run's own page
+      // is shown until the next edit.
+      const inlineCount = quarto.expandedInlines(tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts }).length;
+      // Split Quarto's page as it came: the preview copy carries the house
+      // caption labels, which the draft would then add a second time.
+      const split = await splitResults(rendered.exportHtml ?? rendered.html, tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts });
+      if (gone()) return;
+      lastRunPage = { path: tree.main, page: { kind: "html", html: rendered.html } };
+      if (split.ok) {
+        const held = split.record.inlines ?? [];
+        const inlinesHeld = held.length === inlineCount && held.every((entry) => entry.html);
+        const record = withRunFigures(split.record, runFiguresOf(rendered.results));
+        ownResults = { cells: record.cells, inlines: record.inlines, files: record.files, path: tree.main, updatedAt: new Date().toISOString() };
+        runPhase = "idle";
+        // The next edit's draft carries the outputs either way (ownResults);
+        // a repaint now would replace the page that shows the inline results.
+        if (inlineCount > 0 && !inlinesHeld) showRunPage(tree, { kind: "html", html: rendered.html });
+        else {
+          stopRendering();
+          void paintPreview();
+        }
+        // Sharing may have been turned off, or edit access lost, while the
+        // run was being split: the choice at upload time is the one that counts.
+        if (shareResults && mayEdit) {
+          void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+        }
+        return;
+      }
+      runPhase = "idle";
+      if (split.reason === "no-cells") {
+        // Nothing to share. The cells may live in included files, whose
+        // outputs cannot be paired with the main file, so the run's own page
+        // is kept until the next edit rather than thrown away; a document
+        // with no code at all loses nothing by showing it. Figures the run
+        // made (an include: false producer cell) are still kept and shared.
+        const files = runFiguresOf(rendered.results);
+        if (files.length) {
+          ownResults = { cells: [], inlines: [], files, path: tree.main, updatedAt: new Date().toISOString() };
+          if (shareResults && mayEdit) {
+            const record = { version: 1, path: tree.main, cells: [], inlines: [], files };
+            void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+          }
+        } else {
+          // A run that made no figures still replaces what an earlier run
+          // left for this document, so stale figures do not outlive it.
+          const sharedHeld = sharedResults.state.record;
+          const hadPrevious = ownResults?.path === tree.main || (sharedHeld && sharedHeld.path === tree.main);
+          if (hadPrevious) {
+            ownResults = { cells: [], inlines: [], files: [], path: tree.main, updatedAt: new Date().toISOString() };
+            if (shareResults && mayEdit) {
+              const record = { version: 1, path: tree.main, cells: [], inlines: [] };
+              void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
+            } else sharedResults.skip("none");
+          } else sharedResults.skip("none");
+        }
+        showRunPage(tree, { kind: "html", html: rendered.html });
+        return;
+      }
+      // The output could not be matched to the cells, so it cannot be spliced
+      // into the draft: show the run's own page instead.
+      sharedResults.skip("unmatched");
+      showRunPage(tree, { kind: "html", html: rendered.html });
+      say(m.readerb_run_unmatched());
+    } catch (error) {
+      // A run that threw (the desktop app went away, say) leaves its reason
+      // where the failure message sends the reader, in place of an older log.
+      if (gone()) return;
+      runPhase = "failed";
+      runLog = error?.message || String(error);
+      runDiagnostics = [];
+    } finally {
+      if (runAbort === controller) runAbort = null;
+    }
+  }
+  // Shows the page the last run made, on demand. The next edit repaints the
+  // draft as after any run. The published copy of the bytes is its own, since
+  // publishing may transfer the buffer.
+  function showLastRun() {
+    const last = lastRunPage;
+    if (!last || last.path !== previewPath) return;
+    const page = last.page.kind === "pdf" ? { ...last.page, bytes: last.page.bytes.slice() } : last.page;
+    schedule.cancel();
+    renderCoordinator.claim();
+    target.bump();
+    framePreview?.publish(page);
+  }
+  function stopRun() {
+    runGeneration++;
+    // The signal also stops a run that has not started its job yet, which
+    // cancelPreview alone cannot reach.
+    runAbort?.abort();
+    renderers.cancelPreview({ keepWarm: true });
+    runPhase = "idle";
+  }
+  // How many cells have changed since the last run, counted a moment after
+  // typing stops so that the parse does not follow every keystroke.
+  $effect(() => {
+    void outlineRevision;
+    const results = runResults;
+    const main = previewPath;
+    if (!runsExplicitly || !results || !main || results.path !== main) {
+      staleCount = 0;
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const texts = untrack(() => treeNow()).texts ?? {};
+      const text = String(texts[main] ?? "");
+      const count = results.calepin ? staleChunks(results.files, text, { path: main }) : await staleCells(results.cells, text, { path: main, files: texts }).catch(() => 0);
+      if (!cancelled && !readerDisposed) staleCount = count;
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  });
+  const shareProps = $derived({
+    share: shareResults,
+    onshare: setShareResults,
+    shareStatus: sharedResults.state.status,
+  });
   const stopLatex = () => buildSettings.stopLatex();
 
   const configureLatex = (format, owner = session) => buildSettings.configureLatex(format, owner, buildUserId);
@@ -1945,7 +2788,7 @@
   // reported as a tool requirement instead of opening a retained result.
   const compilesHere = $derived(renderers.compilerAvailable(sourceFormat));
   // Nothing can be drawn here, so there is nothing to wait for.
-  const noCompiler = $derived(pdfOutput && !everPaintedShown && !renderState.failure && !compilesHere);
+  const noCompiler = $derived(pdfOutput && !painted.state.shown && !renderState.failure && !compilesHere);
 
   // The LaTeX compile status: idle, running, or failed, with progress and
   // messages. Used by Diagnostics and the preview's progress line.
@@ -1961,15 +2804,31 @@
       : renderState.failure ? renderState.failureReason || m.readerb_build_failed() : "",
   );
 
-  // A Quarto document is drawn as the Markdown it is until Run code is on,
-  // so the desktop app says what turns the real render on.
-  const quartoNeedsRunCode = $derived(sourceFormat === "quarto" && hasDesktop && mayEdit && !localExecution);
+  // A Quarto or Typst document with code is drawn as a draft until it has
+  // been run, so the desktop app says what produces the real output.
+  const needsRun = $derived.by(() => {
+    if (!runsExplicitly || !runCodeOffered || runResults || !previewPath) return false;
+    void outlineRevision;
+    const text = String(treeNow().texts?.[previewPath] ?? "");
+    if (sourceFormat === "typst") return usesCalepin({ [previewPath]: text });
+    return quarto.executedCells(quarto.parseQuarto(text, { path: previewPath })).length > 0;
+  });
+
+  // A run whose results could not be published is named here too, so the
+  // results are not lost without the user noticing. The line goes once a later
+  // run publishes or sharing is turned off.
+  const publishWarning = $derived(shareResults && mayEdit ? publishProblem(sharedResults.state.status) : null);
 
   const localAppDiagnostics = $derived([
-    quartoNeedsRunCode ? { severity: "warning", message: m.readerb_run_code_for_render() } : null,
+    needsRun ? { severity: "info", message: m.readerb_run_quarto_hint() } : null,
+    publishWarning ? { severity: "warning", message: publishWarning } : null,
+    // A Typst draft has no place for the line that says whose run its
+    // results are, so a collaborator's results are named here.
+    sourceFormat === "typst" && runResults?.calepin && !ownResults ? { severity: "info", message: runResults.note } : null,
+    runPhase === "failed" ? { severity: "error", message: m.readerb_run_failed() } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
-  ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
+  ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })).concat(runsExplicitly ? runDiagnostics : []));
   // Backups that are off say nothing. Only a failing backup is reported.
   const backupDiagnostics = $derived.by(() => {
     const data = backupStatus.active ? backupStatus.data : null;
@@ -1989,10 +2848,6 @@
     untrack(() => diagnosticsController.refresh());
   });
 
-  // The kind of the payload the frame was last handed -- "pdf", "html", or
-  // "" since the last navigation. `framePreview.preview()` knows the same,
-  // but not reactively, and the File menu's download items follow this.
-  let deliveredKind = $state("");
   // What the PDF frame is showing, as the frame itself reports it: whether a
   // page is drawn at all, the zoom mode in force, and the scale it came out
   // at. The header's controls are drawn from this rather than from what was
@@ -2028,7 +2883,6 @@
   let darkNow = $state(false);
   $effect(() => onMode((next) => (darkNow = next === "dark")));
   let viewerTool = $state("select");
-  let activeSynctex = null;
   framePreview = createFramePreview({
     slug: SLUG,
     getDocsOrigin: () => docsOrigin,
@@ -2042,21 +2896,17 @@
       // it loads. Until then the controls go away rather than describing the
       // document that just left.
       viewerView = null;
-      pageDrawn = false;
+      painted.navigated();
       viewerTool = "select";
       invertSent = false;
       densitySent = false;
       findAsk = 0;
       renderCoordinator.invalidate();
-      deliveredKind = "";
       renderStatus.clearDocx();
-      activeSynctex = null;
       frameOverlays.resetAnnotations();
     },
     onDelivered: (payload) => {
-      deliveredKind = payload.kind;
-      everPainted = true;
-      everPaintedShown = true;
+      painted.delivered();
       // An HTML page is on screen the moment it is handed over.
       if (payload.kind === "html") frameHasPage = true;
     },
@@ -2065,10 +2915,15 @@
 
   const navigateFrame = (force = false) => framePreview.navigate(force);
   const replayPreview = () => paintsTheFrame && framePreview.replay();
+  // A load event is a new document in the frame, even at the same address (the
+  // browser's "Reload frame"): it holds no page and no figures, so the figures
+  // are forgotten and the latest page is handed over again. The agent's own
+  // `ready` after each repaint is not a load and does not replay.
   const frameLoaded = () => {
-    const first = framePreview.markReady();
+    framePreview.forgetFigures();
+    framePreview.markReady();
     frameReady = true;
-    if (first) replayPreview();
+    replayPreview();
   };
 
   // The kind of frame follows the tree being displayed, including a
@@ -2140,17 +2995,14 @@
       if (!mayEdit) renderedProjectDigest = projectDigest || "";
     },
     onEmpty: () => {
-      deliveredKind = "";
-      everPainted = false;
-      everPaintedShown = false;
-      pageDrawn = false;
-      activeSynctex = null;
+      painted.reset({ empty: true });
+      renderStatus.resetFailure();
     },
     facts: () => ({
       disposed: readerDisposed,
-      navigation: navigationGeneration,
-      source: sourceGeneration,
-      everPainted,
+      navigation: target.navigation,
+      source: schedule.generation,
+      everPainted: painted.ever,
       format: sourceFormat,
       hasSession: Boolean(session),
       paintsTheFrame,
@@ -2158,10 +3010,14 @@
       typstOutput,
       buildPreferences,
       localExecution,
-      projectDigest: mayEdit ? "" : currentProject?.project_digest || "",
+      runDirectory,
+      runResults,
+      runDirectoryHas,
+      latexContinuous: latexContinuous(),
+      projectDigest: mayEdit ? "" : projection.state.project?.project_digest || "",
     }),
     tree: () => treeNow(),
-    gather: (digests) => gatherFigures(digests),
+    gather: (digests, options) => gatherFigures(digests, options),
     heading: (tree) => headingOf(tree),
     takeManual: () => {
       const manual = manualCompile;
@@ -2169,11 +3025,10 @@
       return manual;
     },
     manualPending: () => manualCompile,
-    onsynctex: (parsed) => { activeSynctex = parsed; },
+    onsynctex: (parsed) => { painted.synctex = parsed; },
     send: (message) => tell(message),
     clearDebounce: () => {
-      clearTimeout(previewTimer);
-      previewTimer = null;
+      schedule.cancel();
     },
     refreshFrame: () => refreshFramedPage(),
     debug: (...parts) => {
@@ -2183,20 +3038,16 @@
     },
   });
 
-  // A source that is not actively being edited in this browser waits for a
-  // pause, so remote changes and preview-only views do not render every word.
-  const PASSIVE_PREVIEW_DEBOUNCE = 1000;
-
-  function sourceChanged() {
+  function sourceChanged({ remote = false } = {}) {
     if (readerDisposed) return;
-    sourceGeneration += 1;
+    schedule.bump();
+    painted.state.empty = false;
     refreshReview();
-    outlineRevision += 1;
+    outlineChanged();
     if (sourceFormat === "quarto" && session && previewPath) {
       const main = previewPath;
-      const parsed = quarto.parseQuarto(String(session.textOf(session.idOf(main))?.toString?.() ?? ""), { path: main });
-      const nextDiagnostics = parsed.diagnostics.map((item) => diagnosticContext(item, { main, texts: { [main]: parsed.source } }, ""));
-      const diagnosticsGeneration = sourceGeneration;
+      const nextDiagnostics = quartoDiagnostics(main);
+      const diagnosticsGeneration = schedule.generation;
       // Loro can notify this observer from inside CodeMirror's update
       // listener. Editor.setDiagnostics dispatches another update, which
       // CodeMirror rejects while the first one is still in progress. Source
@@ -2204,28 +3055,44 @@
       // the current transaction has returned and is skipped if newer text
       // arrived before then.
       queueMicrotask(() => {
-        if (readerDisposed || diagnosticsGeneration !== sourceGeneration) return;
+        if (readerDisposed || diagnosticsGeneration !== schedule.generation) return;
         diagnosticsController.render(nextDiagnostics);
       });
     }
     // The keystroke, which is what the diagnostic wait is measured from.
     diagnosticPainter.typed();
-    // Fast formats use a short bounded preview cadence. Only LaTeX owns its
-    // longer compiler debounce; postponing this timer for every Typst
-    // keystroke would starve the preview indefinitely.
-    if (editing && sourceFormat !== "latex" && previewTimer !== null) return;
-    clearTimeout(previewTimer);
-    // A LaTeX compile takes seconds, so it waits for the source to be quiet
-    // for longer -- `latex.DEBOUNCE`, which is that module's number and not
-    // one written twice. A reader watching somebody else type waits longer
-    // still, and the longer of the two wins.
-    const wait =
-      sourceFormat === "latex"
-        ? Math.max(latex.DEBOUNCE, editing ? 0 : PASSIVE_PREVIEW_DEBOUNCE)
-        : editing
-          ? 50
-          : PASSIVE_PREVIEW_DEBOUNCE;
-    previewTimer = setTimeout(paintPreview, wait);
+    schedule.changed({ remote });
+  }
+
+  // The outline is worked out from the whole file, so a burst of typing
+  // recomputes it at most once per interval. The bump lands at the end of the
+  // interval and reads the text as it stands then, so the outline is never
+  // more than one interval behind the source.
+  const OUTLINE_INTERVAL_MS = 150;
+  let outlineTimer = 0;
+  function outlineChanged() {
+    if (outlineTimer || readerDisposed) return;
+    outlineTimer = setTimeout(() => {
+      outlineTimer = 0;
+      if (!readerDisposed) outlineRevision += 1;
+    }, OUTLINE_INTERVAL_MS);
+  }
+
+  // The Quarto diagnostics of the main file. Most source batches are edits to
+  // other files, which leave the main text as it was, so the parse runs only
+  // when that text or its path differs from the last parse.
+  let diagnosedMain = "";
+  let diagnosedText = null;
+  let diagnosedItems = [];
+  function quartoDiagnostics(main) {
+    const text = String(session.textOf(session.idOf(main))?.toString?.() ?? "");
+    if (main !== diagnosedMain || text !== diagnosedText) {
+      const parsed = quarto.parseQuarto(text, { path: main });
+      diagnosedItems = parsed.diagnostics.map((item) => diagnosticContext(item, { main, texts: { [main]: parsed.source } }, ""));
+      diagnosedMain = main;
+      diagnosedText = text;
+    }
+    return diagnosedItems;
   }
 
   /* ------------------------------------------------------- keeping in step */
@@ -2241,16 +3108,29 @@
   // Read wherever the editor reports a caret, a text change or a file change:
   // those are the ways a selection moves.
   let sourceSelected = $state(false);
+  let sourcePassageNow = $state(null);
   function noteSourceSelection() {
-    sourceSelected = Boolean(editor?.selection?.());
+    const range = editor?.selection?.();
+    sourceSelected = Boolean(range);
+    sourcePassageNow = range ? sourcePassage(editor.text(), range.from, range.to, session?.paths?.get(range.file) || "") : null;
   }
+  // Tasks on a passage take it from the source, where selecting is precise and
+  // the text is what the server finds. The rendered selection serves only
+  // readers without the source.
+  const agentSelection = $derived.by(() => {
+    if (sourcePassageNow) return { source: sourcePassageNow, exact: sourcePassageNow.exact };
+    return !mayEdit && pending && !pending.whole ? pending : null;
+  });
   function outlineCaretChanged() {
     outlineTextChanged();
     followCaret();
   }
 
+  // Set while a click in the preview is placing the caret: the echo of that
+  // move must not scroll the preview to the caret it was just clicked at.
+  let previewPlacing = false;
   function followCaret() {
-    if (!linked || !editing || docText === null) return;
+    if (previewPlacing || !linked || !editing || docText === null) return;
     clearTimeout(stepTimer);
     stepTimer = setTimeout(showCaretInDocument, 120);
   }
@@ -2264,9 +3144,9 @@
     // stripping .tex comments out of it would blank the wrong runs.
     const openPath = session?.paths?.get(openFile) || "";
     const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
-    if (format === "latex" && typeof activeSynctex !== "undefined" && activeSynctex) {
+    if (format === "latex" && painted.synctex) {
       const path = session?.paths?.get(openFile) || "";
-      const precise = activeSynctex.forward(path, synctexLineAt(editor.text(), editor.caret()));
+      const precise = painted.synctex.forward(path, synctexLineAt(editor.text(), editor.caret()));
       if (precise) {
         tell({ type: "synctex-locate", page: precise.page, x: precise.x, y: precise.y });
         return;
@@ -2304,14 +3184,51 @@
 
   function followPdfClick(pdfPoint) {
     if (!linked || !editing || !editor || sourceFormat !== "latex" ||
-        typeof activeSynctex === "undefined" || !activeSynctex || !pdfPoint) return false;
-    const precise = activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
+        !painted.synctex || !pdfPoint) return false;
+    const precise = painted.synctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
     const id = precise && session.idOf(precise.path);
     if (!id) return false;
     rememberPlace(id);
     ws.openFile = id;
     editor.openAt(id, precise.line, 1);
     return true;
+  }
+
+  // A plain click in the preview puts the source caret where the words clicked
+  // are in the source, and scrolls the source to show it. The keyboard stays
+  // with the document: the source is moved, not focused. Only the open file is
+  // searched, so a click never switches files, and only on a wide window where
+  // the source is beside the document -- a phone shows one pane at a time and a
+  // click there is for reading.
+  function followPreviewClick(offset, pdfPoint = null) {
+    if (!linked || compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
+    if (effectiveLayout !== "split" && effectiveLayout !== "source") return;
+    const text = editor.text();
+    if (typeof text !== "string") return;
+    let at = null;
+    // SyncTeX is only for LaTeX. Any other format, or a SyncTeX point that does
+    // not resolve to the open file, falls back to the text the click carried.
+    const precise = pdfPoint && sourceFormat === "latex" && painted.synctex
+      ? painted.synctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y))
+      : null;
+    if (precise && session.idOf(precise.path) === openFile) {
+      // SyncTeX gives a line and no column, so the start of that line is the place.
+      at = synctexOffsetOfLine(text, precise.line);
+    } else {
+      if (offset === null || offset === undefined) return;
+      const openPath = session?.paths?.get(openFile) || "";
+      const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
+      // Exact words only: the widening search a double-click allows would, on
+      // every single click, now and then land somewhere nearby instead.
+      at = sync.sourcePlaceFor(docText, Number(offset) || 0, text, format, { exact: true });
+    }
+    if (at === null || at === undefined) return;
+    previewPlacing = true;
+    try {
+      editor.goTo(at, { focus: false });
+    } finally {
+      previewPlacing = false;
+    }
   }
 
   function setLinked(on) {
@@ -2333,14 +3250,41 @@
   const prefs = preferences.state;
   // Visual mode starts from the Editor setting on every open. The top-bar switch changes it for this session only.
   let visual = $state(prefs.visual);
-  // Every project opens the same way: the files, the file it opens on and its
-  // preview, or the preview alone on a phone. Where the last visit ended is
-  // not kept.
-  let layout = $state("split");
-  let panel = $state("files");
-  let mobileView = $state("document");
-  let preferredPane = $state("document");
+  // Which panes and which panel are on screen, on a desktop and on a phone.
+  // `reader/arrangement.svelte.js` owns them and what they add up to.
+  const arrangement = createArrangement({
+    editing: () => editing,
+    comparing: () => comparing,
+    sourceSide: () => prefs.sourceSide,
+    sizes: () => prefs.sizes,
+    home: () => home,
+    blocked: (name) => DEMO && DEMO_OFF.includes(name),
+    leaving: (name) => { if (comparison.kind && comparison.kind !== name) endComparison(); },
+    loadHistory: () => loadHistory(),
+  });
+  const layout = $derived(arrangement.state.layout);
+  const panel = $derived(arrangement.state.panel);
+  const mobileView = $derived(arrangement.state.mobileView);
+  const preferredPane = $derived(arrangement.state.preferredPane);
+  const moreOpen = $derived(arrangement.state.moreOpen);
+  const mobileCommand = $derived(arrangement.state.mobileCommand);
+  const keyboardOpen = $derived(arrangement.state.keyboardOpen);
+  const width = $derived(arrangement.state.width);
+  const unit = $derived(arrangement.state.unit);
+  const compact = $derived(arrangement.compact);
+  const sourceOpen = $derived(arrangement.sourceOpen);
+  const activeMobileView = $derived(arrangement.activeMobileView);
+  const splitTight = $derived(arrangement.splitTight);
+  const adapted = $derived(arrangement.adapted);
+  const effectiveLayout = $derived(arrangement.effectiveLayout);
+  const panes = $derived(arrangement.panes);
+  const shown = $derived(arrangement.shown);
   let collaborationTab = $state("comments");
+  let moreOpener = null;
+  function openMore(event) {
+    moreOpener = event?.currentTarget ?? null;
+    arrangement.state.moreOpen = true;
+  }
   // The selected comment lasts only while the comment panel is open.
   $effect(() => { if (panel !== "collaboration") selectedAnnotation = ""; });
   // A click outside a comment card or a mark clears the selection. Clicks in
@@ -2358,6 +3302,7 @@
   const keys = $derived(prefs.keys);
   const completion = $derived(prefs.completion);
   const brackets = $derived(prefs.brackets);
+  const latexAssist = $derived(prefs.latexAssist);
   const proofing = $derived(prefs.proofing);
   const dialect = $derived(prefs.dialect);
   const check = $derived(prefs.check);
@@ -2367,21 +3312,21 @@
   // point opens the same dialog on the category it is about.
   let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "general"));
-  let savingTemplate = $state(false);
-  let templateModalOpen = $state(false);
-  let templateName = $state("");
-  let templateError = $state("");
-  let templateSaveKey = "";
-  let templateSaveRequestId = "";
+  // An entry to scroll to once Settings shows, such as a section's id.
+  let settingsEntry = $state("");
+  let saveTemplateDialog = $state(null);
 
-  function openSettings(category = "general") {
+  async function openSettings(category = "general", entry = "") {
     // The editor category carries the shortcut table, and the table greys what
     // the source cannot currently do, so the editor is asked before the page
     // that shows the answer is drawn.
     refreshEditAvailability();
     settingsCategory = category;
+    settingsEntry = entry;
+    try { await lazy.settings.load(); } catch { lazyFailed(); return; }
     settingsOpen = true;
   }
+  $effect(() => { if (settingsOpen) lazy.settings.load().catch(() => {}); });
   // The desktop app asks for Settings from its menu and from Ctrl or Cmd+,.
   $effect(() => {
     const open = () => openSettings();
@@ -2414,30 +3359,28 @@
       ? [...visitedPanels, "collaboration"]
       : visitedPanels,
   );
-  function showMobileView(view) {
-    if (view === "source" && !sourceOpen) view = "document";
-    mobileView = view;
-    if (view !== "sidebar") preferredPane = view;
-    if (!compact && view !== "sidebar" && layout !== "split") layout = view;
-    if (view === "sidebar" && !panel) showPanel(home);
-  }
-  function selectPanel(name) {
-    if (DEMO && DEMO_OFF.includes(name)) return;
-    const next = panel === name && (!compact || activeMobileView === "sidebar") ? "" : name;
-    showPanel(next);
-    if (width <= 760) showMobileView(next ? "sidebar" : "document");
-  }
-  // The files panel, brought forward wherever it is drawn.
-  function openFilesPanel() {
-    void showPanel("files");
-    if (compact) showMobileView("sidebar");
-  }
+  // A panel's code is fetched when the panel is first mounted.
+  $effect(() => {
+    for (const id of mountedPanels) {
+      if (id === "agent" || id === "git") lazy[id].load().catch(() => {});
+      if (id === "history") {
+        lazy.history.load().catch(() => {});
+        lazy.historyWorkspace.load().catch(() => {});
+      }
+    }
+  });
+  $effect(() => {
+    if (comparing === "history") lazy.historyWorkspace.load().catch(() => {});
+  });
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
   const tabs = $derived(
-    tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing: DEMO || canSeeSharing, canPublish, desktop: hasDesktop })
+    tabsFor({ role: doc.role, mayEdit, suggestOnly, editing, canSeeSharing: DEMO || canSeeSharing, canPublish, desktop: hasDesktop })
       .map((tab) => (DEMO && DEMO_OFF.includes(tab.id) ? { ...tab, disabled: true } : tab)),
   );
+  // The robot buttons hand work to the agent. The agent runs only in the
+  // desktop app, so in a browser they say so rather than disappear.
+  const agentOffered = $derived(!DEMO && tabs.some((tab) => tab.id === "agent"));
   // Where the column goes back to when what it showed is taken away: the
   // files, for every role that is offered them, which is every role that has
   // opened a project. Before the document has answered nobody is offered
@@ -2447,17 +3390,20 @@
     : tabs.some((tab) => tab.id === "collaboration") ? "collaboration"
     : "",
   );
-  // Whether the document has said who this browser is. Until it has, the
-  // column is drawn empty rather than as one audience's and then the other's.
-  let settled = $state(false);
   // The height of the demo banner, taken off the workspace so the page does not scroll.
   let demoBannerHeight = $state(0);
-
   // Kept current for the background work that consults it.
   $effect(() => {
     const track = () => {
-      hidden = document.visibilityState === "hidden";
-      if (!hidden && projectRefreshPending && !mayEdit) scheduleCurrentProjectRefresh();
+      const nowHidden = document.visibilityState === "hidden";
+      // The page is leaving the screen: keep the place before a phone may
+      // discard this tab.
+      if (nowHidden && !hidden) keepPlace();
+      hidden = nowHidden;
+      if (!hidden && !mayEdit) projection.resume();
+      // A hidden tab skipped its renders; draw once now rather than wait for
+      // the next edit.
+      if (!hidden) schedule.resume();
     };
     document.addEventListener("visibilitychange", track);
     return () => document.removeEventListener("visibilitychange", track);
@@ -2480,78 +3426,97 @@
     return () => clearInterval(timer);
   });
 
-  // Showing a panel; "" closes the column. Opening the timeline is what
-  // fetches the manifest; leaving it drops the comparison, which is all the
-  // panel ever held -- the document pane shows the current document
-  // throughout.
-  function showPanel(name) {
-    if (DEMO && DEMO_OFF.includes(name)) return Promise.resolve();
-    // Leaving the panel a comparison belongs to ends the comparison.
-    if (comparison.kind && comparison.kind !== name) endComparison();
-    panel = name;
-    if (compact) mobileView = name ? "sidebar" : "document";
-    if (name !== "history") return Promise.resolve();
-    return loadHistory();
-  }
-
   // The source and the document are kept as a share of what they have between
   // them; the comment column is kept in pixels. Two units because they are two
   // different kinds of pane: half a window stays half when the window changes,
   // and a comment card wants the same readable width whatever the screen is.
   let guide = $state({ shown: false, left: 0, held: false });
   let grabbing = $state(false);
-  // The width the panes are divided out of. Bound rather than read when
-  // something happens to ask: it is what every size below is measured against,
-  // and a measurement taken once is a layout that is right until the window
-  // moves.
-  let width = $state(innerWidth);
-  // And what a rem is worth, since every limit in panes.js is one. It moves
-  // when the reader changes their text size or zooms, which is a resize; it is
-  // held here rather than read where it is used so that what depends on it is
-  // worked out again when it does.
-  let unit = $state(measure());
-  const compact = $derived(width <= 760);
-  // The source pane is open when the reader is editing, or a comparison is
-  // showing in its place.
-  const sourceOpen = $derived(editing || comparing !== "");
-  const activeMobileView = $derived(comparing === "history" && mobileView === "document" ? "source"
-    : mobileView === "source" && !sourceOpen ? "document"
-    : mobileView === "sidebar" && !panel ? "document" : mobileView);
-  const splitTight = $derived(width < px(ACTIVITY_WIDTH, unit) + px(PANES.editor.min, unit)
-    + px(DOCUMENT_MIN, unit) + px(GRIP, unit)
-    + (panel ? px(PANES.sidebar.min, unit) + px(GRIP, unit) : 0));
-  // A window that cannot hold the split it was asked for: the phone, and the
-  // tight split above it. Both show one pane at a time, so both need the
-  // switch between the two faces in the bar; only the phone loses the rail
-  // beside the column, and reaches the panels from the Menu in the top bar.
-  const adapted = $derived(compact || (splitTight && layout === "split"));
-  const effectiveLayout = $derived(!compact && comparing === "history"
-    ? "source"
-    : compact
-    ? (activeMobileView === "source" ? "source" : "document")
-    : layout === "split" && splitTight ? preferredPane : layout);
+  $effect(() => { agentInView = panel === "agent" && shown.comments; });
 
-  // What every measurement below is made against.
-  // The column holds one of three things -- the files, the comments or the
-  // timeline -- so what the layout needs to know is whether it is there, not
-  // which of them is in it.
-  const panes = $derived({
-    layout: effectiveLayout,
-    comments: Boolean(panel),
-    editing: sourceOpen,
-    sourceSide,
-    sizes,
-    width,
-    // Passed so that a change of text size reaches everything measured in rem,
-    // which is every limit there is: `px` holds the measurement itself, and
-    // what is never seen to read it is never worked out again.
-    unit,
+  /* --------------------------------------------------------- the phone shell */
+
+  // The layers the phone opens over the document, its header and its bars.
+  // `reader/phone.svelte.js` owns what they add up to and what each row does;
+  // the effects that tie them to the browser stay here.
+  const phone = createPhone({
+    arrangement,
+    comparing: () => comparing,
+    comparisonSays: () => comparisonSays,
+    settingsOpen: () => settingsOpen,
+    closeSettings: () => { settingsOpen = false; },
+    endComparison: () => endComparison(),
+    barHidden: () => barHidden,
+    tabs: () => tabs,
+    badges: () => badges,
+    participants: () => participants,
+    role: () => ({ mayEdit, suggestOnly, mayChat, me }),
+    title: () => doc.title,
+    source: () => ({ format: sourceFormat, compilesHere, toolbarPath, editing, editorReady: Boolean(editor), figureShown: Boolean(shownFigure) }),
+    demo: () => ({ on: DEMO, hint: DEMO_HINT }),
+    hasDesktop: () => hasDesktop,
+    exportable: () => exportable,
+    canExportComments: () => canExportComments,
+    can: () => can,
+    editGroups: () => editGroups,
+    outputs: () => ({ displayedFormat, latexOutput, typstOutput, markdownOutput, pdfOffered: quartoPdfOffered }),
+    view: () => ({ linked, visual, runCodeOffered, localExecution, explicitRun: runsExplicitly, running: runPhase === "running" }),
+    insertMenu: () => insertMenu,
+    refreshEditAvailability: () => refreshEditAvailability(),
+    chooseFileCommand: (id) => chooseFileCommand(id),
+    chooseEditCommand: (id) => chooseEditCommand(id),
+    chooseViewCommand: (id) => chooseViewCommand(id),
+    toggleLocalExecution: () => toggleLocalExecution(),
+    runNow: () => void runCode(),
+    stopRun: () => stopRun(),
+    openSettings: () => openSettings(),
+    runCommand: (id) => runCommand(id),
+    signOut: () => signOut(),
+    signInHref: () => signInHref(),
+    openPanel: (name) => openPanel(name),
+    setCollaborationTab: (tab) => { collaborationTab = tab; },
   });
-  const shown = $derived(compact ? {
-    source: sourceOpen && activeMobileView === "source",
-    document: activeMobileView === "document",
-    comments: activeMobileView === "sidebar",
-  } : showing(panes));
+  const overlayView = $derived(phone.overlayView);
+  const overlayDepth = $derived(phone.overlayDepth);
+  const mobileTitle = $derived(phone.mobileTitle);
+  const modeSwitchShown = $derived(phone.modeSwitchShown);
+  const keyboardBarShown = $derived(phone.keyboardBarShown);
+  const phoneChrome = $derived(phone.chrome);
+  const mobileCommandGroups = $derived(phone.commandGroups);
+  const moreSections = $derived(phone.moreSections);
+  const tabsShown = $derived(phone.tabsShown);
+  const tabActive = $derived(phone.tabActive);
+  const tabBarShown = $derived(phone.tabBarShown);
+  let overlays = null;
+  $effect(() => {
+    overlays = createOverlayHistory({
+      onpop: (depth) => phone.popped(depth),
+    });
+    return () => { overlays?.dispose(); overlays = null; };
+  });
+  $effect(() => { overlays?.sync(overlayDepth); });
+  // A resize to desktop must not leave a hidden overlay behind it.
+  $effect(() => {
+    if (compact) return;
+    arrangement.state.moreOpen = false;
+    arrangement.state.mobileCommand = "";
+    arrangement.state.keyboardOpen = false;
+    // Nor the phone's face: a panel the narrow window was showing stays open in
+    // the column, and the window no longer remembers being on it.
+    if (untrack(() => arrangement.state.mobileView) === "sidebar") arrangement.state.mobileView = untrack(() => arrangement.state.preferredPane);
+  });
+  // The keyboard hides the mode switch and narrows the workspace. When it
+  // comes up the caret is brought back into sight above it.
+  $effect(() => compact
+    ? watchKeyboard((open) => {
+        arrangement.state.keyboardOpen = open;
+        if (open) requestAnimationFrame(() => editor?.revealCaret?.());
+      })
+    : undefined);
+  $effect(() => {
+    const now = mobileCommand;
+    untrack(() => phone.commandChanged(now));
+  });
 
   // What the reader asked for is kept; what fits is worked out again every
   // time it is needed. Writing the fitted size back would make a narrow window
@@ -2571,12 +3536,15 @@
   };
 
   let editAvailability = $state({});
+  // Every item is named by its command in lib/commands.js, the same name the
+  // palette gives it.
   const editGroups = [
-    [["undo", m.common_undo()], ["redo", m.common_redo()]],
-    [["cut", m.common_cut()], ["copy", m.common_copy()], ["paste", m.common_paste()]],
-    [["select-all", m.common_select_all()]],
-    [["find", m.readerb_edit_find()], ["replace", m.readerb_edit_replace()], ["word-count", m.readerb_edit_word_count()]],
-    [["bold", m.common_bold()], ["italic", m.common_italic()]],
+    [["undo", labelOf("undo")], ["redo", labelOf("redo")]],
+    [["cut", labelOf("cut")], ["copy", labelOf("copy")], ["paste", labelOf("paste")], ["paste-plain", labelOf("paste-plain")]],
+    [["select-all", labelOf("select-all")]],
+    [["find", labelOf("find")], ["replace", labelOf("replace")], ["word-count", labelOf("word-count")]],
+    [["bold", labelOf("bold")], ["italic", labelOf("italic")]],
+    [["comment", labelOf("comment")]],
   ];
 
   // What the keyboard already does, named beside the item the way a desktop
@@ -2587,11 +3555,12 @@
   // In Vim or Emacs mode the editing keys belong to the mode, and a menu
   // naming them would be lying about what the next keystroke does; the
   // workspace's own keys are not the mode's and stay named.
-  const MENU_KEYS = $derived(menuKeys({ modalEditor: keys === "vim" || keys === "emacs", apple: APPLE }));
+  const modalEditor = $derived(keys === "vim" || keys === "emacs");
+  const MENU_KEYS = $derived(menuKeys({ modalEditor, apple: APPLE }));
 
   function chooseEditCommand(command) {
     if (command === "word-count") return openWordCount();
-    showMobileView("source");
+    arrangement.showMobileView("source");
     const target = editor;
     // Restore source focus after the menu finishes closing.
     setTimeout(async () => {
@@ -2602,8 +3571,8 @@
   }
 
   function cycleLayout() {
-    layout = ARRANGEMENTS[layout].next;
-    if (compact) showMobileView(layout === "source" ? "source" : "document");
+    arrangement.state.layout = ARRANGEMENTS[layout].next;
+    if (compact) arrangement.showMobileView(layout === "source" ? "source" : "document");
   }
 
   const putSourceOn = (side) => preferences.setSourceSide(side);
@@ -2611,6 +3580,7 @@
   const setKeys = (next) => preferences.setKeys(next);
   const setCompletion = (on) => preferences.setCompletion(on);
   const setBrackets = (on) => preferences.setBrackets(on);
+  const setLatexAssist = (on) => preferences.setLatexAssist(on);
   const setProofing = (value) => preferences.setProofing(value);
   const setDialect = (value) => preferences.setDialect(value);
   const setCheck = (on) => preferences.setCheck(on);
@@ -2619,7 +3589,7 @@
 
   // What ":q" in Vim mode asks for: the document alone, set directly rather
   // than reached by cycling.
-  const showDocumentAlone = () => { layout = "document"; };
+  const showDocumentAlone = () => { arrangement.state.layout = "document"; };
 
   // Everything the layout menu offers, named by what was chosen. The menu
   // reports the value of the line rather than each line calling back, so this
@@ -2634,8 +3604,8 @@
 
   function chose(what) {
     if (what.startsWith("layout-")) {
-      layout = what.slice(7);
-      if (compact) showMobileView(layout === "source" ? "source" : "document");
+      arrangement.state.layout = what.slice(7);
+      if (compact) arrangement.showMobileView(layout === "source" ? "source" : "document");
       return;
     }
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
@@ -2649,7 +3619,7 @@
     if (value === "format-pdf") {
       if (displayedFormat === "latex") return void setLatexOutput("pdf");
       if (displayedFormat === "typst") return void setTypstOutput("pdf");
-      if (["markdown", "quarto"].includes(displayedFormat)) return void setMarkdownOutput("pdf");
+      if (["markdown", "quarto"].includes(displayedFormat)) return quartoPdfOffered ? void setMarkdownOutput("pdf") : undefined;
     }
     if (value === "format-html") {
       if (displayedFormat === "latex") return void setLatexOutput("html");
@@ -2682,7 +3652,7 @@
     if (value === "download-comments") return downloadComments();
     if (value === "download-pdf" || value === "download-html" || value === "download-docx") return downloadAs(value.slice(9));
     if (value === "share" || value === "history" || value === "git") return openPanel(value);
-    if (value === "save-template") return openSaveTemplateModal();
+    if (value === "save-template") return saveTemplateDialog?.open();
     if (!["new-file", "new-folder", "upload"].includes(value)) return;
     await openPanel("files");
     await tick();
@@ -2693,7 +3663,12 @@
   // Whether the desktop app builds exports with the command for this format:
   // the same facts the preview routes a job by, so the menu offers what the
   // export makes. The browser route is taken for any file it has no command for.
-  const exportsLocally = $derived(localExecution && hasDesktop && mayEdit && buildPreferences.backend === "local");
+  // A Quarto or Typst export is itself an explicit request to run the code, so
+  // it needs no switch, only a folder to run in.
+  const exportsLocally = $derived(
+    hasDesktop && mayEdit && !suggestOnly && buildPreferences.backend === "local"
+      && (runsExplicitly ? runDirectoryReady : localExecution),
+  );
 
   // Which exports the File menu can honour, for the file being previewed.
   const exportable = $derived({
@@ -2702,7 +3677,7 @@
     docx: exportAvailability(displayedFormat, "docx", { local: exportsLocally }),
   });
 
-  const docxDownload = $derived(renderState.docxArtifact && renderState.docxArtifact.source === sourceGeneration && renderState.docxArtifact.navigation === navigationGeneration ? renderState.docxArtifact : null);
+  const docxDownload = $derived(renderState.docxArtifact && renderState.docxArtifact.source === schedule.generation && renderState.docxArtifact.navigation === target.navigation ? renderState.docxArtifact : null);
 
   // The identity of the source the frame was last drawn from, so an export
   // can tell whether the page on screen is the current document.
@@ -2734,11 +3709,13 @@
       const format = displayedFormat;
       const preview = framePreview.preview();
       const local = exportsLocally;
+      const resultsFiles = resultsFilesFor(tree.main);
+      // A figure that could not be fetched, or that is in neither the project
+      // nor the last run, becomes a placeholder: the export is never refused.
+      let unfetched = 0;
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
-        if (target !== "html" && missing.length) {
-          throw new Error(m.readerc_figures_missing({ count: missing.length, missing: missing.join(", ") }));
-        }
+        unfetched = missing.length;
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
       }
@@ -2751,11 +3728,14 @@
         project: SLUG,
         preview,
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
+        resultsFiles,
         render: renderers.render,
         run: pandoc,
         local,
       });
       saveBlob(file.blob, file.name);
+      const placeholders = unfetched + (file.missing?.length ?? 0);
+      if (placeholders > 0) say(m.readerc_figures_placeholder({ count: placeholders }), { kind: "problem", id: "reader:export-figures" });
       if (!local && unrunCells(format, tree) > 0) {
         say(m.readerc_cells_not_run(), { id });
       } else {
@@ -2832,63 +3812,16 @@
     }
   }
 
-  function openSaveTemplateModal() {
-    templateName = doc.title || "";
-    templateError = "";
-    templateSaveKey = "";
-    templateSaveRequestId = "";
-    templateModalOpen = true;
-  }
-
-  async function saveTemplate() {
-    const title = templateName.trim();
-    if (!title) {
-      templateError = m.readerc_template_name_required();
-      return;
-    }
-    const key = `librepaper:template-save:${SLUG}:${title}`;
-    if (templateSaveKey !== key || !templateSaveRequestId) {
-      templateSaveKey = key;
-      try {
-        templateSaveRequestId = sessionStorage.getItem(key) || "";
-      } catch {
-        templateSaveRequestId = "";
-      }
-      if (!templateSaveRequestId) {
-        templateSaveRequestId = crypto.randomUUID();
-        try { sessionStorage.setItem(key, templateSaveRequestId); } catch { /* in-memory retries still reuse it */ }
-      }
-    }
-    savingTemplate = true;
-    try {
-      const response = await fetch(`/api/documents/${SLUG}/template`, {
-        method: "POST",
-        headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
-        body: JSON.stringify({ title, request_id: templateSaveRequestId }),
-      });
-      if (!response.ok) {
-        templateError = (await response.json().catch(() => ({}))).error || m.readerc_template_save_failed();
-        return;
-      }
-      try { sessionStorage.removeItem(key); } catch { /* no persistent key was available */ }
-      templateSaveKey = "";
-      templateSaveRequestId = "";
-      templateModalOpen = false;
-      say(m.readerc_template_saved({ title }), { id: "reader:saved-template" });
-    } catch (error) {
-      templateError = error?.message || m.readerc_template_save_failed();
-    } finally {
-      savingTemplate = false;
-    }
-  }
-
   // Open a panel from the menu: unlike the activity bar, choosing an item
   // that is already open leaves it open rather than closing the column.
   function openPanel(name) {
     if (DEMO && DEMO_OFF.includes(name)) return Promise.resolve();
     if (!visitedPanels.includes(name)) visitedPanels = [...visitedPanels, name];
-    const opening = showPanel(name);
-    if (width <= 760) showMobileView("sidebar");
+    // Only one thing is ever open over the document on a phone.
+    arrangement.state.moreOpen = false;
+    arrangement.state.mobileCommand = "";
+    const opening = arrangement.showPanel(name);
+    if (compact) arrangement.showMobileView("sidebar");
     return opening;
   }
 
@@ -2905,7 +3838,7 @@
     arrivedFile: ARRIVED_FILE,
     say: (message) => say(message, { id: "reader:files-moved" }),
     paint: () => paintPreview(),
-    retarget: () => updatePreviewTarget(),
+    retarget: () => target.update(),
     onarrived: (file) => openTheFile(file),
   });
   const ws = workspace.state;
@@ -2927,13 +3860,6 @@
   // screen to colour. Without one, the tab says there is no file to show.
   const authorsShown = $derived(sourceOpen && !comparing && !shownFigure && sourceBound && Boolean(openFile));
   const authorsActive = $derived(authorsView && panel === "history" && authorsShown);
-
-  // The tab can only be on while its panel is open. The panel is unmounted
-  // when it closes, and without this the tab would still be on when it opens
-  // again, with the tab bar showing another tab.
-  $effect(() => {
-    if (panel !== "history" && authorsView) authorsView = false;
-  });
 
   // Turning the view on fetches the map the first time. Turning it off drops
   // any isolated author, so the next time the tab is on, everyone is shown.
@@ -2962,35 +3888,15 @@
   const figureUrl = $derived(ws.figureUrl);
   // Test whether a file path can be displayed as an image in the figure view.
   const isDisplayableImage = (path) => /\.(?:png|jpg|jpeg|gif|svg|webp)$/i.test(path);
-  // At compact widths, the File/Edit/Insert/View menus are accessed through the
-  // hamburger menu instead of being visible in the top bar. This array mirrors
-  // exactly when each MenubarMenu is rendered in the menus() snippet.
-  const compactMenus = $derived([
-    { id: "file", label: m.common_file() },
-    ...(editing && mayEdit ? [
-      { id: "edit", label: m.readerc_menu_edit(), disabled: !editor || !!shownFigure },
-      { id: "insert", label: m.readerc_menu_insert(), disabled: !mayEdit || !editor },
-    ] : []),
-    ...(editing ? [{ id: "view", label: m.reader_menu_view() }] : []),
-  ]);
   let outlineActiveFrom = $state(null);
   let outlineRevision = $state(0);
-  // What the preview draws. `previewPath` is the file, `previewReason` says
-  // why it is that one (the file itself, the file it is shown inside, the file
-  // the preview is locked on, or nothing at all) and
-  // `previewChoices` lists the files that could host the open file when it has
-  // no preview of its own.
-  // The rule is `lib/opening.js`'s; this is where its answer is kept.
-  let previewPath = $state("");
-  let previewReason = $state("none");
-  let previewChoices = $state([]);
-  // The file the preview is locked on, by identity so a rename keeps the lock.
-  // It lasts for this visit: nothing stores it and nobody else sees it.
-  let lockedFile = $state("");
+  // The outline can be shown with no editor open, so it also follows the typst
+  // module's arrival itself.
+  $effect(() => onTypstSyntax(() => { outlineRevision += 1; }));
+  $effect(() => onOrgSyntax(() => { outlineRevision += 1; }));
+  // The path of the file the preview is locked on. The lock itself is held by
+  // the target, by identity, so a rename keeps it.
   const lockedPath = $derived(files.find((file) => file.id === lockedFile)?.path || "");
-  // The paths that render on their own, which is what the eye in Files offers
-  // to lock. Worked out with the target, from the same texts.
-  let aloneSet = $state.raw(new Set());
   const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
   const openTextPath = $derived(files.find((file) => file.id === openFile && file.kind === "text")?.path || "");
   const previewNoteItems = $derived(previewNotes({
@@ -3002,10 +3908,16 @@
   // The visual layer draws only the formats in VISUAL_FORMATS, so the toggle is offered for those alone.
   // The visual layer reads Quarto as Markdown.
   const visualAvailable = $derived(VISUAL_FORMATS.has(editorFormat === "quarto" ? "markdown" : editorFormat));
-  // The formatting row under the top bar: only while the source is open and editable in visual mode.
+  // The formatting row over the source: only while the source is open and editable in visual mode.
   const formatBarShown = $derived(visual && sourceOpen && mayEdit && visualAvailable);
-  // Why the pane shows what it shows, when it is not simply the open file.
-  const previewChip = $derived(Boolean(previewPath) && (previewReason === "locked" || (previewReason === "inside" && toolbarPath)));
+  // At compact the bar is drawn only while the keyboard is open.
+  const formatBarVisible = $derived(formatBarShown && (!compact || keyboardOpen));
+  // The row stands at the top of the source pane, above the editor it formats: not over a comparison or a figure.
+  const formatBarInPane = $derived(formatBarVisible && !comparing && !shownFigure && Boolean(Editor) && sourceBound);
+  // Says which file the pane shows when the open file is drawn inside the
+  // file that includes it. A locked preview has no chip: the solid eye in
+  // Files says it.
+  const previewChip = $derived(Boolean(previewPath) && previewReason === "inside" && Boolean(toolbarPath));
   // What the card says when the open file has nothing the preview could draw.
   // Empty when there is no card.
   const previewCard = $derived.by(() => {
@@ -3032,6 +3944,7 @@
         rulesRemembered = remembered;
         workspace.setRules(answer || {});
         if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
+        if (sourceFormat === "latex") void renderers.warm("latex");
       })
       .catch(() => {
         configRetry = setTimeout(loadRules, 30_000);
@@ -3043,125 +3956,39 @@
   // Reading the directory into the list is the workspace's; what is left
   // here is the preview target, which is a rendering question rather than a
   // directory one.
-  const refreshFiles = () => workspace.refresh();
-
-  // Set when the preview was emptied because there was nothing to show, so
-  // that the next file to become renderable is painted: with no previous
-  // target, the first target is otherwise left to the initial paint.
-  let previewCleared = false;
-
-  /// Empties the preview: no file is being followed, no format is selected and
-  /// nothing is drawn. No render is attempted and no engine is warmed.
-  function clearPreview() {
-    previewCleared = true;
-    previewPath = "";
-    sourceFormat = "";
-    configureLatex("");
-    navigationGeneration += 1;
-    renderCoordinator.invalidate();
-    clearTimeout(previewTimer);
-    previewTimer = null;
-    framePreview.clear();
-    deliveredKind = "";
-    everPainted = false;
-    everPaintedShown = false;
-    pageDrawn = false;
-    activeSynctex = null;
-    renderStatus.resetFailure();
-    renderStatus.clearDocx();
-    diagnosticPainter.rendered({ page: false, diagnostics: [] });
+  // A project is the unit of loading: opening it fetches every figure in the
+  // background, and every change to the directory fetches what it added, so a
+  // file switch or a new figure never waits on the network
+  // (SPEC-transport section 8). The store keeps the open project's figures.
+  function warmFigures() {
+    const digests = liveTreeNow().digests || {};
+    figures.keep(Object.values(digests));
+    if (Object.keys(digests).length) void figures.gather(SLUG, digests, authHeaders(KEY), { urls: false }).catch(() => {});
   }
+  const refreshFiles = () => { workspace.refresh(); warmFigures(); };
 
   // A project with no file at all, as opposed to one whose directory has not
   // arrived yet. The directory is read from the session itself so that a
   // stale file list cannot report a project as empty.
   const projectEmpty = $derived(mayEdit
     ? Boolean(session && persistence.joined && files.length === 0 && session.list().length === 0)
-    : Boolean(currentProject && !Object.keys(currentProject.tree?.files || currentProject.texts || {}).length));
-  $effect(() => { if (projectEmpty) untrack(clearPreview); });
-
-  // Works out which file the preview draws and moves it there. It runs when
-  // the open file changes, when the lock does, when the directory does, and a
-  // moment after any edit, because which file includes which is read from the
-  // texts. A target that has not changed costs a comparison and nothing else.
-  function updatePreviewTarget() {
-    if (readerDisposed || (!session && !currentProject)) return;
-    // A link holder reading a file in place of the preview keeps the preview
-    // as it was underneath, so going back to it shows the same page at once.
-    if (!mayEdit && viewing) return;
-    const texts = liveTreeNow().texts;
-    if (lockedFile && !lockedPath) lockedFile = "";
-    // With a figure open there is no open text, so the preview stays on the
-    // file it has. Nothing open at all means the file the project opens on.
-    const open = openTextPath || (openFile ? previewPath : "") || openingFile(texts) || "";
-    const target = previewTarget({ open, locked: lockedPath, texts });
-    const includers = includersOf(texts);
-    const alone = Object.keys(texts).filter((path) => rendersAlone(path, texts, includers)).sort();
-    if (alone.length !== aloneSet.size || alone.some((path) => !aloneSet.has(path))) aloneSet = new Set(alone);
-    if (target.reason !== previewReason) previewReason = target.reason;
-    if (target.choices.join("\n") !== previewChoices.join("\n")) previewChoices = target.choices;
-    const path = target.path || "";
-    const format = path ? renderers.previewFormatOf(path) : "";
-    // Nothing the preview could follow: the open file has no renderer, or it
-    // is part of a document no single file stands for, or there is no file.
-    if (!format) {
-      if (previewPath) clearPreview();
-      return;
-    }
-    if (previewPath === path && sourceFormat === format) return;
-    const previous = previewPath || sourceFormat || (previewCleared ? "cleared" : "");
-    previewCleared = false;
-    previewPath = path;
-    sourceFormat = format;
-    configureLatex(format, session || readerProjectOwner);
-    warmEngine(format);
-    if (!previous) {
-      // The first file the preview is given is rendered now. Waiting for the
-      // typing pause would hold it for a second or more while the project
-      // loads, since every hydration step restarts that timer.
-      clearTimeout(previewTimer);
-      previewTimer = null;
-      void tick().then(() => {
-        if (!readerDisposed && previewPath === path) void paintPreview();
-      });
-      return;
-    }
-    // Invalidate both running compiles and replayed pages, even when the
-    // two selected files use the same renderer or both produce PDFs.
-    navigationGeneration += 1;
-    const mine = navigationGeneration;
-    renderCoordinator.invalidate();
-    framePreview.clear();
-    // Only the render of the new file installs a click map.
-    activeSynctex = null;
-    everPainted = false;
-    everPaintedShown = false;
-    pageDrawn = false;
-    renderStatus.resetFailure();
-    // The frame is reloaded only when the kind of page changes. Moving between
-    // two files of the same kind keeps it, so switching files in the list does
-    // not pay for a frame load before the cached page can be shown.
-    if (docsOrigin) navigateFrame();
-    void tick().then(() => {
-      if (!readerDisposed && mine === navigationGeneration) void paintPreview();
-    });
-  }
+    : Boolean(projection.state.project && !Object.keys(projection.state.project.tree?.files || projection.state.project.texts || {}).length));
+  $effect(() => { if (projectEmpty) untrack(() => target.clear()); });
 
   // The preview follows the open file, and follows the lock when there is one.
   $effect(() => {
     void openFile;
     void lockedFile;
-    untrack(updatePreviewTarget);
+    untrack(() => target.update());
   });
 
   // The eye in Files, the View menu and the card all lock the preview, and
   // none of them opens the file. A phone shows the preview it just moved.
   function lockPreviewOn(id) {
-    lockedFile = id;
     viewing = false;
-    updatePreviewTarget();
-    if (!compact && layout === "source") layout = "split";
-    if (compact) showMobileView("document");
+    target.lock(id);
+    if (!compact && layout === "source") arrangement.state.layout = "split";
+    if (compact) arrangement.showMobileView("document");
   }
 
   function lockPreview(id) {
@@ -3171,33 +3998,22 @@
   }
 
   function unlockPreview() {
-    lockedFile = "";
-    updatePreviewTarget();
-  }
-
-  // Any edit can change which file includes which, so the preview target is
-  // worked out again once typing pauses, so the texts are read once per pause
-  // and not once per keystroke.
-  const TARGET_PAUSE = 500;
-  let targetTimer = null;
-  function scheduleTargetUpdate() {
-    clearTimeout(targetTimer);
-    targetTimer = setTimeout(() => updatePreviewTarget(), TARGET_PAUSE);
+    target.unlock();
   }
 
   // A file added, renamed or removed: the list is redrawn and the document is
   // rendered again, because every one of those changes what a compiler would
   // produce. An edit to the text of any file is a source change too, because
   // it can alter the render of whichever file the preview is drawing.
-  function filesChanged(events, active = session) {
+  function filesChanged(events, active = session, by = "local") {
     if (!active || active !== session) return;
     // Nested text edits change the preview, but not the file list. Which
     // events are the directory's is the session's to say: the list moves with
     // four maps, not one.
     if (active.directoryChanged(events)) refreshFiles();
     if (needsSourceRefresh(events)) {
-      sourceChanged();
-      scheduleTargetUpdate();
+      sourceChanged({ remote: by === "import" });
+      schedule.scheduleTarget();
     }
   }
 
@@ -3214,18 +4030,18 @@
 
   // A failure is reported once the render has settled as failed. One that a
   // retry is already superseding is not.
-  const failedBeforeRender = $derived(renderState.failure && !everPaintedShown && !compiling);
+  const failedBeforeRender = $derived(renderState.failure && !painted.state.shown && !compiling);
   // The one waiting display. It stands in for the pane until the page for the
   // current target is drawn, whatever the format. A stand-in page from the
   // cache is drawn like any other, so a recompile under one never lands here.
-  const pageIsUp = $derived(pdfOutput ? pageDrawn : everPaintedShown);
+  const pageIsUp = $derived(pdfOutput ? painted.state.drawn : painted.state.shown);
   const waiting = $derived(Boolean(
     shown.document && previewPath && compilesHere && !pageIsUp
-      && !documentNeedsSignIn && !heldFile && !projectUnreadable && !projectEmpty && !previewCard
-      && !failedBeforeRender,
+      && !documentNeedsSignIn && !heldFile && !projection.state.unreadable && !projectEmpty && !previewCard
+      && !failedBeforeRender && !painted.state.empty,
   ));
   const waitStage = $derived(waitStageOf({
-    pageDelivered: pdfOutput && everPaintedShown,
+    pageDelivered: pdfOutput && painted.state.shown,
     latexPhase: sourceFormat === "latex" && !latexHtmlPreview ? latexPhase : "",
     latexScope: sourceFormat === "latex" && !latexHtmlPreview ? String(latexState.progress?.scope || "") : "",
     engineLoading: engineLoading && engineLoading === sourceFormat ? engineLoading : "",
@@ -3238,7 +4054,7 @@
   const steadyWaiting = createSteadyBusy({ onchange: (shown) => (waitingShown = shown) });
   // A delivered PDF in a frame that already shows pages is swapped in by the
   // viewer once it is drawn, so there is nothing to wait for on screen.
-  const waitingNeeded = $derived(waiting && !(frameHasPage && pdfOutput && everPaintedShown));
+  const waitingNeeded = $derived(waiting && !(frameHasPage && pdfOutput && painted.state.shown));
   $effect(() => {
     steadyWaiting.set(waitingNeeded);
   });
@@ -3254,9 +4070,9 @@
   function viewTheFile(file) {
     if (openFile !== file.id) outlineActiveFrom = null;
     workspace.show(file);
-    const texts = currentProject?.texts || {};
+    const texts = projection.state.project?.texts || {};
     viewing = file.kind !== "text" || previewTarget({ open: file.path, locked: lockedPath, texts }).reason === "none";
-    if (compact) showMobileView("document");
+    if (compact) arrangement.showMobileView("document");
   }
 
   function backToPreview() {
@@ -3284,8 +4100,8 @@
     workspace.show(file);
     // Choosing a file is asking to see it, so an arrangement with no source
     // pane makes room for one.
-    if (mayEdit && !compact && layout === "document") layout = "split";
-    if (mayEdit) showMobileView(fromList && compact && previewsOnTap(file) ? "document" : "source");
+    if (mayEdit && !compact && layout === "document") arrangement.state.layout = "split";
+    if (mayEdit) arrangement.showMobileView(fromList && compact && previewsOnTap(file) ? "document" : "source");
   }
 
   // An outline entry is a source navigation command. It may be the first
@@ -3302,7 +4118,7 @@
     openTheFile(file);
     if (!editing) await startEditing();
     if (readerDisposed || id !== openFile) return;
-    showMobileView("source");
+    arrangement.showMobileView("source");
     await tick();
     if (readerDisposed || id !== openFile || revision !== outlineRevision || !editor
         || !outlineHeadings.some((item) => item.from === heading.from)) return;
@@ -3338,6 +4154,7 @@
     return true;
   }
   async function uploadInsertAsset(file) {
+    if (suggestOnly) throw new Error(m.common_project_suggest_only());
     return await addFigure(file);
   }
   const previewInsertAsset = (path) => workspace.assetUrl(path);
@@ -3385,14 +4202,14 @@
   // refused by the same rules.
   let fileList = $state(null);
   async function dropped(event) {
-    if (!mayEdit) return;
+    if (!mayEdit || suggestOnly) return;
     event.preventDefault();
     const chosen = [...(event.dataTransfer?.files || [])];
     if (!chosen.length) return;
     // The files panel is where a refusal is shown, so a drop on the comments
     // brings it forward first.
     if (panel !== "files") {
-      showPanel("files");
+      arrangement.showPanel("files");
       await tick();
     }
     fileList?.offer(chosen);
@@ -3409,233 +4226,6 @@
     paintPreview();
   }
 
-  // What the Reader hears from a session joined to a room.
-  function sessionEvents() {
-    return {
-      onPeers: (count) => { if (!readerDisposed) peers = Math.max(peers, count); },
-      onState: (state_) => {
-        // Teardown sets this before it closes the collaboration, so a local
-        // write landing in that window has a UI to miss.
-        if (readerDisposed) return;
-        const newlyFailed = state_.localError && state_.localError !== persistence.localError;
-        persistence = state_;
-        if (newlyFailed) say(m.readerc_local_storage_failed({ error: state_.localError }), { kind: "problem", id: "reader:local-storage-failed" });
-      },
-      onSession: (active) => {
-        session = active;
-        changesUnsubscribe?.();
-        // The changes live beside the text in the document, so any commit
-        // can move them, an accept or reject included, and that is not a text
-        // event. Imports from other peers arrive here as well.
-        changesUnsubscribe = active?.doc.subscribe(refreshReview) || null;
-        // The attachments of an editor are derived from the document, so they
-        // are followed on every commit.
-        followAnnotations?.();
-        followAnnotations = active ? annotations.follow(active.doc) : null;
-        refreshReview();
-        workspace.attach(active);
-        refreshFiles();
-        refreshPeers();
-        // A restored document can already contain its complete tree when
-        // the session is handed over, so no later source event is guaranteed.
-        // Render once from that hydrated tree after Svelte has applied the
-        // format and file-list state.
-        void tick().then(() => {
-          if (!readerDisposed && active === session) void paintPreview();
-        });
-      },
-      onFiles: filesChanged,
-      onAwareness: () => { if (!readerDisposed) refreshPeers(); },
-    };
-  }
-
-  // The CRDT is loaded here and nowhere else. A reader with a link to a
-  // published document never joins the source room, so it never asks for the
-  // three megabytes of loro wasm behind it; an editor pays for them once, on
-  // the way in, rather than before the page has drawn.
-  async function startCollaboration(document_, { sourceSync = true } = {}) {
-    collaboration?.close();
-    const collab = sourceSync ? await import("../lib/collab.js") : null;
-    // Awaiting the module gave the reader time to be torn down or replaced.
-    if (readerDisposed) return;
-    collaboration = createReaderCollaboration({
-      slug: SLUG,
-      key: KEY,
-      collab,
-      getIdentity: () => identity,
-      getCanEdit: () => mayEdit,
-      sourceSync,
-      standalone: DEMO,
-      onMessage: receive,
-      onConnected: (up) => {
-        connected = up;
-        if (!up) {
-          pendingChat?.disconnect();
-          outbox.disconnected();
-        }
-        // A publish that happened while this browser was not listening was
-        // announced to nobody: the offer is pushed over this very socket. So
-        // the way back up is where a reader asks whether they missed one.
-        if (up && !mayEdit) void refreshCurrentProject();
-      },
-      ...sessionEvents(),
-      onDocumentChanged: () => {
-        location.reload();
-      },
-    });
-    session = collaboration.start(document_);
-    if (DEMO) {
-      const { seedTryProject } = await import("../lib/try-project.js");
-      if (readerDisposed) return;
-      await seedTryProject(session);
-    }
-  }
-
-  async function refreshCurrentProject() {
-    if (readerDisposed || mayEdit) return;
-    if (projectFetch) {
-      projectRefreshPending = true;
-      return projectFetch;
-    }
-    const headers = authHeaders(KEY);
-    if (projectEtag) headers["If-None-Match"] = projectEtag;
-    projectFetch = (async () => {
-      const response = await fetch(`/api/documents/${encodeURIComponent(SLUG)}/project`, { headers });
-      if (response.status === 304) return;
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        // A document whose projection exceeds a resource bound answers 503
-        // and stays unreadable on the server until recovered (§2.2); its
-        // editors can still type and export locally, but this browser is a
-        // reader with no source of its own to fall back to. Carry the status
-        // so the catch below can say that plainly rather than the generic
-        // "could not be loaded" a transient network failure gets.
-        const failure = Object.assign(new Error(body.error || m.readerc_project_load_failed()), { status: response.status });
-        throw failure;
-      }
-      const next = await response.json();
-      if (readerDisposed || mayEdit) return;
-      projectEtag = response.headers.get("etag") || `"${next.project_digest}"`;
-      currentProject = next;
-      workspace.fromProject(next);
-      changeRows = readerChangeRows(next.changes);
-      if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
-      projectUnreadable = "";
-      // A reader opens on the file the project opens on, whichever that is
-      // now. The target puts its format in place and paints the page this
-      // browser last drew for it.
-      updatePreviewTarget();
-      sourceGeneration += 1;
-      outlineRevision += 1;
-      settled = true;
-      void paintPreview();
-    })().catch((error) => {
-      if (readerDisposed) return;
-      const message = error?.status === 503
-        ? (error.message || m.readerc_too_large())
-        : (error?.message || m.readerc_project_load_failed());
-      // Never leave the pane spinning on a project this browser has not yet
-      // shown anything for: a reader with no source of its own has nothing
-      // else to paint while this stays broken, so the loading state has to
-      // end here rather than waiting on a render that is never coming.
-      if (!currentProject) {
-        projectUnreadable = message;
-        settled = true;
-      }
-      say(message, { kind: "problem", id: "reader:project-load" });
-    }).finally(() => {
-      projectFetch = null;
-      if (projectRefreshPending) {
-        scheduleCurrentProjectRefresh();
-      }
-    });
-    return projectFetch;
-  }
-
-  function scheduleCurrentProjectRefresh() {
-    projectRefreshPending = true;
-    if (hidden || projectRefreshTimer !== null) return;
-    projectRefreshTimer = setTimeout(() => {
-      projectRefreshTimer = null;
-      projectRefreshPending = false;
-      void refreshCurrentProject();
-    }, 1000);
-  }
-
-  // What this browser may do with the document, and whether it can render it
-  // at all.
-  async function prepare(document_) {
-    // The role endpoint answer is authoritative for every affordance.
-    const ROLES = ["reader", "commenter", "editor", "owner"];
-    const allowed = ROLES.indexOf(document_.role) >= ROLES.indexOf("editor");
-    // The desktop app must see the resolved permission on its first
-    // configuration. In particular, account examples arrive as editable
-    // Quarto documents; configuring before this assignment leaves the
-    // desktop app inactive and the pane stuck on its Markdown fallback.
-    mayEdit = Boolean(allowed);
-    const offeredRenderers = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
-    renderers.offerLatex(offeredRenderers.includes("latex"));
-    // The workspace guards its own writes, so it is told once, here, where
-    // the permission is settled.
-    ws.canEdit = mayEdit;
-    timeline.state.canEdit = mayEdit;
-    openedLocally = Boolean(document_.local_copy);
-    // Access was reduced, so this browser should stop offering an editable copy
-    // of a project it may no longer edit. A copy opened from this browser has no
-    // server answer behind its role, so it is kept as it is.
-    if (!mayEdit && !openedLocally) {
-      forgetProject({ server: location.origin, documentId: document_.document_id, slug: SLUG, createdAt: document_.created_at })
-        .catch(() => {});
-    }
-    // A panel this visit has already moved to may not be one this role is
-    // offered. A phone keeps the view it opened on.
-    if (panel && !tabs.some((tab) => tab.id === panel)) {
-      const view = mobileView;
-      showPanel(home);
-      mobileView = view;
-    }
-    // Reader and commenter links receive an allowlisted projection of the
-    // current project. They share the renderer but never join CRDT sync.
-    if (!mayEdit) {
-      await startCollaboration(document_, { sourceSync: false });
-      await refreshCurrentProject();
-      return;
-    }
-    // Rendering follows the durable source format. Generated-result identity
-    // is deliberately absent: a reader compiles this source on demand.
-    // An empty project has no format; the first file added gives it one.
-    const format = document_.source_format ||
-      (document_.execution_engine === "quarto" ? "quarto" : "");
-    sourceFormat = format;
-    scopeLocalApp();
-    // Every reader compiles from source when the browser has the engine. A
-    // missing engine produces an actionable local-tool message below.
-    if (format && !renderers.outputKind(format)) {
-      say(m.readerc_no_renderer({ format }), { kind: "problem", id: "reader:no-renderer" });
-      settled = true;
-      return;
-    }
-    settled = true;
-    // Load the browser renderer for readers as well as editors; this is all
-    // transient and does not create a server-side result.
-    if (format) {
-      warmEngine(format);
-    }
-    await startCollaboration(document_);
-    // The directory arrives after the session does. A session object alone is
-    // not a snapshot.
-    // No chooser and no saved distribution: `latex.configure` tells the
-    // controller which project this is and what it is allowed to do, and the
-    // first `paintPreview` (from `startEditing` below, or an edit) is what
-    // actually starts loading the engine. `session.latexSettings()` needs the
-    // session that `startCollaboration` just built, which is why this comes after
-    // it rather than beside the old restore-a-distribution code above.
-    configureLatex(sourceFormat);
-    // A document its author may edit opens ready to be worked on: that is what
-    // they came for.
-    if (mayEdit) startEditing();
-  }
-
   // A document is shown once the server has answered for it.
   function showDocument(found) {
     doc = found;
@@ -3650,7 +4240,7 @@
     // LaTeX document, a PDF an editor's browser compiled, which needs a
     // frame that can draw one. Set after `prepare`, which is what settles
     // the format and so which frame this document wants.
-    void prepare(found);
+    void lifecycle.prepare(found);
     if (!separate) {
       renderStatus.failed(NO_DOCS_ORIGIN);
       say(NO_DOCS_ORIGIN, { kind: "problem", id: "reader:no-docs-origin" });
@@ -3668,7 +4258,7 @@
       documentUrl: DEMO ? "/api/try" : undefined,
       onIdentity: (who) => {
         me = who;
-        if (who.name) session?.rename(who.name);
+        if (who.name || who.id) session?.rename(who.name || "", who.provider ? who.id || "" : "");
       },
       onDocument: showDocument,
       // A document answers a stranger exactly as a missing one does, which
@@ -3715,14 +4305,12 @@
       // page this document will open with next time.
       void flushAll();
       renderCoordinator.invalidate();
-      navigationGeneration += 1;
+      target.bump();
       renderers.cancelPreview();
       clearTimeout(reviewTimer);
-      clearTimeout(previewTimer);
-      clearTimeout(targetTimer);
-      clearTimeout(projectRefreshTimer);
-      projectRefreshTimer = null;
-      previewTimer = null;
+      clearTimeout(outlineTimer);
+      schedule.dispose();
+      projection.dispose();
       boot.dispose();
       framePreview.dispose();
       stopLatex();
@@ -3731,7 +4319,7 @@
       changesUnsubscribe = null;
       followAnnotations?.();
       followAnnotations = null;
-      collaboration?.close();
+      lifecycle.close();
     };
   });
 
@@ -3760,7 +4348,12 @@
       // The page shell is cached with the local copy, so the landing page can
       // list local projects when the server cannot be reached. Until it is
       // cached the record has no shellReady, and the next attempt tries again.
-      if (!record.shellReady && await cacheCurrentShell()) await markShellReady(identity);
+      // A record cached by an older build has no shellReady for this one, so
+      // it is cached again and picks up chunks that have since become lazy.
+      if (!record.shellReady) {
+        // The offline copy only stores code already loaded, so load the lazy panels first.
+        if (await prefetchLazyPanels() && await cacheCurrentShell()) await markShellReady(identity);
+      }
       localCopyRemembered = true;
       localCopyRunning = false;
     })().catch(() => {
@@ -3770,28 +4363,10 @@
 
   // Ctrl-S reports the durability the server has confirmed for local work.
   // Typing is saved automatically, but a buffered edit is not durable yet.
-  //
-  // "Saved" is the word to be careful with. This browser's own storage is not
-  // a save: it is evictable, it is one device, and it holds nothing the
-  // server has not also been sent only while the socket is down. So an
-  // offline Ctrl-S says where the work currently is and what will happen to
-  // it, and leaves the word alone. Only the server copy is called saved.
+  // What it says, and why it avoids the word "saved", is the opening's.
   function reportPersistence() {
-    // A local write that failed or is still in flight is not worth
-    // reassuring anybody about; the failure says so on its own.
-    if (persistence.localError || persistence.localPending) return;
-    if (!connected) {
-      if (!persistence.local) return;
-      say(
-        persistence.pending
-          ? m.readerc_offline_pending()
-          : m.readerc_offline_saved(),
-        { id: "reader:persistence" },
-      );
-      return;
-    }
-    if (!persistence.joined || persistence.pending) return;
-    say(m.readerc_saved_on_server(), { id: "reader:persistence" });
+    const message = lifecycle.report();
+    if (message) say(message, { id: "reader:persistence" });
   }
 
   // There is no save, so a close is almost never worth interrupting: the
@@ -3816,7 +4391,7 @@
   const canExportComments = $derived(tabs.some((tab) => tab.id === "collaboration"));
 
   const commandContext = $derived({
-    mayEdit, editing, compact,
+    mayEdit, suggestOnly, editing, compact,
     panels: tabs.filter((tab) => !tab.disabled).map((tab) => tab.id),
     preview: shown.document,
     compilable: mayEdit && sourceFormat === "latex" && compilesHere,
@@ -3831,12 +4406,21 @@
     },
     edit: editAvailability,
     canClearChat: chatState.canClear,
+    canComment: mayChat,
+    // In Vim or Emacs mode Alt is the editor's, so the Alt menu chords stand down in the source.
+    modalEditor: keys === "vim" || keys === "emacs",
   });
 
   // What each command can do about it, asked once. The menus grey a line by
   // this and the keyboard refuses a chord by this, so a greyed item and a dead
   // key are the same answer rather than two rules that can disagree in public.
   const can = $derived(availability(commandContext));
+  // What the preview band offers to save: the File menu's exports, in its order.
+  const previewDownloads = $derived([
+    can["download-pdf"] && { format: "pdf", label: m.common_download_pdf() },
+    can["download-html"] && { format: "html", label: m.commands_download_html() },
+    can["download-docx"] && { format: "docx", label: m.commands_download_docx() },
+  ].filter(Boolean));
 
   // Whether a selection can be cut, whether there is anything to undo: the
   // editor is asked, because only it knows, and it is asked when something is
@@ -3851,9 +4435,11 @@
   // thing the menu already calls, so a command cannot drift from the menu item
   // that names it. Nothing new is implemented in this function.
   async function runCommand(id) {
+    if (id === "report-problem") return openSettings("general", "diagnostics-report");
     if (id === "word-count") return openWordCount();
     if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
-    if (id === "palette") { refreshEditAvailability(); commandPalette = true; return; }
+    if (id === "palette") { refreshEditAvailability(); try { await lazy.commandPalette.load(); } catch { lazyFailed(); return; } commandPalette = true; return; }
+    if (id.startsWith("menu-")) return openMenu(id.slice("menu-".length));
     if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
@@ -3861,6 +4447,7 @@
     // A template command opens the Math overlay on its template.
     if (id.startsWith("math-")) return openPalette("math", id.slice("math-".length));
     if (id === "focus-comments") return focusPanel("collaboration");
+    if (id === "comment-document") return commentOnDocument();
     if (id === "chat-clear") return askClearChat();
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
@@ -3871,7 +4458,18 @@
     return chooseFileCommand(id);
   }
 
-  const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic"];
+  // Alt+F and the rest open a word of the bar, with the keyboard on its first
+  // line. A word that is not on the bar now (Edit with no source, say) stays shut.
+  function openMenu(id) {
+    if (!document.querySelector(`.menubar [data-menubar="${id}"]:not(:disabled)`)) return;
+    menubar.show(id);
+    menubar.enter();
+  }
+
+  const EDIT_COMMANDS = [
+    "undo", "redo", "cut", "copy", "paste", "paste-plain", "select-all", "find", "replace", "bold", "italic",
+    "link", "comment", "numbered-list", "bulleted-list", "heading-1", "heading-2", "heading-3", "heading-4", "heading-5", "heading-6",
+  ];
   const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
   const TEXT_SIZE_COMMANDS = ["text-bigger", "text-smaller", "text-reset"];
 
@@ -3884,24 +4482,23 @@
   // editor had when it opened, so there is nothing to open without a source.
   async function openPalette(name, template = "") {
     if (!can[name]) return;
+    try { await lazy[name].load(); } catch { lazyFailed(); return; }
+    if (!can[name]) return;
     symbolsOpen = name === "symbols";
     mathOpen = name === "math";
     await tick();
     if (template) mathPalette?.openTemplate?.(template);
   }
 
-  // However an overlay closes, the editor gets the keyboard back, once the
-  // dialog has finished returning the focus to whatever opened it. The opener
-  // can be a menu that no longer exists. The Symbols picker skips this on touch
-  // devices (see returnToEditorUnlessTouch).
-  const returnToEditor = () => requestAnimationFrame(() => editor?.focus?.());
-  // On a touch device the editor is not refocused, since that raises the virtual keyboard.
-  const returnToEditorUnlessTouch = () => { if (!matchMedia("(pointer: coarse)").matches) returnToEditor(); };
-
+  // A palette that has just inserted closes and hands the keyboard to the
+  // editor, after the dialog has returned focus to its opener, so typing goes
+  // on where the insertion landed. Escape leaves focus with the opener. On a
+  // touch device the editor is not refocused, since that raises the virtual
+  // keyboard.
   function closePalette() {
     symbolsOpen = false;
     mathOpen = false;
-    returnToEditor();
+    if (!matchMedia("(pointer: coarse)").matches) requestAnimationFrame(() => editor?.focus?.());
   }
 
   // An Escape the palette keeps, to clear its search or leave a form, is
@@ -3932,7 +4529,7 @@
   // The preview, which on a narrow screen has to be the face that is showing
   // before it can be the thing that has the focus.
   function focusPreview() {
-    if (compact) showMobileView("document");
+    if (compact) arrangement.showMobileView("document");
     preview?.focus();
   }
 
@@ -3948,6 +4545,9 @@
       const typing = event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']");
       // An Escape a dialog or a menu already took is theirs, not the comparison's.
       if (comparing && !typing && !event.defaultPrevented && !captured(event.target)) endComparison();
+      // In a narrow window Escape leaves a panel, a command list or Settings
+      // the way the header's Back does.
+      else if (compact && overlayView && !typing && !event.defaultPrevented && !captured(event.target)) phone.back();
       return;
     }
     // Back is not in the registry: its chord is Ctrl+Minus on a Mac, which the
@@ -3986,146 +4586,30 @@
     barHidden = false;
   });
 
-  // Reveal the bar when keyboard focus enters the nav element, so off-screen
-  // controls are never focused invisibly.
+  // Reveal the bars when keyboard focus enters one of them, so off-screen
+  // controls are never focused invisibly. Revealing them all, rather than only
+  // the row that took focus, keeps the workspace height (which counts the bars
+  // that are shown) in step with what is drawn.
   $effect(() => revealOnNavFocus(() => {
     barHidden = false;
-  }));
+  }, "body > nav, .mobile-mode-switch, .tool-band-slot"));
 </script>
 
-<svelte:window bind:innerWidth={width} onresize={() => (unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
-
-{#snippet exportItem(value, label, target)}
-  {@const state = exportable[target]}
-  <Menu.Item value={value} class="menuitem" disabled={!state.ok}>
-    <span class="menuitem-label">{label}</span>
-    {#if !state.ok && state.reason}<span class="export-reason">{state.reason}</span>{/if}
-  </Menu.Item>
-{/snippet}
-
-<!-- A child menu reports its own selections, so it gets the same handler as
-     the File menu; Zag does not pass a sub-menu's select up to its parent. -->
-{#snippet downloadMenu()}
-  <Menu open={downloadOpen}
-        onOpenChange={(event) => (downloadOpen = event.open)}
-        onSelect={(chosen) => void chooseFileCommand(chosen.value)}>
-    <Menu.TriggerItem value="submenu:download" class="menuitem">
-      <span class="menuitem-label">{m.common_download()}</span>
-      <span class="menuitem-chevron" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
-    </Menu.TriggerItem>
-    <ExplorerMenu>
-      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">{m.common_project()}</span></Menu.Item>{/if}
-      {@render exportItem("download-html", "HTML", "html")}
-      {@render exportItem("download-pdf", "PDF", "pdf")}
-      {@render exportItem("download-docx", "DOCX", "docx")}
-      {#if canExportComments && !DEMO}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">{m.common_comments()}</span></Menu.Item>{/if}
-      {#if mayEdit}
-        <Menu.Item value="download-source" class="menuitem" disabled={!toolbarPath}>
-          <span class="menuitem-label">{m.common_source()}</span>
-          {#if !toolbarPath}<span class="export-reason">{m.readerd_download_source_reason()}</span>{/if}
-        </Menu.Item>
-      {/if}
-    </ExplorerMenu>
-  </Menu>
-{/snippet}
-
-{#snippet fileItems()}
-  {#if mayEdit}
-    <Menu.Item value="new-file" class="menuitem">{m.readerd_new_file()}</Menu.Item>
-    <Menu.Item value="new-folder" class="menuitem">{m.readerd_new_folder()}</Menu.Item>
-    <Menu.Item value="upload" class="menuitem" disabled={DEMO}>{m.readerd_upload_files()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>
-    <hr class="hr my-1" />
-  {/if}
-  {@render downloadMenu()}
-  {#if me?.id || DEMO}<Menu.Item value="save-template" class="menuitem" disabled={DEMO}>{m.readerd_save_as_template_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  <hr class="hr my-1" />
-  {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem" disabled={DEMO}>{m.readerd_git_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  {#if DEMO || canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem" disabled={DEMO}>{m.readerd_share_item()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  <!-- Only where the panel behind it is one this reader is offered: a menu
-       that opens a column the rail does not have is the second list of who
-       may see what that lib/panels.js exists to prevent. -->
-  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem" disabled={DEMO}>{m.common_history()}{DEMO ? ` ${DEMO_HINT}` : ""}</Menu.Item>{/if}
-  <hr class="hr my-1" />
-  {#if mayEdit && sourceFormat === "latex" && compilesHere}
-    <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">{m.common_compile_now()}</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
-  {/if}
-  <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">{m.readerd_settings_item()}</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
-  {#if hasDesktop}
-    <hr class="hr my-1" />
-    <Menu.Item value="quit" class="menuitem">{m.readerd_quit()}</Menu.Item>
-  {/if}
-{/snippet}
-
-{#snippet layoutItems()}
-  {#each [["source", m.common_editor()], ["document", m.common_preview()], ["split", m.reader_split()]] as [value, label]}
-    <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"}>
-      <span class="menuitem-check">{(compact ? activeMobileView === value : layout === value) ? "✓" : ""}</span>{label}
-    </Menu.Item>
-  {/each}
-  <hr class="hr my-1" />
-  {#each [["left", m.common_editor_on_left()], ["right", m.common_editor_on_right()]] as [side, label]}
-    <Menu.Item value="side-{side}" class="menuitem" disabled={compact}>
-      <span class="menuitem-check">{sourceSide === side ? "✓" : ""}</span>{label}
-    </Menu.Item>
-  {/each}
-  <hr class="hr my-1" />
-  {#each RATIOS as ratio}
-    <Menu.Item value="ratio-{ratio.share}" class="menuitem" disabled={compact}>
-      <span class="menuitem-check">{sizes[PANES.editor.key] === ratio.share ? "✓" : ""}</span>{ratio.says}
-    </Menu.Item>
-  {/each}
-  <hr class="hr my-1" />
-  <Menu.Item value="linked" class="menuitem">
-    <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">{m.readerd_keep_in_step()}</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
-  </Menu.Item>
-  <Menu.Item value="visual-markup" class="menuitem">
-    <span class="menuitem-check">{visual ? "✓" : ""}</span><span class="menuitem-label">{m.readerd_visual_markup()}</span>{#if MENU_KEYS["visual-markup"]}<span class="menuitem-keys">{MENU_KEYS["visual-markup"]}</span>{/if}
-  </Menu.Item>
-  <hr class="hr my-1" />
-  <Menu.Item value="text-bigger" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_bigger_text()}</span>{#if MENU_KEYS["text-bigger"]}<span class="menuitem-keys">{MENU_KEYS["text-bigger"]}</span>{/if}
-  </Menu.Item>
-  <Menu.Item value="text-smaller" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_smaller_text()}</span>{#if MENU_KEYS["text-smaller"]}<span class="menuitem-keys">{MENU_KEYS["text-smaller"]}</span>{/if}
-  </Menu.Item>
-  <Menu.Item value="text-reset" class="menuitem">
-    <span class="menuitem-check"></span><span class="menuitem-label">{m.readerd_reset_text_size()}</span>{#if MENU_KEYS["text-reset"]}<span class="menuitem-keys">{MENU_KEYS["text-reset"]}</span>{/if}
-  </Menu.Item>
-{/snippet}
-
-{#snippet previewItems()}
-  {@const selectedFormat = displayedFormat === "latex" ? latexOutput : displayedFormat === "typst" ? typstOutput : ["markdown", "quarto"].includes(displayedFormat) ? markdownOutput : "html"}
-  {@const selectableFormat = ["latex", "typst", "markdown", "quarto"].includes(displayedFormat)}
-  <Menu.Item value="format-html" class="menuitem" disabled={!selectableFormat}>
-    <span class="menuitem-check">{selectedFormat === "html" ? "✓" : ""}</span>HTML
-  </Menu.Item>
-  <Menu.Item value="format-pdf" class="menuitem" disabled={!selectableFormat}>
-    <span class="menuitem-check">{selectedFormat === "pdf" ? "✓" : ""}</span>PDF
-  </Menu.Item>
-{/snippet}
-
-{#snippet viewItems()}
-  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]}>{m.common_lock_preview_on_file()}</Menu.Item>
-  {#if can["unlock-preview"]}<Menu.Item value="unlock-preview" class="menuitem">{m.common_unlock_the_preview()}</Menu.Item>{/if}
-  <hr class="hr my-1" />
-  {@render previewItems()}
-  <hr class="hr my-1" />
-  {@render layoutItems()}
-{/snippet}
+<svelte:window bind:innerWidth={arrangement.state.width} onresize={() => (arrangement.state.unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => { keepPlace(); session?.leave(); }} />
 
 {#snippet faceSwitch()}
   <div class="face-switch" role="group" aria-label={m.readerd_workspace_view()}>
-    <IconButton icon="eye" label={m.common_preview()} visibleLabel={compact ? m.common_preview() : null} pressed={shown.document}
-                onclick={() => showMobileView("document")} />
+    <IconButton icon="eye" label={m.common_preview()} pressed={shown.document}
+                onclick={() => arrangement.showMobileView("document")} />
     {#if sourceOpen}
-      <IconButton icon="writing-hand" label={m.common_editor()} visibleLabel={compact ? m.common_editor() : null} pressed={shown.source}
-                  onclick={() => showMobileView("source")} />
+      <IconButton icon="writing-hand" label={m.common_editor()} pressed={shown.source}
+                  onclick={() => arrangement.showMobileView("source")} />
     {/if}
   </div>
 {/snippet}
 {#snippet visualModeControl()}
   {#if sourceOpen && mayEdit && visualAvailable}
-    <label class="bar-toggle" title={m.readerd_visual_mode_hint()}>
+    <label class="bar-toggle" data-tip={m.readerd_visual_mode_hint()}>
       <button type="button" role="switch" class="switch" aria-checked={visual} aria-label={m.common_visual_mode()} data-state={visual ? "checked" : "unchecked"} onclick={() => setVisual(!visual)}>
         <span class="switch-thumb" data-state={visual ? "checked" : "unchecked"}></span>
       </button>
@@ -4133,9 +4617,21 @@
     </label>
   {/if}
 {/snippet}
+{#snippet runStatus()}
+  {#if runPhase === "running"}<RunStatus since={runStartedAt} onstop={stopRun} tool={sourceFormat === "typst" ? "calepin" : "quarto"} />{/if}
+{/snippet}
 {#snippet localExecutionControl()}
-  {#if runCodeOffered}
-    <label class="bar-toggle" title={m.readerd_run_code_hint()}>
+  {#if runCodeOffered && runsExplicitly}
+    <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun}
+      share={shareResults} onshare={setShareResults}
+      directoryName={runDir.status?.path ? leaf(runDir.status.path) : ""}
+      directoryPath={runDir.status?.path ? runDir.shorten(runDir.status.path) : ""}
+      directoryMissing={Boolean(runDir.status?.path) && !runDir.usable}
+      ondirectory={chooseRunDirectory}
+      canViewLast={Boolean(lastRunPage && lastRunPage.path === previewPath) && runPhase !== "running"}
+      onviewlast={showLastRun} />
+  {:else if runCodeOffered}
+    <label class="bar-toggle" data-tip={m.readerd_run_code_hint()}>
       <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label={m.readerd_run_code()} data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>
         <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
       </button>
@@ -4158,21 +4654,13 @@
      desktop app and this page disagree. -->
 <DesktopMismatch />
 
-<Nav {me} phoneMenu hidden={barHidden}>
+<Nav {me} phoneMenu phoneShell={compact} phoneBare={tabsShown} hidden={barHidden && !compact}>
   {#snippet tools()}
     {#if compact}
-      <!-- At compact widths (≤760px), the top bar holds the Menu trigger (the
-           panels, File/Edit/Insert/View and the account) and the Preview/Source
-           switch. Each carries a caption. The menubar stays mounted but is
-           invisible; a menu chosen from Menu opens in the menu's own box. -->
-      <CompactPanelMenu tabs={tabs} {panel} {me} {badges} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
-                        menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
-      {@render faceSwitch()}
-      {@render visualModeControl()}
-      {#if !connected && !DEMO}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>{m.common_offline()}</span>{/if}
+      <!-- The phone has no tools in its header: More is in the bottom bar. -->
     {:else}
-      <!-- Between 761px and the split's narrow point, the face choice stays in
-           the top bar. Compact widths render it beside the hamburger above. -->
+      <!-- Between the phone and the split's narrow point, the face choice stays
+           in the top bar. -->
       {#if adapted && sourceOpen}
         {@render faceSwitch()}
       {/if}
@@ -4180,9 +4668,19 @@
            by Diagnostics, so the bar only carries the local execution switch. -->
       {@render visualModeControl()}
       {@render localExecutionControl()}
-      <div class="presence" role="group" aria-label={connected ? m.readerd_people_connected({ count: peers }) : connectionNote} title={connected ? m.readerd_people_connected({ count: peers }) : connectionNote}>
+      <!-- Shown only while tracked changes are being recorded, so a reviewer
+           who has closed the Changes panel can still see that edits are tracked. -->
+      {#if tracking}
+        <button type="button" class="tracking-pill" data-tip={m.reader_tracking_open()} onclick={() => void focusPanel("changes")}>
+          <Icon name="pencil" size={14} />
+          <span>{m.reader_tracking_on()}</span>
+        </button>
+      {/if}
+      <div class="presence" role="group" aria-label={connected ? m.readerd_people_connected({ count: participants.length + 1 }) : connectionNote} data-tip={connected ? m.readerd_people_connected({ count: participants.length + 1 }) : connectionNote}>
         {#each participants.slice(0, 3) as person (person.key)}
-          <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
+          <button type="button" class="presence-jump" data-tip={person.name} aria-label={m.common_go_to_cursor({ name: person.name })} onclick={() => jumpToPerson(person)}>
+            <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
+          </button>
         {/each}
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
         {#if !connected && !DEMO}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>{m.common_offline()}</span>{/if}
@@ -4190,50 +4688,56 @@
     {/if}
   {/snippet}
   {#snippet menus()}
-    <!-- The File menu is the project's, not the preview's: new files, uploads,
-         downloads, sharing, history and settings all belong to the project
-         whatever pane is on screen, so it stays put when the document pane is
-         hidden. -->
-    <MenubarMenu id="file" label={m.common_file()} onselect={(command) => void chooseFileCommand(command)}>
-      {@render fileItems()}
-    </MenubarMenu>
-    {#if editing && mayEdit}
-      <MenubarMenu id="edit" label={m.readerd_edit_menu()} disabled={!editor || !!shownFigure}
-                   onopen={refreshEditAvailability}
-                   onselect={chooseEditCommand}>
-        {#each editGroups as group, index}
-          {#if index}<hr class="hr my-1" />{/if}
-          {#each group as [command, label]}
-            <Menu.Item value={command} class="menuitem" disabled={!can[command]}>
-              <span class="menuitem-label">{label}</span>{#if MENU_KEYS[command]}<span class="menuitem-keys">{MENU_KEYS[command]}</span>{/if}
-            </Menu.Item>
-          {/each}
-        {/each}
-      </MenubarMenu>
-      <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={(items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} demo={DEMO} />
-    {/if}
-    {#if editing}
-      <MenubarMenu id="view" label={m.reader_menu_view()} onselect={chooseViewCommand}>
-        {@render viewItems()}
-      </MenubarMenu>
-    {/if}
+    <Menus role={{ mayEdit, suggestOnly, me, canSeeSharing, canPublish, canExportComments }} demo={DEMO} demoHint={DEMO_HINT} {tabs} {hasDesktop}
+      source={{ format: sourceFormat, compilesHere, toolbarPath, editing, editorReady: Boolean(editor), figureShown: Boolean(shownFigure) }}
+      {exportable}
+      view={{ compact, activeMobileView, layout, sourceSide, editorShare: sizes[PANES.editor.key], linked, visual }}
+      outputs={{ displayedFormat, latexOutput, typstOutput, markdownOutput, pdfOffered: quartoPdfOffered }}
+      {can} keys={MENU_KEYS} {editGroups} bind:downloadOpen
+      onfile={(command) => void chooseFileCommand(command)}
+      onedit={chooseEditCommand}
+      oneditopen={refreshEditAvailability}
+      onview={chooseViewCommand}
+      onhelp={(id) => void runCommand(id)}>
+      {#snippet insert()}
+        <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() && !suggestOnly ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={suggestOnly ? undefined : (items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} demo={DEMO} />
+      {/snippet}
+    </Menus>
   {/snippet}
   {#snippet children()}
-    <span id="docTitle" class="nav-document truncate" title={toolbarPath || doc.title || ""}>
-      {toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
+    {#if compact}
+      <!-- The header only shows over a view that is not a tab (a panel, a
+           command list, a comparison): Back closes it, and the title names it. -->
+      <button type="button" class="mobile-header-button" aria-label={m.common_back()} onclick={() => phone.back()}>
+        <Icon name="arrow-left" size={20} />
+      </button>
+    {/if}
+    <span id="docTitle" class="nav-document truncate" class:mobile-title={compact} class:mobile-title-open={overlayView}
+          data-tip-wait="long" data-tip={toolbarPath || doc.title || ""}>
+      {compact ? mobileTitle : toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
     </span>
   {/snippet}
 </Nav>
 
-{#if formatBarShown}
-  <FormatToolbar active={formatActive} hidden={barHidden} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} />
+<!-- The view the phone is on, said when it changes. -->
+{#if compact}
+  <div class="sr-only" role="status" aria-live="polite">{mobileTitle}</div>
+{/if}
+
+{#if compact && tabsShown}
+  <!-- No header on a tab screen: this keeps the top safe area painted. -->
+  <div class="phone-safe-top" aria-hidden="true"></div>
+{/if}
+
+{#if compact && modeSwitchShown}
+  <ModeSwitch mode={shown.source ? "source" : "document"} collapsed={barHidden} onchange={(view) => arrangement.showMobileView(view)} />
 {/if}
 
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
-      class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:bar-hidden={barHidden}
-      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - var(--librepaper-format-used, 0px) - {demoBannerHeight}px); --librepaper-format-used: {formatBarShown ? 'var(--librepaper-format-bar)' : '0px'}; --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+      class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:phone-tabs={tabsShown} class:bar-hidden={barHidden && !compact}
+      style="height: calc(100dvh - var(--librepaper-bar-visible, var(--librepaper-bar)) - {demoBannerHeight}px - var(--librepaper-phone-chrome, 0px));{compact ? ` --librepaper-phone-chrome: calc(${phoneChrome});` : ''} --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
        looks for first is here instead: said once, seen by nobody. -->
@@ -4243,7 +4747,7 @@
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
     <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewPath} locked={lockedPath}
-      {mayEdit} {rules} onopen={(file) => openTheFile(file, { fromList: true })} onadd={addFile}
+      mayEdit={mayEdit && !suggestOnly} {rules} onopen={(file) => openTheFile(file, { fromList: true })} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
       onfigure={addFigure} ontext={addDroppedText} demo={DEMO}
@@ -4275,10 +4779,19 @@
   {/snippet}
 
   {#snippet agentPanel()}
-    <Agent open={panel === "agent" && shown.comments} slug={SLUG} canShare={doc.role === "owner"} />
+    {#if lazy.agent.component}
+    {@const Agent = lazy.agent.component}
+    <Agent open={panel === "agent" && shown.comments} slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
+      path={session?.paths?.get(openFile) || ""} selection={agentSelection}
+      revision={agentSelection?.revision || ""} request={assistantRequest}
+      {comments} changes={changeRows} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}
+      onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || m.common_you()}
+      bind:waiting={agentWaiting} />
+    {/if}
   {/snippet}
 
   {#snippet collaborationPanel()}
+    {#if compact}<Presence {participants} onjump={jumpToPerson} />{/if}
     <Collaboration messages={chatState.messages} more={chatState.more} loadingOlder={chatState.loadingOlder}
       loadError={chatState.loadError} canClear={chatState.canClear} onloadolder={liveChat.loadOlder}
       onclear={askClearChat} {connected} canPost={mayChat} onsend={sendLiveChat}
@@ -4287,18 +4800,19 @@
       canComment={mayChat}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} onedit={edit}
+      onagent={agentOffered ? askCommentAssistant : undefined}
       onattach={mayEdit ? attachComment : undefined} attachable={sourceSelected}
       {composing} {needsLogin} signInHref={signInHref()}
       page={annotations.state.page}
       onloadmore={() => void annotations.loadMore()}
       onloadreplies={(comment) => void annotations.loadReplies(comment)}
-      oncommentsend={sendDraft} oncommentcancel={cancelDraft} />
+      oncommentsend={sendDraft} oncommentcancel={cancelDraft} oncommentdocument={commentOnDocument} />
     {@render pendingRecovery("collaboration")}
   {/snippet}
 
   {#snippet changesPanel()}
-    <Changes changes={changeRows} {files} {identity} {tracking} canTrack={mayEdit && editing}
-      canReview={mayEdit} selected={selectedChange}
+    <Changes changes={changeRows} {files} {identity} tracking={tracking || suggestOnly} canTrack={mayEdit && editing}
+      canReview={mayEdit} {suggestOnly} ownKey={ownWho} selected={selectedChange} ids={changesIds}
       ontracking={setTracking} onaccept={acceptChange} onreject={rejectChange} onrejectmany={rejectChanges} onreveal={revealChange} />
     {@render pendingRecovery("changes")}
   {/snippet}
@@ -4306,13 +4820,16 @@
   {#snippet sharePanel()}
     <Share open={panel === "share" && shown.comments} inline slug={SLUG}
       canShare={doc.role === "owner"}
-      onclose={() => showPanel("")} />
+      onclose={() => arrangement.showPanel("")} />
   {/snippet}
 
   {#snippet gitPanel()}
+    {#if lazy.git.component}
+    {@const Git = lazy.git.component}
     <Git open={panel === "git" && shown.comments}
       web={webGit} slug={SLUG} linkKey={KEY} desktop={hasDesktop}
-      connection={webConnection} />
+      connection={webConnection} onhistory={() => void openPanel("history")} />
+    {/if}
   {/snippet}
 
   {#snippet diagnosticsPanel()}
@@ -4321,12 +4838,15 @@
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
-      log={renderState.lastLatexResult?.log || renderState.lastLog || ""}
+      onagent={agentOffered ? askDiagnostic : undefined}
+      log={runsExplicitly && runLog ? runLog : renderState.lastLatexResult?.log || renderState.lastLog || ""}
       logOpen={renderState.lastLatexResult ? undefined : false} />
   {/snippet}
 
   {#snippet historyPanel()}
-    <History {labels} viewing={historySelectedSha} older={historySource.older} newer={historySource.newer} canEdit={mayEdit}
+    {#if lazy.history.component}
+    {@const History = lazy.history.component}
+    <History {labels} viewing={historySelectedSha} older={historySource.older} newer={historySource.newer} canEdit={mayEdit && !suggestOnly}
       problem={historyProblem} loaded={timeline.state.loaded} complete={timeline.state.complete}
       loadingMore={timeline.state.loadingMore} moreProblem={timeline.state.moreProblem}
       saved={timeline.state.saved} savedLoaded={timeline.state.savedLoaded}
@@ -4348,6 +4868,7 @@
       authorsOnly={authorsOnly}
       onauthorsview={(on) => (authorsView = on)}
       onisolate={(key) => (authorsOnly = key)} />
+    {/if}
   {/snippet}
 
   <!-- Annotations the server has not acknowledged, offered back wherever
@@ -4369,7 +4890,7 @@
               collaboration: collaborationPanel, changes: changesPanel,
               share: sharePanel, git: gitPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
-    onselectpanel={selectPanel} ondrop={dropped}
+    onselectpanel={(name) => arrangement.selectPanel(name)} ondrop={dropped}
     onsize={(size) => setSize(PANES.sidebar, size)} onguide={(where) => (guide = where)}
     ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}
   >
@@ -4391,26 +4912,35 @@
 
   {#if sourceOpen}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <section id="reader-source" class="editorpane" class:away={!shown.source} class:comparing={comparing !== ""}
+    <section id="reader-source" class="editorpane" class:away={!shown.source} class:comparing={comparing !== ""} class:with-format-bar={formatBarInPane}
+             role={compact && modeSwitchShown ? "tabpanel" : undefined} aria-labelledby={compact && modeSwitchShown ? "mode-tab-source" : undefined}
              ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
       {#if comparing}
-        <ComparisonBar says={comparisonSays} onclose={endComparison} />
+        <ComparisonBar says={comparisonSays} onclose={() => { endComparison(); if (compact) arrangement.showMobileView("sidebar"); }} />
       {/if}
       {#if comparing === "history"}
-        <HistoryWorkspace source={historySource} versions={labels} canEdit={mayEdit} onrestore={restoreLabel}
-          ondownload={downloadArchive}
-          downloading={downloadingSha} downloadProblem={downloadProblem} />
+        {#if lazy.historyWorkspace.component}
+          {@const HistoryWorkspace = lazy.historyWorkspace.component}
+          <HistoryWorkspace source={historySource} versions={labels} canEdit={mayEdit && !suggestOnly} onrestore={restoreLabel}
+            ondownload={downloadArchive}
+            downloading={downloadingSha} downloadProblem={downloadProblem} />
+        {/if}
       {:else if shownFigure}
         {@render figureBody()}
       {:else if Editor && sourceBound}
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+        {#if formatBarInPane}
+          <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
+                         onmenuselect={() => setTimeout(() => { if (!document.activeElement?.closest?.("#composer")) editor?.focus?.(); }, 60)} collapsed={compact && barHidden} />
+        {/if}
+        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
-                  onformatstate={(state) => { formatActive = state; }}
+                  onchangeselect={selectChangeFromSource}
+                  onformatstate={(state) => { formatActive = state; refreshEditAvailability(); }}
                   authorship={authorsActive && authorsMap ? { authors: authorsMap, only: authorsOnly } : null}
                   onauthorship={(summary) => (authorsSummary = summary)}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
@@ -4448,7 +4978,7 @@
       {#if heldFile.kind === "asset" && shownFigure}
         {@render figureBody()}
       {:else}
-        <pre class="fileview-text">{currentProject?.texts?.[heldFile.path] ?? ""}</pre>
+        <pre class="fileview-text">{projection.state.project?.texts?.[heldFile.path] ?? ""}</pre>
       {/if}
     </section>
   {:else if documentNeedsSignIn}
@@ -4463,7 +4993,7 @@
         </div>
       </div>
     </section>
-  {:else if shown.document && projectUnreadable}
+  {:else if shown.document && projection.state.unreadable}
     <!-- No projection ever arrived, so there is no tree to compile and no
          renderer card below has anything to say. This is the one state that
          is not "not yet" -- the server itself has nothing to hand this
@@ -4472,9 +5002,9 @@
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">{m.readerd_cannot_show()}</h2>
-        <p class="lp-text-secondary text-sm">{projectUnreadable}</p>
+        <p class="lp-text-secondary text-sm">{projection.state.unreadable}</p>
         <div class="notyet-actions">
-          <button class="btn btn-sm lp-control-tonal-brand" onclick={() => void refreshCurrentProject()}>{m.common_try_again()}</button>
+          <button class="btn btn-sm lp-control-tonal-brand" onclick={() => void projection.refresh()}>{m.common_try_again()}</button>
         </div>
       </div>
     </section>
@@ -4484,11 +5014,11 @@
         <h2 class="h4">{m.readerd_nothing_to_preview()}</h2>
         <p class="lp-text-secondary text-sm">
           {m.readerd_project_no_files()}
-          {#if mayEdit}{m.readerd_add_one_from_files()}{/if}
+          {#if mayEdit && !suggestOnly}{m.readerd_add_one_from_files()}{/if}
         </p>
-        {#if mayEdit}
+        {#if mayEdit && !suggestOnly}
           <div class="notyet-actions">
-            <button class="btn btn-sm lp-control-tonal-brand" onclick={openFilesPanel}>{m.readerd_open_files()}</button>
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => arrangement.openFilesPanel()}>{m.readerd_open_files()}</button>
           </div>
         {/if}
       </div>
@@ -4525,7 +5055,7 @@
           </p>
           <div class="notyet-actions">
             <button class="btn btn-sm lp-control-brand" onclick={() => void setLatexOutput("pdf")}>{m.readerd_show_pdf()}</button>
-            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => showPanel("diagnostics")}>{m.readerd_open_diagnostics()}</button>
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={() => arrangement.showPanel("diagnostics")}>{m.readerd_open_diagnostics()}</button>
           </div>
         {:else if renderState.failureReason}
           <p class="lp-text-secondary text-sm">
@@ -4535,7 +5065,7 @@
         {:else}
           <p class="lp-text-secondary text-sm">
             {#if !compilesHere}
-              {m.readerd_browser_cannot_render_source({ format: sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : "Markdown" })} {sourceFormat === "latex" ? m.readerd_configure_latex() : m.readerd_desktop_can_render()}
+              {m.readerd_browser_cannot_render_source({ format: sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : sourceFormat === "org" ? "Org" : "Markdown" })} {sourceFormat === "latex" ? m.readerd_configure_latex() : m.readerd_desktop_can_render()}
             {:else}
               {m.readerd_fix_errors()}
             {/if}
@@ -4564,8 +5094,9 @@
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
   {#snippet previewControls()}
-    {#if viewerView}
+    {#if viewerView || previewDownloads.length}
       <PreviewControls view={viewerView} tool={viewerTool} busy={previewBusy} dark={darkNow} {findAsk}
+        collapsed={compact && barHidden}
         onpresent={() => preview?.present()}
         send={(message) => {
           // The one message that is also a preference: remember what was chosen.
@@ -4585,35 +5116,58 @@
           viewerTool = next;
           tell({ type: "viewer-tool", tool: next });
         }}
-        ondownload={can["download-pdf"] ? () => void downloadAs("pdf") : null} />
+        downloads={previewDownloads}
+        ondownload={(format) => void downloadAs(format)} />
     {/if}
   {/snippet}
   {#snippet waitingCover()}
     <PreviewWaiting stage={waitStage} progress={waitProgress} />
   {/snippet}
-  {#snippet previewNotice()}
-    {#if previewReason === "locked"}
-      <span class="notice-chip">
-        <span>{m.readerd_locked_path({ path: previewPath })}</span>
-        <button type="button" aria-label={m.common_unlock_the_preview()} title={m.common_unlock_the_preview()} onclick={unlockPreview}><Icon name="x" /></button>
-      </span>
-    {:else}
-      <span class="notice-chip"><span>{m.readerd_shown_inside({ name: basename(toolbarPath), path: previewPath })}</span></span>
-    {/if}
+  {#snippet emptyCover()}
+    <p class="lp-text-secondary text-sm">{m.readerd_document_empty()}</p>
   {/snippet}
-  <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
+  {#snippet previewNotice()}
+    <span class="notice-chip"><span>{m.readerd_shown_inside({ name: basename(toolbarPath), path: previewPath })}</span></span>
+  {/snippet}
+  <Preview bind:this={preview} id="reader-document" role={compact && modeSwitchShown ? "tabpanel" : undefined}
+           labelledby={compact && modeSwitchShown ? "mode-tab-document" : undefined}
+           src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            notice={previewChip ? previewNotice : undefined}
-           cover={waitingUp ? waitingCover : undefined}
+           cover={painted.state.empty ? emptyCover : waitingUp ? waitingCover : undefined}
+           status={runStatus}
+           dimmed={runsExplicitly && (runPhase === "running" || runPhase === "failed")}
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
-           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || noCompiler || failedBeforeRender || Boolean(projectUnreadable) || Boolean(previewCard)} />
+           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || (noCompiler || failedBeforeRender) || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
        pointermove. -->
   {#if guide.shown}<div class="grip-guide" class:held={guide.held} style="left: {guide.left}px"></div>{/if}
+
+  <!-- The File, Edit, View and Insert commands as a list over the workspace.
+       Everything under it stays mounted, the editor included. -->
+  {#if compact && mobileCommand}
+    <CommandView groups={mobileCommandGroups} onchoose={(id) => phone.chooseCommand(id)} />
+  {/if}
 </main>
+
+{#if tabBarShown}
+  <TabBar active={tabActive}
+          filesShown={tabs.some((tab) => tab.id === "files")} filesDisabled={Boolean(tabs.find((tab) => tab.id === "files")?.disabled)}
+          commentsShown={tabs.some((tab) => tab.id === "collaboration")} commentsDot={Boolean(badges.collaboration?.dot)}
+          {moreOpen} offlineNote={!connected && !DEMO ? connectionNote : ""}
+          ondocument={() => phone.showDocument()} onfiles={() => void openPanel("files")} oncomments={() => phone.showComments()} onmore={openMore}
+          hidden={barHidden} onreveal={() => (barHidden = false)} />
+{/if}
+{#if compact && keyboardBarShown}
+  <KeyboardBar onundo={() => void chooseEditCommand("undo")} onredo={() => void chooseEditCommand("redo")}
+               oninsert={() => phone.openCommand("insert")} onmore={() => openMore()} />
+{/if}
+{#if compact}
+  <MoreSheet bind:open={arrangement.state.moreOpen} sections={moreSections} onchoose={(id) => phone.chooseMoreRow(id)} finalFocusEl={() => moreOpener} />
+{/if}
 
 <!-- What can be done to the passage that is selected, over the passage that
      is selected. The verbs are here rather than in the column because the
@@ -4641,12 +5195,12 @@
                a sibling rather than a child because a button inside a button
                is not a thing a browser will draw. -->
           <div class="verb highlighter">
-            <button type="button" class="verb-face" title={item.title} aria-label={item.label}
+            <button type="button" class="verb-face" data-tip={item.title} aria-label={item.label}
                     onclick={() => annotate(item.id)}>
               <Icon name={item.icon} size={18} />
             </button>
             <button type="button" class="ink" aria-expanded={palette} aria-haspopup="true"
-                    aria-label={m.readerd_choose_highlight_colour()} title={m.readerd_choose_highlight_colour()}
+                    aria-label={m.readerd_choose_highlight_colour()} data-tip={m.readerd_choose_highlight_colour()}
                     style="--ink: {highlightColor}"
                     onclick={() => (palette = !palette)}></button>
             {#if palette}
@@ -4655,7 +5209,7 @@
                   <button type="button" class:selected={highlightColor === color} class="color-swatch" style="background:{color}"
                     aria-label={m.readerd_highlight_in({ color: colorName(color) })} onclick={() => highlightWith(color)}></button>
                 {/each}
-                <label class="custom-color" title={m.readerd_choose_highlight_colour()}>
+                <label class="custom-color" data-tip={m.readerd_choose_highlight_colour()}>
                   <span class="sr-only">{m.readerd_custom_highlight_colour()}</span>
                   <input type="color" bind:value={highlightColor} onchange={() => highlightWith(highlightColor)} />
                 </label>
@@ -4663,7 +5217,7 @@
             {/if}
           </div>
         {:else}
-          <button type="button" class="verb verb-face" title={item.title} aria-label={item.label}
+          <button type="button" class="verb verb-face" data-tip={item.title} aria-label={item.label}
                   onclick={() => annotate(item.id)}>
             <Icon name={item.icon} size={18} />
           </button>
@@ -4676,26 +5230,37 @@
 <!-- The keyboard as a list to search. It is drawn from lib/commands.js and runs
      what the menus run, so it cannot drift from what the keys actually do. The
      table to read lives in the editor settings. -->
-<CommandPalette bind:open={commandPalette} context={commandContext} apple={APPLE}
-                onrun={(id) => void runCommand(id)} />
+{#if lazy.commandPalette.component}
+  {@const CommandPalette = lazy.commandPalette.component}
+  <CommandPalette bind:open={commandPalette} context={commandContext} apple={APPLE}
+                  onrun={(id) => void runCommand(id)} />
+{/if}
 
 <!-- The palettes open over the editor rather than in the sidebar. Each is
      mounted only while open, so a form left half filled does not come back. -->
-<Modal bind:open={symbolsOpen} title={m.common_insert_symbol()} compact sheet onclose={returnToEditorUnlessTouch}
+<Modal bind:open={symbolsOpen} title={m.common_insert_symbol()} compact sheet
        initialFocus={() => symbolPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(symbolPalette, event)}>
-  {#if symbolsOpen}
+  {#if symbolsOpen && lazy.symbols.component}
+    {@const SymbolPalette = lazy.symbols.component}
     <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={(result, context) => applyInsertion(result, context, { focus: false })} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
 </Modal>
-<Modal bind:open={mathOpen} title={m.common_math()} wider onclose={returnToEditor}
+<Modal bind:open={mathOpen} title={m.common_math()} wider
        initialFocus={() => mathPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(mathPalette, event)}>
-  {#if mathOpen}
+  {#if mathOpen && lazy.math.component}
+    {@const MathPalette = lazy.math.component}
     <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
 </Modal>
 
+<!-- The Run directory: opened from the Run button's menu, and by Run itself
+     while it waits for a folder. -->
+<Modal open={runDirPageOpen} title={m.rundirectorycontrol_prompt_title()} onclose={dismissRunDir} sheet>
+  <RunDirectoryPrompt directory={runDir} title={doc.title} onclose={closeRunDirPage} {...shareProps} />
+</Modal>
+
 <!-- Word counts for the open file, read on open and as the text changes. -->
-<Modal bind:open={wordCountOpen} title={m.common_word_count()} onclose={returnToEditor}
+<Modal bind:open={wordCountOpen} title={m.common_word_count()}
   confirm={{ label: m.common_close(), cancel: false, onclick: () => (wordCountOpen = false) }}>
   {#snippet children()}
     <WordCount count={wordCount} />
@@ -4703,82 +5268,51 @@
 </Modal>
 
 <!-- The preferences dialog is shared by the navbar menu and sidebar button. -->
-<SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
-                remoteConnected={connected} remoteNote={connectionNote}
-                {keys} onkeys={setKeys}
-                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}
-                visual={prefs.visual} onvisual={setVisualDefault}
-                commands={commandContext}
-                userId={buildUserId}
-                onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
-                account={me} />
+{#if lazy.settings.component}
+  {@const SettingsDialog = lazy.settings.component}
+  <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} bind:entry={settingsEntry}
+                  remoteConnected={connected} remoteNote={connectionNote}
+                  {keys} onkeys={setKeys}
+                  {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {latexAssist} onlatexassist={setLatexAssist} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}
+                  visual={prefs.visual} onvisual={setVisualDefault}
+                  commands={commandContext}
+                  userId={buildUserId}
+                  runDirectory={runDir} onchooserundirectory={openRunDirPage}
+                  onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
+                  account={me} />
+{/if}
 
-<Modal bind:open={templateModalOpen} title={m.readerd_save_as_template()}
-  onclose={() => { templateError = ""; templateName = ""; }}
-  confirm={{ label: savingTemplate ? m.common_saving() : m.common_save(), disabled: savingTemplate, onclick: saveTemplate }}>
-  {#snippet children()}
-    <label class="label">
-      <span class="label-text">{m.readerd_template_name()}</span>
-      <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
-      <input class="input" autofocus bind:value={templateName} />
-    </label>
-    {#if templateError}<p class="lp-text-error text-sm">{templateError}</p>{/if}
-  {/snippet}
-</Modal>
+<SaveTemplateDialog bind:this={saveTemplateDialog} slug={SLUG} title={doc.title} />
 
-<Modal bind:open={timeline.state.restoring} title={m.readerd_restore_version_title()}
-  description={restoreMoved
-    ? m.readerd_restore_moved({ name: restoreName })
-    : m.readerd_restore_description({ name: restoreName })}
-  confirm={{
-    label: restoreBusy ? m.readerd_restoring() : restoreMoved ? m.readerd_restore_anyway() : m.readerd_restore_version(),
-    disabled: restoreBusy || !mayEdit,
-    onclick: confirmRestore,
-  }}>
-  {#if historyProblem}
-    <p class="lp-text-error text-sm" role="alert">{historyProblem}</p>
-  {/if}
-</Modal>
+<!-- Restoring is an editor's action, so a reader or suggester is given no dialog for it. -->
+{#if mayEdit && !suggestOnly}
+  <Modal bind:open={timeline.state.restoring} title={m.readerd_restore_version_title()}
+    description={restoreMoved
+      ? m.readerd_restore_moved({ name: restoreName })
+      : m.readerd_restore_description({ name: restoreName })}
+    confirm={{
+      label: restoreBusy ? m.readerd_restoring() : restoreMoved ? m.readerd_restore_anyway() : m.readerd_restore_version(),
+      disabled: restoreBusy || !mayEdit,
+      onclick: confirmRestore,
+    }}>
+    {#if historyProblem}
+      <p class="lp-text-error text-sm" role="alert">{historyProblem}</p>
+    {/if}
+  </Modal>
+{/if}
 
-<!-- Deleting a thread cannot be undone, so it is confirmed. -->
-<Modal
-  bind:open={deleting}
-  title={pendingDelete.length > 1 ? m.readerd_delete_many_comments_title({ count: pendingDelete.length }) : m.readerd_delete_comment_title()}
-  description={pendingDelete.length > 1
-    ? m.readerd_delete_many_comments_body()
-    : m.readerd_delete_comment_body()}
-  confirm={{ label: m.common_delete(), tone: "error", onclick: confirmDelete }}
-></Modal>
+<DeleteCommentsDialog bind:this={deleteCommentsDialog} ondelete={(comment) => annotations.delete(comment)} />
 
-<!-- Clearing the chat deletes it for everyone, so it is confirmed. -->
-<Modal
-  bind:open={clearingChat}
-  title={m.readerd_delete_chat_title()}
-  description={m.readerd_delete_chat_body()}
-  confirm={{ label: m.readerd_delete_history(), tone: "error", onclick: confirmClearChat }}
-></Modal>
+<ClearChatDialog bind:this={clearChatDialog} onclear={() => collaboration?.send({ type: "chat-clear" })} />
 
-<!-- Signed out, a commenter chooses how to be named before they write. -->
-<Modal
-  bind:open={identifying}
-  title={m.readerd_who_are_you()}
-  description={m.readerd_choose_identity()}
-  cancelLabel={m.common_sign_in()}
-  confirm={{
-    label: m.readerd_continue_as({ name: doc.commenting_as || m.common_anonymous() }),
-    oncancel: () => { identifying = false; location.href = signInHref(); },
-    onclick: () => { identifying = false; openDraft(); },
-  }}
-></Modal>
+<IdentityDialog bind:this={identityDialog} name={doc.commenting_as || m.common_anonymous()} signInHref={signInHref} oncontinue={() => openDraft()} />
 
 <Toasts />
 
 <style>
-  .demo-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-pane-edge); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
+  .demo-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing) calc(var(--spacing) * 3); padding: calc(var(--spacing) * 1.5) var(--panel-padding, calc(var(--spacing) * 4)); border-bottom: 1px solid var(--color-border-strong); background: var(--color-subtle); color: var(--color-text); font-size: var(--text-sm); }
   .demo-banner-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 2); }
-  .editorpane.comparing { grid-template-rows: auto minmax(0, 1fr); }
-  .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
-  .export-reason { flex: 0 0 auto; margin-left: auto; max-width: 12rem; overflow: hidden; color: var(--color-text-secondary); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
+  .editorpane.comparing, .editorpane.with-format-bar { grid-template-rows: auto minmax(0, 1fr); }
   .bar-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
   .nav-document {
     display: block;
@@ -4786,26 +5320,34 @@
     color: var(--color-text-secondary);
     font-size: var(--text-sm);
   }
-  /* Adapted widths keep the two faces grouped. Compact widths put them in the
-     top bar beside the Menu trigger, with the same column sizing and captions. */
+  /* Adapted widths above the phone keep the two faces grouped in the bar. */
   .face-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--radius-container); background: var(--color-subtle); }
-  @media (max-width: 760px) {
-    .face-switch { gap: calc(var(--spacing) * 2); padding: 0; border-radius: 0; background: none; }
-    .face-switch :global(.icon-control) { flex-direction: column; gap: 2px; width: auto; min-width: 3.5rem; height: 2.75rem; padding: 0; }
-    .face-switch :global(.compact-label) { font-size: 11px; }
-  }
+  /* The phone's header over a non-tab view: a back control and the title,
+     the control a thumb-sized square with no fill of its own. */
+  .mobile-header-button { position: relative; display: inline-grid; grid-auto-flow: column; flex: none; place-items: center; gap: .125rem; min-width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text); font-size: var(--text-xs); line-height: 1; cursor: pointer; }
+  .mobile-header-button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+  .phone-safe-top { height: env(safe-area-inset-top); background: var(--color-shell); }
+  /* The title takes the room the buttons leave. Over a panel or a list it is
+     that view's name; over the document it is the quiet file name. */
+  .nav-document.mobile-title { flex: 1 1 auto; min-width: 0; max-width: none; color: var(--color-text); font-size: .875rem; }
+  .nav-document.mobile-title-open { font-size: 1rem; font-weight: 500; }
   @media (max-width: 600px) {
     /* Nobody else here yet: an empty group would still take a gap. */
     .presence:empty { display: none; }
   }
+  .tracking-pill { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * 1.5); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2.5); border: 1px solid var(--color-divider); border-radius: 999px; background: transparent; color: var(--color-text-secondary); font-size: var(--text-xs); white-space: nowrap; cursor: pointer; }
+  .tracking-pill:hover { background: var(--color-row-hover); color: var(--color-text); }
+  .tracking-pill:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
   .presence { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .75); color: var(--color-text-secondary); font-size: var(--text-xs); }
   .presence-offline-dot { width: .5rem; height: .5rem; flex: 0 0 .5rem; border-radius: 50%; background: var(--color-error-solid); }
-  .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
+  .presence-jump { display: inline-flex; flex: none; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
+  .presence-jump:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+  .presence-jump + .presence-jump { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-divider); color: var(--color-text-secondary); font-size: .65rem; }
   /* A heading over a run of items. Aligned with the names rather than with
      the panel edge, so the column the items make starts once. */
-  @media (max-width: 760px) {
+  @media (max-width: 767px) {
     :global(main.reader.adapted .sidebar-activity) { display: none; }
   }
   /* The bar over a selection: one row of icons, with the swatches unfolding
@@ -4819,7 +5361,7 @@
      The small corner marker makes the strip's palette action visible. */
   .highlighter .verb-face { padding-bottom:6px; }
   .ink { position:absolute; right:4px; bottom:0; left:4px; height:14px; border-radius:2px; background:linear-gradient(transparent 0 8px, var(--ink) 8px); }
-  .ink::before { content:""; position:absolute; right:0; bottom:0; left:0; height:6px; border-radius:2px; box-shadow:inset 0 0 0 1px var(--color-text-muted); pointer-events:none; }
+  .ink::before { content:""; position:absolute; right:0; bottom:0; left:0; height:6px; border-radius:2px; box-shadow:inset 0 0 0 1px var(--color-text-secondary); pointer-events:none; }
   .ink::after { content:""; position:absolute; right:0; bottom:0; width:0; height:0; border-right:7px solid var(--color-text-secondary); border-top:7px solid transparent; pointer-events:none; }
   .ink:hover::before, .ink[aria-expanded="true"]::before { box-shadow:inset 0 0 0 1px var(--color-focus); }
   .highlight-colors { position:absolute; z-index:1; top:calc(100% + 6px); left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:3px; padding:2px; border:1px solid var(--color-border); border-radius:var(--radius-base); background:var(--color-raised); box-shadow:var(--shadow-lg); }

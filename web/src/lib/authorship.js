@@ -11,7 +11,8 @@
 import { SHELL_HEADERS } from "./api.js";
 import { m } from "./paraglide/messages.js";
 import { locale } from "./locale.js";
-import { presenceColour } from "./presence-colour.js";
+import { cursorAt } from "./loro-cursor.js";
+import { personSeed, presenceColour } from "./presence-colour.js";
 
 const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
 
@@ -30,7 +31,7 @@ export function authorshipRuns(doc, text) {
   let offset = 0;
   for (const char of source) {
     const width = char.length;
-    const cursor = text.getCursor(offset, 0);
+    const cursor = cursorAt(text, offset, 0, source);
     const id = cursor?.pos();
     cursor?.free?.();
     const peer = id ? id.peer : "";
@@ -89,15 +90,14 @@ export async function loadAuthors(slug, headers = {}) {
 
 /// The key a run is grouped under. An agent gets its own row, keyed by its
 /// owner's account and its label, so it never merges with the owner's own
-/// writing. A person is keyed by the account when there is one, else the name.
-/// Peers absent from the map are unknown.
+/// writing. A person is keyed by the same seed their live cursor is coloured
+/// from (`personSeed`): the account when there is one, else the name. Peers
+/// absent from the map are unknown.
 function keyOf(peer, authors) {
   const author = peer ? authors.get(peer) : undefined;
   if (!author) return "unknown";
   if (author.agent) return `agent:${author.accountId || ""}:${author.name}`;
-  if (author.accountId) return `account:${author.accountId}`;
-  if (author.name) return `name:${author.name}`;
-  return "unknown";
+  return personSeed({ accountId: author.accountId, name: author.name }) || "unknown";
 }
 
 /// Groups runs by person and says who wrote how much. Returns
@@ -143,6 +143,11 @@ export function summarize(runs, authors) {
     if (a.unknown !== b.unknown) return a.unknown ? 1 : -1;
     return b.chars - a.chars;
   });
+  // A row's colour is drawn from the same seed as the person's live cursor,
+  // and moves on to a free hue only when an earlier row already wears it, as
+  // the cursor does when somebody present wears it. Six hues and a hash alone
+  // would put two of three authors together too often for the tab to tell
+  // them apart.
   const taken = [];
   for (const row of rows) {
     if (row.unknown) continue;

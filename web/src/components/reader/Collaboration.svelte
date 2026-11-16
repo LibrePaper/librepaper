@@ -12,7 +12,7 @@
     comments = [], identity = "", commentingAs = m.common_anonymous(),
     canModerate = false, canComment = true,
     onreveal = undefined, onresolve = undefined, ondelete = undefined,
-    ondeletemany = undefined, onreply = undefined, onedit = undefined, pending = undefined,
+    ondeletemany = undefined, onreply = undefined, onedit = undefined, onagent = undefined, pending = undefined,
     unreadChat = false, selected = "", tab = $bindable("comments"),
     // The traversal, as `lib/reader/annotations.svelte.js` keeps it: the
     // catalogue's own counts, whether there is another page, and whether
@@ -24,6 +24,8 @@
     // The draft being written, which belongs to the Comments tab whatever it
     // will become.
     composing = null, needsLogin = false, signInHref = "", oncommentsend = undefined, oncommentcancel = undefined,
+    // Starts a comment on the whole document, from the Comments tab's header.
+    oncommentdocument = undefined,
   } = $props();
   // View-only links never see the chat, so there is no tab for it.
   const VIEWS = $derived([
@@ -34,7 +36,7 @@
   $effect(() => { if (!canComment && tab === "chat") tab = "comments"; });
   const common = () => ({ identity, commentingAs, canModerate, canComment,
     onreveal, onresolve, ondelete, ondeletemany,
-    onreply, onedit, pending, selected,
+    onreply, onedit, onagent, pending, selected,
     page, onloadmore, onloadreplies, onattach, attachable });
 </script>
 
@@ -52,7 +54,8 @@
     <Tabs.Content value="chat"><Chat {messages} {more} {loadingOlder} {loadError} {onloadolder} {connected} {canPost} {onsend} /></Tabs.Content>
     <Tabs.Content value="comments">
       <Comments {...common()} {comments} filter="comments" cardIdPrefix="collaboration-comment"
-        {composing} {needsLogin} {signInHref} onsend={oncommentsend} oncancel={oncommentcancel} />
+        {composing} {needsLogin} {signInHref} onsend={oncommentsend} oncancel={oncommentcancel}
+        onwholedocument={oncommentdocument} />
     </Tabs.Content>
     <Tabs.Content value="highlights">
       <Comments {...common()} {comments} filter="highlights" title={m.collaboration_highlights()}

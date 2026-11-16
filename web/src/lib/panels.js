@@ -19,13 +19,15 @@ export const TABS = [
   { id: "outline", says: m.common_outline(), icon: "list", when: (who) => who.mayEdit },
   { id: "collaboration", says: m.common_collaboration(), icon: "comment" },
   { id: "changes", says: m.common_changes(), icon: "pencil" },
-  { id: "agent", says: m.common_agent(), icon: "bot" },
+  // The agent edits the document for whoever runs it, and runs only in the
+  // desktop app: a suggester's changes are tracked, so it is not offered.
+  { id: "agent", says: m.common_agent(), icon: "bot", when: (who) => !who.suggestOnly },
   // History is readable by link-holders too: reviewers need the “since”
   // view even when they cannot edit or restore the live source.
   { id: "history", says: m.common_history(), icon: "history" },
   // Every project that can be edited has a Git panel. A web project cannot
   // run git: its panel sets up the GitHub Action that does.
-  { id: "git", says: m.panels_git(), icon: "git-branch", when: (who) => who.mayEdit },
+  { id: "git", says: m.panels_git(), icon: "git-branch", when: (who) => who.mayEdit && !who.suggestOnly },
   { id: "share", says: m.common_share(), icon: "users", when: (who) => who.canSeeSharing || who.canPublish },
   // Last, because it comes and goes with the source pane: at the end of the
   // rail its arrival moves nothing else.

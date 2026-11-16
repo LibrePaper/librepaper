@@ -61,6 +61,7 @@ pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
 mod connection;
 mod git;
 mod jobs;
+mod run_dir;
 mod sync;
 #[cfg(test)]
 mod wire_tests;
@@ -122,6 +123,31 @@ const MAX_QUEUE: usize = 4;
 /// removes its workspace.
 const FINISHED_TTL: Duration = Duration::from_secs(10 * 60);
 
+/// Asks the person a yes or no question in a native dialog. The service only
+/// ever sees this trait, so tests answer without a dialog.
+#[async_trait::async_trait]
+pub(super) trait Approver: Send + Sync {
+    /// Whether the person allowed what `question` says. `Err` when no dialog
+    /// could be shown.
+    async fn approve(&self, question: &str) -> Result<bool, String>;
+}
+
+/// Asks with the native folder chooser, the one dialog every desktop has here.
+/// The question is its title; choosing any folder allows and cancelling
+/// refuses, and the folder chosen is not used.
+struct ChooserApprover;
+
+#[async_trait::async_trait]
+impl Approver for ChooserApprover {
+    async fn approve(&self, question: &str) -> Result<bool, String> {
+        match crate::local::folder::choose_directory_at(question, None).await {
+            Ok(_) => Ok(true),
+            Err(why) if why == crate::local::folder::CANCELLED => Ok(false),
+            Err(why) => Err(why),
+        }
+    }
+}
+
 /// What executes one job and reports what the machine can do. `service.rs`
 /// only ever sees this trait, never `discovery`/`native` directly, so a
 /// `FakeRunner` can stand in for both without the test suite needing real
@@ -154,9 +180,9 @@ pub struct NativeRunner {
 impl NativeRunner {
     /// A runner that executes every document in a hosted workspace under
     /// `base`.
-    pub fn with_hosted_workspaces(base: PathBuf) -> Self {
+    pub fn with_hosted_workspaces(base: PathBuf, run_dirs: PathBuf) -> Self {
         Self {
-            binding_store: BindingStore::new(base),
+            binding_store: BindingStore::with_run_dirs(base, run_dirs),
         }
     }
 }
@@ -361,6 +387,13 @@ fn cancel_running_in_workspace(
 pub(super) struct Inner {
     pub(super) state_home: PathBuf,
     folder_dialog: Mutex<()>,
+    /// Asks the person to allow a Git remote. Holds `folder_dialog` while it
+    /// asks.
+    approver: Arc<dyn Approver>,
+    /// The folder most recently chosen through the Browse button, by the
+    /// connection key it was chosen for. A local connection to that folder
+    /// needs no second dialog.
+    picked: Mutex<HashMap<String, PathBuf>>,
     backups: Arc<backups::BackupManager>,
     instance: String,
     port: u16,
@@ -422,10 +455,12 @@ impl LocalService {
         // than replaying it. See `SessionRegistry::recover_at_startup`.
         crate::assistant::registry::SessionRegistry::recover_at_startup(state_home);
         super::render::records::init(state_home);
-        let bindings = BindingStore::new(base);
+        let bindings = BindingStore::with_run_dirs(base, BindingStore::run_dirs_home(state_home));
         let inner = Arc::new(Inner {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
+            approver: Arc::new(ChooserApprover),
+            picked: Mutex::new(HashMap::new()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
             instance,
             port,
@@ -690,6 +725,21 @@ async fn dispatch(
         ["zotero", "items", key] if *method == Method::GET => {
             handle_zotero_item(inner, headers, origin, key).await
         }
+        ["run-directory"] if *method == Method::GET => {
+            run_dir::handle_status(inner, headers, origin, request).await
+        }
+        ["run-directory", "choose"] if *method == Method::POST => {
+            run_dir::handle_choose(inner, headers, origin, request).await
+        }
+        ["run-directory", "default"] if *method == Method::POST => {
+            run_dir::handle_default(inner, headers, origin, request).await
+        }
+        ["run-directory", "has"] if *method == Method::POST => {
+            run_dir::handle_has(inner, headers, origin, request).await
+        }
+        ["run-directory", "open"] if *method == Method::POST => {
+            run_dir::handle_open(inner, headers, origin, request).await
+        }
         ["connections"] if *method == Method::GET => {
             connection::handle_status(inner, headers, origin, request).await
         }
@@ -698,6 +748,9 @@ async fn dispatch(
         }
         ["connections", "local"] if *method == Method::POST => {
             connection::handle_connect_local(inner, headers, origin, request).await
+        }
+        ["connections", "local", "choose"] if *method == Method::POST => {
+            connection::handle_choose_local(inner, headers, origin, request).await
         }
         ["connections", "pull"] if *method == Method::POST => {
             connection::handle_pull(inner, headers, origin, request).await
@@ -1198,9 +1251,27 @@ pub(super) mod test_support {
 
     pub(in crate::local::service) const PORT: u16 = 8763;
 
+    /// Allows every question, so a test that is not about consent connects.
+    pub(in crate::local::service) struct Allow;
+
+    #[async_trait::async_trait]
+    impl Approver for Allow {
+        async fn approve(&self, _question: &str) -> Result<bool, String> {
+            Ok(true)
+        }
+    }
+
     pub(in crate::local::service) async fn inner(
         state_home: &Path,
         cache_home: &Path,
+    ) -> Arc<Inner> {
+        inner_asking(state_home, cache_home, Arc::new(Allow)).await
+    }
+
+    pub(in crate::local::service) async fn inner_asking(
+        state_home: &Path,
+        cache_home: &Path,
+        approver: Arc<dyn Approver>,
     ) -> Arc<Inner> {
         let jobs_root = cache_home.join("jobs");
         std::fs::create_dir_all(&jobs_root).unwrap();
@@ -1208,6 +1279,8 @@ pub(super) mod test_support {
         Arc::new(Inner {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
+            approver,
+            picked: Mutex::new(HashMap::new()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
             control: control::ControlAuth::create(state_home, &instance).unwrap(),
             instance,
@@ -1880,6 +1953,7 @@ mod supersession_tests {
                 entrypoint: "main.typ".into(),
                 binding_id: binding_id.into(),
                 manifest: Vec::new(),
+                wanted: Vec::new(),
                 options: Default::default(),
             },
             origin: origin.into(),

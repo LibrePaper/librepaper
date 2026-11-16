@@ -1,6 +1,8 @@
-The visual markup layer draws LaTeX and Typst sources in place: headings,
-emphasis, lists, math, figures and tables over the text, which stays the
-document.
+The visual markup layer draws LaTeX sources in place: headings, emphasis,
+lists, math, figures and tables over the text, which stays the document.
+Markdown, Quarto, Org and Typst are drawn by the paper view (lib/paper)
+instead; their language definitions here still serve the formatting toolbar
+and the task model.
 
 core/, languages/, view/, markup.ts and markup.css began as a copy of
 [codemirror-visual-markup](https://github.com/TeXlyre/codemirror-visual-markup)

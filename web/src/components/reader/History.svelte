@@ -26,8 +26,9 @@
 
   // The two ends of a comparison, each a version's sha or CURRENT for the live
   // document. They are marked in the list so the reader does not need the colour.
-  // `selecting` is the endpoint being chosen, "normal" when none is. While it is
-  // not, the list says which end to pick and every eligible row says so too.
+  // `selecting` is the endpoint being chosen ("select-older", "select-newer",
+  // "select-first" or "select-second"), "normal" when none is. While it is
+  // not "normal", the list says which end to pick and every eligible row says so too.
   let {
     labels = [],
     viewing = null,
@@ -87,7 +88,7 @@
   // Open state is the default from the groups, flipped by a click. Each set
   // holds the keys whose state the reader has changed. Sets are replaced, not
   // mutated, so the template sees the change. Multi-version sessions start
-  // closed, except the one holding the live document, which starts open.
+  // closed, except the newest session, which starts open.
   let toggled = $state(new Set());
   let toggledEvents = $state(new Set());
   let reveal = $state(new Map());
@@ -111,7 +112,7 @@
     note = "";
     if (openNow(key) !== want) toggled = flipped(toggled, key);
   }
-  // The session holding the live document starts open; the others start closed.
+  // The newest session starts open; the others start closed.
   const eventOpen = (key) => toggledEvents.has(key) !== (key === newestEventKey);
   function setEvent(key, want) {
     if (eventOpen(key) !== want) toggledEvents = flipped(toggledEvents, key);
@@ -184,49 +185,42 @@
     return point.by;
   };
 
-  // The newest version overall stands for the live document: its row says
-  // Current, and choosing it views the live document, not that stored version.
-  // Periods and events are newest first.
-  const newestOf = (list) => {
-    const first = list[0];
-    if (!first) return null;
-    return first.events ? first.events[0]?.points[0] ?? null : newestOf(first.children ?? []);
-  };
-  const latestSha = $derived(newestOf(periods)?.sha ?? "");
-  // The same walk, stopping at the event that holds the newest version.
+  // The event holding the newest version. Periods and events are newest first.
   const newestEventOf = (list) => {
     const first = list[0];
     if (!first) return null;
     return first.events ? first.events[0] ?? null : newestEventOf(first.children ?? []);
   };
   const newestEventKey = $derived(newestEventOf(periods)?.key ?? "");
-  const isLive = (sha) => latestSha !== "" && sha === latestSha;
-  // What a click on the row of this version asks for, and whether it is the
-  // one being read.
-  const pickOf = (sha) => (isLive(sha) ? "" : sha);
-  const hereAt = (sha) => (isLive(sha) ? !viewing || viewing === sha : viewing === sha);
-  // Naming the live document is "current", and it happens on the newest row.
-  const namingAt = (sha) => naming === sha || (isLive(sha) && naming === "current");
+  const hereAt = (sha) => viewing === sha;
+  const namingAt = (sha) => naming === sha;
 
   // The endpoint a row carries, as "older", "newer" or nothing. The live
-  // document has no sha of its own, and an empty `older` must not tag it.
+  // project's row has no sha, so an empty sha is never an endpoint.
   const endpointKind = (sha) => {
     if (!sha) return "";
     if (sha === older) return "older";
-    if (sha === newer || (isLive(sha) && newer === CURRENT)) return "newer";
+    if (sha === newer) return "newer";
     return "";
   };
   const endpointWord = (sha) => {
     const kind = endpointKind(sha);
     return kind === "older" ? m.history_older_tag() : kind === "newer" ? m.history_newer_tag() : "";
   };
+  // The banner's prompt for the endpoint being chosen.
+  const selectPrompt = $derived(
+    selecting === "select-older" ? m.history_select_older_prompt()
+      : selecting === "select-newer" ? m.history_select_newer_prompt()
+      : selecting === "select-first" ? m.history_select_first_prompt()
+      : m.history_select_second_prompt(),
+  );
+  // The Latest row carries Newer when it is the newer end of a comparison.
   const currentEnd = $derived(newer === CURRENT ? "newer" : "");
   const currentTag = $derived(newer === CURRENT ? m.history_newer_tag() : "");
-  // A row's description for the tooltip and the screen reader: the words the
-  // eye gets from the layout, Current and the endpoint among them.
+  // A row's description for the tooltip and the screen reader: the row's
+  // words and its endpoint word, if any.
   const describe = (what, detail, sha) =>
-    [m.history_row_tip({ what, detail }), isLive(sha) ? m.history_current_label() : "", endpointWord(sha)]
-      .filter(Boolean).join(", ");
+    [m.history_row_tip({ what, detail }), endpointWord(sha)].filter(Boolean).join(", ");
   const tipWith = (what, detail, endpoint) =>
     endpoint ? m.history_row_tip_endpoint({ what, detail, endpoint }) : m.history_row_tip({ what, detail });
 
@@ -482,7 +476,7 @@
 
     {#if selecting !== "normal"}
       <div class="hx-select" role="status">
-        <span>{selecting === "select-older" ? m.history_select_older_prompt() : m.history_select_newer_prompt()}</span>
+        <span>{selectPrompt}</span>
         <button type="button" class="btn btn-sm" onclick={() => oncancelselect?.()}>{m.common_cancel()}</button>
       </div>
     {/if}
@@ -491,29 +485,27 @@
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <ol class="hx-list" class:hx-selecting={selecting !== "normal"} bind:this={listEl} onkeydown={navigate}>
       {#if mode === "all"}
-        <!-- The live document is the newest version's row. Until there is one,
-             a compact row keeps it reachable. -->
-        {#if !labels.length}
-          <li class="hx-current hx-row" class:hx-here={!viewing}>
-            {#if naming === "current"}
-              {@render nameField(m.history_name_bookmark())}
-            {:else}
-              <button
-                type="button"
-                class="hx-single"
-                data-nav
-                class:timeline-here={!viewing}
-                aria-current={!viewing ? "true" : undefined}
-                aria-label={[m.history_current_version(), currentTag].filter(Boolean).join(", ")}
-                onclick={() => onview?.("")}
-              >
-                <span class="hx-ell">{m.history_current_version()}</span>
-                {@render endMark(currentEnd)}
-              </button>
-              {#if canEdit && !viewing}{@render liveTool()}{/if}
-            {/if}
-          </li>
-        {/if}
+        <!-- The live project's own row, always first. The newest saved version
+             is an ordinary row below it. -->
+        <li class="hx-current hx-row" class:hx-here={!viewing}>
+          {#if naming === "current"}
+            {@render nameField(m.history_name_bookmark())}
+          {:else}
+            <button
+              type="button"
+              class="hx-single"
+              data-nav
+              class:lp-selected={!viewing}
+              aria-current={!viewing ? "true" : undefined}
+              aria-label={[m.history_latest_version(), currentTag].filter(Boolean).join(", ")}
+              onclick={() => onview?.("")}
+            >
+              <span class="hx-ell">{m.history_latest_version()}</span>
+              {@render endMark(currentEnd)}
+            </button>
+            {#if canEdit}{@render liveTool()}{/if}
+          {/if}
+        </li>
 
         {#if problem}
           <li class="hx-status">
@@ -594,9 +586,9 @@
                 <button
                   type="button"
                   class="hx-main hx-author"
-                  class:timeline-here={pressed}
+                  class:lp-selected={pressed}
                   aria-pressed={pressed}
-                  title={named}
+                  data-tip-wait="long" data-tip={named}
                   onclick={() => onisolate?.(pressed ? null : row.key)}
                 >
                   <span class="hx-swatch" class:hx-swatch-unknown={row.unknown}
@@ -609,9 +601,11 @@
               </li>
             {/each}
           </ul>
-          <p class="panel-meta hx-foot">
-            {authors.since ? m.history_authors_since({ date: shortDate(authors.since) }) : m.history_authors_since_none()}
-          </p>
+          {#if authors.rows.some((row) => row.unknown)}
+            <p class="panel-meta hx-foot">
+              {authors.since ? m.history_authors_since({ date: shortDate(authors.since) }) : m.history_authors_since_none()}
+            </p>
+          {/if}
         {/if}
       </div>
     </Tabs.Content>
@@ -675,7 +669,7 @@
           class:hx-holds={holds && !expanded}
           data-nav
           aria-expanded={expanded}
-          title={m.history_row_tip({ what: primaryOf(event), detail: eventMeta(event) })}
+          data-tip-wait="long" data-tip={m.history_row_tip({ what: primaryOf(event), detail: eventMeta(event) })}
           aria-label={m.history_row_tip({ what: primaryOf(event), detail: eventMeta(event) })}
           onclick={() => setEvent(event.key, !expanded)}
           onkeydown={(keyed) => arrow(keyed, expanded, (want) => setEvent(event.key, want))}
@@ -713,22 +707,22 @@
   {@const detail = plain ? who : soloLine(event)}
   <li class="hx-event" data-event={event.key} data-type={event.type} data-sha={first.sha}>
     {#if namingAt(first.sha)}
-      {@render nameField(first.label && naming !== "current" ? m.history_rename_bookmark() : m.history_name_bookmark())}
+      {@render nameField(first.label ? m.history_rename_bookmark() : m.history_name_bookmark())}
     {:else}
       <div class="hx-row" class:hx-here={here}>
         <button
           type="button"
           class="hx-single"
           data-nav
-          class:timeline-here={here}
+          class:lp-selected={here}
           aria-current={here ? "true" : undefined}
-          title={describe(what, detail, first.sha)}
+          data-tip-wait="long" data-tip={describe(what, detail, first.sha)}
           aria-label={describe(what, detail, first.sha)}
-          onclick={() => onview?.(pickOf(first.sha))}
+          onclick={() => onview?.(first.sha)}
         >
           {#if plain}
             <span class="hx-when">{clock(first.at)}</span>
-            {#if who}<span class="hx-who panel-meta" title={who}>{who}</span>{/if}
+            {#if who}<span class="hx-who panel-meta" data-tip-wait="long" data-tip={who}>{who}</span>{/if}
           {:else}
             {@render eventText(event, titleOf(event), soloLine(event))}
           {/if}
@@ -755,19 +749,17 @@
   </span>
 {/snippet}
 
-<!-- The right edge of a row is one slot. It holds the endpoint word when the row
-     is an endpoint, otherwise Current on the newest version, otherwise nothing.
-     The newest version as the newer end shows Current alone. -->
+<!-- The right edge of a row is one slot. It holds the endpoint word ("older" or
+     "newer") when the row is an endpoint, otherwise nothing. -->
 {#snippet trail(sha)}
-  {@const end = endpointKind(sha)}
-  {@render endMark(end === "older" ? "older" : isLive(sha) ? "current" : end)}
+  {@render endMark(endpointKind(sha))}
 {/snippet}
 
-<!-- The one right-hand slot of a row: Current, or a comparison endpoint word.
-     The slot is always there, pushed to the right edge at a fixed minimum width,
-     so a row never shifts or wraps when it is marked. -->
+<!-- The one right-hand slot of a row: a comparison endpoint word, "older" or
+     "newer". The slot is always there, pushed to the right edge at a fixed
+     minimum width, so a row never shifts or wraps when it is marked. -->
 {#snippet endMark(kind)}
-  <span class="hx-end panel-meta" class:hx-now={kind === "current"} aria-hidden="true">{kind === "current" ? m.history_current_label() : kind === "newer" ? m.history_newer_tag() : kind === "older" ? m.history_older_tag() : ""}</span>
+  <span class="hx-end panel-meta" aria-hidden="true">{kind === "newer" ? m.history_newer_tag() : kind === "older" ? m.history_older_tag() : ""}</span>
 {/snippet}
 
 <!-- One version inside an expanded session. The whole row is the button. -->
@@ -784,16 +776,16 @@
         <button
           type="button"
           class="hx-version-main"
-          class:timeline-here={here}
+          class:lp-selected={here}
           data-nav
           aria-current={here ? "true" : undefined}
-          title={m.history_row_tip({ what: told(point), detail: stamp(point.at) || shortSha(point.sha) })}
-          aria-label={[m.history_version_at({ time: clock(point.at) }), who ? m.history_by({ who }) : "", why, isLive(point.sha) ? m.history_current_label() : "", endpointWord(point.sha)].filter(Boolean).join(", ")}
-          onclick={() => onview?.(pickOf(point.sha))}
+          data-tip-wait="long" data-tip={m.history_row_tip({ what: told(point), detail: stamp(point.at) || shortSha(point.sha) })}
+          aria-label={[m.history_version_at({ time: clock(point.at) }), who ? m.history_by({ who }) : "", why, endpointWord(point.sha)].filter(Boolean).join(", ")}
+          onclick={() => onview?.(point.sha)}
           onkeydown={toSession}
         >
           <span class="hx-when">{clock(point.at)}</span>
-          {#if showWho}<span class="hx-who panel-meta" title={who}>{who}</span>{/if}
+          {#if showWho}<span class="hx-who panel-meta" data-tip-wait="long" data-tip={who}>{who}</span>{/if}
           {@render trail(point.sha)}
         </button>
         {@render rowTools(point)}
@@ -802,16 +794,16 @@
   </li>
 {/snippet}
 
-<!-- The tools of a version's row. On the newest one the bookmark is the live
-     document's, while the live document is the one being read. -->
+<!-- The tools of a version's row: its bookmark. The live project's own row has
+     its bookmark in liveTool instead. -->
 {#snippet rowTools(point)}
-  {#if isLive(point.sha) && canEdit && !viewing}{@render liveTool()}{:else}{@render markTool(point)}{/if}
+  {@render markTool(point)}
 {/snippet}
 
 {#snippet liveTool()}
   <span class="hx-tools">
     <IconButton icon="bookmark" tone="plain" size="btn-icon-sm"
-                label={m.history_bookmark_current()}
+                label={m.history_bookmark_latest()}
                 onclick={() => startNaming({ sha: "current", label: "" })} />
   </span>
 {/snippet}
@@ -829,9 +821,9 @@
           type="button"
           class="hx-main"
           data-nav
-          class:timeline-here={viewing === point.sha}
+          class:lp-selected={viewing === point.sha}
           aria-current={viewing === point.sha ? "true" : undefined}
-          title={m.history_row_tip({ what: point.label, detail: savedWhen(point.at) })}
+          data-tip-wait="long" data-tip={m.history_row_tip({ what: point.label, detail: savedWhen(point.at) })}
           aria-label={tipWith(point.label, savedWhen(point.at), end)}
           onclick={() => onview?.(point.sha)}
         >
@@ -845,7 +837,7 @@
           {#if canEdit}
             <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label={m.common_rename()}
                         onclick={() => startNaming(point)} />
-            <IconButton icon="trash" tone="plain" size="btn-icon-sm" label={m.history_remove_saved()}
+            <IconButton icon="x" tone="plain" size="btn-icon-sm" label={m.history_remove_saved()}
                         onclick={() => unbookmark(point)} />
           {/if}
         </span>
@@ -1001,7 +993,7 @@
     border-radius: 4px;
     text-align: left;
   }
-  .hx-main:hover:not(.timeline-here) { background: var(--color-row-hover); }
+  .hx-main:hover:not(.lp-selected) { background: var(--color-row-hover); }
   .hx-text { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; line-height: 1.3; }
   .hx-line1 {
     min-width: 0;
@@ -1035,17 +1027,26 @@
     padding-left: calc(var(--hx-shift, 0px) + 20px + var(--hx-chev) + var(--hx-gap));
   }
   .hx-version-main { min-height: 2.125rem; padding-left: calc(var(--hx-shift, 0px) + 44px); }
+  /* The Latest row sits above the periods and reads as one of their headings:
+     its text lines up with theirs, where the chevron would end. */
+  .hx-current { margin-top: 8px; }
+  .hx-current ~ .hx-top { margin-top: 18px; }
+  .hx-current .hx-single {
+    min-height: 2rem;
+    padding-left: calc(var(--hx-chev) + 4px);
+    font-size: var(--panel-font-size);
+    font-weight: 600;
+  }
   .hx-session:hover,
-  .hx-single:hover:not(.timeline-here),
-  .hx-version-main:hover:not(.timeline-here) { background: var(--color-row-hover); }
-  /* The selected row: a quiet background, an accent on its edge and a
-     heavier time. The global class is overridden here. */
-  .hx-single.timeline-here,
-  .hx-version-main.timeline-here { border-radius: 5px; box-shadow: inset 2px 0 var(--color-brand); }
-  .timeline-here .hx-when { font-weight: 600; }
-  /* A closed session holding the version being read: the selected row's edge
-     accent, without its background, and a heavier label. */
-  .hx-holds { box-shadow: inset 2px 0 var(--color-brand); }
+  .hx-single:hover:not(.lp-selected),
+  .hx-version-main:hover:not(.lp-selected) { background: var(--color-row-hover); }
+  /* The selected row takes the shared selected ground (librepaper.css). Its
+     time is heavier. */
+  .hx-single.lp-selected,
+  .hx-version-main.lp-selected { border-radius: 5px; }
+  .lp-selected .hx-when { font-weight: 600; }
+  /* A closed session holding the version being read: a heavier label, with no
+     ground of its own. */
   .hx-holds .hx-ev1 { font-weight: 600; }
   .hx-ev1, .hx-ev2 { display: flex; align-items: center; gap: 4px; }
   .hx-ev1 { font-size: 0.8125rem; }
@@ -1062,7 +1063,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* The row's one right-hand slot: Current or an endpoint word, pushed to the
+  /* The row's one right-hand slot: an endpoint word, pushed to the
      right edge. It keeps its minimum width whether or not a word is in it, and
      the word never wraps. */
   .hx-end {
@@ -1136,5 +1137,19 @@
     align-items: center;
     gap: var(--spacing);
     padding: var(--spacing) calc(var(--spacing) * 2);
+  }
+  /* Phones have no hover, so the bookmark, rename and remove controls stay on
+     their rows, and every row and disclosure is a finger's height. */
+  @media (max-width: 767px) {
+    .hx-tools { display: flex; }
+    .hx-tools :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+    .hx-heading,
+    .hx-session,
+    .hx-single,
+    .hx-version-main,
+    .hx-main { min-height: 2.75rem; }
+    .hx-more { display: flex; align-items: center; min-height: 2.75rem; }
+    .hx-list .input,
+    .hx-popover .input { font-size: 1rem; }
   }
 </style>

@@ -1,7 +1,7 @@
 import { EditorState, Extension, StateEffect, StateField } from '@codemirror/state';
 import { EditorView, hoverTooltip, Tooltip } from '@codemirror/view';
 import { getLanguage } from '../core/language';
-import { Tokenizer } from '../core/tokenizer';
+import { tokenizeOrEmpty } from '../core/tokenize';
 import { Token, tokenAt } from '../core/tokens';
 import { createEditableMath } from './math-field';
 
@@ -18,7 +18,7 @@ const enabledField = StateField.define<boolean>({
 });
 
 function findMath(state: EditorState, pos: number, language: string): Token | null {
-  const tokens = new Tokenizer(getLanguage(language)).tokenize(state.doc.toString());
+  const tokens = tokenizeOrEmpty(getLanguage(language), state.doc.toString());
   const token = tokenAt(tokens, pos);
   return token && token.kind === 'math' ? token : null;
 }

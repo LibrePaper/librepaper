@@ -411,7 +411,7 @@ impl PostgresCatalog {
         };
         let rank = |role: Option<&str>| match role {
             Some("editor") => 3,
-            Some("commenter") => 2,
+            Some("commenter") | Some("suggester") => 2,
             Some("reader") => 1,
             _ => 0,
         };

@@ -8,8 +8,10 @@
   import Modal from "../Modal.svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import { checkDirectoryPath, checkPath, collisionKey } from "../../lib/paths.js";
+  import { labelOf } from "../../lib/commands.js";
   import { basename, parentPath, inside, nodeKey, fileTree, folderPaths, topEntries, checkPlacement, copyPath, droppedFiles } from "../../lib/file-manager.js";
   import { expandArchives } from "../../lib/project-upload.js";
+  import { belongsInRunDirectory } from "../../lib/reader/run-directory.js";
   import { unzip } from "../../lib/zip.js";
   import { retargetElementAttributes } from "../element-attributes.js";
 
@@ -26,6 +28,8 @@
   let draft = $state("");
   let refusal = $state("");
   let uploadWarning = $state("");
+  // Set when a skipped file is a script or data file, which belongs in the Run directory.
+  let localHint = $state(false);
   let chooser = $state(null);
   let uploadTarget = "";
   let busy = $state(false);
@@ -77,13 +81,31 @@
   function entryOf(node) { return node.kind === "folder" ? { kind: "folder", id: node.path, path: node.path } : files.find((file) => file.id === node.fileId && file.kind === node.kind); }
   function selectionFor(node) { return selected.includes(node.id) ? topEntries(chosen) : [entryOf(node)].filter(Boolean); }
   function expand(path) { if (path) expanded = [...new Set([...expanded, `folder:${path}`])]; }
-  function reset() { editing = null; draft = ""; refusal = ""; uploadWarning = ""; }
+  function reset() { editing = null; draft = ""; refusal = ""; uploadWarning = ""; localHint = false; }
+  // Naming is an inline dialog, so it follows the rule of the modal dialogs:
+  // when it ends, focus goes back to what had it when it began, or to the
+  // editor when that has gone, and never to the body.
+  let namingOpener = null;
+  function endNaming() {
+    const target = namingOpener;
+    namingOpener = null;
+    reset();
+    tick().then(() => {
+      const usable = (element) => element instanceof HTMLElement && element !== document.body && element.isConnected && element.getClientRects().length > 0;
+      if (usable(target)) target.focus();
+      else {
+        const editor = /** @type {HTMLElement | null} */ (document.querySelector(".cm-content"));
+        if (editor && editor.getClientRects().length > 0) editor.focus();
+      }
+    });
+  }
   function focusName(element) { tick().then(() => { element.focus(); element.select(); }); }
   // `start` and `choose` are exported for the toolbar's File menu, which
   // offers what this panel's own toolbar does without making a person open
   // the panel first to find it.
   export function start(type, entry = null, parent = currentFolder) {
     if (!mayEdit) return;
+    namingOpener = document.activeElement;
     refusal = "";
     editing = { type, entry, parent };
     draft = type === "rename" ? basename(entry.path) : "";
@@ -101,13 +123,13 @@
         if (kind === "folder") await onmkdir?.(normalized);
         else await onadd?.(normalized);
       }
-      reset();
+      endNaming();
     } catch (error) { refusal = error.message; }
   }
   function namingKey(event) {
     event.stopPropagation();
     if (event.key === "Enter") { event.preventDefault(); commit(); }
-    if (event.key === "Escape") { event.preventDefault(); reset(); }
+    if (event.key === "Escape") { event.preventDefault(); endNaming(); }
   }
   function ask(type, targets) {
     if (!mayEdit || !targets.length) return;
@@ -161,8 +183,10 @@
     busy = true;
     refusal = "";
     uploadWarning = "";
+    localHint = false;
     const errors = [];
     const skipped = [];
+    const archiveSkipped = [];
     try {
       // A ZIP is the files inside it. Expanding before anything is written
       // means a broken archive refuses the whole import rather than leaving
@@ -170,6 +194,7 @@
       if (items.some((item) => /\.zip$/i.test(item.path))) {
         const opened = await expandArchives(items, rules, unzip);
         items = opened.files;
+        archiveSkipped.push(...opened.skipped);
         incomingFolders = [...incomingFolders, ...opened.folders];
       }
       for (const folder of incomingFolders) {
@@ -206,6 +231,7 @@
       if (skipped.length) {
         uploadWarning = m.files_skipped({ count: skipped.length, names: skipped.join(", "), extensions: allowedExtensions.join(", ") || m.common_none_inline() });
       }
+      localHint = [...skipped, ...archiveSkipped].some(belongsInRunDirectory);
     }
   }
   export function offer(chosenFiles) {
@@ -289,6 +315,7 @@
     {/if}
     {#if busy}<p role="status">{m.files_uploading()}</p>{/if}
     {#if uploadWarning}<p class="upload-warning" role="status">{uploadWarning}</p>{/if}
+    {#if localHint}<p class="upload-warning" role="status">{m.common_scripts_stay_local()}</p>{/if}
     {#if refusal && !dialog}<p class="refusal" role="alert">{refusal}</p>{/if}
     {#if editing && editing.type !== "rename"}
       <div class="space-y-1">
@@ -296,7 +323,7 @@
         <div class="flex items-center gap-1">
           <input id="new-project-entry" class="name" aria-label={editing.type === "folder" ? m.files_new_folder_name() : m.files_new_file_name()} bind:value={draft} use:focusName onkeydown={namingKey} />
           <IconButton icon="check" label={editing.type === "folder" ? m.files_create_folder() : m.files_create_file()} onclick={commit} />
-          <IconButton icon="x" label={m.common_cancel()} onclick={reset} />
+          <IconButton icon="x" label={m.common_cancel()} onclick={endNaming} />
         </div>
       </div>
     {/if}
@@ -335,7 +362,7 @@
   <Icon name={node.kind === "folder" ? "folder" : node.kind === "asset" ? "image" : "file-text"} />
   {#if editing?.type === "rename" && editing.entry.path === node.path}
     <input class="name" aria-label={m.files_rename_path({ path: node.path })} bind:value={draft} use:focusName onkeydown={namingKey} onclick={(event) => event.stopPropagation()} />
-    <span onclick={(event) => event.stopPropagation()} role="presentation"><IconButton icon="check" label={m.files_save_name()} onclick={commit} /><IconButton icon="x" label={m.files_cancel_rename()} onclick={reset} /></span>
+    <span onclick={(event) => event.stopPropagation()} role="presentation"><IconButton icon="check" label={m.files_save_name()} onclick={commit} /><IconButton icon="x" label={m.files_cancel_rename()} onclick={endNaming} /></span>
   {:else if node.kind === "folder"}
     <TreeView.BranchText class="explorer-name">{node.name}</TreeView.BranchText>
   {:else}
@@ -347,12 +374,12 @@
        being previewed without a lock is the open file, which its row already
        marks. -->
   {#if node.kind !== "folder" && locked && node.path === locked}
-    <button type="button" class="explorer-preview shown" aria-label={m.common_unlock_the_preview()} title={m.common_unlock_the_preview()}
+    <button type="button" class="explorer-preview shown" aria-label={m.common_unlock_the_preview()} data-tip={m.common_unlock_the_preview()}
       onclick={(event) => { event.stopPropagation(); onunlock?.(); }}
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
   {:else if node.kind === "text" && previewable(node.path)}
-    <button type="button" class="explorer-preview" aria-label={m.common_lock_preview_on({ name: node.name })} title={m.common_lock_preview_on_file()}
+    <button type="button" class="explorer-preview" aria-label={m.common_lock_preview_on({ name: node.name })} data-tip={m.common_lock_preview_on_file()}
       onclick={(event) => { event.stopPropagation(); const entry = entryOf(node); if (entry) onlock?.(entry); }}
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
@@ -363,9 +390,9 @@
   <ExplorerMenu>
     {#if mayEdit}
       {#if node.kind === "folder"}
-        <Menu.Item value="file" class="menuitem">{m.common_new_file()}</Menu.Item>
-        <Menu.Item value="folder" class="menuitem">{m.common_new_folder()}</Menu.Item>
-        <Menu.Item value="upload" class="menuitem" disabled={busy || demo}>{demo ? m.files_upload_demo() : m.common_upload_files()}</Menu.Item>
+        <Menu.Item value="file" class="menuitem">{labelOf("new-file")}</Menu.Item>
+        <Menu.Item value="folder" class="menuitem">{labelOf("new-folder")}</Menu.Item>
+        <Menu.Item value="upload" class="menuitem" disabled={busy || demo}>{demo ? m.files_upload_demo() : labelOf("upload")}</Menu.Item>
       {/if}
       <Menu.Item value="rename" class="menuitem">{m.common_rename()} <span class="ml-auto text-xs">F2</span></Menu.Item>
       <Menu.Item value="move" class="menuitem">{m.files_move_to()}</Menu.Item>
@@ -384,7 +411,7 @@
           <Menu.ContextTrigger>
             {#snippet element(attributes)}
               <div {...retargetElementAttributes(attributes)}>
-                <TreeView.BranchControl class="explorer-row {hover === node.path ? 'drop-target' : ''}" title={node.path}
+                <TreeView.BranchControl class="explorer-row {hover === node.path ? 'drop-target' : ''}" data-tip-wait="long" data-tip={node.path}
                   {...dragAttrs(node, node.path)}>
                   {@render row(node)}
                 </TreeView.BranchControl>
@@ -406,7 +433,7 @@
         <Menu.ContextTrigger>
           {#snippet element(attributes)}
             <div {...retargetElementAttributes(attributes)}>
-              <TreeView.Item class="explorer-row {open === node.fileId ? 'explorer-open' : ''} {hover === parentPath(node.path) ? 'drop-target' : ''}" title={node.path}
+              <TreeView.Item class="explorer-row {open === node.fileId ? 'explorer-open' : ''} {hover === parentPath(node.path) ? 'drop-target' : ''}" data-tip-wait="long" data-tip={node.path}
                 data-previewed={node.path === preview ? "" : undefined}
                 {...dragAttrs(node, parentPath(node.path))}>
                 {@render row(node)}
@@ -458,7 +485,7 @@
   .explorer-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   /* Pushed to the far end by the name, which takes the free width. */
   .explorer-preview { display: flex; flex: none; align-items: center; justify-content: center; width: calc(var(--spacing) * 7); height: calc(var(--spacing) * 7); margin-inline-end: calc(var(--spacing) * -1.5); padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text-secondary); }
-  button.explorer-preview { color: var(--color-text-muted); opacity: 0.45; cursor: pointer; }
+  button.explorer-preview { color: var(--color-text-secondary); opacity: 0.45; cursor: pointer; }
   button.explorer-preview:hover, button.explorer-preview:focus-visible { opacity: 1; color: var(--color-text-secondary); background: var(--color-row-hover); }
   button.explorer-preview.shown { color: var(--color-text-secondary); opacity: 1; cursor: pointer; }
   button.explorer-preview:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
@@ -467,5 +494,13 @@
     align-items: center;
     gap: calc(var(--spacing) * 1);
     flex-wrap: wrap;
+  }
+  /* Phones: no hover to reveal the eye, so it stays on each row at a thumb's
+     width, and the rows and header controls are as tall as a finger needs. */
+  @media (max-width: 767px) {
+    .explorer :global(.explorer-row) { min-height: 2.75rem; }
+    .explorer :global(.icon-control) { min-width: 2.75rem; min-height: 2.75rem; }
+    button.explorer-preview { width: 2.75rem; height: 2.75rem; margin-inline-end: calc(var(--spacing) * -2); opacity: .8; }
+    .filelist input { font-size: 1rem; }
   }
 </style>

@@ -5,6 +5,7 @@ import { locale } from "../../../lib/locale.js";
 export const ROLES = [
   { id: "reader", label: m.shared_role_reader() },
   { id: "commenter", label: m.common_comment() },
+  { id: "suggester", label: m.common_suggest() },
   { id: "editor", label: m.common_edit() },
 ];
 export const EXPIRIES = [["1d", m.shared_expiry_1d()], ["7d", m.shared_expiry_7d()], ["30d", m.shared_expiry_30d()], ["180d", m.shared_expiry_180d()], ["365d", m.shared_expiry_365d()], ["never", m.shared_expiry_never()]];
@@ -14,18 +15,25 @@ export const EXPIRIES = [["1d", m.shared_expiry_1d()], ["7d", m.shared_expiry_7d
 export const allows = (sharing, role) => role === "reader" || (role === "commenter"
   ? sharing?.commenters_policy !== "nobody" : sharing?.publishers !== "nobody");
 
-// The install text the Tokens tab copies for the user to paste into their agent. It stays English because it addresses an agent.
-export const INSTALL_INSTRUCTIONS = [
-  "Install the LibrePaper agent skill for every project on this computer by running:",
+// Whether the deployment lets a link of this role work without a sign-in. The
+// server reports it per role as `anonymous`; anything missing counts as no.
+const anonymousRole = { reader: "reads", commenter: "comments", suggester: "suggests", editor: "edits" };
+export const anonymousAllowed = (sharing, role) => sharing?.anonymous?.[anonymousRole[role]] === true;
+
+// The one block an agent is given, shared by the reveal and each token row. It
+// holds both the install and connect instructions, so one paste installs the
+// skill if it is missing and connects with the token. It stays English because
+// it addresses an agent.
+export const connectionInstructions = (token) => [
+  "Install the LibrePaper agent skill if you do not have it yet, then use it to connect to my project with the agent token below.",
+  "",
+  "To install it for every project on this computer, run:",
   "",
   "npx skills add LibrePaper/librepaper --skill librepaper --global",
   "",
-  "If that does not work, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, into your skills folder. If your sandbox blocks this or the command needs my input, give me the exact command to run in my terminal. When the skill is installed, tell me to start a new session.",
-].join("\n");
-
-// The addressed-to-agent connection text, shared by the reveal and each token row. It stays English because it addresses an agent.
-export const connectionInstructions = (token) => [
-  "Use the LibrePaper skill to connect to my project with the agent token below. If you do not have that skill, stop and ask me to install it.",
+  "If that does not work, copy https://github.com/LibrePaper/librepaper/tree/main/skills/librepaper, including its references and scripts folders, into your skills folder. If you cannot install it, for example because your sandbox blocks the skills folder or the command needs my input, copy that folder to a temporary directory instead. Then tell me that the skill is not installed, what blocked it, and the exact command to run in my terminal so it is installed next time.",
+  "",
+  "A skill you have just installed or copied may not load until a new session, so read its SKILL.md directly and use it now. Do not ask me to start a new session.",
   "",
   "The project is on a LibrePaper server and the token names it, so you need no local folder. The token is a credential: do not repeat it to me or write it into any file in your working directory.",
   "",
@@ -49,5 +57,6 @@ export const displayName = (kind, item) => item.name || (kind === "link" ? (link
 // The second line of a row.
 export const metaOf = (kind, item) => {
   const role = roleLabel(item.role);
-  return `${role} · ${item.until ? dateOf(item.until) : m.shared_no_expiry()}`;
+  const expiry = item.until ? dateOf(item.until) : m.shared_no_expiry();
+  return kind === "link" && item.anonymous ? `${role} · ${expiry} · ${m.shared_no_sign_in()}` : `${role} · ${expiry}`;
 };

@@ -12,13 +12,13 @@
 // does not use is absent from the projection and says so in a diagnostic.
 
 import { LoroText } from "loro-crdt";
-import { collisionKey, checkPath, normalisePath, suffixed } from "./paths.js";
+import { collisionKey, checkDirectoryPath, checkPath, normalisePath, suffixed } from "./paths.js";
 import { sha256HexOfText } from "./digest.js";
 import { canonicalBytes, compareUtf8 } from "./projection-digest.js";
 
 // Re-exported so a caller that already has a projection does not have to
 // know that the canonical form lives one module down. It lives there because
-// the LaTeX worker and the document preview need the name without needing
+// the LaTeX worker and the assistant preview need the name without needing
 // `loro-crdt`, which this module imports.
 export { canonicalBytes, compareUtf8 };
 
@@ -53,16 +53,28 @@ function compareKeys(left, right) {
   return 0;
 }
 
+/// The collision keys taken so far. `keys` holds every taken key; `ancestors`
+/// holds every proper directory prefix of every taken key, so a key is a
+/// directory of something taken exactly when it is in `ancestors`.
+function createTaken() {
+  return { keys: new Set(), ancestors: new Set() };
+}
+
+function addTaken(taken, key) {
+  taken.keys.add(key);
+  for (let at = key.indexOf("/"); at !== -1; at = key.indexOf("/", at + 1)) {
+    taken.ancestors.add(key.slice(0, at));
+  }
+}
+
 /// Whether `path` may be taken: not already a file, not a directory prefix of
-/// a file already taken, and not under one. `taken` is a Set of collision
-/// keys.
+/// a file already taken, and not under one.
 function free(taken, path) {
   const key = collisionKey(path);
-  if (taken.has(key)) return false;
-  const under = `${key}/`;
-  for (const existing of taken) {
-    if (existing.startsWith(under)) return false;
-    if (key.startsWith(`${existing}/`)) return false;
+  if (taken.keys.has(key)) return false;
+  if (taken.ancestors.has(key)) return false;
+  for (let at = key.indexOf("/"); at !== -1; at = key.indexOf("/", at + 1)) {
+    if (taken.keys.has(key.slice(0, at))) return false;
   }
   return true;
 }
@@ -70,10 +82,19 @@ function free(taken, path) {
 /// The steps of §4.4, in order. `doc` is a `LoroDoc`; `rules` is the
 /// deployment's path rules as `/api/config` serves them.
 ///
-/// Returns `{ files, diagnostics, texts }`, where `files` maps
+/// `bodyCache`, when given, maps a file id to `{ text, bytes }` and is read
+/// and filled for every text body. The caller must delete an id's entry
+/// whenever that text changes; see `project-session.js`.
+///
+/// Returns `{ files, diagnostics, texts, retained }`, where `files` maps
 /// a path to `{ kind, id, digest, bytes }` in UTF-8 path order and `texts`
-/// maps a path to its body.
-export function projectDirectory(doc, rules) {
+/// maps a path to its body. `retained` maps a path to the body of a text that
+/// is structurally sound but whose extension the allow list refuses (the list
+/// constrains upload, creation and rename, not what a download holds). It is
+/// in neither `files` nor the digest, and the `invalid-path` diagnostic is
+/// unchanged; only downloads read it. Ordered by path.
+/** @param {any} doc @param {any} rules @param {{ bodies?: boolean, bodyCache?: Map<string, { text: string, bytes: number }> }} [options] */
+export function projectDirectory(doc, rules, { bodies = true, bodyCache } = {}) {
   const diagnostics = [];
   const candidates = [];
 
@@ -102,14 +123,24 @@ export function projectDirectory(doc, rules) {
       diagnostics.push({ kind: "unnamed", id });
       continue;
     }
-    const body = value.toString();
+    // A caller that keeps `bodyCache` across builds vouches that an entry is
+    // current for this id, so the body is not re-read and re-encoded.
+    let body = null;
+    let bytes = 0;
+    if (bodies && bodyCache?.has(id)) {
+      ({ text: body, bytes } = bodyCache.get(id));
+    } else if (bodies) {
+      body = value.toString();
+      bytes = encoder.encode(body).length;
+      bodyCache?.set(id, { text: body, bytes });
+    }
     candidates.push({
       asset: false,
       key: id,
       id,
       requested: named.get(id),
       digest: "",
-      bytes: encoder.encode(body).length,
+      bytes,
       text: body,
     });
   }
@@ -137,6 +168,7 @@ export function projectDirectory(doc, rules) {
 
   // 2. Validate paths.
   const valid = [];
+  const retainedCandidates = [];
   for (const candidate of candidates) {
     const wanted = candidate.asset ? "asset" : "text";
     // A session can receive its first state before `/api/config` resolves.
@@ -151,6 +183,10 @@ export function projectDirectory(doc, rules) {
         path: candidate.requested,
         why: outcome.error,
       });
+      // Only the extension refused it: keep the text for downloads.
+      if (!candidate.asset && candidate.text !== null && !checkDirectoryPath(rules, candidate.requested)) {
+        retainedCandidates.push(candidate);
+      }
       continue;
     }
     if (outcome.kind !== wanted) {
@@ -172,13 +208,13 @@ export function projectDirectory(doc, rules) {
   });
 
   // 4. Reserve.
-  const taken = new Set();
+  const taken = createTaken();
   const placed = [];
   const deferred = [];
   for (const candidate of valid) {
     const normalised = normalisePath(candidate.requested);
     if (free(taken, normalised)) {
-      taken.add(collisionKey(normalised));
+      addTaken(taken, collisionKey(normalised));
       placed.push([candidate, normalised]);
     } else {
       deferred.push(candidate);
@@ -200,7 +236,7 @@ export function projectDirectory(doc, rules) {
       diagnostics.push({ kind: "dropped", id: candidate.key, path: requested });
       continue;
     }
-    taken.add(collisionKey(chosen));
+    addTaken(taken, collisionKey(chosen));
     diagnostics.push({ kind: "moved", id: candidate.key, from: requested, to: chosen });
     placed.push([candidate, chosen]);
   }
@@ -226,7 +262,40 @@ export function projectDirectory(doc, rules) {
 
   diagnostics.sort((left, right) => compareKeys(diagnosticSortKey(left), diagnosticSortKey(right)));
 
-  return { files, diagnostics, texts };
+  // Retained texts follow the placed entries, in id order. One whose path is
+  // taken (by a placed file or an earlier retained text) is suffixed like a
+  // placed file; if no suffix up to 100 is free it is dropped.
+  const retainedList = [];
+  const byId = [...retainedCandidates].sort((left, right) => compareUtf8(left.key, right.key));
+  for (const candidate of byId) {
+    const path = normalisePath(candidate.requested);
+    let chosen = null;
+    if (free(taken, path)) {
+      chosen = path;
+    } else {
+      for (let nth = 2; nth <= 100; nth += 1) {
+        const attempt = suffixed(path, nth);
+        if (free(taken, attempt)) {
+          chosen = attempt;
+          break;
+        }
+      }
+    }
+    if (chosen === null) continue;
+    addTaken(taken, collisionKey(chosen));
+    retainedList.push([chosen, candidate.text]);
+  }
+  retainedList.sort((left, right) => compareUtf8(left[0], right[0]));
+  const retained = Object.fromEntries(retainedList);
+
+  return { files, diagnostics, texts, retained };
+}
+
+/// The same path <-> id layout as `projectDirectory`, without reading any
+/// text body: `texts` is empty and every `bytes` is 0. For lookups that only
+/// need which path a file id has, which is most of them.
+export function projectPaths(doc, rules) {
+  return projectDirectory(doc, rules, { bodies: false });
 }
 
 /// The canonical projection, including the content digests used by snapshots.

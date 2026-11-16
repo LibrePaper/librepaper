@@ -44,6 +44,15 @@ struct Served {
 /// A served deployment whose owner is a GitHub account that both switches
 /// admit, so a token acting for the owner is not clamped by the ceilings.
 async fn serve(slug: &str) -> Option<Served> {
+    serve_with(slug, Default::default()).await
+}
+
+/// The same, with the deployment's `[access]` switches for links held without
+/// signing in.
+async fn serve_with(
+    slug: &str,
+    anonymous: librepaper_base::role::AnonymousAccess,
+) -> Option<Served> {
     let mut deployment = http_deployment(
         DocumentInput {
             slug: slug.into(),
@@ -67,6 +76,7 @@ async fn serve(slug: &str) -> Option<Served> {
         .unwrap()
         .to_owned();
     deployment.server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
+    deployment.server.anonymous = anonymous;
     let Deployment {
         server,
         catalog,
@@ -347,6 +357,115 @@ async fn the_share_route_creates_updates_replaces_and_revokes_by_id() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_link_is_anonymous_only_where_the_deployment_allows_it() {
+    let Some(served) = serve_with(
+        "anonymous-links",
+        librepaper_base::role::AnonymousAccess {
+            reads: true,
+            ..Default::default()
+        },
+    )
+    .await
+    else {
+        return;
+    };
+    let (status, created) = served
+        .share(json!({"create": {"kind": "link", "role": "reader", "anonymous": true}}))
+        .await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(created["anonymous"]["reads"], true);
+    assert_eq!(created["anonymous"]["comments"], false);
+    let id = created["created"]["id"].as_str().unwrap().to_string();
+    let listed = served.sharing().await;
+    let row = listed["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(row["anonymous"], true);
+
+    // A link made without the field is not anonymous.
+    let (_, plain) = served
+        .share(json!({"create": {"kind": "link", "role": "reader"}}))
+        .await;
+    let plain_id = plain["created"]["id"].as_str().unwrap();
+    let plain_row = plain["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["id"] == plain_id)
+        .unwrap();
+    assert_eq!(plain_row["anonymous"], false);
+
+    // The switch for a role that is off refuses, on create and on update.
+    let (status, refused) = served
+        .share(json!({"create": {"kind": "link", "role": "commenter", "anonymous": true}}))
+        .await;
+    assert_eq!(status, 400, "{refused}");
+    assert_eq!(
+        refused["error"],
+        "this deployment does not allow commenter links without sign-in"
+    );
+    let (status, _) = served
+        .share(json!({"create": {"kind": "link", "role": "commenter"}}))
+        .await;
+    assert_eq!(status, 200);
+    // A token never goes without sign-in.
+    let (status, _) = served
+        .share(json!({"create": {
+            "kind": "token", "role": "read", "name": "bot", "until": "1d", "anonymous": true
+        }}))
+        .await;
+    assert_eq!(status, 400);
+
+    // Updating keeps the flag unless it is named, and can clear it.
+    let (status, renamed) = served
+        .share(json!({"update": {"id": id, "name": "renamed"}}))
+        .await;
+    assert_eq!(status, 200, "{renamed}");
+    let row = renamed["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(row["anonymous"], true);
+    let (status, cleared) = served
+        .share(json!({"update": {"id": id, "anonymous": false}}))
+        .await;
+    assert_eq!(status, 200, "{cleared}");
+    let row = cleared["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(row["anonymous"], false);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn no_link_is_anonymous_when_every_switch_is_off() {
+    let Some(served) = serve("anonymous-links-off").await else {
+        return;
+    };
+    let (status, refused) = served
+        .share(json!({"create": {"kind": "link", "role": "reader", "anonymous": true}}))
+        .await;
+    assert_eq!(status, 400, "{refused}");
+    assert_eq!(
+        refused["error"],
+        "this deployment does not allow reader links without sign-in"
+    );
+    let (status, _) = served
+        .share(json!({"create": {"kind": "link", "role": "reader", "anonymous": false}}))
+        .await;
+    assert_eq!(status, 200);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_token_lists_its_name_its_expiry_and_for_its_owner_its_text() {
     let Some(served) = serve("token-listing").await else {
         return;
@@ -578,6 +697,49 @@ async fn the_tools_route_tells_a_direct_caller_what_a_write_needs() {
     let (comment_token, _) = served.mint_token("comment", "reviewer").await;
     let commenter = served.tools_body(&comment_token, "?schema=full").await;
     assert!(tool(&commenter, "document_propose").is_null());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_tool_routes_name_the_oldest_skill_version_they_work_with() {
+    let Some(served) = serve("min-skill-version").await else {
+        return;
+    };
+    let (token, _) = served.mint_token("edit", "editor").await;
+    let min_skill_version = |response: &reqwest::Response| -> Option<u64> {
+        response
+            .headers()
+            .get("x-librepaper-min-skill-version")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|version| *version > 0)
+    };
+    let client = reqwest::Client::new();
+
+    let tools = client
+        .get(format!(
+            "{}/api/documents/{}/tools",
+            served.base, served.slug
+        ))
+        .header("host", "paper.example")
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(min_skill_version(&tools).is_some(), "{:?}", tools.headers());
+
+    let call = client
+        .post(format!(
+            "{}/api/documents/{}/tools/document_read",
+            served.base, served.slug
+        ))
+        .header("host", "paper.example")
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(min_skill_version(&call).is_some(), "{:?}", call.headers());
 }
 
 #[tokio::test]
@@ -828,17 +990,21 @@ async fn stored_roles(served: &Served) -> Vec<(String, String)> {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn the_share_api_accepts_read_comment_and_edit_and_refuses_suggest() {
+async fn the_share_api_accepts_every_role_and_a_suggest_token_cannot_apply() {
     let Some(served) = serve("token-edit-roles").await else {
         return;
     };
     served.mint_token("edit", "editing").await;
     served.mint_token("read", "reading").await;
     served.mint_token("comment", "commenting").await;
-    let (status, refused) = served
-        .share(json!({"create": {"kind": "token", "role": "suggest", "name": "suggesting", "until": "1d"}}))
-        .await;
-    assert_eq!(status, 400, "{refused}");
+    let (suggest, _) = served.mint_token("suggest", "suggesting").await;
+    let (_, tools) = served.tools(&suggest).await;
+    assert!(tools.contains(&"document_propose".to_string()), "{tools:?}");
+    assert!(
+        tools.contains(&"document_withdraw".to_string()),
+        "{tools:?}"
+    );
+    assert!(!tools.contains(&"document_apply".to_string()), "{tools:?}");
     let listing = served.sharing().await;
     let role_of = |name: &str| {
         listing["tokens"]
@@ -852,12 +1018,14 @@ async fn the_share_api_accepts_read_comment_and_edit_and_refuses_suggest() {
     assert_eq!(role_of("editing"), "editor");
     assert_eq!(role_of("reading"), "reader");
     assert_eq!(role_of("commenting"), "commenter");
+    assert_eq!(role_of("suggesting"), "suggester");
     assert_eq!(
         stored_roles(&served).await,
         [
             ("commenting".to_string(), "commenter".to_string()),
             ("editing".to_string(), "editor".to_string()),
             ("reading".to_string(), "reader".to_string()),
+            ("suggesting".to_string(), "suggester".to_string()),
         ]
     );
 }

@@ -2,8 +2,8 @@ import { cssColor } from '../../core/color';
 import { registerLanguage, Language, LanguageCommands, TokenStyle } from '../../core/language';
 import { Token } from '../../core/tokens';
 import { COMMANDS, ENVIRONMENTS, type EnvironmentRender, type Render } from './catalog';
-import { ARGUMENT_COUNT, COMMAND_CLASSES, EDITABLE_COMMANDS, FIRST_ARGUMENT_COMMANDS, INCLUDE_COMMANDS, LIST_ENVIRONMENTS, REF_COMMANDS, VERBATIM_ENVIRONMENTS } from './commands';
-import { rules } from './rules';
+import { ARGUMENT_COUNT, COMMAND_CLASSES, EDITABLE_COMMANDS, FIRST_ARGUMENT_COMMANDS, LIST_ENVIRONMENTS, REF_COMMANDS, VERBATIM_ENVIRONMENTS } from './commands';
+import { tokenizeLatex } from './tree';
 import { table } from './table';
 import { figure, latexImageStyle } from './figure';
 
@@ -163,7 +163,6 @@ function style(token: Token): TokenStyle | null {
       const name = token.name ?? '';
       const full = fullName(token);
       if (REF_COMMANDS.has(full)) return { widget: 'ref' };
-      if (INCLUDE_COMMANDS.has(full)) return { widget: 'include' };
       if (name === 'maketitle') return { widget: 'title', block: true };
       if (name === 'includegraphics') return { widget: 'image' };
       if (FIRST_ARGUMENT_COMMANDS.has(name) && token.args?.length) return { argument: 0 };
@@ -175,9 +174,12 @@ function style(token: Token): TokenStyle | null {
         const properties: string[] = [];
         if (color) properties.push(name === 'textcolor' ? `color:${color}` : `background-color:${color}`);
         if (border) properties.push(`box-shadow:inset 0 0 0 1px ${border}`);
+        // A figure's caption starts with its number, when the numbering pass has one. The
+        // caption class is matched before the catalog, so the number is added on this branch.
         return {
           class: known,
-          attributes: properties.length ? { style: properties.join(';') } : undefined
+          attributes: properties.length ? { style: properties.join(';') } : undefined,
+          ...(full === 'caption' ? { before: 'captionnum' } : {})
         };
       }
       const spec = COMMANDS.get(name);
@@ -222,7 +224,7 @@ function hiddenSummary(text: string): string | null {
 export const latex: Language = {
   id: 'latex',
   name: 'LaTeX',
-  rules,
+  tokenize: tokenizeLatex,
   style,
   commands,
   table,
@@ -247,7 +249,6 @@ function countMandatory(signature = ''): number {
   return (signature.match(/m/g) ?? []).length;
 }
 
-export { rules } from './rules';
 export * from './commands';
 
 registerLanguage(latex);

@@ -1,0 +1,175 @@
+[
+  {
+    "args": [],
+    "body": {
+      "from": 17,
+      "to": 456
+    },
+    "children": [
+      {
+        "from": 17,
+        "kind": "text",
+        "to": 20
+      },
+      {
+        "args": [],
+        "from": 20,
+        "kind": "command",
+        "name": "centering",
+        "to": 30
+      },
+      {
+        "from": 30,
+        "kind": "text",
+        "to": 33
+      },
+      {
+        "args": [
+          {
+            "from": 42,
+            "to": 72
+          }
+        ],
+        "body": {
+          "from": 42,
+          "to": 72
+        },
+        "children": [
+          {
+            "from": 42,
+            "kind": "text",
+            "to": 72
+          }
+        ],
+        "from": 33,
+        "kind": "command",
+        "name": "caption",
+        "to": 73
+      },
+      {
+        "from": 73,
+        "kind": "text",
+        "to": 76
+      },
+      {
+        "args": [
+          {
+            "from": 92,
+            "to": 95
+          }
+        ],
+        "body": {
+          "from": 96,
+          "to": 442
+        },
+        "children": [
+          {
+            "from": 96,
+            "kind": "text",
+            "to": 101
+          },
+          {
+            "args": [],
+            "from": 101,
+            "kind": "command",
+            "name": "toprule",
+            "to": 109
+          },
+          {
+            "from": 109,
+            "kind": "text",
+            "to": 151
+          },
+          {
+            "from": 151,
+            "kind": "linebreak",
+            "to": 153
+          },
+          {
+            "from": 153,
+            "kind": "text",
+            "to": 158
+          },
+          {
+            "args": [],
+            "from": 158,
+            "kind": "command",
+            "name": "midrule",
+            "to": 166
+          },
+          {
+            "from": 166,
+            "kind": "text",
+            "to": 245
+          },
+          {
+            "from": 245,
+            "kind": "linebreak",
+            "to": 247
+          },
+          {
+            "from": 247,
+            "kind": "text",
+            "to": 333
+          },
+          {
+            "from": 333,
+            "kind": "linebreak",
+            "to": 335
+          },
+          {
+            "from": 335,
+            "kind": "text",
+            "to": 421
+          },
+          {
+            "from": 421,
+            "kind": "linebreak",
+            "to": 423
+          },
+          {
+            "from": 423,
+            "kind": "text",
+            "to": 428
+          },
+          {
+            "args": [],
+            "from": 428,
+            "kind": "command",
+            "name": "bottomrule",
+            "to": 439
+          },
+          {
+            "from": 439,
+            "kind": "text",
+            "to": 442
+          }
+        ],
+        "from": 76,
+        "kind": "table",
+        "name": "tabular",
+        "to": 455
+      },
+      {
+        "from": 455,
+        "kind": "text",
+        "to": 456
+      }
+    ],
+    "from": 0,
+    "kind": "container",
+    "name": "table",
+    "options": [
+      {
+        "from": 14,
+        "to": 16
+      }
+    ],
+    "to": 467
+  },
+  {
+    "from": 467,
+    "kind": "text",
+    "to": 468
+  }
+]

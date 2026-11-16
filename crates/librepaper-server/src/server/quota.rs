@@ -107,6 +107,7 @@ impl Server {
                     "figureBytes": d.figure_bytes,
                     "archiveBytes": d.archive_bytes,
                     "historyBytes": d.history_bytes,
+                    "resultsBytes": d.results_bytes,
                     "template": templates.contains(&d.id),
                 })
             })

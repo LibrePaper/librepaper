@@ -10,9 +10,12 @@
 // with it. That is why the sidebar treats everything arriving from here as
 // untrusted input rather than as fact.
 
-import { createMathTypesetter } from "../lib/math.js";
+import { createKatexCache, createKatexLoader, createMathTypesetter, typesetDetached } from "../lib/math.js";
+import { createDiagramCache, createDiagramRenderer, createMermaidLoader } from "../lib/mermaid.js";
+import { perfEnd, perfStart } from "../lib/perf-marks.js";
 import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
 import { watchPinch } from "../lib/pinch.js";
+import { morphChildren } from "./morph.js";
 
 (() => {
   // Where this agent is allowed to speak. It is injected into a document on
@@ -61,15 +64,38 @@ import { watchPinch } from "../lib/pinch.js";
   // Whether the frame set data-theme on the root itself. An attribute the
   // document supplied is never changed.
   let themeSetByFrame = false;
+  // The reader's own surface colours ({ paper, ink }), or null for the house
+  // defaults. They override the house variables on both :root and .lp-dark.
+  let surface = null;
+  function setSurface(next) {
+    const ok = (value) => typeof value === "string" && value.length > 0 && value.length < 200;
+    const wanted = next && ok(next.paper) && ok(next.ink) ? { paper: next.paper, ink: next.ink } : null;
+    if (wanted?.paper === surface?.paper && wanted?.ink === surface?.ink) return;
+    surface = wanted;
+    applyPaper();
+  }
   function applyPaper() {
     const root = document.documentElement;
+    if (surface) {
+      root.style.setProperty("--lp-paper", surface.paper);
+      root.style.setProperty("--lp-ink", surface.ink);
+    } else {
+      root.style.removeProperty("--lp-paper");
+      root.style.removeProperty("--lp-ink");
+    }
     root.classList.toggle("librepaper-dark", paper === "dark");
+    // The house stylesheet redefines its colour variables under .lp-dark.
+    root.classList.toggle("lp-dark", paper === "dark");
     if (themeSetByFrame) root.dataset.theme = paper;
   }
   function setPaper(next) {
     if ((next !== "light" && next !== "dark") || next === paper) return;
     paper = next;
     applyPaper();
+    // Drawn diagrams are in the palette of the old paper. `diagrams` is first
+    // used from the message listener, which runs only after this module has
+    // finished, so the const is always initialized by then.
+    diagrams.retheme();
     // The washes are mixed from the paper, so the marks are painted again.
     if (lastRanges.length) highlight(lastRanges);
   }
@@ -103,21 +129,51 @@ import { watchPinch } from "../lib/pinch.js";
         padding: 24px 20px;
       }
     }
+    /* Documents in the house style (librepaper-house: the root carries the
+       house variables) colour themselves, and go dark through .lp-dark. The
+       rules below are for documents with styles of their own, such as a
+       Quarto page rendered by the paired app. */
     /* Light paper, the default. Its ink is set here too, so a dark reader does
        not hand the body light text on the white page. */
-    html.librepaper-preview:not(.librepaper-dark) { color-scheme: light; background-color: #fff; color: #000; }
-    html.librepaper-preview:not(.librepaper-dark).librepaper-flow body { color: #000; background: #fff; }
+    html.librepaper-preview:not(.librepaper-dark) { color-scheme: light; }
+    html.librepaper-preview:not(.librepaper-dark):not(.librepaper-house) { background-color: #fff; color: #000; }
+    /* House documents sit on the reader's editor surface when the reader sends
+       it (--lp-paper and --lp-ink are then set on the root), and on the house
+       paper otherwise. */
+    html.librepaper-preview.librepaper-house { background-color: var(--lp-paper); color: var(--lp-ink); }
+    html.librepaper-preview:not(.librepaper-dark):not(.librepaper-house).librepaper-flow body { color: #000; background: #fff; }
     /* Dark paper. Flow images stay white, so a transparent plot drawn for white
        paper remains readable, and Typst's paged SVG output is pages of paper. */
-    html.librepaper-preview.librepaper-dark { color-scheme: dark; background-color: #1c1f1e; color: #e4e7e5; }
-    html.librepaper-preview.librepaper-dark.librepaper-flow body { color: #e4e7e5; background: #1c1f1e; }
-    html.librepaper-preview.librepaper-dark.librepaper-flow img { background-color: #fff; }
+    html.librepaper-preview.librepaper-dark { color-scheme: dark; }
+    html.librepaper-preview.librepaper-dark:not(.librepaper-house) { background-color: #1c1f1e; color: #e4e7e5; }
+    html.librepaper-preview.librepaper-dark:not(.librepaper-house).librepaper-flow body { color: #e4e7e5; background: #1c1f1e; }
+    html.librepaper-preview.librepaper-dark:not(.librepaper-house).librepaper-flow img { background-color: #fff; }
     html.librepaper-preview.librepaper-dark svg.typst-doc { background-color: #fff; }
     /* Code is coloured by the document for white paper. Blocks stay light, like
        images, so their syntax colours keep their contrast. Inline code takes
        the paper's ink on a faint chip, whatever colours the document gave it. */
-    html.librepaper-preview.librepaper-dark.librepaper-flow :is(pre, div.sourceCode) { background-color: #f2f4f7; color: #1a1d21; }
-    html.librepaper-preview.librepaper-dark.librepaper-flow :not(pre) > code { background-color: rgb(255 255 255 / 0.1); color: inherit; }
+    html.librepaper-preview.librepaper-dark:not(.librepaper-house).librepaper-flow :is(pre, div.sourceCode) { background-color: #f2f4f7; color: #1a1d21; }
+    html.librepaper-preview.librepaper-dark:not(.librepaper-house).librepaper-flow :not(pre) > code { background-color: rgb(255 255 255 / 0.1); color: inherit; }
+    /* Shared Quarto results: the saved output of a collaborator's run under
+       each code cell of the draft. Output whose code changed since is faded
+       and marked on its left, so it never passes for current output. */
+    html.librepaper-preview .lp-cell-output { margin: 0.5em 0 1em; }
+    html.librepaper-preview .lp-cell-output img { max-width: 100%; height: auto; }
+    html.librepaper-preview .lp-cell-output pre,
+    html.librepaper-preview.librepaper-flow .lp-cell-output pre,
+    html.librepaper-preview .lp-cell-output pre code,
+    html.librepaper-preview.librepaper-dark.librepaper-flow .lp-cell-output pre { background: none; border: 0; box-shadow: none; border-radius: 0; padding: 0; margin: 0.25em 0; }
+    html.librepaper-preview.librepaper-dark.librepaper-flow .lp-cell-output :is(pre, pre code) { background: transparent; color: inherit; }
+    html.librepaper-preview .lp-cell-output table { border-collapse: collapse; }
+    html.librepaper-preview .lp-cell-output :is(th, td) { padding: 0.25em 0.6em; border-bottom: 1px solid rgb(127 127 127 / 0.35); }
+    html.librepaper-preview .lp-cell-output thead th { font-weight: bold; border-bottom: 1px solid rgb(127 127 127 / 0.8); }
+    html.librepaper-preview .lp-cell-output :is(figure, figcaption) { text-align: center; }
+    html.librepaper-preview .lp-cell-output figcaption { font-size: 0.85em; opacity: 0.7; }
+    html.librepaper-preview .lp-cell-output-stale { opacity: 0.5; border-left: 3px dashed currentColor; padding-left: 0.75em; }
+    html.librepaper-preview .lp-mermaid { margin: 1em 0; text-align: center; }
+    html.librepaper-preview .lp-mermaid svg { max-width: 100%; height: auto; }
+    html.librepaper-preview .lp-mermaid figcaption { font-size: 0.85em; opacity: 0.7; }
+    html.librepaper-preview .lp-results-note { font-size: 0.85em; opacity: 0.7; }
   `;
   const previewStyle = document.createElement("style");
   previewStyle.dataset.librepaperPreview = "canvas";
@@ -126,7 +182,21 @@ import { watchPinch } from "../lib/pinch.js";
   // Math arrives as TeX in tagged spans and is typeset here, with a KaTeX
   // fetched from this origin the first time a document needs one. The path is
   // written in at build time, beside the copy of KaTeX the build made.
-  const typesetMath = createMathTypesetter({ base: __KATEX__, document, window });
+  const loadKatex = createKatexLoader({ base: __KATEX__, document, window });
+  // One cache of rendered formulas, shared by the live body and by the
+  // detached pages typeset before they are morphed in.
+  const katexCache = createKatexCache();
+  const typesetMath = createMathTypesetter({ base: __KATEX__, document, window, load: loadKatex, cache: katexCache });
+  // Mermaid diagrams, drawn the same way: a cache of drawn SVG shared by the
+  // live body and the detached page, and a loader for Mermaid itself, which
+  // is fetched from this origin the first time a document has a diagram.
+  const diagrams = createDiagramRenderer({
+    document,
+    window,
+    load: createMermaidLoader({ base: __MERMAID__, document, window }),
+    cache: createDiagramCache(),
+    theme: () => (document.documentElement.classList.contains("librepaper-dark") ? "dark" : "default"),
+  });
 
   // The one mark this file draws that is not the document's: the ring around
   // whichever annotation the sidebar has singled out. Installed once, up
@@ -150,6 +220,12 @@ import { watchPinch } from "../lib/pinch.js";
        dark ground. */
     html.librepaper-dark mark[data-librepaper][data-librepaper-selected] {
       outline-color: #56b4e9;
+    }
+    /* A figure whose bytes have not reached this frame yet, as on a page kept
+       from an earlier visit: its space is held without a broken-image icon
+       until the render that brings the bytes replaces the page. */
+    img[src^="about:blank#librepaper-asset="] {
+      visibility: hidden;
     }
   `;
   document.head.appendChild(markStyle);
@@ -200,6 +276,7 @@ import { watchPinch } from "../lib/pinch.js";
         return document.head.appendChild(clone);
       });
     }
+    document.documentElement.classList.toggle("librepaper-house", wanted.some((node) => node.localName === "style" && node.textContent.includes("--lp-ink")));
     const title = parsed.head.querySelector("title");
     if (title) document.title = title.textContent || "";
     // Re-append after replacing document styles, and also on the fast path
@@ -354,13 +431,32 @@ import { watchPinch } from "../lib/pinch.js";
     return shiftAnnotationRanges(before, after, ranges);
   }
 
+  // Unwrap every highlight mark and rejoin the text nodes it split, which
+  // restores the pristine text-node structure.
+  function removeMarks() {
+    document
+      .querySelectorAll("mark[data-librepaper]")
+      .forEach((mark) => mark.replaceWith(...mark.childNodes));
+    document.body.normalize();
+  }
+
+  // What the marks were last painted for, and on which body. A repaint asked
+  // for the same ranges on the same body changes nothing, so it is skipped.
+  // `bodyGeneration` moves whenever the body is replaced, and the painted key
+  // is cleared whenever something outside painting may have removed marks.
+  let bodyGeneration = 0;
+  let paintedKey = null;
+  let paintedGeneration = -1;
+
   function highlight(ranges) {
     lastRanges = ranges;
+    // The washes are mixed from the paper, so a change of paper is a change of
+    // paint even when the ranges are the same.
+    const key = `${paper}\n${JSON.stringify(ranges)}`;
+    if (key === paintedKey && paintedGeneration === bodyGeneration) return;
+    paintedKey = null;
     quietly(() => {
-      document
-        .querySelectorAll("mark[data-librepaper]")
-        .forEach((mark) => mark.replaceWith(...mark.childNodes));
-      document.body.normalize(); // restore the pristine text-node structure
+      removeMarks();
     });
     scan();
 
@@ -388,8 +484,11 @@ import { watchPinch } from "../lib/pinch.js";
     }
 
     quietly(() => {
+      // One live Range instead of one per piece, because the browser updates
+      // every live Range on each DOM change, and the pieces are wrapped one
+      // after another.
+      const range = document.createRange();
       for (const { piece, covering } of plan.reverse()) {
-        const range = document.createRange();
         range.setStart(piece.node, piece.from);
         range.setEnd(piece.node, piece.to);
         const mark = document.createElement("mark");
@@ -417,6 +516,8 @@ import { watchPinch } from "../lib/pinch.js";
       }
     });
     quietly(applySelected);
+    paintedKey = key;
+    paintedGeneration = bodyGeneration;
     // surroundContents splits the text nodes it wraps, so the table built above
     // no longer describes the document. A selection made after a highlight
     // would land in a node the table has never seen, and report offsets against
@@ -556,10 +657,68 @@ import { watchPinch } from "../lib/pinch.js";
   }
 
 
+  // The app hands over the bundled fonts as bytes, since the document cannot
+  // fetch them from its own origin. Each face is registered once.
+  const addedFaces = new Set();
+  function addFonts(faces) {
+    if (!document.fonts || typeof FontFace === "undefined" || !Array.isArray(faces)) return;
+    for (const face of faces) {
+      if (typeof face?.family !== "string" || !(face.data instanceof ArrayBuffer)) continue;
+      const { style, weight, unicodeRange } = face.descriptors || {};
+      const key = [face.family, style, weight, unicodeRange].join("\n");
+      if (addedFaces.has(key)) continue;
+      try {
+        document.fonts.add(new FontFace(face.family, face.data, { style, weight, unicodeRange }));
+        addedFaces.add(key);
+      } catch {
+        // A face the browser refuses is left out; the others still load.
+      }
+    }
+  }
+
+  // The figures the reader sends for a preview, by digest, each as a blob URL
+  // made here. A page refers to a figure by `about:blank#librepaper-asset=<sha>`
+  // (see figures.js, which owns that format), and the preview substitutes the
+  // blob URL before the page is parsed, so the bytes cross the channel once
+  // rather than inside every keystroke's HTML.
+  const frameFigures = new Map();
+  // The types a figure may be given. The reader sends the type it worked out
+  // from the file name, and this end does not trust it: an SVG or HTML blob
+  // would run as this origin. figures.js has the other copy of this list.
+  const FRAME_FIGURE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"]);
+  const FIGURE_REFERENCE = /about:blank#librepaper-asset=([0-9A-Za-z%]+)/g;
+  function addFigures(items) {
+    if (!Array.isArray(items)) return;
+    for (const item of items) {
+      if (typeof item?.sha !== "string" || !(item.bytes instanceof Uint8Array) || typeof item.type !== "string") continue;
+      if (frameFigures.has(item.sha)) continue;
+      const type = FRAME_FIGURE_TYPES.has(item.type) ? item.type : "application/octet-stream";
+      frameFigures.set(item.sha, URL.createObjectURL(new Blob([item.bytes], { type })));
+    }
+  }
+  function withFigureUrls(html) {
+    return html.replace(FIGURE_REFERENCE, (whole, sha) => {
+      const url = frameFigures.get(sha);
+      return url ? `${url}#librepaper-asset=${sha}` : whole;
+    });
+  }
+
+  // Give each figure in a parsed page a decoding hint, so decoding happens off
+  // the main thread. Done on the parsed page, so every keystroke yields
+  // identical attributes and the morph sees no change.
+  const FIGURE_SOURCE = /#librepaper-asset=[0-9A-Za-z%]+$/;
+  function hintFigures(root) {
+    for (const img of root.querySelectorAll("img")) {
+      if (!FIGURE_SOURCE.test(img.getAttribute("src") || "")) continue;
+      if (!img.hasAttribute("decoding")) img.setAttribute("decoding", "async");
+    }
+  }
+
   addEventListener("message", (event) => {
     if (!READER || event.source !== parent || event.origin !== READER) return;
     const message = event.data;
     if (!message || message.librepaper !== true) return;
+    if (message.type === "figures") addFigures(message.items);
     // The frame can finish loading and publish before Svelte has bound the
     // iframe element used to authenticate its message source. The reader
     // acknowledges its own load event so that readiness is never a one-shot
@@ -567,7 +726,11 @@ import { watchPinch } from "../lib/pinch.js";
     if (message.type === "reader-ready") publish(true);
     // The reader's theme. `paper` is what the preview is drawn on, which can
     // differ from the mode when the reader has set it separately.
-    if (message.type === "theme") setPaper(message.paper ?? message.mode);
+    if (message.type === "theme") {
+      setPaper(message.paper ?? message.mode);
+      setSurface(message.surface);
+    }
+    if (message.type === "fonts") addFonts(message.faces);
     if (message.type === "highlight") highlight(message.ranges || []);
     // The editor's live preview. The document being previewed is not yet
     // published, so it arrives as HTML over this channel rather than as a
@@ -588,19 +751,60 @@ import { watchPinch } from "../lib/pinch.js";
       // text exactly as it does for a document that builds itself in
       // JavaScript -- one code path for "the document changed", not two.
       if (message.pdf) return;
-      const parsed = new DOMParser().parseFromString(String(message.html || ""), "text/html");
+      // The body is about to be replaced or morphed, so marks painted on the
+      // old one no longer count as painted.
+      bodyGeneration += 1;
+      const totalStart = perfStart();
+      const parseStart = perfStart();
+      const parsed = new DOMParser().parseFromString(withFigureUrls(String(message.html || "")), "text/html");
+      perfEnd("lp:preview:parse", parseStart);
       // The frame this arrives in is an empty shell -- nothing rendered is
       // stored any more, so there is no page whose styles the body could
       // inherit. The page's own head comes with it, and is installed once:
       // it is the same template on every keystroke, so it is replaced only
       // when it actually differs.
       adoptStyles(parsed, message.presentation);
+      hintFigures(parsed.body);
+      document.documentElement.classList.add("lp-live-preview");
+      // Every format is morphed in place, so unchanged paragraphs, images and
+      // equations are never recreated. Math is typeset on the parsed page
+      // first, so the morph compares typeset with typeset and an unchanged
+      // formula keeps its nodes. Marks go first: they split text nodes, and
+      // the morph compares the page with the unmarked source.
+      // KaTeX puts itself on the window when its script loads.
+      const katex = /** @type {any} */ (window).katex;
+      const katexReady = !!katex;
+      // The one case that replaces rather than morphs: math waiting for a
+      // KaTeX that is not loaded yet. A page without math morphs always.
+      const awaitingKatex = !katexReady
+        && !!parsed.body.querySelector("span[data-math-style], span.math:not([data-math-style])");
+      if (katexReady) {
+        const typesetStart = perfStart();
+        typesetDetached(katex, parsed.body, parsed, katexCache);
+        perfEnd("lp:preview:typeset", typesetStart);
+      }
+      // Diagrams already drawn are swapped in on the parsed page too, so the
+      // morph compares drawn with drawn and an unchanged diagram keeps its nodes.
+      diagrams.applyCached(parsed.body);
       quietly(() => {
-        document.body.innerHTML = parsed.body.innerHTML;
+        const swapStart = perfStart();
+        removeMarks();
+        if (awaitingKatex) {
+          // The first document with math: the parsed nodes move in as they
+          // are, without a second parse, and typesetMath below starts the
+          // load. Later keystrokes morph.
+          document.body.replaceChildren(...document.adoptNode(parsed.body).childNodes);
+        } else {
+          morphChildren(document.body, parsed.body);
+        }
+        perfEnd("lp:preview:swap", swapStart);
         // In the same breath when KaTeX is already here, so the text published
         // below is the typeset text. The first time it is not, and the
-        // rendering lands as a mutation the observer republishes.
+        // rendering lands as a mutation the observer republishes. When the
+        // page was typeset above this finds nothing to do, and covers any
+        // formula that was left over.
         typesetMath();
+        diagrams.render();
       });
       // Replacing the body throws away every mark on it, and the ranges to
       // paint again only arrive after the sidebar has seen the new text and
@@ -615,7 +819,10 @@ import { watchPinch } from "../lib/pinch.js";
       if (lastRanges.length) highlight(shiftRanges(lastRanges));
       // Directly, not through the observer: the observer waits a quarter of a
       // second before republishing, and a preview should keep up with typing.
+      const publishStart = perfStart();
       publish(true);
+      perfEnd("lp:preview:publish", publishStart);
+      perfEnd("lp:preview:total", totalStart);
     }
 
     // Show the reader where a place in the text is. The offset is into the
@@ -735,24 +942,52 @@ import { watchPinch } from "../lib/pinch.js";
   // A double-click in the document, reported as an offset into the published text, so
   // the editor can put its caret in the same place. Only the position is sent;
   // a double-click that lands on nothing textual says nothing.
+  // The offset into the published text of the point under the pointer, or null
+  // when the point is not on text this frame published.
+  function textOffsetAt(x, y) {
+    if (!table || !table.nodes.length) return null;
+    const caret = document.caretPositionFromPoint ? document.caretPositionFromPoint(x, y) : null;
+    const node = caret?.offsetNode;
+    if (!node || node.nodeType !== Node.TEXT_NODE) return null;
+    const index = table.index.get(node);
+    if (index === undefined) return null;
+    return table.starts[index] + (caret.offset || 0);
+  }
+
   document.addEventListener("dblclick", (event) => {
     const pdf = globalThis.librepaperViewer?.pointFromClient?.(event.clientX, event.clientY) || null;
-    if (!table.nodes.length) {
+    const offset = textOffsetAt(event.clientX, event.clientY);
+    if (offset === null) {
       if (pdf) post({ type: "pdf-caret", pdf });
       return;
     }
-    const caret = document.caretPositionFromPoint
-      ? document.caretPositionFromPoint(event.clientX, event.clientY)
-      : null;
-    const node = caret?.offsetNode;
-    if (!node || node.nodeType !== Node.TEXT_NODE) {
-      if (pdf) post({ type: "pdf-caret", pdf });
-      return;
-    }
-    const index = table.index.get(node);
-    if (index === undefined) return;
-    const offset = table.starts[index] + (caret.offset || 0);
     post({ type: "caret", offset, pdf });
+  });
+
+  // A plain click, reported so the source caret can follow it without the
+  // keyboard leaving the document. Only a click that did not drag, with the
+  // primary button and no modifier, counts; a double click reports through
+  // dblclick instead; and a click on a link, a control or a comment mark is
+  // left to what it already does.
+  const INTERACTIVE = "a[href],area[href],button,input,select,textarea,label,summary,option,[contenteditable],"
+    + "[role=button],[role=link],[role=checkbox],[role=menuitem],[role=tab],[role=switch],mark[data-librepaper]";
+  const DRAG_TOLERANCE = 4;
+  let pressedAt = null;
+  document.addEventListener("pointerdown", (event) => {
+    pressedAt = event.button === 0 ? { x: event.clientX, y: event.clientY } : null;
+  }, { capture: true });
+  document.addEventListener("click", (event) => {
+    const start = pressedAt;
+    pressedAt = null;
+    if (!start || event.button !== 0 || event.detail !== 1 || event.defaultPrevented) return;
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > DRAG_TOLERANCE) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target || target.closest(INTERACTIVE)) return;
+    const pdf = globalThis.librepaperViewer?.pointFromClient?.(event.clientX, event.clientY) || null;
+    const offset = textOffsetAt(event.clientX, event.clientY);
+    if (offset === null && !pdf) return;
+    post({ type: "click", offset, pdf });
   });
 
   // The keys that act on a selection have to be heard here: the selection is
@@ -922,6 +1157,34 @@ import { watchPinch } from "../lib/pinch.js";
     pending = setTimeout(() => publish(true), 250);
   };
 
+  // A PDF page that is built lazily swaps its hidden text for the real text
+  // layer as it scrolls near. The text is the same, so the reader has nothing
+  // new to hear: a full republish on every scroll would be a `ready` and a
+  // repaint each time. Only this frame's own state is refreshed: the node table
+  // is rescanned and the remembered highlights are painted again, since the
+  // swap dropped any that sat on that page.
+  let lazyPending = null;
+  const lazyBuilt = () => {
+    clearTimeout(lazyPending);
+    lazyPending = setTimeout(() => {
+      scan();
+      // The swap dropped marks on the page, so the painted key no longer holds.
+      paintedKey = null;
+      if (lastRanges && lastRanges.length) highlight(lastRanges);
+    }, 250);
+  };
+  const withinPage = (node) => {
+    const element = node instanceof Element ? node : node?.parentElement;
+    return Boolean(element?.closest?.(".page[data-page]"));
+  };
+  const onMutations = (records) => {
+    // Any change the observer sees was not made by painting, so it may have
+    // unwrapped marks: the next highlight must paint again.
+    paintedKey = null;
+    if (records.every((record) => withinPage(record.target))) lazyBuilt();
+    else republish();
+  };
+
   function watch() {
     publish();
     // The first bundle runs in the child frame's load handler. The
@@ -929,7 +1192,7 @@ import { watchPinch } from "../lib/pinch.js";
     // frame binding, can settle just afterward. Repeat once on the next task;
     // later bundles remain mutation-driven.
     setTimeout(() => publish(true), 0);
-    observer = new MutationObserver(republish);
+    observer = new MutationObserver(onMutations);
     observer.observe(document.body, {
       childList: true,
       characterData: true,
