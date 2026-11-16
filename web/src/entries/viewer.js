@@ -299,6 +299,10 @@ function settle(anchor) {
   }
 }
 
+/// Below this width the frame has no room to lay a page out in, so nothing is
+/// rasterised into it.
+const MIN_DRAW_WIDTH = 50;
+
 /// Draw `bytes`, which may be the ones already on screen.
 ///
 /// One path for a new preview and for a redraw, so the two cannot drift about
@@ -317,6 +321,15 @@ async function paint(bytes, frameGeneration = 0) {
     ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).slice()
     : new Uint8Array(bytes).slice();
   drawn = keep;
+  // WebKit reports no width while the window is being reshaped, and nothing
+  // can be laid out in that. The bytes are kept and the draw waits for the
+  // resize that brings a width. lastWidth is cleared so that resize is never
+  // taken for a width already drawn.
+  if (document.documentElement.clientWidth < MIN_DRAW_WIDTH) {
+    lastWidth = 0;
+    lastHeight = 0;
+    return;
+  }
   painting = true;
   lastWidth = document.documentElement.clientWidth;
   lastHeight = document.documentElement.clientHeight;
@@ -387,7 +400,7 @@ addEventListener("resize", () => {
   resizeTimer = setTimeout(() => {
     const width = document.documentElement.clientWidth;
     const height = document.documentElement.clientHeight;
-    if (!width || (width === lastWidth && height === lastHeight)) return;
+    if (width < MIN_DRAW_WIDTH || (width === lastWidth && height === lastHeight)) return;
     lastHeight = height;
     lastWidth = width;
     redraw();

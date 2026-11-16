@@ -165,6 +165,9 @@ export async function render(bytes, root, options = {}) {
   let handedOn = false;
   const entries = [];
   const stale = () => mine !== generation;
+  // Declared out here so that a render which is superseded can release the
+  // canvases it built before it gave up.
+  let staging = null;
   try {
     document_ = await loading.promise;
     if (stale()) return null;
@@ -173,7 +176,7 @@ export async function render(bytes, root, options = {}) {
     // by page into the live body would have the agent's observer republish a
     // half-drawn document once per page, and the sidebar re-anchor every
     // comment against text that is about to grow.
-    const staging = document.createElement("div");
+    staging = document.createElement("div");
     staging.className = spread ? "pages spread" : "pages";
     const starts = [];
     let offset = 0;
@@ -246,7 +249,7 @@ export async function render(bytes, root, options = {}) {
       offset += joined.length;
 
       entries.push({ number, page, frame, viewport, content: contents[number - 1], built: false,
-        building: false, wanted: false, task: null, height: viewport.height });
+        building: false, wanted: false, task: null, failures: 0, height: viewport.height });
     }
 
     // Only the pages that will be in view after the swap are built before
@@ -274,6 +277,7 @@ export async function render(bytes, root, options = {}) {
     const anchor = beforeswap?.();
     // The previous document's lazy work stops here, before its pages go.
     stopLazy();
+    releaseCanvases(root);
     root.replaceChildren(staging);
     pageStarts = starts;
     afterswap?.(anchor);
@@ -284,6 +288,7 @@ export async function render(bytes, root, options = {}) {
   } finally {
     if (!handedOn) {
       for (const entry of entries) entry.task?.cancel();
+      if (staging) releaseCanvases(staging);
       await closeDocument(document_, loading);
     }
   }
@@ -295,6 +300,17 @@ let lazy = null;
 function stopLazy() {
   lazy?.stop();
   lazy = null;
+}
+
+/// Give back the canvas memory of a page set that is being dropped. WebKit
+/// counts canvas memory against one total cap, and a canvas that is only
+/// released by garbage collection can still hold that memory when the next
+/// page set is drawn, which is what leaves the new pages blank.
+function releaseCanvases(root) {
+  for (const canvas of root.querySelectorAll("canvas")) {
+    canvas.width = 0;
+    canvas.height = 0;
+  }
 }
 
 /// Build the remaining pages as they come within about a viewport of the
@@ -371,6 +387,10 @@ function startLazy(entries, ctx) {
   return first;
 }
 
+/// How many times a page whose canvas could not be drawn is tried again before
+/// it is given up as a blank page.
+const MAX_BUILD_FAILURES = 3;
+
 /// Make one page complete: its canvas drawn, its selectable text spans in
 /// place of the hidden text node, and its links. The page is inserted into
 /// the frame only once drawn, so a page is never seen half-built.
@@ -389,18 +409,44 @@ async function buildPage(entry, ctx) {
     // cap bounds the canvas memory of a large page on a dense screen.
     canvas.style.width = `${Math.floor(viewport.width)}px`;
     canvas.style.height = `${Math.floor(viewport.height)}px`;
-    try {
-      entry.task = page.render({
-        canvas,
-        canvasContext: canvas.getContext("2d"),
-        viewport,
-        transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
-      });
-      await entry.task.promise;
-    } catch {
-      /* cancelled, or a page that cannot be drawn: blank, but still a page */
+    // WebKit refuses a 2D context, or fails the draw, once the canvas memory of
+    // the window runs out. Such a page is not kept blank straight away: it is
+    // left unbuilt so a later pass can draw it, and only after a few failed
+    // attempts is it given up as a blank page.
+    const context = canvas.getContext("2d");
+    let outcome = context ? null : new Error("no 2D canvas context");
+    if (context) {
+      try {
+        entry.task = page.render({
+          canvas,
+          canvasContext: context,
+          viewport,
+          transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
+        });
+        await entry.task.promise;
+      } catch (error) {
+        outcome = error;
+      }
     }
     entry.task = null;
+    // A cancelled draw is a superseded page: nothing was drawn and nothing is
+    // kept, and it is not a failure to count.
+    if (outcome?.name === "RenderingCancelledException") {
+      canvas.width = 0;
+      canvas.height = 0;
+      return;
+    }
+    if (outcome) {
+      if (stale()) return;
+      entry.failures += 1;
+      const giveUp = entry.failures >= MAX_BUILD_FAILURES;
+      console.warn(`LibrePaper: page ${number} could not be drawn (attempt ${entry.failures}${giveUp ? ", giving up" : ""})`, outcome);
+      if (!giveUp) {
+        canvas.width = 0;
+        canvas.height = 0;
+        return;
+      }
+    }
     if (stale()) return;
     frame.prepend(canvas);
 
