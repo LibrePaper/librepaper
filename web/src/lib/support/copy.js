@@ -34,12 +34,21 @@ export async function copyReport({ includeBuildLog = false, fallbackArea = null 
     try {
       await navigator.clipboard.writeText(report);
     } catch (error) {
-      // The selection copy needs the text in the field, so put it there first.
-      if (fallbackArea) {
-        fallbackArea.value = report;
-        fallbackArea.select();
+      // The selection copy needs the text in a field, so put it there first.
+      // The crash notices have no field of their own; a hidden one stands in,
+      // or the copy would "succeed" with nothing selected.
+      const area = fallbackArea || document.body.appendChild(document.createElement("textarea"));
+      if (!fallbackArea) {
+        area.setAttribute("readonly", "");
+        area.style.cssText = "position:fixed;top:0;left:0;opacity:0;";
       }
-      if (!document.execCommand("copy")) throw error;
+      try {
+        area.value = report;
+        area.select();
+        if (!document.execCommand("copy")) throw error;
+      } finally {
+        if (!fallbackArea) area.remove();
+      }
     }
     return report;
   }
