@@ -12,9 +12,10 @@
 // an error it did not understand can reload forever. Both say what happened
 // and leave the choice.
 //
-// Errors are also noted in a small in-page buffer (see support/log.js). It
-// lives in memory only and nothing leaves the page on its own: the user can
-// copy it out from settings, and check it first.
+// Errors are also noted in a small in-page buffer (see support/log.js). It is
+// kept in this browser tab's session storage, so it survives a reload of the
+// tab, and nothing leaves the page on its own: the user can copy it out from
+// settings, and check it first.
 
 import { record } from "./support/log.js";
 import { scrubMessage } from "./support/redact.js";
