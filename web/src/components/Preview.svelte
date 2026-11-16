@@ -48,8 +48,14 @@
     window.addEventListener("message", receiver.receive);
     const observer = new ResizeObserver(() => {
       if (away || !viewport) return;
-      heldWidth = viewport.clientWidth;
-      heldHeight = viewport.clientHeight;
+      // A frame reshaped to nothing reports zero; holding that would make the
+      // next restore put the frame back at no size.
+      const width = viewport.clientWidth;
+      const height = viewport.clientHeight;
+      if (width > 0 && height > 0) {
+        heldWidth = width;
+        heldHeight = height;
+      }
     });
     observer.observe(viewport);
     const stopMode = onMode(() => sendTheme());

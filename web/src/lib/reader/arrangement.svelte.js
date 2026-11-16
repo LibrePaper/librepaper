@@ -168,6 +168,16 @@ export function createArrangement({
     return loadHistory();
   }
 
+  // The pane the user is working in. Only a tight split shows one pane at a
+  // time, and it shows this one, so this is what keeps the source on screen
+  // when a panel opens beside it. It sets nothing else: the layout and the
+  // phone's view are left as they are. The source cannot be preferred while
+  // it is not open.
+  function focusPane(view) {
+    if (view === "source" && !sourceOpen) return;
+    state.preferredPane = view;
+  }
+
   return {
     state,
     get compact() { return compact; },
@@ -182,5 +192,6 @@ export function createArrangement({
     selectPanel,
     openFilesPanel,
     showPanel,
+    focusPane,
   };
 }

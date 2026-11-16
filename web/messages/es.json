@@ -2130,6 +2130,7 @@
   "outline_filter_open_todos": "TODO abiertos",
   "outline_filter_tag": "Etiqueta: {tag}",
   "outline_no_headings": "No hay encabezados en este archivo.",
+  "panelboundary_failed": "Esta parte de la página dejó de funcionar. El resto de LibrePaper sigue funcionando.",
   "panels_git": "Git",
   "panels_shared": "Compartidos conmigo",
   "panels_trash": "Papelera",
