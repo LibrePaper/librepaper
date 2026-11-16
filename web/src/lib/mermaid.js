@@ -146,6 +146,9 @@ export function createDiagramRenderer({ document, window, load, cache, theme }) 
     while (replaced) {
       replaced = false;
       for (const pre of findDiagrams(document.body)) {
+        // The paper changed: this pass's palette is stale, and retheme() has
+        // queued a pass in the new one.
+        if (theme() !== wanted) return;
         const source = diagramSource(pre);
         const key = keyFor(source, wanted);
         const cached = cache.get(key);
@@ -167,9 +170,9 @@ export function createDiagramRenderer({ document, window, load, cache, theme }) 
         try {
           const { svg } = await mermaid.render(id, source);
           cache.set(key, svg);
-          // The same <pre> may have been morphed to a newer source while this
-          // was drawing; the old drawing must not replace the newer listing.
-          if (pre.isConnected && diagramSource(pre) === source) {
+          // The same <pre> may have been morphed to a newer source, or the paper
+          // changed, while this was drawing; a stale drawing is not swapped in.
+          if (pre.isConnected && diagramSource(pre) === source && theme() === wanted) {
             pre.replaceWith(holder(svg, source, pre, wanted));
             replaced = true;
           }

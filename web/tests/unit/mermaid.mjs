@@ -380,4 +380,46 @@ const settle = () => new Promise((done) => setTimeout(done, 0));
   assert.deepEqual(init.map((options) => options.theme), ["default", "dark"]);
 }
 
+// A paper change while a drawing is pending: the old-palette drawing is not
+// swapped in, and the listing is drawn in the new palette.
+{
+  const doc = fakeDocument();
+  const pre = element("pre", { children: [element("code", { cls: "language-mermaid", text: "graph TD\nA-->B" })] });
+  doc.body.appendChild(pre);
+  const init = [];
+  const pending = [];
+  const mermaid = {
+    initialize: (options) => init.push(options),
+    parse: async () => true,
+    render: () => {
+      const palette = init.at(-1).theme;
+      return new Promise((resolve) => pending.push(() => resolve({ svg: `<svg>${palette}</svg>` })));
+    },
+  };
+  let theme = "default";
+  const renderer = createDiagramRenderer({
+    document: doc,
+    window: { mermaid },
+    load: async () => mermaid,
+    cache: createDiagramCache(),
+    theme: () => theme,
+  });
+  renderer.render();
+  await settle();
+  assert.equal(pending.length, 1, "the first drawing is pending");
+
+  theme = "dark";
+  renderer.retheme();
+  pending[0]();
+  await settle();
+  assert.equal(doc.body.children[0], pre, "the old-palette drawing was not swapped in");
+  assert.equal(pending.length, 2, "a drawing in the new palette started");
+  pending[1]();
+  await settle();
+  const [figure] = doc.body.children;
+  assert.equal(figure.localName, "figure");
+  assert.equal(figure.getAttribute("data-lp-mermaid-theme"), "dark");
+  assert.equal(figure.innerHTML, "<svg>dark</svg>");
+}
+
 console.log("mermaid: loader, diagram finding, captions, cache, stale renders and retheme passed");
