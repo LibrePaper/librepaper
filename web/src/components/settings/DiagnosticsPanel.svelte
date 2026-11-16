@@ -2,8 +2,9 @@
   // The diagnostics report: what the user hands over when something breaks.
   // The text is built from fields the application chose, shown here in full
   // before it is copied, downloaded or pasted into an issue.
-  import { collectReport, hasBuildLog } from "../../lib/support/report.js";
-  import { desktop, desktopReport, shellAction } from "../../lib/desktop/client.js";
+  import { hasBuildLog } from "../../lib/support/report.js";
+  import { buildReport, copyReport } from "../../lib/support/copy.js";
+  import { desktop, shellAction } from "../../lib/desktop/client.js";
   import { m } from "../../lib/paraglide/messages.js";
 
   let { compact = false } = $props();
@@ -19,38 +20,17 @@
   const inDesktop = Boolean(desktop());
 
   async function build() {
-    let desktopText = "";
-    if (desktop()) {
-      try { desktopText = await desktopReport(); }
-      catch (error) { desktopText = `Desktop app report unavailable: ${error?.message || "unknown error"}`; }
-    }
-    text = await collectReport({ includeBuildLog, desktopText });
+    text = await buildReport({ includeBuildLog });
     return text;
   }
 
   function say(message, bad = false) { status = message; failed = bad; }
 
-  // The clipboard is written in the same task as the click. Safari and
-  // WebKitGTK refuse a write that waits for the report first, but they accept
-  // a ClipboardItem whose content is still a promise.
   async function copy() {
-    const building = build();
-    try {
-      if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) throw new Error("no ClipboardItem");
-      const blob = building.then((report) => new Blob([report], { type: "text/plain" }));
-      await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
-    } catch {
-      const report = await building;
-      try {
-        await navigator.clipboard.writeText(report);
-      } catch (error) {
-        area?.select();
-        if (!document.execCommand("copy")) throw error;
-      }
-    }
+    text = await copyReport({ includeBuildLog, fallbackArea: area });
   }
 
-  async function copyReport() {
+  async function copyButton() {
     try { await copy(); say(m.diagnosticspanel_copied()); }
     catch (error) { say(error?.message || m.diagnosticspanel_copy_failed(), true); }
   }
@@ -95,7 +75,7 @@
 
 <div class="diagnostics" class:compact>
   <div class="diagnostics-buttons">
-    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void copyReport()}>{m.diagnosticspanel_copy()}</button>
+    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void copyButton()}>{m.diagnosticspanel_copy()}</button>
     <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void download()}>{m.common_download()}</button>
     <a href={ISSUES_URL} target="_blank" rel="noreferrer" class="btn btn-sm lp-control-tonal-brand" onclick={() => void reportIssue()}>{m.diagnosticspanel_report_issue()}</a>
     {#if inDesktop}<button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void openLogs()}>{m.diagnosticspanel_open_logs()}</button>{/if}

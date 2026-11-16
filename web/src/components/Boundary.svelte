@@ -12,9 +12,21 @@
   // from matching.
   import { report } from "../lib/crash.js";
   import DiagnosticsPanel from "./settings/DiagnosticsPanel.svelte";
+  import { copyReport } from "../lib/support/copy.js";
   import { m } from "../lib/paraglide/messages.js";
 
   let showDiagnostics = $state(false);
+  // Outcome of the last "Copy diagnostics" press, shown under the buttons.
+  let copyStatus = $state("");
+  let copyFailed = $state(false);
+
+  // No await before copyReport: the clipboard write has to start in the click.
+  function copyDiagnostics() {
+    copyReport().then(
+      () => { copyStatus = m.diagnosticspanel_copied(); copyFailed = false; },
+      (error) => { copyStatus = error?.message || m.diagnosticspanel_copy_failed(); copyFailed = true; },
+    );
+  }
 
   // `component` rather than a snippet, so an entry can keep saying
   // `mount(Boundary, { props: { component: Reader } })` and nothing else
@@ -37,9 +49,11 @@
              failed to load is fetched again, and a bad bit of state is built
              from scratch. Reloading is the way out when it does not. -->
         <button type="button" onclick={reset}>{m.common_try_again()}</button>
+        <button type="button" onclick={copyDiagnostics}>{m.diagnosticspanel_copy()}</button>
         <button type="button" onclick={() => location.reload()}>{m.boundary_reload()}</button>
         <button type="button" aria-expanded={showDiagnostics} onclick={() => (showDiagnostics = !showDiagnostics)}>{m.common_diagnostics()}</button>
       </div>
+      <p class="crash-status" class:crash-failed={copyFailed} role="status">{copyStatus}</p>
       {#if showDiagnostics}<DiagnosticsPanel compact />{/if}
     </div>
   {/snippet}
@@ -66,7 +80,9 @@
     opacity: 0.7;
     overflow-wrap: anywhere;
   }
-  .crash-actions { display: flex; gap: 0.5rem; }
+  .crash-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .crash-status:empty { margin: 0; }
+  .crash-failed { font-weight: 600; }
   .crash-actions button {
     padding: 0.4rem 0.9rem;
     border: 1px solid currentcolor;
