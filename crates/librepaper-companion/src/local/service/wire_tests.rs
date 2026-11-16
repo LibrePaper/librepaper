@@ -32,9 +32,11 @@ const RENDERER_REQUESTS: &[&str] = &[
 ];
 /// Replies the current code produces. Blessed with `WIRE_BLESS=1`.
 const RESPONSES: &[&str] = &[
+    "routes.json",
     "health.get.response.json",
     "capabilities.get.response.full.json",
     "renderers.put.response.json",
+    "jobs.post.request.decoded.json",
     "jobs.post.response.json",
     "jobs.cancel.post.response.json",
     "jobs.get.response.queued.json",
@@ -205,7 +207,82 @@ async fn current_bodies(inner: &Arc<Inner>) -> Vec<(String, Value)> {
         let value = serde_json::to_value(sample_status(variant)).expect("encode a status");
         bodies.push((format!("jobs.get.response.{variant}.json"), value));
     }
+
+    // What `JobRequest` keeps of a full request. A field added to the type shows
+    // up here as an additive change, even when it is `#[serde(default)]` and
+    // so absent from the hand-written request fixture.
+    let decoded = JobRequest::decode(job.clone()).expect("the full request decodes");
+    bodies.push((
+        "jobs.post.request.decoded.json".into(),
+        serde_json::to_value(&decoded).expect("encode a job request"),
+    ));
+
+    bodies.push(("routes.json".into(), dispatched_routes()));
     bodies
+}
+
+/// Every route the service dispatches, read from the match arms of `mod.rs`
+/// (`async fn dispatch`), as `"<METHOD> <path>"` keys whose values are the
+/// string `"route"`. A dynamic segment is `{}` and a catch-all tail is `{..}`.
+/// A new route must raise `wire::MINOR` and a removed one must raise
+/// `wire::MAJOR` (SPEC-wire.md 9); this fixture makes either change visible.
+fn dispatched_routes() -> Value {
+    const SOURCE: &str = include_str!("mod.rs");
+    const MARKER: &str = "] if *method == Method::";
+    let mut routes = serde_json::Map::new();
+    for line in SOURCE.lines() {
+        let line = line.trim();
+        if !line.starts_with('[') || !line.contains(MARKER) {
+            continue;
+        }
+        let end = line.find(MARKER).expect("the marker was just found");
+        let segments: Vec<String> = line[1..end]
+            .split(',')
+            .map(|segment| {
+                let segment = segment.trim();
+                if let Some(literal) = segment
+                    .strip_prefix('"')
+                    .and_then(|rest| rest.strip_suffix('"'))
+                {
+                    literal.to_string()
+                } else if segment.contains("..") {
+                    "{..}".to_string()
+                } else if !segment.is_empty()
+                    && segment.chars().all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    "{}".to_string()
+                } else {
+                    panic!("cannot parse the route segment `{segment}` in: {line}")
+                }
+            })
+            .collect();
+        let method: String = line[end + MARKER.len()..]
+            .chars()
+            .take_while(char::is_ascii_alphabetic)
+            .collect();
+        if method.is_empty() {
+            panic!("cannot find the method of the route in: {line}");
+        }
+        let key = format!("{method} {}", segments.join("/"));
+        routes.insert(key, Value::String("route".into()));
+    }
+    Value::Object(routes)
+}
+
+#[test]
+fn dispatched_routes_sees_the_dispatcher() {
+    let Value::Object(routes) = dispatched_routes() else {
+        panic!("the routes are an object");
+    };
+    for key in [
+        "GET health",
+        "POST jobs",
+        "POST run-directory/has",
+        "GET jobs/{}/files/{..}",
+    ] {
+        assert!(routes.contains_key(key), "no route {key}");
+    }
+    assert!(routes.len() > 30, "only {} routes", routes.len());
 }
 
 /// A `JobStatus` in the state `variant` names, with the fields that state sets.
