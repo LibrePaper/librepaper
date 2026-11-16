@@ -9,9 +9,22 @@
   // left for the reader to retry, so a part that throws on every render does
   // not loop.
   import { report } from "../lib/crash.js";
+  import { copyReport } from "../lib/support/copy.js";
   import { m } from "../lib/paraglide/messages.js";
 
   let { children, name = "this part" } = $props();
+
+  // Outcome of the last "Copy diagnostics" press, shown under the buttons.
+  let copyStatus = $state("");
+  let copyFailed = $state(false);
+
+  // No await before copyReport: the clipboard write has to start in the click.
+  function copyDiagnostics() {
+    copyReport().then(
+      () => { copyStatus = m.diagnosticspanel_copied(); copyFailed = false; },
+      (error) => { copyStatus = error?.message || m.diagnosticspanel_copy_failed(); copyFailed = true; },
+    );
+  }
 
   const RETRY_DELAY = 1000;
   const RETRY_WINDOW = 10000;
@@ -41,7 +54,11 @@
     <div class="panel-failed" role="alert" use:autoRetry={reset}>
       <p>{m.panelboundary_failed()}</p>
       {#if messageOf(error)}<p class="panel-failed-detail">{messageOf(error)}</p>{/if}
-      <button type="button" onclick={reset}>{m.common_try_again()}</button>
+      <div class="panel-failed-actions">
+        <button type="button" onclick={reset}>{m.common_try_again()}</button>
+        <button type="button" onclick={copyDiagnostics}>{m.diagnosticspanel_copy()}</button>
+      </div>
+      <p class="panel-failed-status" class:panel-failed-error={copyFailed} role="status">{copyStatus}</p>
     </div>
   {/snippet}
 </svelte:boundary>
@@ -55,6 +72,10 @@
     line-height: 1.4;
   }
   .panel-failed p { margin: 0 0 0.5rem; }
+  .panel-failed-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .panel-failed-status { font-size: 0.75rem; }
+  .panel-failed-status:empty { margin: 0; }
+  .panel-failed-error { font-weight: 600; }
   .panel-failed-detail {
     font-family: ui-monospace, monospace;
     font-size: 0.75rem;
