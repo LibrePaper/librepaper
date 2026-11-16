@@ -44,6 +44,11 @@ export function findDiagrams(root) {
   return [...found];
 }
 
+/** Whether `pre` is still a diagram block: `pre.mermaid`, or a `<pre>` around `code.language-mermaid`. */
+function isDiagram(pre) {
+  return (pre.className || "").split(/\s+/).includes("mermaid") || Boolean(pre.querySelector("code.language-mermaid"));
+}
+
 /** The diagram's source: the code listing inside the `<pre>`, trailing space trimmed. */
 export function diagramSource(pre) {
   const code = pre.querySelector("code.language-mermaid");
@@ -170,9 +175,10 @@ export function createDiagramRenderer({ document, window, load, cache, theme }) 
         try {
           const { svg } = await mermaid.render(id, source);
           cache.set(key, svg);
-          // The same <pre> may have been morphed to a newer source, or the paper
-          // changed, while this was drawing; a stale drawing is not swapped in.
-          if (pre.isConnected && diagramSource(pre) === source && theme() === wanted) {
+          // The same <pre> may have been morphed to a newer source or another
+          // language, or the paper changed, while this was drawing; a stale
+          // drawing is not swapped in.
+          if (pre.isConnected && isDiagram(pre) && diagramSource(pre) === source && theme() === wanted) {
             pre.replaceWith(holder(svg, source, pre, wanted));
             replaced = true;
           }

@@ -422,4 +422,33 @@ const settle = () => new Promise((done) => setTimeout(done, 0));
   assert.equal(figure.innerHTML, "<svg>dark</svg>");
 }
 
+// A fence changed from mermaid to another language while its drawing is
+// pending: the code block is left as it is.
+{
+  const doc = fakeDocument();
+  const code = element("code", { cls: "language-mermaid", text: "graph TD\nA-->B" });
+  // In a real page the <pre> holds the code's text too.
+  const pre = element("pre", { text: "graph TD\nA-->B", children: [code] });
+  doc.body.appendChild(pre);
+  const pending = [];
+  const mermaid = {
+    initialize: () => {},
+    parse: async () => true,
+    render: () => new Promise((resolve) => pending.push(() => resolve({ svg: "<svg></svg>" }))),
+  };
+  const renderer = createDiagramRenderer({
+    document: doc,
+    window: { mermaid },
+    load: async () => mermaid,
+    cache: createDiagramCache(),
+    theme: () => "default",
+  });
+  renderer.render();
+  await settle();
+  code.className = "language-text";
+  pending[0]();
+  await settle();
+  assert.equal(doc.body.children[0], pre, "a block that is no longer Mermaid keeps its listing");
+}
+
 console.log("mermaid: loader, diagram finding, captions, cache, stale renders and retheme passed");
