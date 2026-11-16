@@ -454,10 +454,10 @@ async function pollJob(id, signal) {
   }
 }
 
-async function submitAndAwait(form, signal) {
+async function submitAndAwait(form, signal, since) {
   // A Stop that landed while the form was being made must not start a job.
   if (signal?.aborted) throw named("Canceled", "Canceled");
-  const submitted = await send("POST", "jobs", { formBody: form }).then((r) => r.json());
+  const submitted = await send("POST", "jobs", { formBody: form, since }).then((r) => r.json());
   let status;
   try {
     status = await pollJob(submitted.id, signal);
@@ -509,6 +509,9 @@ export const LOCAL_OUTPUTS = Object.freeze({
 /** The key the desktop app files a renderer under. */
 export const rendererKey = (format, output) => `${format}.${output}`;
 
+// Typst jobs run through Calepin, and return its stored results, from 3.3.0.
+const CALEPIN_SINCE = "3.3.0";
+
 /** Render one document with the command the desktop app holds for its
  * format and output. The page sends a job and never a command. Resolves with
  * the result file, the SyncTeX file when the tool wrote one, the files a
@@ -540,7 +543,7 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
   };
   const scope = `local ${format}`;
   onProgress?.({ done: 0, total: 1, scope });
-  const finished = await submitAndAwait(formOf(request, files), signal);
+  const finished = await submitAndAwait(formOf(request, files), signal, format === "typst" ? CALEPIN_SINCE : undefined);
   const { id, status } = finished;
   const artifact = await fetchVerifiedOutput(id, "artifact", status);
   const synctex = await fetchVerifiedOutput(id, "synctex", status);
@@ -566,6 +569,8 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
 // each project on this computer and never uploaded. Each call answers with
 // `{ project, path, exists, suggested }`; `path` is null until one is chosen.
 const RUN_DIRECTORY_SINCE = "3.2.0";
+// `run-directory/has` came in 3.3.0.
+const RUN_DIRECTORY_HAS_SINCE = "3.3.0";
 
 /** @param {string} method @param {string} path @param {string} project */
 async function runDirectoryCall(method, path, project) {
@@ -583,7 +588,7 @@ export const runDirectory = (project) => runDirectoryCall("GET", "run-directory"
  * bytes come back. @param {string} project @param {string[]} paths
  * @returns {Promise<string[]>} */
 export async function runDirectoryHas(project, paths) {
-  const response = await send("POST", "run-directory/has", { jsonBody: { project: String(project || ""), paths: paths.map(String) }, since: RUN_DIRECTORY_SINCE });
+  const response = await send("POST", "run-directory/has", { jsonBody: { project: String(project || ""), paths: paths.map(String) }, since: RUN_DIRECTORY_HAS_SINCE });
   const body = await response.json();
   return Array.isArray(body?.present) ? body.present.filter((path) => typeof path === "string") : [];
 }

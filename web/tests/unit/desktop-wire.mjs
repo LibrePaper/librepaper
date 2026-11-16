@@ -16,7 +16,7 @@ const PARAGLIDE = join(SRC, "lib", "paraglide");
 const PROTOCOL_HEADER = "x-librepaper-protocol";
 
 const BASE = "lp-local://localhost/";
-const CURRENT = { base: BASE, version: "3.2.0", protocol: { oldest: 3, current: "3.2.0" } };
+const CURRENT = { base: BASE, version: "3.3.0", protocol: { oldest: 3, current: "3.3.0" } };
 const LEGACY = { base: BASE, version: "3.0.0" };
 const TREE = { main: "chapters/paper.tex", texts: { "chapters/paper.tex": "\\documentclass{article}" } };
 
@@ -187,6 +187,41 @@ test("the Run directory calls use their method, path, body and since", async () 
   useDesktop(older, async () => { requests += 1; return response(200, status); });
   await assert.rejects(client.runDirectory("paper"), (error) => error.name === "DesktopFeatureOutdated");
   assert.equal(requests, 0);
+});
+
+test("run-directory/has and Typst jobs are refused by a 3.2.0 app, and other calls still go out", async () => {
+  const TYPST_TREE = { main: "main.typ", texts: { "main.typ": "= Title" } };
+  const status = { project: "paper", path: null, exists: false, suggested: "" };
+  const older = { base: BASE, version: "3.2.0", protocol: { oldest: 3, current: "3.2.0" } };
+  const sent = [];
+  useDesktop(older, async (url, init = {}) => {
+    sent.push({ url, method: init.method });
+    return response(200, status);
+  });
+  await assert.rejects(client.runDirectoryHas("paper", ["fig.png"]), (error) => error.name === "DesktopFeatureOutdated");
+  assert.equal(sent.length, 0);
+  assert.deepEqual(await client.runDirectory("paper"), status);
+  assert.equal(sent.length, 1);
+  sent.length = 0;
+  await assert.rejects(
+    client.runRender({ job: {}, tree: TYPST_TREE, format: "typst", output: "pdf" }),
+    (error) => error.name === "DesktopFeatureOutdated",
+  );
+  assert.equal(sent.length, 0);
+});
+
+test("a LaTeX job still goes out to a 3.2.0 app", async () => {
+  const sent = [];
+  const older = { base: BASE, version: "3.2.0", protocol: { oldest: 3, current: "3.2.0" } };
+  useDesktop(older, async (url, init = {}) => {
+    sent.push({ url, method: init.method });
+    if (url.endsWith("/jobs") && init.method === "POST") return response(202, { id: "job-1" });
+    if (url.endsWith("/jobs/job-1")) return response(200, { id: "job-1", status: "done", exit: 0, outputs: {} });
+    throw new Error(`unexpected request ${url}`);
+  });
+  const result = await client.runRender({ job: {}, tree: TREE, format: "latex", output: "pdf" });
+  assert.equal(result.exit, 0);
+  assert.ok(sent.some((entry) => entry.method === "POST" && entry.url.endsWith("/jobs")));
 });
 
 test("a job status the page does not know keeps polling until done", async () => {
