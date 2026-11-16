@@ -2130,6 +2130,7 @@
   "outline_filter_open_todos": "Offene TODOs",
   "outline_filter_tag": "Tag: {tag}",
   "outline_no_headings": "Keine Überschriften in dieser Datei.",
+  "panelboundary_failed": "Dieser Teil der Seite funktioniert nicht mehr. Der Rest von LibrePaper funktioniert einwandfrei.",
   "panels_git": "Git",
   "panels_shared": "Mit mir geteilt",
   "panels_trash": "Papierkorb",

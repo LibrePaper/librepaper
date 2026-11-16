@@ -277,6 +277,7 @@
   import { documentFacts } from "../lib/visual-markup/facts.js";
   import { paperVisual } from "../lib/paper/index.js";
   import { m } from "../lib/paraglide/messages.js";
+  import { report } from "../lib/crash.js";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import { retargetElementAttributes } from "./element-attributes.js";
@@ -2289,10 +2290,17 @@
   });
 
   // Draw the pending changes again when the selection or the viewer changes.
+  // This effect is not inside a panel's markup, so a throw from the drawing
+  // is caught here: the marks stay as they were rather than the editor going.
   $effect(() => {
     void selectedChange;
     void me;
-    if (view) drawChanges();
+    if (!view) return;
+    try {
+      drawChanges();
+    } catch (error) {
+      report(error, "tracked changes");
+    }
   });
 
   // Turning the Authors view on or off, or isolating one author, redraws the
