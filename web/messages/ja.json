@@ -2115,6 +2115,7 @@
   "outline_filter_open_todos": "未完了のTODO",
   "outline_filter_tag": "タグ: {tag}",
   "outline_no_headings": "このファイルに見出しはありません。",
+  "panelboundary_failed": "ページのこの部分は動作を停止しました。LibrePaperの残りの部分は正常です。",
   "panels_git": "Git",
   "panels_shared": "共有されたもの",
   "panels_trash": "ごみ箱",

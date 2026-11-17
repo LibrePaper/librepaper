@@ -87,6 +87,8 @@
   import { exportAvailability, exportFile, unrunCells } from "../lib/reader/exports.js";
   import { pandoc } from "../lib/pandoc/client.js";
   import Preview from "./Preview.svelte";
+  import PanelBoundary from "./PanelBoundary.svelte";
+  import { report } from "../lib/crash.js";
   import PreviewControls from "./PreviewControls.svelte";
   import { onPageZoom } from "../lib/desktop/zoom.js";
   import { agentWaitingBadge } from "../lib/agent-permission.js";
@@ -605,7 +607,14 @@
         selected: String(comment.id) === String(selectedAnnotation),
       });
     }
-    untrack(() => editor.setCommentMarks(list));
+    // This runs on every keystroke and dispatches into CodeMirror, and it
+    // sits in the Reader itself, past every panel boundary. A throw is caught
+    // here and the marks are left as they were.
+    try {
+      untrack(() => editor.setCommentMarks(list));
+    } catch (error) {
+      report(error, "comment marks");
+    }
   }
   $effect(() => {
     void comments;
@@ -801,6 +810,9 @@
         break;
       case "click":
         followPreviewClick(message.offset, message.pdf);
+        break;
+      case "reading-position":
+        followReadingPosition(message.start, message.pdf);
         break;
       case "focus":
         void focusAnnotation(message.id);
@@ -1107,8 +1119,18 @@
       pending,
     };
     collaborationTab = "comments";
+    // A draft started in the source keeps the source on screen when the
+    // column opens beside it on a tight split; one started in the preview
+    // keeps the preview.
+    arrangement.focusPane(pending.source ? "source" : "document");
     if (panel !== "collaboration") void arrangement.showPanel("collaboration");
     if (compact) arrangement.showMobileView("sidebar");
+  }
+
+  // A press or a focus inside a pane makes it the one a tight split keeps.
+  function keepPane(event) {
+    if (event.target.closest?.("#reader-source")) arrangement.focusPane("source");
+    else if (event.target.closest?.("#reader-document")) arrangement.focusPane("document");
   }
 
   // A verb chosen on the bar over the selection. Highlighting is the one that
@@ -2124,16 +2146,22 @@
     const path = toolbarPath;
     return renderers.formatOf(path) || (path && path === previewPath ? sourceFormat : "");
   });
+  // These deriveds run in the Reader itself, which no panel boundary catches,
+  // so a throw here would take the whole page. A count that throws is shown
+  // as empty and the error is noted.
+  const guarded = (where, fallback, compute) => {
+    try { return compute(); } catch (error) { report(error, where); return fallback; }
+  };
   // The outline of the open file. Typst reads the typst module's tree, which
   // is empty until the module loads; the revision brings the outline back then.
   const outlineHeadings = $derived.by(() => {
     void outlineRevision;
     if (panel !== "outline" || !mayEdit) return [];
-    return extractOutline(outlineSource, outlineFormat);
+    return guarded("outline", [], () => extractOutline(outlineSource, outlineFormat));
   });
   // Word counts for each heading in the Outline panel.
   const outlineSections = $derived.by(() => panel === "outline" && mayEdit
-    ? sectionWords(outlineSource, outlineFormat, outlineHeadings) : []);
+    ? guarded("outline", [], () => sectionWords(outlineSource, outlineFormat, outlineHeadings)) : []);
   // The Word count dialog: the open file's document with its includes, and
   // the selection in the open file. A preview lock does not change the count.
   // Nothing is counted while the dialog is shut.
@@ -2144,10 +2172,10 @@
     const texts = liveTreeNow().texts;
     const root = previewTarget({ open: toolbarPath, locked: null, texts }).path || toolbarPath;
     const range = editor?.selection?.();
-    return {
+    return guarded("word count", null, () => ({
       document: documentWords(root, texts),
       selection: range && range.file === openFile ? countWordsIn(editor.text(), outlineFormat, range.from, range.to) : null,
-    };
+    }));
   });
   // What the last compile said. When it is painted is `diagnostics.js`'s
   // rule, and the wait it counts is from the keystroke rather than from the
@@ -3194,18 +3222,14 @@
     return true;
   }
 
-  // A plain click in the preview puts the source caret where the words clicked
-  // are in the source, and scrolls the source to show it. The keyboard stays
-  // with the document: the source is moved, not focused. Only the open file is
-  // searched, so a click never switches files, and only on a wide window where
-  // the source is beside the document -- a phone shows one pane at a time and a
-  // click there is for reading.
-  function followPreviewClick(offset, pdfPoint = null) {
-    if (!linked || compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
-    if (effectiveLayout !== "split" && effectiveLayout !== "source") return;
+  // The source offset that matches a place in the preview, or null when there
+  // is none in the open file. SyncTeX is tried first for a PDF point, then the
+  // text the place carried. With `exact` false the words need not match
+  // word-for-word, so a place that landed on a nearby line still counts.
+  function sourceOffsetForPreview(offset, pdfPoint, { exact = true } = {}) {
+    if (!editor || docText === null || !openFile) return null;
     const text = editor.text();
-    if (typeof text !== "string") return;
-    let at = null;
+    if (typeof text !== "string") return null;
     // SyncTeX is only for LaTeX. Any other format, or a SyncTeX point that does
     // not resolve to the open file, falls back to the text the click carried.
     const precise = pdfPoint && sourceFormat === "latex" && painted.synctex
@@ -3213,15 +3237,26 @@
       : null;
     if (precise && session.idOf(precise.path) === openFile) {
       // SyncTeX gives a line and no column, so the start of that line is the place.
-      at = synctexOffsetOfLine(text, precise.line);
-    } else {
-      if (offset === null || offset === undefined) return;
-      const openPath = session?.paths?.get(openFile) || "";
-      const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
-      // Exact words only: the widening search a double-click allows would, on
-      // every single click, now and then land somewhere nearby instead.
-      at = sync.sourcePlaceFor(docText, Number(offset) || 0, text, format, { exact: true });
+      return synctexOffsetOfLine(text, precise.line);
     }
+    if (offset === null || offset === undefined) return null;
+    const openPath = session?.paths?.get(openFile) || "";
+    const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
+    return sync.sourcePlaceFor(docText, Number(offset) || 0, text, format, { exact });
+  }
+
+  // A plain click in the preview puts the source caret where the words clicked
+  // are in the source, and scrolls the source to show it. The keyboard stays
+  // with the document: the source is moved, not focused. Only the open file is
+  // searched, so a click never switches files, and only on a wide window where
+  // the source is beside the document. On a phone the source instead catches up
+  // when the reader switches to it (see followReadingPosition).
+  function followPreviewClick(offset, pdfPoint = null) {
+    if (!linked || compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
+    if (effectiveLayout !== "split" && effectiveLayout !== "source") return;
+    // Exact words only: the widening search a double-click allows would, on
+    // every single click, now and then land somewhere nearby instead.
+    const at = sourceOffsetForPreview(offset, pdfPoint, { exact: true });
     if (at === null || at === undefined) return;
     previewPlacing = true;
     try {
@@ -3229,6 +3264,35 @@
     } finally {
       previewPlacing = false;
     }
+  }
+
+  // Set when the reader switches from the preview to the source on a phone, so
+  // that only the reply to that request moves the source.
+  let positionAsked = false;
+  function askReadingPosition() {
+    positionAsked = true;
+    tell({ type: "reading-position" });
+  }
+
+  // The preview's answer to askReadingPosition: the source moves to the place
+  // the reader was looking at. Focus stays out of it so the phone keyboard does
+  // not open.
+  function followReadingPosition(start, pdfPoint) {
+    if (!positionAsked) return;
+    positionAsked = false;
+    if (!linked || !compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
+    if (activeMobileView !== "source") return;
+    const at = sourceOffsetForPreview(start, pdfPoint, { exact: false });
+    if (at === null || at === undefined) return;
+    // The source pane has only just been shown, so it is laid out next frame.
+    requestAnimationFrame(() => {
+      previewPlacing = true;
+      try {
+        editor.goTo(at, { focus: false });
+      } finally {
+        previewPlacing = false;
+      }
+    });
   }
 
   function setLinked(on) {
@@ -4586,6 +4650,20 @@
     barHidden = false;
   });
 
+  // Asks the preview where the reader is when they switch from it to the
+  // source on a phone, so the source can be moved to match. Only compact and
+  // the pane itself are tracked; the rest is read untracked.
+  let previousMobileView = null;
+  $effect(() => {
+    const view = activeMobileView;
+    const previous = previousMobileView;
+    previousMobileView = view;
+    if (!compact || previous !== "document" || view !== "source") return;
+    untrack(() => {
+      if (linked && editing && comparing === "") askReadingPosition();
+    });
+  });
+
   // Reveal the bars when keyboard focus enters one of them, so off-screen
   // controls are never focused invisibly. Revealing them all, rather than only
   // the row that took focus, keeps the workspace height (which counts the bars
@@ -4733,7 +4811,11 @@
   <ModeSwitch mode={shown.source ? "source" : "document"} collapsed={barHidden} onchange={(view) => arrangement.showMobileView(view)} />
 {/if}
 
+<!-- The pane the reader last worked in is the one a tight split keeps. The
+     handler is on the page because the preview is a component that takes no
+     event handlers of its own. -->
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
+      onpointerdown={keepPane} onfocusin={keepPane}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:phone-tabs={tabsShown} class:bar-hidden={barHidden && !compact}
@@ -4746,6 +4828,7 @@
        of these its rail has selected; none of it travels through the column
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
+    <PanelBoundary name="the files panel">
     <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewPath} locked={lockedPath}
       mayEdit={mayEdit && !suggestOnly} {rules} onopen={(file) => openTheFile(file, { fromList: true })} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
@@ -4753,6 +4836,7 @@
       onfigure={addFigure} ontext={addDroppedText} demo={DEMO}
       ondownload={downloadTree} ondownloaditem={downloadEntry}
       previewable={(path) => aloneSet.has(path)} onlock={(entry) => lockPreview(entry.id)} onunlock={unlockPreview} />
+    </PanelBoundary>
   {/snippet}
 
   <!-- The figure being looked at: wherever it is shown, it is shown this way. -->
@@ -4775,10 +4859,13 @@
   {/snippet}
 
   {#snippet outlinePanel()}
+    <PanelBoundary name="the outline">
     <Outline headings={outlineHeadings} counts={outlineSections} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
+    </PanelBoundary>
   {/snippet}
 
   {#snippet agentPanel()}
+    <PanelBoundary name="the agent panel">
     {#if lazy.agent.component}
     {@const Agent = lazy.agent.component}
     <Agent open={panel === "agent" && shown.comments} slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
@@ -4788,9 +4875,11 @@
       onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || m.common_you()}
       bind:waiting={agentWaiting} />
     {/if}
+    </PanelBoundary>
   {/snippet}
 
   {#snippet collaborationPanel()}
+    <PanelBoundary name="the comments panel">
     {#if compact}<Presence {participants} onjump={jumpToPerson} />{/if}
     <Collaboration messages={chatState.messages} more={chatState.more} loadingOlder={chatState.loadingOlder}
       loadError={chatState.loadError} canClear={chatState.canClear} onloadolder={liveChat.loadOlder}
@@ -4808,31 +4897,39 @@
       onloadreplies={(comment) => void annotations.loadReplies(comment)}
       oncommentsend={sendDraft} oncommentcancel={cancelDraft} oncommentdocument={commentOnDocument} />
     {@render pendingRecovery("collaboration")}
+    </PanelBoundary>
   {/snippet}
 
   {#snippet changesPanel()}
+    <PanelBoundary name="the changes panel">
     <Changes changes={changeRows} {files} {identity} tracking={tracking || suggestOnly} canTrack={mayEdit && editing}
       canReview={mayEdit} {suggestOnly} ownKey={ownWho} selected={selectedChange} ids={changesIds}
       ontracking={setTracking} onaccept={acceptChange} onreject={rejectChange} onrejectmany={rejectChanges} onreveal={revealChange} />
     {@render pendingRecovery("changes")}
+    </PanelBoundary>
   {/snippet}
 
   {#snippet sharePanel()}
+    <PanelBoundary name="the share panel">
     <Share open={panel === "share" && shown.comments} inline slug={SLUG}
       canShare={doc.role === "owner"}
       onclose={() => arrangement.showPanel("")} />
+    </PanelBoundary>
   {/snippet}
 
   {#snippet gitPanel()}
+    <PanelBoundary name="the git panel">
     {#if lazy.git.component}
     {@const Git = lazy.git.component}
     <Git open={panel === "git" && shown.comments}
       web={webGit} slug={SLUG} linkKey={KEY} desktop={hasDesktop}
       connection={webConnection} onhistory={() => void openPanel("history")} />
     {/if}
+    </PanelBoundary>
   {/snippet}
 
   {#snippet diagnosticsPanel()}
+    <PanelBoundary name="the diagnostics panel">
     <Diagnostics {diagnostics}
       entry={previewPath}
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
@@ -4841,9 +4938,11 @@
       onagent={agentOffered ? askDiagnostic : undefined}
       log={runsExplicitly && runLog ? runLog : renderState.lastLatexResult?.log || renderState.lastLog || ""}
       logOpen={renderState.lastLatexResult ? undefined : false} />
+    </PanelBoundary>
   {/snippet}
 
   {#snippet historyPanel()}
+    <PanelBoundary name="the history panel">
     {#if lazy.history.component}
     {@const History = lazy.history.component}
     <History {labels} viewing={historySelectedSha} older={historySource.older} newer={historySource.newer} canEdit={mayEdit && !suggestOnly}
@@ -4869,6 +4968,7 @@
       onauthorsview={(on) => (authorsView = on)}
       onisolate={(key) => (authorsOnly = key)} />
     {/if}
+    </PanelBoundary>
   {/snippet}
 
   <!-- Annotations the server has not acknowledged, offered back wherever
@@ -4933,8 +5033,9 @@
       {:else if Editor && sourceBound}
         {#if formatBarInPane}
           <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
-                         onmenuselect={() => setTimeout(() => editor?.focus?.(), 60)} collapsed={compact && barHidden} />
+                         onmenuselect={() => setTimeout(() => { if (!document.activeElement?.closest?.("#composer")) editor?.focus?.(); }, 60)} collapsed={compact && barHidden} />
         {/if}
+        <PanelBoundary name="the source editor">
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
@@ -4944,6 +5045,7 @@
                   authorship={authorsActive && authorsMap ? { authors: authorsMap, only: authorsOnly } : null}
                   onauthorship={(summary) => (authorsSummary = summary)}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
+        </PanelBoundary>
       {/if}
     </section>
   {/if}
@@ -5129,6 +5231,7 @@
   {#snippet previewNotice()}
     <span class="notice-chip"><span>{m.readerd_shown_inside({ name: basename(toolbarPath), path: previewPath })}</span></span>
   {/snippet}
+  <PanelBoundary name="the preview">
   <Preview bind:this={preview} id="reader-document" role={compact && modeSwitchShown ? "tabpanel" : undefined}
            labelledby={compact && modeSwitchShown ? "mode-tab-document" : undefined}
            src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
@@ -5140,6 +5243,7 @@
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
            away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || (noCompiler || failedBeforeRender) || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
+  </PanelBoundary>
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
@@ -5263,7 +5367,9 @@
 <Modal bind:open={wordCountOpen} title={m.common_word_count()}
   confirm={{ label: m.common_close(), cancel: false, onclick: () => (wordCountOpen = false) }}>
   {#snippet children()}
-    <WordCount count={wordCount} />
+    <PanelBoundary name="the word count">
+      <WordCount count={wordCount} />
+    </PanelBoundary>
   {/snippet}
 </Modal>
 

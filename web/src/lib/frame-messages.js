@@ -119,9 +119,16 @@ export function validateFrameMessage(input) {
       return { type: input.type };
     case "focus":
       return boundedString(input.id, MAX_ID) && input.id.length ? { type: "focus", id: input.id } : null;
-    case "reading-position":
-      return Number.isSafeInteger(input.start) && input.start >= 0 && input.start <= MAX_READY_TEXT
-        ? { type: "reading-position", start: input.start } : null;
+    case "reading-position": {
+      // The text offset is null when the frame found no text under the probe
+      // point; the PDF point is optional and dropped when it is invalid. A
+      // reply with neither says nothing the reader can use.
+      const start = input.start;
+      if (start !== null && (!Number.isSafeInteger(start) || start < 0 || start > MAX_READY_TEXT)) return null;
+      const pdf = pdfPoint(input.pdf);
+      if (start === null && !pdf) return null;
+      return { type: "reading-position", start, pdf };
+    }
     case "scroll": {
       // Scroll offsets come from the frame's own scroller, so they are only
       // checked for finiteness and a generous bound. A bad bottom is dropped
