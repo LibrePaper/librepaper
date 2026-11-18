@@ -1,5 +1,15 @@
 # Connecting an agent to a LibrePaper project
 
+## Chat apps (claude.ai, ChatGPT)
+
+For a chat app, recommend the connector. A chat app's code sandbox often cannot reach the server for a token paste, and the connector needs no token in the chat.
+
+1. The owner opens the project's Agent panel, then the Agent tab, and copies the URL under **Connect a chat app**: `https://<server>/mcp/<slug>`.
+2. In the app, add a custom connector with that URL. In claude.ai: Settings → Connectors → Add custom connector.
+3. A LibrePaper page opens. Sign in if asked, choose the role (Suggest by default) and click Approve.
+
+The server must be reachable from the internet, because the app's servers call it. Only the owner can connect a project. The connection lasts 30 days, renews while the app uses it, and the owner can revoke it in the Agent tab. A server only on a local network or Tailscale needs the token route below.
+
 ## The usual way
 
 1. Create a token (section 1 below), then click **Copy connection instructions** in the Agent panel's Agent tab and paste the text into your agent. It is one copy and one paste. Each project has its own token, so you repeat this for each project. The text contains the token and tells the agent to use the skill. If the skill is missing, the paste installs it (`npx skills add LibrePaper/librepaper --skill librepaper --global`, or copies the skill folder into the agent's skills folder). The first paste installs it once per computer. The agent reads the skill directly, so no new session is needed. An agent that cannot install the skill copies it to a temporary folder for that session and gives the user the command to install it.
