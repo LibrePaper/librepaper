@@ -544,17 +544,17 @@
     <div class="insert-results" role="group" aria-label={source === "zotero" ? m.insertmenu_zotero_items_group() : source === "doi" ? m.insertmenu_doi_items_group() : m.insertmenu_bibliography_group()}>
       {#if source === "zotero"}
         {#each zoteroEntries as entry}
-          <label class="insert-result" title={entryLabel(entry)}><input type="checkbox" value={entry.zotero_item} checked={zoteroSelected.some((item) => item.zotero_item === entry.zotero_item)} onchange={(event) => toggleZotero(entry, event.currentTarget.checked)} />{@render row(entry)}</label>
+          <label class="insert-result" data-tip={entryLabel(entry)}><input type="checkbox" value={entry.zotero_item} checked={zoteroSelected.some((item) => item.zotero_item === entry.zotero_item)} onchange={(event) => toggleZotero(entry, event.currentTarget.checked)} />{@render row(entry)}</label>
         {:else}<p class="panel-muted">{m.insertmenu_zotero_no_match()}</p>{/each}
       {:else if source === "doi"}
         {#each doiEntries as entry}
-          <label class="insert-result" title={entryLabel(entry)}><input type="checkbox" value={entry.doi} checked={doiSelected.some((item) => item.doi.toLowerCase() === entry.doi.toLowerCase())} onchange={(event) => toggleDoi(entry, event.currentTarget.checked)} />{@render row(entry)}</label>
+          <label class="insert-result" data-tip={entryLabel(entry)}><input type="checkbox" value={entry.doi} checked={doiSelected.some((item) => item.doi.toLowerCase() === entry.doi.toLowerCase())} onchange={(event) => toggleDoi(entry, event.currentTarget.checked)} />{@render row(entry)}</label>
         {/each}
         {#if doiLooking}<p class="panel-muted" role="status">{m.insertmenu_doi_looking_up()}</p>{/if}
         {#if doiError && !doiLooking}<p class="insert-error-text" role="alert">{doiError}</p>{/if}
       {:else}
         {#each filteredEntries as entry}
-          <label class="insert-result" title={entryLabel(entry)}><input type="checkbox" value={entry.key} bind:group={draft.keys} />{@render row(entry)}</label>
+          <label class="insert-result" data-tip={entryLabel(entry)}><input type="checkbox" value={entry.key} bind:group={draft.keys} />{@render row(entry)}</label>
         {:else}<p class="panel-muted">{m.insertmenu_bibliography_no_match()}</p>{/each}
       {/if}
     </div>

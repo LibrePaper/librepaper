@@ -22,10 +22,11 @@ function harness() {
     dataset: {},
   };
   const run = new Function(
-    "document", "lastRanges", "highlight",
+    "document", "lastRanges", "highlight", "diagrams",
     `${frame.slice(start, end)}\nreturn { setPaper, setSurface };`,
   );
-  const api = run({ documentElement: root }, [], () => {});
+  // setPaper redraws drawn diagrams in the new palette; none are drawn here.
+  const api = run({ documentElement: root }, [], () => {}, { retheme() {} });
   return { ...api, props, classes };
 }
 
