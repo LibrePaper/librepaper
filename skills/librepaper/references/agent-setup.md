@@ -1,16 +1,23 @@
 # Connecting an agent to a LibrePaper project
 
-## Chat apps (claude.ai, ChatGPT)
+## The connector (the main way)
 
-For a chat app, recommend the connector. A chat app's code sandbox often cannot reach the server for a token paste, and the connector needs no token in the chat.
+For any client that supports remote MCP, such as claude.ai, Claude Desktop, ChatGPT and Claude Code, recommend the connector. It needs no token in the chat, and the owner approves it in LibrePaper.
 
-1. The owner opens the project's Agent panel, then the Agent tab, and copies the URL under **Connect a chat app**: `https://<server>/mcp/<slug>`.
-2. In the app, add a custom connector with that URL. In claude.ai: Settings → Connectors → Add custom connector.
+1. The owner opens the project's Agent panel, then the Agent tab, and copies the URL under **Connect an app or agent**: `https://<server>/mcp/<slug>`.
+2. Add the URL to the app as a remote MCP server or custom connector:
+   - claude.ai and Claude Desktop: Settings → Connectors → Add custom connector, and paste the URL.
+   - Claude Code: `claude mcp add --transport http librepaper https://<server>/mcp/<slug>`, then run `/mcp` in a session and choose to authenticate. The approval page opens in the browser.
+   - Any other app: add the URL as a remote MCP server. The app opens the approval page.
 3. A LibrePaper page opens. Sign in if asked, choose the role (Suggest by default) and click Approve.
 
-The server must be reachable from the internet, because the app's servers call it. Only the owner can connect a project. The connection lasts 30 days, renews while the app uses it, and the owner can revoke it in the Agent tab. A server only on a local network or Tailscale needs the token route below.
+Only the owner can connect a project. The connection lasts 30 days, renews while the app uses it, and the owner can revoke it in the Agent tab. A chat app (claude.ai, ChatGPT) calls the server from its maker's servers, so the server must be reachable from the internet for it. A coding agent on the owner's computer also works with a server on a local network or Tailscale.
 
-## The usual way
+If the app cannot add a remote MCP server, use a token, below.
+
+## Fallback: a token
+
+Use a token for scripts, sync, or an agent that cannot add a connector.
 
 1. Create a token (section 1 below), then click **Copy connection instructions** in the Agent panel's Agent tab and paste the text into your agent. It is one copy and one paste. Each project has its own token, so you repeat this for each project. The text contains the token and tells the agent to use the skill. If the skill is missing, the paste installs it (`npx skills add LibrePaper/librepaper --skill librepaper --global`, or copies the skill folder into the agent's skills folder). The first paste installs it once per computer. The agent reads the skill directly, so no new session is needed. An agent that cannot install the skill copies it to a temporary folder for that session and gives the user the command to install it.
 2. You can copy the same text again later with the copy icon on the token's row. Tokens created before this release have no copy icon; create a new token and revoke the old one to get one.
