@@ -974,7 +974,7 @@
       // Read the opt-in now: another tab may have turned it off since this one loaded.
       if (!readAgentRun(buildScope(), SLUG)) return errorReply("run_disabled", "The owner has not enabled \"Let agents run code\" for this project.");
       // A run is of the file the preview shows.
-      if (request.path !== previewPath) return errorReply("failed", "Open this file in the editor before running it.");
+      if (request.path !== previewPath) return errorReply("run_unavailable", "Open this file in the editor before running it.");
       if (runPhase === "running") return errorReply("busy", "A run is already in progress.");
       // No await between the check, the capture and the start, so the run and
       // the reply describe the same file.
@@ -985,15 +985,17 @@
       const revision = await digest;
       if (outcome.reason === "run_disabled") return errorReply("run_disabled", "The owner has not enabled \"Let agents run code\" for this project.");
       if (outcome.cancelled) return errorReply("failed", "The run was stopped.");
-      const diagnostics = outcome.diagnostics.map((item) => diagnosticContext(item, tree, revision));
+      const diagnostics = [...outcome.diagnostics, ...missingFigureWarnings(outcome.missing)].map((item) => diagnosticContext(item, tree, revision));
       return compileReply({
         ok: outcome.ok, diagnostics, log: outcome.log, provenance: { renderer: "local" },
         ...(outcome.output === "pdf" ? { pdf: { byteLength: 1 } } : outcome.output === "html" ? { html: "" } : {}),
       }, revision, request.output);
     }
     const tree = capturePreviewTree({ ...live, main: request.path });
+    let missingFigures = [];
     if (Object.keys(tree.digests || {}).length) {
-      const { held } = await gatherFigures(tree.digests);
+      const { held, missing } = await gatherFigures(tree.digests);
+      missingFigures = missing;
       tree.assets = held.assets;
       tree.urls = { ...(tree.urls || {}), ...held.urls };
     }
@@ -1006,8 +1008,15 @@
     // result can describe another tree than the one asked for.
     if (rendered?.compiledTree && rendered.compiledTree !== tree) return errorReply("busy", "A newer preview replaced this compile. Try again.");
     const revision = await renderers.snapshotDigest({ ...tree, main: "" });
-    const diagnostics = (rendered?.diagnostics || []).map((item) => diagnosticContext(item, tree, revision));
+    const diagnostics = [...(rendered?.diagnostics || []), ...missingFigureWarnings(missingFigures)].map((item) => diagnosticContext(item, tree, revision));
     return compileReply({ ...rendered, diagnostics }, revision, request.output);
+  }
+  // A figure that could not be fetched leaves the compile without it; the
+  // agent is told so the result does not look complete.
+  function missingFigureWarnings(paths) {
+    return (paths || []).map((path) => ({
+      severity: "warning", file: path, message: "This figure could not be loaded, so the compile ran without it.",
+    }));
   }
   async function postCompileReply(id, body) {
     try {
@@ -2649,7 +2658,7 @@
   // the draft's cells. For Typst, Calepin's stored files are kept instead, and
   // the browser's draft reads them back, so the preview stays the draft.
   async function runCode({ refreshCache = false, output = "", tree: given = null, allowed = null } = {}) {
-    const none = (reason, cancelled = false, log = "") => ({ ok: false, cancelled, output: "none", diagnostics: [], log, reason });
+    const none = (reason, cancelled = false, log = "") => ({ ok: false, cancelled, output: "none", diagnostics: [], log, reason, missing: [] });
     if (runPhase === "running" || readerDisposed) return none("busy");
     if (!runDir.usable) {
       pendingRun = { refreshCache };
@@ -2668,6 +2677,7 @@
     const source = schedule.generation;
     const gone = () => mine !== runGeneration || readerDisposed;
     let done = (ok) => none(ok ? "" : "failed");
+    let missingFigures = [];
     const controller = new AbortController();
     runAbort = controller;
     // The run's own page replaces the draft, unless the reader moved to
@@ -2686,8 +2696,9 @@
     try {
       const tree = given || capturePreviewTree(treeNow());
       if (Object.keys(tree.digests || {}).length) {
-        const { held } = await gatherFigures(tree.digests);
+        const { held, missing } = await gatherFigures(tree.digests);
         if (gone()) return none("stopped", true);
+        missingFigures = missing;
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
       }
@@ -2725,6 +2736,7 @@
         diagnostics: rendered?.diagnostics || [],
         log: rendered?.log || rendered?.failure?.message || "",
         reason: ok ? "" : "failed",
+        missing: missingFigures,
       });
       // The run's log is what Diagnostics shows, whether it worked or not.
       runLog = rendered?.log || rendered?.failure?.message || "";
@@ -3187,6 +3199,7 @@
       schedule.cancel();
     },
     refreshFrame: () => refreshFramedPage(),
+    repaint: () => { void paintPreview(); },
     debug: (...parts) => {
       try {
         if (localStorage.getItem("librepaper-latex-debug")) console.debug(...parts);
