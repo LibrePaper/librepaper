@@ -36,6 +36,7 @@ const repeated = '<!doctype html><html><head><title>Repeated</title></head><body
 const untagged = '<!doctype html><html><head><title>Untagged</title></head><body><h1 data-sourcepos="1:1-1:7">Title</h1><p data-sourcepos="3:1-4:10">First line and <em data-sourcepos="3:16-3:22">second</em> words.</p></body></html>';
 const bundled = '<!doctype html><html><head><title>Bundled</title></head><body><p data-sourcepos="0:1:1-0:1:40">Bundled text here.</p></body></html>';
 const mismatched = '<!doctype html><html><head><title>Mismatched</title></head><body><p data-sourcepos="0:1:1-0:1:20">Mixed</p><p data-sourcepos="1:5:1-1:5:20">ends here</p></body></html>';
+const twice = '<!doctype html><html><head><title>Twice</title></head><body><p data-sourcepos="5:1-5:40">The model fits. And then the model fits.</p><p data-sourcepos="7:1-7:12">Next paragraph.</p></body></html>';
 
 // The sources a document names. Tag 0 is the bundled source, which maps to
 // null: its text is not a file the project keeps.
@@ -179,6 +180,46 @@ try {
   ));
   assert.equal(squash(mixed.selector.exact), "Mixedends", "mismatched: the quote spans both paragraphs");
   assert.equal("hint" in mixed.selector, false, "mismatched tags: no hint");
+
+  // 6. Repeated words in one element: "model fits" is in the paragraph twice,
+  // at offsets 4 and 29 of its text. The hint names which copy was selected;
+  // the first copy is 0 and the second is 1, both out of 2.
+  await preview(twice, ["paper.md"]);
+  await showing('[data-sourcepos="5:1-5:40"]');
+  const secondCopy = await page.evaluate(selectText(
+    ['p[data-sourcepos="5:1-5:40"]', 29],
+    ['p[data-sourcepos="5:1-5:40"]', 39],
+  ));
+  assert.equal(secondCopy.selector.exact, "model fits", "repeated words: the quote is the selected words");
+  assert.deepEqual(
+    secondCopy.selector.hint,
+    { path: "paper.md", from_line: 5, to_line: 5, occurrence: 1, count: 2 },
+    "repeated words: the second copy in the element is occurrence 1 of 2",
+  );
+  const firstCopy = await page.evaluate(selectText(
+    ['p[data-sourcepos="5:1-5:40"]', 4],
+    ['p[data-sourcepos="5:1-5:40"]', 14],
+  ));
+  assert.equal(firstCopy.selector.exact, "model fits", "repeated words: the first copy is still quoted");
+  assert.deepEqual(
+    firstCopy.selector.hint,
+    { path: "paper.md", from_line: 5, to_line: 5, occurrence: 0, count: 2 },
+    "repeated words: the first copy is occurrence 0 of 2",
+  );
+
+  // A selection across two elements keeps its lines but names no copy: the
+  // copies are counted within one element only.
+  const acrossElements = await page.evaluate(selectText(
+    ['p[data-sourcepos="5:1-5:40"]', 29],
+    ['p[data-sourcepos="7:1-7:12"]', 4],
+  ));
+  assert.deepEqual(
+    acrossElements.selector.hint,
+    { path: "paper.md", from_line: 5, to_line: 7 },
+    "across elements: the hint covers both lines and has no copy index",
+  );
+  assert.equal("occurrence" in acrossElements.selector.hint, false, "across elements: no occurrence");
+  assert.equal("count" in acrossElements.selector.hint, false, "across elements: no count");
 
   console.log("preview-source-hint-browser: tagged and untagged selections carry the lines they came from, bundled and unsourced selections carry none, mismatched ends carry none");
 } finally {

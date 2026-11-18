@@ -174,14 +174,19 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     repaint();
   }
 
-  /** @param {{ exact: string, prefix?: string, suffix?: string, position?: number | null, render_digest?: string, source?: { file_id: string, start: number, end: number } | null, whole?: boolean, hint?: { path: string, from_line: number, to_line: number } }} selection `whole` makes it a remark about the document, which names no passage; `hint` names the source lines a preview selection came from, and is sent only when present @param {{ motivation: string, body: string, color?: string }} input @param {string} creator */
+  /** @param {{ exact: string, prefix?: string, suffix?: string, position?: number | null, render_digest?: string, source?: { file_id: string, start: number, end: number } | null, whole?: boolean, hint?: { path: string, from_line: number, to_line: number, occurrence?: number, count?: number } }} selection `whole` makes it a remark about the document, which names no passage; `hint` names the source lines a preview selection came from, and is sent only when present @param {{ motivation: string, body: string, color?: string }} input @param {string} creator */
   function comment(selection, { motivation, body, color }, creator) {
     const temp_id = crypto.randomUUID();
     // A remark about the whole document is sent with `document` and no
     // passage: the server takes that flag as the whole of its request.
     const { whole, hint, ...passage } = selection;
+    // The copy of repeated words the hint names goes with it, when it names one.
     const hintFields = hint
-      ? { hint: { path: hint.path, from_line: hint.from_line, to_line: hint.to_line } } : {};
+      ? { hint: {
+        path: hint.path, from_line: hint.from_line, to_line: hint.to_line,
+        ...(hint.occurrence !== undefined && hint.count !== undefined
+          ? { occurrence: hint.occurrence, count: hint.count } : {}),
+      } } : {};
     const colorFields = /^#[0-9a-f]{6}$/i.test(color || "")
       ? { color: color.toLowerCase() } : {};
     // The draft is shown the way a stored comment is shown: from what the

@@ -33,6 +33,20 @@ for (const hint of [
     type: "selection", selector: hinted,
   }, JSON.stringify(hint).slice(0, 80));
 }
+// The copy of repeated words is kept when both fields are present and in
+// range, and dropped alone otherwise, keeping the lines of the hint.
+const copied = { path: "a.md", from_line: 2, to_line: 2 };
+assert.deepEqual(accepted({ type: "selection", selector: { ...hinted, hint: { ...copied, occurrence: 1, count: 2 } } }), {
+  type: "selection", selector: { ...hinted, hint: { ...copied, occurrence: 1, count: 2 } },
+});
+for (const extra of [
+  { occurrence: 1 }, { count: 2 }, { occurrence: 2, count: 2 }, { occurrence: -1, count: 2 },
+  { occurrence: 0, count: 1001 }, { occurrence: 0.5, count: 2 }, { occurrence: "1", count: 2 },
+]) {
+  assert.deepEqual(accepted({ type: "selection", selector: { ...hinted, hint: { ...copied, ...extra } } }), {
+    type: "selection", selector: { ...hinted, hint: copied },
+  }, JSON.stringify(extra));
+}
 assert.deepEqual(accepted({ type: "caret", offset: 9, pdf: { page: 2, x: 0, y: 12 } }), { type: "caret", offset: 9, pdf: { page: 2, x: 0, y: 12 } });
 assert.deepEqual(accepted({ type: "pdf-caret", pdf: { page: 1, x: 10, y: 20 } }), { type: "pdf-caret", pdf: { page: 1, x: 10, y: 20 } });
 // A plain click carries the text offset under it, the PDF point, or both; a

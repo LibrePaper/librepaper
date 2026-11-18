@@ -8,6 +8,7 @@ const MAX_SELECTION_TEXT = 1_000_000;
 const MAX_CONTEXT_TEXT = 4096;
 const MAX_ID = 256;
 const MAX_HINT_PATH = 1024;
+const MAX_HINT_COPIES = 1000;
 const MAX_COORDINATE = 10_000_000;
 const MAX_SCROLL = 100_000_000;
 
@@ -35,7 +36,16 @@ function sourceHint(value) {
   if (!plainObject(value) || !boundedString(value.path, MAX_HINT_PATH) || !value.path.length
       || !Number.isSafeInteger(value.from_line) || value.from_line < 1
       || !Number.isSafeInteger(value.to_line) || value.to_line < value.from_line) return null;
-  return { path: value.path, from_line: value.from_line, to_line: value.to_line };
+  const hint = { path: value.path, from_line: value.from_line, to_line: value.to_line };
+  // Which copy of repeated words was selected. Both fields or neither: when
+  // either is missing or out of range, the lines are kept and the pair dropped.
+  const { occurrence, count } = value;
+  if (Number.isSafeInteger(occurrence) && Number.isSafeInteger(count)
+      && occurrence >= 0 && occurrence < count && count <= MAX_HINT_COPIES) {
+    hint.occurrence = occurrence;
+    hint.count = count;
+  }
+  return hint;
 }
 
 function selector(value) {
