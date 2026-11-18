@@ -20,13 +20,14 @@ type Link = (
     bool,
 );
 
-async fn setup() -> (PostgresCatalog, Uuid, Authority) {
+async fn setup() -> (PostgresCatalog, Uuid, Authority, super::WriterLease) {
     let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
         .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");
     let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
         .await
         .unwrap();
     catalog.migrate().await.unwrap();
+    let writer = catalog.claim_writer().await.unwrap();
     crate::testing::reset(&catalog).await;
     let tag = Uuid::now_v7();
     let account = catalog
@@ -61,7 +62,7 @@ async fn setup() -> (PostgresCatalog, Uuid, Authority) {
         policy_comment: true,
         automation: false,
     };
-    (catalog, document.id, actor)
+    (catalog, document.id, actor, writer)
 }
 
 fn link(digit: u8, expires: Option<OffsetDateTime>) -> Link {
@@ -98,7 +99,7 @@ fn hashes(links: &[Link]) -> Vec<Vec<u8>> {
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_save_cannot_bring_back_a_revoked_token() {
-    let (catalog, id, actor) = setup().await;
+    let (catalog, id, actor, _writer) = setup().await;
     let first = link(1, None);
     let second = link(2, None);
     let both = [first.clone(), second.clone()];
@@ -132,7 +133,7 @@ async fn a_save_cannot_bring_back_a_revoked_token() {
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_change_to_one_field_of_a_row_makes_an_older_read_stale() {
-    let (catalog, id, actor) = setup().await;
+    let (catalog, id, actor, _writer) = setup().await;
     let soon =
         OffsetDateTime::from_unix_timestamp(OffsetDateTime::now_utc().unix_timestamp() + 3600)
             .unwrap();
