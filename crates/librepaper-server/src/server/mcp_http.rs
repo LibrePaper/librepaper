@@ -16,20 +16,10 @@
 
 use super::*;
 use axum::extract::{Extension, Path, State};
-use axum::routing::any;
 
 /// Protocol revisions this endpoint speaks, newest first. A client that asks
 /// for one of them gets it back; any other client is offered the first.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-
-/// The one route. Until the connector router exists on this branch it is
-/// merged beside `api_router`; at integration the single `.route(...)` line
-/// below moves into `connector_router`.
-pub(super) fn mcp_router(server: Arc<Server>) -> Router {
-    Router::new()
-        .route("/mcp/{slug}", any(mcp_http))
-        .with_state(server)
-}
 
 pub(super) async fn mcp_http(
     State(server): State<Arc<Server>>,

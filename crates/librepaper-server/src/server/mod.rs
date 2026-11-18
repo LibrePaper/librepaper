@@ -64,6 +64,9 @@ mod chat;
 mod chat_http_tests;
 #[cfg(test)]
 mod comment_http_tests;
+mod connector;
+#[cfg(test)]
+mod connector_http_tests;
 pub mod cost;
 #[cfg(test)]
 mod detail_http_tests;
@@ -1013,8 +1016,7 @@ impl Server {
             .with_state(self.clone());
         Router::new()
             .merge(routes::api_router(self.clone()))
-            // Moves into `connector_router` when the connector lands.
-            .merge(mcp_http::mcp_router(self.clone()))
+            .merge(connector::connector_router(self.clone()))
             .merge(fallback)
             .layer(DefaultBodyLimit::disable())
             .layer(axum::middleware::from_fn_with_state(
