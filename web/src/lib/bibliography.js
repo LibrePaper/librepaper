@@ -364,7 +364,7 @@ function projectBibliographyPath(filePath, reference) {
 // Where a Markdown or Quarto document's bibliography is declared: its own front
 // matter, else the preview's entry file, else (Quarto) the nearest _quarto.yml.
 // files are project-relative paths, resolved against the declaring file.
-export function declaredBibliography({ format, chapterPath = "", chapterText = "", entryPath = "", entryText = "", texts = {} } = {}) {
+export function declaredBibliography({ format = "", chapterPath = "", chapterText = "", entryPath = "", entryText = "", texts = {} } = {}) {
   const resolve = (from, source, kind) => selectedBibliographyFiles(source, kind).map((name) => projectBibliographyPath(from, name)).filter(Boolean);
   const none = { files: [], owner: null, ownerPath: null };
   const inChapter = resolve(chapterPath, chapterText, format);
@@ -391,6 +391,10 @@ export function declaredBibliography({ format, chapterPath = "", chapterText = "
 
 // The part of an import plan the two sources share: which .bib the entry goes
 // into, its text so far, and the registration the citing file may need.
+/**
+ * @param {{ source: string, targetPath: string, texts: Record<string, string>, format: string,
+ *   chapterPath?: string, chapterText?: string, entryPath?: string, entryText?: string }} where
+ */
 function importTarget({ source, targetPath, texts, format, chapterPath, chapterText, entryPath, entryText }) {
   const project = (format === "markdown" || format === "quarto") && chapterPath !== undefined;
   const declared = project ? declaredBibliography({ format, chapterPath, chapterText, entryPath, entryText, texts }) : null;
