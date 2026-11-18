@@ -76,6 +76,8 @@ pub(crate) struct ResolvedConfig {
     pub(crate) commenters: Policy,
     /// Which link roles may be held without signing in.
     pub(crate) anonymous: librepaper_base::role::AnonymousAccess,
+    /// Whether chat apps may connect to a project as a remote MCP connector.
+    pub(crate) agent_connectors: bool,
     pub(crate) simulate_activity: Option<u32>,
     pub(crate) expire_after: Option<String>,
     pub(crate) expire_from: Option<String>,
@@ -124,6 +126,7 @@ impl fmt::Debug for ResolvedConfig {
             .field("publishers", &self.publishers)
             .field("commenters", &self.commenters)
             .field("anonymous", &self.anonymous)
+            .field("agent_connectors", &self.agent_connectors)
             .field("simulate_activity", &self.simulate_activity)
             .field("expire_after", &self.expire_after)
             .field("expire_from", &self.expire_from)
@@ -259,6 +262,7 @@ struct Access {
     anonymous_comments: Option<Input<bool>>,
     anonymous_suggests: Option<Input<bool>>,
     anonymous_edits: Option<Input<bool>>,
+    agent_connectors: Option<Input<bool>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -575,6 +579,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "anonymous_comments",
             "anonymous_suggests",
             "anonymous_edits",
+            "agent_connectors",
         ],
     )?;
     section(
@@ -770,6 +775,7 @@ pub(crate) fn load_with_postgres_env(
         false,
     )?;
     let anonymous_edits = r.value("access.anonymous_edits", raw.access.anonymous_edits, false)?;
+    let agent_connectors = r.value("access.agent_connectors", raw.access.agent_connectors, true)?;
     let expire_after = r.optional("retention.expire_after", raw.retention.expire_after)?;
     let erase_inactive_after = r.optional(
         "retention.erase_inactive_after",
@@ -940,6 +946,7 @@ pub(crate) fn load_with_postgres_env(
             suggests: anonymous_suggests,
             edits: anonymous_edits,
         },
+        agent_connectors,
         simulate_activity,
         expire_after,
         expire_from,
@@ -1748,6 +1755,13 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "access.anonymous_edits",
         "anonymous_edits",
         &c.anonymous.edits.to_string(),
+    );
+    value(
+        &mut out,
+        &c.sources,
+        "access.agent_connectors",
+        "agent_connectors",
+        &c.agent_connectors.to_string(),
     );
     section(&mut out, "limits");
     value(
@@ -2605,6 +2619,15 @@ client_secret = { file = "missing-oauth-secret" }
             assert!(shown.contains(key), "{shown}");
         }
         assert!(load_text("[access]\nanonymous_writes = true\n").is_err());
+    }
+
+    #[test]
+    fn agent_connectors_switch_defaults_on_and_round_trips() {
+        let loaded = load_text("").unwrap();
+        assert!(loaded.agent_connectors);
+        let loaded = load_text("[access]\nagent_connectors = false\n").unwrap();
+        assert!(!loaded.agent_connectors);
+        assert!(show_resolved(&loaded).contains("agent_connectors = false"));
     }
 
     fn oidc_ids(loaded: &ResolvedConfig) -> Vec<&str> {
