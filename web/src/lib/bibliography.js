@@ -202,7 +202,11 @@ export function bibliographyTrigger(format) {
 export function selectedBibliographyFiles(source, format) {
   const names = [];
   if (format === "markdown" || format === "quarto") {
-    const lines = string(source).split(/\r?\n/);
+    // Only the leading front matter declares a bibliography; a "Bibliography:"
+    // line and bullet list in the body are prose.
+    const all = string(source).replace(/^\uFEFF/, "").split(/\r?\n/);
+    const close = all[0]?.trim() === "---" ? all.findIndex((line, index) => index > 0 && /^(?:---|\.\.\.)\s*$/.test(line)) : -1;
+    const lines = close > 0 ? all.slice(1, close) : [];
     for (let i = 0; i < lines.length; i++) {
       const match = lines[i].match(/^\s*bibliography\s*:\s*(.*?)\s*$/i);
       if (!match) continue;
