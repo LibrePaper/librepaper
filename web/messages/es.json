@@ -173,7 +173,7 @@
   "agent_your_agent": "su agente",
   "agentexternal_connect_docs": "Cómo conectarse",
   "agentexternal_connect_title": "Conectar una aplicación",
-  "agentexternal_connect_lede": "Funciona en el navegador, en el escritorio y en su teléfono, con asistentes que admiten conectores, como Claude o ChatGPT. Unos pocos pasos para cada proyecto.",
+  "agentexternal_connect_lede": "Funciona en el navegador, en el escritorio y en su teléfono, con asistentes que admiten conectores MCP, como Claude o ChatGPT. Unos pocos pasos para cada proyecto.",
   "agentexternal_connector_copy": "Copiar la URL del conector",
   "agentexternal_connector_url_label": "URL del conector",
   "agentexternal_rows_title": "Conectados",

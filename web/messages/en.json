@@ -173,7 +173,7 @@
   "agent_your_agent": "your agent",
   "agentexternal_connect_docs": "How to connect",
   "agentexternal_connect_title": "Connect an app",
-  "agentexternal_connect_lede": "Works in the browser, on the desktop and on your phone, with assistants that support connectors, such as Claude or ChatGPT. A few steps for each project.",
+  "agentexternal_connect_lede": "Works in the browser, on the desktop and on your phone, with assistants that support MCP connectors, such as Claude or ChatGPT. A few steps for each project.",
   "agentexternal_connector_copy": "Copy connector URL",
   "agentexternal_connector_url_label": "Connector URL",
   "agentexternal_rows_title": "Connected",
