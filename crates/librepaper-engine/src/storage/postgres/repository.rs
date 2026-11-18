@@ -347,13 +347,15 @@ impl PostgresCatalog {
     /// in one transaction. Authorization and replacement share the same
     /// transaction so ownership and session changes cannot race the save.
     ///
-    /// `expected` is the set of token hashes of the non-revoked rows the
-    /// caller read before building `links`. The replacement writes the whole
-    /// set, and a row missing from it is revoked while a row present in it is
-    /// brought back to life, so a set built from an old read would undo a
-    /// revocation or erase a new row. Once the document row is locked, the
-    /// live rows are compared with `expected`; any difference returns
-    /// `Error::Stale` and nothing is written.
+    /// `expected` is the full state of the non-revoked rows the caller read
+    /// before building `links`. The replacement writes the whole set, and
+    /// every kept row is rewritten in full, so a set built from an old read
+    /// would undo a revocation, erase a new row or write old metadata back.
+    /// Once the document row is locked, the live rows are compared with
+    /// `expected` field by field; any difference returns `Error::Stale` and
+    /// nothing is written. A set that names a token which exists only as a
+    /// revoked row returns `Error::Revoked`: a revoked token never comes
+    /// back.
     #[allow(clippy::type_complexity)]
     pub async fn save_document_sharing(
         &self,
@@ -371,13 +373,15 @@ impl PostgresCatalog {
             bool,
         )],
         live_hashes: &[Vec<u8>],
-        expected: &[Vec<u8>],
+        expected: &[super::LinkState],
     ) -> Result<()> {
         let mut tx = self.begin_write(Fence::Required, &[]).await?;
         PostgresCatalog::authorize_mutation(&mut tx, document_id, actor, true).await?;
         Self::require_document_owner(&mut tx, document_id, actor).await?;
-        let mut current = sqlx::query_scalar::<_, Vec<u8>>(
-            "SELECT token_hash FROM share_links WHERE document_id=$1 AND revoked_at IS NULL",
+        let mut current = sqlx::query_as::<_, super::LinkState>(
+            "SELECT token_hash,role,label,floor(extract(epoch from expires_at))::bigint,
+                    comment_budget,kind,owner_generation,anonymous
+             FROM share_links WHERE document_id=$1 AND revoked_at IS NULL",
         )
         .bind(document_id)
         .fetch_all(&mut **tx)
@@ -387,6 +391,19 @@ impl PostgresCatalog {
         expected.sort();
         if current != expected {
             return Err(Error::Stale);
+        }
+        let wanted: Vec<Vec<u8>> = links.iter().map(|(_, hash, ..)| hash.to_vec()).collect();
+        let revived = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM share_links
+                           WHERE document_id=$1 AND revoked_at IS NOT NULL
+                             AND token_hash=ANY($2))",
+        )
+        .bind(document_id)
+        .bind(&wanted)
+        .fetch_one(&mut **tx)
+        .await?;
+        if revived {
+            return Err(Error::Revoked);
         }
         Self::replace_share_links_tx(&mut tx, document_id, links).await?;
         Self::prune_link_grants_tx(&mut tx, document_id, live_hashes).await?;

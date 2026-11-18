@@ -1083,14 +1083,14 @@ async fn the_largest_registration_still_completes_a_grant_and_a_refresh() {
     let Some(served) = serve("connector-large", true).await else {
         return;
     };
-    // Five URIs totalling exactly 2048 characters, one of them the callback.
+    // Five URIs totalling exactly 512 characters, one of them the callback.
     // Three padded URIs share the room, and the last one takes what is left.
     let padded = |fill: char, length: usize| {
         let stem = "https://chat.example/";
         format!("{stem}{}", fill.to_string().repeat(length - stem.len()))
     };
-    let share = (2048 - CALLBACK.len()) / 4;
-    let last = 2048 - CALLBACK.len() - 3 * share;
+    let share = (512 - CALLBACK.len()) / 4;
+    let last = 512 - CALLBACK.len() - 3 * share;
     let uris = vec![
         CALLBACK.to_string(),
         padded('a', share),
@@ -1098,7 +1098,7 @@ async fn the_largest_registration_still_completes_a_grant_and_a_refresh() {
         padded('c', share),
         padded('d', last),
     ];
-    assert_eq!(uris.iter().map(String::len).sum::<usize>(), 2048);
+    assert_eq!(uris.iter().map(String::len).sum::<usize>(), 512);
     let answer = served
         .register(&json!({"redirect_uris": uris, "client_name": "Big app"}))
         .await;
@@ -1125,6 +1125,24 @@ async fn the_largest_registration_still_completes_a_grant_and_a_refresh() {
     let refresh = issued.body["refresh_token"].as_str().unwrap().to_string();
     let renewed = served.refresh(&client_id, &refresh).await;
     assert_eq!(renewed.status, 200, "{}", renewed.body);
+
+    // Signed out, with the longest state, the whole authorize query still
+    // fits in the sign-in redirect that carries it in a cookie.
+    let state = "s".repeat(256);
+    let query = form(&[
+        ("response_type", "code"),
+        ("client_id", &client_id),
+        ("redirect_uri", &uris[1]),
+        ("code_challenge", &pkce_challenge(VERIFIER)),
+        ("code_challenge_method", "S256"),
+        ("state", &state),
+        ("resource", &served.resource()),
+    ]);
+    let signed_out = served.get(&format!("/oauth/authorize?{query}"), None).await;
+    assert_eq!(signed_out.status, 302);
+    let location = signed_out.location.unwrap();
+    assert!(location.starts_with("/auth/login?next="), "{location}");
+    assert!(location.len() < 3000, "{} bytes", location.len());
 
     // One character more is refused.
     let mut too_many = uris.clone();

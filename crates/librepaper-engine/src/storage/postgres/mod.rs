@@ -28,6 +28,9 @@ pub use persistence::PersistenceConnection;
 mod peers;
 pub use peers::PeerAuthor;
 mod repository;
+#[cfg(test)]
+#[path = "sharing_save_tests.rs"]
+mod sharing_save_tests;
 mod results;
 mod tags;
 mod usage;
@@ -358,6 +361,21 @@ pub fn new_id() -> uuid::Uuid {
     uuid::Uuid::now_v7()
 }
 
+/// What a save compares of one live sharing row: token hash, role, label,
+/// expiry in whole epoch seconds (`None` for no expiry), comment budget, kind,
+/// owner generation and the anonymous flag. A caller builds one per row it
+/// read; the save builds the same from the table under the document lock.
+pub type LinkState = (
+    Vec<u8>,
+    String,
+    String,
+    Option<i64>,
+    Option<i64>,
+    String,
+    String,
+    bool,
+);
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("PostgreSQL: {0}")]
@@ -373,6 +391,10 @@ pub enum Error {
     /// written; reload the rows and apply the change again.
     #[error("the sharing rows changed under the save")]
     Stale,
+    /// A save tried to bring back a token that was revoked; nothing was
+    /// written.
+    #[error("that token was revoked")]
+    Revoked,
     #[error("{0}")]
     Quota(QuotaScope),
     /// A write gave up waiting for a row lock another transaction held

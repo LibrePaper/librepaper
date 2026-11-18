@@ -131,6 +131,10 @@ impl Refusal {
                 Kind::Conflict(Reason::Conflict),
                 CatalogError::Stale.to_string(),
             ),
+            CatalogError::Revoked => Self::not_written(
+                Kind::Conflict(Reason::Conflict),
+                CatalogError::Revoked.to_string(),
+            ),
             CatalogError::Duplicate(of) => {
                 Self::not_written(Kind::Conflict(Reason::Conflict), of.to_string())
             }

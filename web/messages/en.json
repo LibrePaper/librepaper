@@ -894,7 +894,7 @@
   "connect_owner_only": "Only the project's owner can connect an app to it.",
   "connect_redirect": "You will be sent back to {host} once you approve.",
   "connect_role_comment_help": "Reads and comments.",
-  "connect_role_edit_help": "Changes files directly.",
+  "connect_role_edit_help": "Changes files directly, and can read the project's history and sync its files.",
   "connect_role_read_help": "Reads the project.",
   "connect_role_suggest_help": "Proposes tracked changes you accept or reject.",
   "connectionmethods_choose_token": "Token to use",

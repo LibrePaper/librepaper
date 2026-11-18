@@ -123,6 +123,8 @@ impl From<CatalogError> for WriteError {
             CatalogError::Conflict(why) => Self::Conflict(why),
             // The sharing rows moved under a save: reload and try again.
             CatalogError::Stale => Self::Conflict(CatalogError::Stale.to_string()),
+            // A save tried to bring back a revoked token: a conflict too.
+            CatalogError::Revoked => Self::Conflict(CatalogError::Revoked.to_string()),
             CatalogError::Quota(scope) => Self::Quota(scope),
             // A momentary refusal, the same kind as the memory budget's.
             CatalogError::Busy => Self::Busy,

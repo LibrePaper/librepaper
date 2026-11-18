@@ -1623,16 +1623,34 @@ impl Store {
         let mut entry = entry_from_document(catalog, &document)
             .await
             .map_err(|e| ModifyError::Storage(e.to_string()))?;
+        // The rows as read, in the same shape the save reads them from the
+        // table under its lock. `until` was built from the column's whole
+        // seconds, so parsing it gives back the value the column floors to.
         let expected = entry
             .links
             .iter()
             .map(|link| {
-                link.hash
+                let hash = link
+                    .hash
                     .parse::<Digest>()
-                    .map(|digest| digest.as_bytes().to_vec())
-                    .map_err(|_| ModifyError::Refused("invalid link digest".into()))
+                    .map_err(|_| ModifyError::Refused("invalid link digest".into()))?;
+                let until = if link.until.is_empty() {
+                    None
+                } else {
+                    librepaper_base::util::parse_timestamp(&link.until)
+                };
+                Ok((
+                    hash.as_bytes().to_vec(),
+                    link.role.clone(),
+                    link.label.clone(),
+                    until,
+                    link.budget,
+                    link.kind.as_str().to_string(),
+                    link.owner_generation.clone(),
+                    link.anonymous,
+                ))
             })
-            .collect::<Result<Vec<_>, ModifyError>>()?;
+            .collect::<Result<Vec<crate::storage::postgres::LinkState>, ModifyError>>()?;
         change(&mut entry).map_err(ModifyError::Refused)?;
         let links = entry
             .links
@@ -1679,6 +1697,9 @@ impl Store {
         {
             Ok(()) => {}
             Err(CatalogError::Stale) => return Ok(None),
+            Err(CatalogError::Revoked) => {
+                return Err(ModifyError::Refused("that token was revoked".into()))
+            }
             Err(CatalogError::Conflict(_)) => return Err(ModifyError::OwnershipChanged),
             Err(CatalogError::NotFound) => return Err(ModifyError::NotFound),
             Err(other) => return Err(ModifyError::Storage(other.to_string())),

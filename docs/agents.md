@@ -34,7 +34,7 @@ The app now has the LibrePaper tools for that project. The connection is an agen
 | Read | Read the project. |
 | Comment | Read and comment. |
 | Suggest | Everything Comment allows, plus tracked suggestions. |
-| Edit | Everything Suggest allows, plus direct edits, and creating, renaming or deleting text files. |
+| Edit | Everything Suggest allows, plus direct edits, and creating, renaming or deleting text files. It can also read the project's history and sync its files. |
 
 The connection lasts 30 days and renews while the app keeps using it. It is listed under **Connected apps and tokens** in the Agent tab. To end it at any time, click the revoke button on its row. Revoking it stops the app at once.
 
