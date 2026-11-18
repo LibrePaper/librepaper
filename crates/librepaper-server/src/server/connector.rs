@@ -14,8 +14,13 @@
 //! a ledger -- the second redemption finds the row's hash already known to the
 //! document, takes that as a replay and kills the row if it is still live.
 //! Revoked rows are never deleted, so the hash stays known after the token is
-//! refreshed or revoked, and the code stays spent. A refresh token is sealed
-//! the same way and names the row it renews.
+//! revoked, and the code stays spent. A refresh token is sealed the same way
+//! and names the row it renews. A refresh keeps the row and its key and only
+//! extends the expiry, so the app goes on holding the same token and the row
+//! keeps its id, which comments and the Agent panel refer to. It may come
+//! after the access token ran out, for as long again. The trade-off is that a
+//! refresh token stays usable until the owner revokes the connection, like a
+//! pasted token that renews on use.
 //!
 //! These routes sit outside `api_guard`: the token, revoke and register
 //! routes have no cookie at all, and the two consent routes read the
@@ -32,7 +37,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::sync::atomic::AtomicBool;
 
-use super::sharing::{agent_token_text, seal_link_key, token_expiry, MAX_LINK_LABEL};
+use super::sharing::{
+    agent_token_text, open_link_key, seal_link_key, token_expiry, MAX_LINK_LABEL,
+};
 
 /// How long a registered client name may be, and what a client with none is
 /// called.
@@ -549,13 +556,15 @@ impl Server {
         })
     }
 
-    /// The answer to a finished grant: the new access token, the refresh
-    /// token that renews the row and when the access token ends.
+    /// The answer to a finished grant: the access token, the refresh token
+    /// that renews the row and the seconds the access token has left, from
+    /// the row's `until`.
     fn issued(
         &self,
         origin: &str,
         slug: &str,
         key: &LinkKey,
+        until: &str,
         client_digest: &str,
         owner: &str,
         role: &str,
@@ -579,7 +588,10 @@ impl Server {
             &json!({
                 "access_token": access,
                 "token_type": "Bearer",
-                "expires_in": TOKEN_DAYS * 24 * 3600,
+                "expires_in": (librepaper_base::util::parse_timestamp(until)
+                    .unwrap_or_default()
+                    - now_unix())
+                .max(0),
                 "refresh_token": refresh,
                 "scope": scope_of(role),
             }),
@@ -730,9 +742,9 @@ impl Server {
             ..Default::default()
         };
         // A code is spent once its hash has ever been a row of the document.
-        // The row itself may be long gone from the live set: a refresh swaps
-        // it for one under a new key and a revoke marks it revoked. Revoked
-        // rows are kept, so this lookup still sees them and answers early.
+        // The row itself may be long gone from the live set: a revoke marks
+        // it revoked. Revoked rows are kept, so this lookup still sees them
+        // and answers early.
         // It is only a fast path: the save refuses to bring a revoked token
         // back, so a redemption that gets past it, or races it, still fails
         // with the same `invalid_grant` when the row is added.
@@ -775,7 +787,7 @@ impl Server {
                 }
                 if spent_before {
                     // The row is no longer live, so there is nothing left to
-                    // kill: the token it made was refreshed or revoked. The
+                    // kill: the token it made was revoked. The
                     // code still must not make another. Without this answer
                     // the save below would refuse the row as revoked, which
                     // is the same `invalid_grant`.
@@ -803,16 +815,20 @@ impl Server {
             &arrival.reader_origin(),
             &code.s,
             &key,
+            &grant.until,
             &code.c,
             &code.o,
             role.as_str(),
         )
     }
 
-    /// The `refresh_token` grant: swaps the row the token names for one under
-    /// a new key and a fresh thirty days, so the old access token and the old
-    /// refresh token die together and a stolen refresh token works once at
-    /// most.
+    /// The `refresh_token` grant: keeps the row and its key and extends the
+    /// row's expiry to thirty days from now, answering with the same access
+    /// token. The row may already have expired, for up to as long again, since
+    /// an app learns the token ran out from a 401. A revoked row is not on the
+    /// document's live set, so revoking ends refresh. The trade-off is that a
+    /// refresh token stays usable until the owner revokes the connection, like
+    /// a pasted token that renews on use.
     async fn grant_refresh(&self, arrival: &Arrival, form: &HashMap<String, String>) -> Reply {
         let Some(refresh) = unseal::<Refresh>(&self.key, "lpr1", field(form, "refresh_token"))
         else {
@@ -829,7 +845,13 @@ impl Server {
             Ok(None) => return token_error("invalid_grant"),
             Err(()) => return unavailable(),
         };
-        let Some(row) = entry.live_agent(&refresh.h, now_unix()) else {
+        let grace = TOKEN_DAYS * 24 * 3600;
+        let Some(row) = entry.links.iter().find(|link| {
+            link.kind == LinkKind::Agent
+                && link.hash == refresh.h
+                && librepaper_base::util::parse_timestamp(&link.until)
+                    .is_some_and(|until| now_unix() < until + grace)
+        }) else {
             return token_error("invalid_grant");
         };
         if entry.publisher_id != refresh.o {
@@ -842,6 +864,10 @@ impl Server {
         if owner.session_generation != row.owner_generation {
             return token_error("invalid_grant");
         }
+        let Ok(key) = open_link_key(&self.key, &row.sealed).parse::<LinkKey>() else {
+            return token_error("invalid_grant");
+        };
+        let role = row.role.clone();
         let authority = match self.owner_authority(&owner) {
             Ok(authority) => authority,
             Err(reply) => return reply,
@@ -849,26 +875,24 @@ impl Server {
         let Ok(until) = token_expiry(&format!("{TOKEN_DAYS}d")) else {
             return server_error();
         };
-        let key = LinkKey::mint();
-        let mut grant = row.clone();
-        grant.hash = key.digest().to_hex();
-        grant.sealed = seal_link_key(&self.key, key.expose());
-        grant.since = librepaper_base::util::timestamp();
-        grant.until = until;
-        let role = grant.role.clone();
-        let old = refresh.h.clone();
+        let hash = refresh.h.clone();
         let written = self
             .store
             .modify_as_owner(&refresh.s, &authority, |entry| {
-                // Two refreshes with the same token race here: the first
-                // swaps the row, and the second finds nothing to swap.
-                let Some(id) = entry
-                    .live_agent(&old, now_unix())
-                    .map(|row| row.id().to_string())
+                // Read afresh, and expired rows count: the row may have been
+                // revoked since it was read above, and a refresh is exactly
+                // what brings an expired one back.
+                let Some(mut renewed) = entry
+                    .links
+                    .iter()
+                    .find(|link| link.kind == LinkKind::Agent && link.hash == hash)
+                    .cloned()
                 else {
                     return Err("the connection is gone".to_string());
                 };
-                entry.replace_link(&id, grant.clone());
+                let id = renewed.id().to_string();
+                renewed.until = until.clone();
+                entry.replace_link(&id, renewed);
                 Ok(())
             })
             .await;
@@ -886,6 +910,7 @@ impl Server {
             &arrival.reader_origin(),
             &refresh.s,
             &key,
+            &until,
             &refresh.c,
             &refresh.o,
             &role,
