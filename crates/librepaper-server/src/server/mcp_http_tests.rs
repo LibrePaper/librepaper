@@ -242,6 +242,9 @@ async fn the_handshake_and_the_tool_list_follow_the_protocol() {
     assert!(body["result"]["capabilities"]["tools"].is_object());
     let instructions = body["result"]["instructions"].as_str().unwrap();
     assert!(!instructions.contains("operation_epoch"));
+    assert!(instructions.contains("there is no main file"));
+    assert!(instructions.contains("document_compile"));
+    assert!(instructions.contains("Run directory"));
 
     // An unknown revision is answered with the newest one this server speaks.
     let (_, body) = served
