@@ -392,10 +392,13 @@ export function declaredBibliography({ format = "", chapterPath = "", chapterTex
 // The part of an import plan the two sources share: which .bib the entry goes
 // into, its text so far, and the registration the citing file may need.
 /**
- * @param {{ source: string, targetPath: string, texts: Record<string, string>, format: string,
- *   chapterPath?: string, chapterText?: string, entryPath?: string, entryText?: string }} where
+ * @typedef {{ source: string, targetPath: string, texts: Record<string, string>, format: string,
+ *   chapterPath?: string, chapterText?: string, entryPath?: string, entryText?: string }} ImportWhere
  */
-function importTarget({ source, targetPath, texts, format, chapterPath, chapterText, entryPath, entryText }) {
+
+// The declared (or, failing that, existing) .bib files an import can go into.
+/** @param {ImportWhere} where */
+function resolveTargets({ source, targetPath, texts, format, chapterPath, chapterText, entryPath, entryText }) {
   const project = (format === "markdown" || format === "quarto") && chapterPath !== undefined;
   const declared = project ? declaredBibliography({ format, chapterPath, chapterText, entryPath, entryText, texts }) : null;
   const configured = declared ? declared.files : selectedBibliographyFiles(format === "latex" || format === "tex" ? latexMasked(string(source)) : source, format);
@@ -405,8 +408,31 @@ function importTarget({ source, targetPath, texts, format, chapterPath, chapterT
   // BibTeX is only ever appended to a .bib file, never to a CSL-JSON or YAML bibliography.
   const bibPaths = configuredPaths.filter((name) => /\.bib$/i.test(name));
   if (configuredPaths.length && !bibPaths.length) throw Object.assign(new Error("bibliography_not_bibtex"), { code: "bibliography_not_bibtex" });
-  const path = bibPaths.find((name) => Object.hasOwn(texts, name)) || bibPaths[0] || existing[0] || "references.bib";
-  const previous = string(texts[path]);
+  return { configured, configuredPaths, existing, bibPaths };
+}
+
+/**
+ * The .bib files an import can add to, sorted, and whether the document declares them.
+ * Takes the same inputs as the import planners.
+ * @param {ImportWhere} where
+ * @returns {{ files: string[], declared: boolean }}
+ */
+export function bibliographyTargets(where) {
+  let resolved;
+  try { resolved = resolveTargets(where); }
+  catch (error) { if (error?.code === "bibliography_not_bibtex") return { files: [], declared: true }; throw error; }
+  if (resolved.configuredPaths.length) return { files: [...new Set(resolved.bibPaths)].sort(), declared: true };
+  return { files: resolved.existing, declared: false };
+}
+
+/** @param {ImportWhere & { bibPath?: string }} where */
+function importTarget({ bibPath, ...where }) {
+  const { source, targetPath, format } = where;
+  const { configured, existing, bibPaths } = resolveTargets(where);
+  const candidates = configured.length ? bibPaths : existing;
+  const chosen = bibPath && candidates.includes(bibPath) ? bibPath : null;
+  const path = chosen || bibPaths.find((name) => Object.hasOwn(where.texts, name)) || bibPaths[0] || existing[0] || "references.bib";
+  const previous = string(where.texts[path]);
   const registration = () => {
     if (configured.length) return null;
     const depth = String(targetPath || "").split("/").slice(0, -1).length;
@@ -423,8 +449,16 @@ function importPlan({ texts, path, previous, registration }, key, entryText, alr
 
 export function planZoteroImport({ source, targetPath, texts, item, format = "markdown", ...where }) {
   const target = importTarget({ source, targetPath, texts, format, ...where });
-  const key = zoteroCitationKey(target.previous, item.zotero_item, item.citation_key);
   const already = new RegExp(`x-librepaper-zotero-item\\s*=\\s*[{"]${String(item.zotero_item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[}"]`, "i").test(target.previous);
+  // An item already in the target keeps its key; a new one avoids the keys of every .bib.
+  let key;
+  if (already) key = zoteroCitationKey(target.previous, item.zotero_item, item.citation_key);
+  else {
+    const used = new Set([target.previous, ...bibliographyFiles({ texts }).map((name) => string(texts[name]))]
+      .flatMap((text) => [...text.matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)]).map((match) => match[1].toLocaleLowerCase()));
+    key = item.citation_key;
+    for (let index = 1; used.has(key.toLocaleLowerCase()); index++) key = item.citation_key + collisionSuffix(index);
+  }
   return importPlan({ ...target, texts }, key, item.bibtex, already);
 }
 

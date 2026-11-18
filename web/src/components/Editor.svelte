@@ -240,7 +240,7 @@
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { cslText, cslToBibtex, cslYear, fetchDoi, normaliseDoi } from "../lib/doi.js";
-  import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planDoiImport, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
+  import { bibliographyCache, bibliographyTargets, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planDoiImport, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, completionWake, formatOfPath } from "../lib/completion/index.js";
   import { createLiveIndex } from "../lib/document-index/live.js";
@@ -928,13 +928,26 @@
     return { plan, regId };
   }
 
+  /// The .bib files the Insert > Citation dialog can import into: { files, declared }. No files when no editable file is showing.
+  export function bibliographyImportTargets() {
+    if (!editable || !session || !showing || !view) return { files: [], declared: false };
+    const doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
+    const tree = treeForDoc(doc);
+    const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath) && Boolean(textIdForPath(doc, entry));
+    const regPath = sameFamily ? entry : activePath;
+    const reg = getTextFromDoc(sameFamily ? textIdForPath(doc, entry) : activeFile);
+    try {
+      return bibliographyTargets({ source: reg?.toString() || "", targetPath: regPath, texts: tree.texts, format: formatOf(regPath), chapterPath: activePath, chapterText: getTextFromDoc(activeFile)?.toString() || "", entryPath: entry || "", entryText: (entry && tree.texts[entry]) || "" });
+    } catch { return { files: [], declared: false }; }
+  }
+
   // The plan throws this code when the document's bibliography is not a BibTeX file.
   function importError(error) {
     return error?.code === "bibliography_not_bibtex" ? new Error(m.editor_bibliography_not_bibtex()) : error;
   }
 
   /// Imports several Zotero items for the Insert > Citation dialog. Errors throw to the caller. It returns the citation key of each item, in order.
-  export async function importZoteroItems(items) {
+  export async function importZoteroItems(items, bibPath) {
     if (!editable || !session || !showing || !view) throw new Error(m.editor_zotero_needs_file());
     const activeSession = session, doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
     const fetchedItems = await Promise.all(items.map((item) => zoteroItem(item.zotero_item)));
@@ -946,7 +959,7 @@
       let written;
       try {
         written = writeBibliographyImport(doc, activeFile, activePath, (target) => planZoteroImport({
-          ...target, item: { ...fetchedItems[index], zotero_item: items[index].zotero_item },
+          ...target, bibPath, item: { ...fetchedItems[index], zotero_item: items[index].zotero_item },
         }));
       } catch (error) { throw importError(error); }
       keys.push(written.plan.key);
@@ -982,13 +995,13 @@
   }
 
   /// Adds looked-up DOI entries ({ doi, key, bibtex }) to the project's .bib for the Insert > Citation dialog. It returns the citation key of each entry, in order.
-  export async function importDoiEntries(entries) {
+  export async function importDoiEntries(entries, bibPath) {
     if (!editable || !session || !showing || !view) throw new Error(m.editor_doi_needs_file());
     const doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
     const keys = [];
     for (const doiEntry of entries) {
       let written;
-      try { written = writeBibliographyImport(doc, activeFile, activePath, (target) => planDoiImport({ ...target, entry: doiEntry })); }
+      try { written = writeBibliographyImport(doc, activeFile, activePath, (target) => planDoiImport({ ...target, bibPath, entry: doiEntry })); }
       catch (error) { throw importError(error); }
       keys.push(written.plan.key);
       registerImport(written.plan, written.regId, activeFile);

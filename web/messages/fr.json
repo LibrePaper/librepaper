@@ -1561,6 +1561,7 @@
   "insertmenu_reference_choose": "Choisir un titre, une figure, un tableau ou une équation…",
   "insertmenu_search_label": "Rechercher dans la bibliographie",
   "insertmenu_search_placeholder": "Rechercher un auteur, un titre, une année ou une clé",
+  "insertmenu_bib_target": "Ajouter à",
   "insertmenu_source": "Source",
   "insertmenu_style_narrative": "Narratif / textuel",
   "insertmenu_style_parenthetical": "Entre parenthèses",
