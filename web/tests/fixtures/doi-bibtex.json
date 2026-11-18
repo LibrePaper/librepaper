@@ -256,7 +256,7 @@
         "URL": "http://dx.doi.org/10.1145/3292500.3330701"
       },
       "key": "AkiSanYanOhtKoy2019",
-      "bibtex": "@inproceedings{AkiSanYanOhtKoy2019,\n  author = {Akiba, Takuya and Sano, Shotaro and Yanase, Toshihiko and Ohta, Takeru and Koyama, Masanori},\n  title = {Optuna},\n  year = {2019},\n  booktitle = {Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining},\n  pages = {2623--2631},\n  publisher = {ACM},\n  doi = {10.1145/3292500.3330701}\n}\n"
+      "bibtex": "@inproceedings{AkiSanYanOhtKoy2019,\n  author = {Akiba, Takuya and Sano, Shotaro and Yanase, Toshihiko and Ohta, Takeru and Koyama, Masanori},\n  title = {Optuna},\n  year = {2019},\n  booktitle = {Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery \\& Data Mining},\n  pages = {2623--2631},\n  publisher = {ACM},\n  doi = {10.1145/3292500.3330701}\n}\n"
     },
     {
       "name": "crossref-html-title",
@@ -337,7 +337,7 @@
         ]
       },
       "key": "MulOkoWorND",
-      "bibtex": "@article{MulOkoWorND,\n  author = {Müller, Hans and Ðoković, Novak and {World Health Organization}},\n  title = {Gesundheit für alle},\n  journal = {Health & Policy Review},\n  volume = {12},\n  number = {3},\n  pages = {101--120},\n  publisher = {Editorial Board Ltd},\n  address = {Geneva},\n  doi = {10.1234/synthetic},\n  isbn = {978-0-00-000000-2}\n}\n"
+      "bibtex": "@article{MulOkoWorND,\n  author = {Müller, Hans and Ðoković, Novak and {World Health Organization}},\n  title = {Gesundheit für alle},\n  journal = {Health \\& Policy Review},\n  volume = {12},\n  number = {3},\n  pages = {101--120},\n  publisher = {Editorial Board Ltd},\n  address = {Geneva},\n  doi = {10.1234/synthetic},\n  isbn = {978-0-00-000000-2}\n}\n"
     },
     {
       "name": "synthetic-no-authors",
@@ -379,6 +379,23 @@
       },
       "key": "SmiND",
       "bibtex": "@article{SmiND,\n  author = {Smith, Jane},\n  title = {Undated Work},\n  doi = {10.1234/undated}\n}\n"
+    },
+    {
+      "name": "synthetic-mixed-script-title",
+      "doi": "10.1234/mixed",
+      "csl": {
+        "type": "book",
+        "title": "東京 大阪 京都 Economics of Rivers",
+        "issued": {
+          "date-parts": [
+            [
+              2001
+            ]
+          ]
+        }
+      },
+      "key": "EcoRiv2001",
+      "bibtex": "@book{EcoRiv2001,\n  title = {東京 大阪 京都 Economics of Rivers},\n  year = {2001},\n  doi = {10.1234/mixed}\n}\n"
     }
   ],
   "normalise": [
@@ -421,6 +438,18 @@
     {
       "input": "",
       "doi": null
+    },
+    {
+      "input": "https://doi.org/10.1000/xyz?locatt=mode:legacy",
+      "doi": "10.1000/xyz"
+    },
+    {
+      "input": "https://doi.org/10.1000/xyz#section",
+      "doi": "10.1000/xyz"
+    },
+    {
+      "input": "https://doi.org/10.1000/a%3Fb",
+      "doi": "10.1000/a?b"
     }
   ]
 }
