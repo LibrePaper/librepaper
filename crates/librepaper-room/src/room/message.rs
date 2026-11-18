@@ -62,11 +62,23 @@ pub struct SourceSelection {
 /// is never the range itself: the words still decide, and the server verifies
 /// them against that file, so a wrong hint costs a wider search, not a wrong
 /// anchor.
+///
+/// `occurrence` and `count` say which copy of the selected words the reader
+/// picked, when the same words appear more than once inside the element the
+/// selection was made in: `count` is how many times they appear in that
+/// element's rendered text, and `occurrence` is which of them was selected,
+/// counted from zero. They are sent together or not at all, and only when the
+/// whole selection is inside that one element, so `from_line..=to_line` are
+/// that element's lines.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct SourceHint {
     pub path: String,
     pub from_line: u32,
     pub to_line: u32,
+    #[serde(default)]
+    pub occurrence: Option<u32>,
+    #[serde(default)]
+    pub count: Option<u32>,
 }
 
 #[allow(clippy::large_enum_variant)]

@@ -67,6 +67,19 @@ pub struct Region {
     pub file: usize,
     pub start: usize,
     pub end: usize,
+    /// Which copy of the words the page says was selected, when the page knows.
+    pub pick: Option<Pick>,
+}
+
+/// Which copy of the words the page says was selected, when they appear more
+/// than once inside the element the selection was made in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Pick {
+    pub occurrence: usize,
+    pub count: usize,
+    /// The UTF-16 range of the element's own lines, without any padding.
+    pub start: usize,
+    pub end: usize,
 }
 
 /// One file a passage might have come from.
@@ -466,6 +479,14 @@ pub fn locate(files: &[Candidate<'_>], quote: &Quote<'_>) -> Result<SourceTextTa
 /// end inside it count. If that finds nothing it has either missed or
 /// refused, and the whole document is searched as if no region had been
 /// given: a wrong region costs a wider search, never a missed passage.
+///
+/// A region with a [`Pick`] is tried first in a stricter way: the whole
+/// selection must occur exactly `count` times inside the element, and the
+/// reader's copy is the `occurrence`-th of them. The copies of a passage inside
+/// one element come in the same order on the page as in the source, so the
+/// k-th on the page is the k-th in the source. When the counts differ -- markup
+/// hid a copy, or added one -- that order cannot be trusted, and the pick is
+/// ignored in favour of the words and their context, as it would be without it.
 pub fn locate_in(
     files: &[Candidate<'_>],
     quote: &Quote<'_>,
@@ -475,14 +496,48 @@ pub fn locate_in(
     if wanted.is_empty() {
         return Err(Failure::Empty);
     }
-    if region.is_some() {
-        let inside = Search::over(files, quote, region);
+    if let Some(region) = region {
+        if let Some(pick) = region.pick {
+            if let Some(found) = picked_copy(files, &wanted, region, pick) {
+                return Ok(found);
+            }
+        }
+        let inside = Search::over(files, quote, Some(region));
         if let Ok(found) = search_for(files, &inside, &wanted) {
             return Ok(found);
         }
     }
     let everywhere = Search::over(files, quote, None);
     search_for(files, &everywhere, &wanted)
+}
+
+/// The copy of `wanted` the page picked, when the copies inside the region
+/// are as many as the page said there were. See [`locate_in`].
+fn picked_copy(
+    files: &[Candidate<'_>],
+    wanted: &[char],
+    region: Region,
+    pick: Pick,
+) -> Option<SourceTextTarget> {
+    if pick.count < 2 || pick.occurrence >= pick.count {
+        return None;
+    }
+    let candidate = files.get(region.file)?;
+    let html = is_html(candidate.path);
+    let flat = flatten(candidate.text, html);
+    let copies: Vec<usize> = occurrences(&flat.chars, wanted)
+        .into_iter()
+        .filter(|&at| {
+            let start = flat.from[at] as usize;
+            let end = flat.from[at + wanted.len()] as usize;
+            start >= pick.start && start < pick.end && end <= pick.end
+        })
+        .collect();
+    if copies.len() != pick.count {
+        return None;
+    }
+    let at = *copies.get(pick.occurrence)?;
+    Some(place(candidate, &flat, html, at, wanted.len()))
 }
 
 /// Both directions of shortening, against one search.
@@ -916,10 +971,86 @@ mod tests {
             file: 0,
             start,
             end,
+            pick: None,
         };
         let found = locate_in(&one(text), &quote("It is true.", "", ""), Some(region)).unwrap();
         assert_eq!(found.start_utf16, 13);
         assert_eq!(found.end_utf16, 24);
+    }
+
+    /// Two copies of the same sentence on one line, with other lines around
+    /// them so the line's offsets are not the file's.
+    const TWICE: &str = "Intro line.\nThe model fits. The model fits.\nOutro.\n";
+
+    fn picked(text: &str, occurrence: usize, count: usize) -> Region {
+        let (start, end) = line_region(text, 2, 2, 0);
+        Region {
+            file: 0,
+            start,
+            end,
+            pick: Some(Pick {
+                occurrence,
+                count,
+                start,
+                end,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_pick_names_the_second_copy_on_a_line() {
+        // The words are refused as ambiguous with nothing around them, as
+        // above; the pick says the reader selected the second copy.
+        let found = locate_in(
+            &one(TWICE),
+            &quote("The model fits.", "", ""),
+            Some(picked(TWICE, 1, 2)),
+        )
+        .unwrap();
+        assert_eq!(found.start_utf16, 28);
+        assert_eq!(found.end_utf16, 43);
+        assert_eq!(found.exact, "The model fits.");
+    }
+
+    #[test]
+    fn a_pick_of_zero_names_the_first_copy_on_a_line() {
+        let found = locate_in(
+            &one(TWICE),
+            &quote("The model fits.", "", ""),
+            Some(picked(TWICE, 0, 2)),
+        )
+        .unwrap();
+        assert_eq!(found.start_utf16, 12);
+        assert_eq!(found.end_utf16, 27);
+    }
+
+    #[test]
+    fn a_pick_whose_count_does_not_match_the_source_is_ignored() {
+        // The page says three copies; the source has two. The pick cannot be
+        // trusted, so the words decide, and with nothing around them they
+        // cannot.
+        assert_eq!(
+            locate_in(
+                &one(TWICE),
+                &quote("The model fits.", "", ""),
+                Some(picked(TWICE, 1, 3)),
+            )
+            .unwrap_err(),
+            Failure::Ambiguous
+        );
+    }
+
+    #[test]
+    fn a_pick_of_a_single_copy_changes_nothing() {
+        let text = "Intro.\nThe model fits.\nOutro.\n";
+        let found = locate_in(
+            &one(text),
+            &quote("The model fits.", "", ""),
+            Some(picked(text, 0, 1)),
+        )
+        .unwrap();
+        assert_eq!(found.start_utf16, 7);
+        assert_eq!(found.exact, "The model fits.");
     }
 
     #[test]

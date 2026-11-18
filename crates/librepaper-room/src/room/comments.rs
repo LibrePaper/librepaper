@@ -504,6 +504,11 @@ fn source_files(doc: &LoroDoc) -> Vec<(String, String, String)> {
 /// words it holds. A couple of lines either side absorbs that.
 const PAD: u32 = 2;
 
+/// The most copies of the selected words a hint may claim. A page with more
+/// copies than this inside one element is not one a reader picks out, and a
+/// count this large is more likely a broken client than a real selection.
+const MAX_PICK_COUNT: u32 = 1000;
+
 /// Works out what a selection is about, in the document at `doc`.
 ///
 /// This is the one place a rendered selection becomes a source range, and it
@@ -541,9 +546,29 @@ fn locate_anchor(
         let file = candidates
             .iter()
             .position(|candidate| candidate.path == hint.path.as_str())?;
-        let (start, end) =
-            locate::line_region(candidates[file].text, hint.from_line, hint.to_line, PAD);
-        Some(locate::Region { file, start, end })
+        let text = candidates[file].text;
+        let (start, end) = locate::line_region(text, hint.from_line, hint.to_line, PAD);
+        // The pick covers the element's own lines, so its copies are counted
+        // there and not in the padding around it. A count past the cap is
+        // ignored rather than trusted.
+        let pick = match (hint.occurrence, hint.count) {
+            (Some(occurrence), Some(count)) if count <= MAX_PICK_COUNT => {
+                let (start, end) = locate::line_region(text, hint.from_line, hint.to_line, 0);
+                Some(locate::Pick {
+                    occurrence: occurrence as usize,
+                    count: count as usize,
+                    start,
+                    end,
+                })
+            }
+            _ => None,
+        };
+        Some(locate::Region {
+            file,
+            start,
+            end,
+            pick,
+        })
     });
     let found = match region {
         Some(region) => locate::locate_in(&candidates, quote, Some(region)),

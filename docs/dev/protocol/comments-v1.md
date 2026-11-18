@@ -70,7 +70,10 @@ that fit are loaded, except for the one-row oversize case.
   the lines the selection came from, as the preview's source positions give
   them. Absent or `null` means no hint. The server searches only that file's
   lines, padded by two either side, and falls back to the whole document when
-  the words are not found there. The hint is never the range and is not stored,
+  the words are not found there. When the whole selection is inside one element
+  and its words occur `count` times there, `occurrence` (0-based) says which copy
+  was selected, and the two are sent together or not at all. The hint is never
+  the range and is not stored,
   so a retry is not compared against it.
 - `comments-changed` carries updated state counts but no comment rows. Clients
   re-read pages when an event describes a batch or other change that cannot

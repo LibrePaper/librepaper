@@ -34,7 +34,7 @@ uses a stable UUID `temp_id` across retries.
 
 | Type | Required fields | Notes |
 |---|---|---|
-| `comment` | `exact` for a selected passage | `body` may be omitted for a highlight. Optional `motivation`, `prefix`, `suffix`, rendered `position`, `document`, `color`, and rendered digest. `document: true` is a document-wide remark and has no selection. Optional `source` (`file_id`, `start`, `end` in UTF-16) names a range of the source itself; editors only. Optional `hint` (`path`, `from_line`, `to_line`, 1-based and inclusive) says which file and lines a rendered selection came from; any commenter may send it. The hint only narrows the search for `exact`, the words still decide the range, and it is not stored. |
+| `comment` | `exact` for a selected passage | `body` may be omitted for a highlight. Optional `motivation`, `prefix`, `suffix`, rendered `position`, `document`, `color`, and rendered digest. `document: true` is a document-wide remark and has no selection. Optional `source` (`file_id`, `start`, `end` in UTF-16) names a range of the source itself; editors only. Optional `hint` (`path`, `from_line`, `to_line`, 1-based and inclusive) says which file and lines a rendered selection came from; any commenter may send it. The hint only narrows the search for `exact`, the words still decide the range, and it is not stored. Optional `occurrence` (0-based) and `count` say which copy of repeated words was selected inside the one element the selection was in, and are sent together or not at all. |
 | `reply` | `comment_id`, `body` | Adds a reply to a thread. |
 | `resolve` | `comment_id`, `resolved` | `false` reopens. |
 | `delete` | `comment_id` | Deletes an annotation. |
