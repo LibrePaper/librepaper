@@ -15,12 +15,12 @@
 // Usage: LIBREPAPER_TEST_POSTGRES_URL=<administrative postgres url> \
 //        connect-browser.mjs <path-to-librepaper-binary>
 // Needs: the binary (the first argument, or the default deployment binary), a
-// Postgres (LIBREPAPER_TEST_POSTGRES_URL) and Chromium. Skips politely when the
+// Postgres (LIBREPAPER_TEST_POSTGRES_URL) and Chromium. Fails when the
 // binary or Postgres is missing.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { browser, removeTemporary, until } from "../helpers/browser-driver.mjs";
@@ -32,10 +32,6 @@ const CLIENT_NAME = "Test app";
 const STATE = "xyz";
 
 const binary = resolve(process.argv[2] || deploymentBinary());
-if (!existsSync(binary)) {
-  log(`no librepaper binary at ${binary}; skipping (set LIBREPAPER_BIN)`);
-  process.exit(0);
-}
 
 // One multipart upload makes the project; the same shape the transport check uses.
 function multipart(title, files) {
@@ -85,13 +81,10 @@ async function register(deployment) {
 const randomPort = () => 19000 + Math.floor(Math.random() * 3000);
 
 const deployment = await startDeployment({ label: "connect_browser", binary });
-if (!deployment) {
-  log("no binary; skipping");
-  process.exit(0);
-}
-if (deployment.unavailable) {
-  log(`${deployment.unavailable}; skipping`);
-  process.exit(0);
+// A deployment scenario fails rather than skips, like the others in this
+// suite: the suite provides the binary and Postgres, so a missing one is a fault.
+if (!deployment || deployment.unavailable) {
+  throw new Error(deployment?.unavailable || `no librepaper binary at ${binary}; build it first`);
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "librepaper-connect-check-"));

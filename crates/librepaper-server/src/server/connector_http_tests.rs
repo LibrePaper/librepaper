@@ -919,13 +919,19 @@ async fn the_largest_registration_still_completes_a_grant_and_a_refresh() {
         return;
     };
     // Five URIs totalling exactly 2048 characters, one of them the callback.
-    let padded = |fill: char| format!("https://chat.example/{}", fill.to_string().repeat(482));
+    // Three padded URIs share the room, and the last one takes what is left.
+    let padded = |fill: char, length: usize| {
+        let stem = "https://chat.example/";
+        format!("{stem}{}", fill.to_string().repeat(length - stem.len()))
+    };
+    let share = (2048 - CALLBACK.len()) / 4;
+    let last = 2048 - CALLBACK.len() - 3 * share;
     let uris = vec![
         CALLBACK.to_string(),
-        padded('a'),
-        padded('b'),
-        padded('c'),
-        padded('d'),
+        padded('a', share),
+        padded('b', share),
+        padded('c', share),
+        padded('d', last),
     ];
     assert_eq!(uris.iter().map(String::len).sum::<usize>(), 2048);
     let answer = served
@@ -956,8 +962,7 @@ async fn the_largest_registration_still_completes_a_grant_and_a_refresh() {
     assert_eq!(renewed.status, 200, "{}", renewed.body);
 
     // One character more is refused.
-    let mut too_many = vec![CALLBACK.to_string()];
-    too_many.extend([padded('a'), padded('b'), padded('c'), padded('d')]);
+    let mut too_many = uris.clone();
     too_many[1].push('x');
     let refused = served.register(&json!({"redirect_uris": too_many})).await;
     assert_eq!(refused.status, 400, "{}", refused.body);
@@ -972,7 +977,10 @@ async fn the_connector_routes_are_not_found_on_the_documents_host() {
     };
     let response = served
         .client()
-        .get(format!("{}/.well-known/oauth-authorization-server", served.base))
+        .get(format!(
+            "{}/.well-known/oauth-authorization-server",
+            served.base
+        ))
         .header("host", "docs.paper.example")
         .send()
         .await

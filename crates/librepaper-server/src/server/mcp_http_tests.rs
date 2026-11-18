@@ -444,12 +444,13 @@ async fn a_message_that_is_not_json_rpc_two_runs_nothing() {
     assert_eq!(body["error"]["code"], -32600);
     assert_eq!(body["id"], Value::Null);
     let listed = served
-        .call(&token, "document_read", json!({"queries": [{"kind": "context"}]}))
+        .call(
+            &token,
+            "document_read",
+            json!({"queries": [{"kind": "context"}]}),
+        )
         .await;
-    assert!(
-        !listed.to_string().contains("Should not exist"),
-        "{listed}"
-    );
+    assert!(!listed.to_string().contains("Should not exist"), "{listed}");
 
     // An object as the id would be echoed into the answer.
     let (status, body) = served

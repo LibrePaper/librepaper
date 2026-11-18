@@ -356,7 +356,11 @@ impl Server {
     /// The ordinary not-found for every route here when connectors are off,
     /// or when the request arrived on the documents origin, which serves
     /// nothing of the app.
-    pub(super) fn connector_gate(&self, ctx: &RequestContext, headers: &HeaderMap) -> Option<Reply> {
+    pub(super) fn connector_gate(
+        &self,
+        ctx: &RequestContext,
+        headers: &HeaderMap,
+    ) -> Option<Reply> {
         if !self.agent_connectors || ctx.arrival.is_docs_host() {
             return Some(self.not_found(headers));
         }
@@ -731,10 +735,14 @@ impl Server {
                     // may be the thief. The row is expired rather than
                     // dropped: dropped, it would leave nothing for a third
                     // redemption to find, and that one would be granted a new
-                    // token. An expired row admits nobody and keeps the code
-                    // spent until the code itself runs out.
+                    // token. The row stays, dead: an owner generation no
+                    // account can have refuses its token at once, and it
+                    // expires a second from now. Not now itself: the catalogue
+                    // holds an expiry to no earlier than the row's creation,
+                    // which may be this very second.
                     if let Some(mut spent) = entry.link_by_id(&id).cloned() {
-                        spent.until = librepaper_base::util::timestamp();
+                        spent.owner_generation = "spent".to_string();
+                        spent.until = librepaper_base::util::format_unix(now_unix() + 1);
                         entry.replace_link(&id, spent);
                     }
                     replayed.store(true, Ordering::SeqCst);
@@ -1014,8 +1022,9 @@ async fn authorize(
     }
     let query = request.uri().query().unwrap_or_default();
     let params = parse_form(query.as_bytes());
-    let asked = match server.check_authorize(&ctx.arrival.reader_origin(), &params) {
-        Ok(asked) => asked,
+    // Checked for its refusals only: the page reads the query itself.
+    match server.check_authorize(&ctx.arrival.reader_origin(), &params) {
+        Ok(_) => {}
         Err(Problem::Refuse(message)) => {
             return plain(400, &format!("invalid authorization request: {message}"))
         }
