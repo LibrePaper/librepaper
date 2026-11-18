@@ -1356,13 +1356,6 @@ async fn approve(
             &json!({"error": "role is read, comment, suggest or edit"}),
         );
     };
-    let ceiling = server.owner_ceiling(&who);
-    if ceiling.clamp(role) != role {
-        return write_json(
-            400,
-            &json!({"error": "that role is not available on this server"}),
-        );
-    }
     match server
         .authorize::<access::rung::Owner>(&ctx, &headers, &asked.slug, None)
         .await
@@ -1375,6 +1368,14 @@ async fn approve(
                 &json!({"error": "only the project's owner can connect an app to it"}),
             )
         }
+    }
+    // Asked only of the owner, so a stranger learns nothing about policy.
+    let ceiling = server.owner_ceiling(&who);
+    if ceiling.clamp(role) != role {
+        return write_json(
+            400,
+            &json!({"error": "that role is not available on this server"}),
+        );
     }
     let code = seal(
         &server.key,

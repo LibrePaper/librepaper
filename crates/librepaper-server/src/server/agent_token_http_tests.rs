@@ -896,13 +896,15 @@ async fn revoked_expired_and_stale_tokens_answer_401() {
     .unwrap();
     assert_eq!(served.tools(&expired).await.0, 401);
     let listed = served.sharing().await;
+    // An expired token stays listed, marked expired, for the window in which a
+    // connector could still renew it, so the owner can revoke it.
     assert!(
-        !listed["tokens"]
+        listed["tokens"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|token| token["id"] == expired_id.as_str()),
-        "an expired token is not listed: {listed}"
+            .any(|token| token["id"] == expired_id.as_str() && token["expired"] == true),
+        "an expired token is listed as expired: {listed}"
     );
 
     assert_eq!(served.tools(&stale).await.0, 200);

@@ -1400,14 +1400,20 @@ async fn a_continuation_too_long_to_carry_through_sign_in_is_refused_here() {
     let Some(served) = serve("connector-long-next", true).await else {
         return;
     };
-    let client_id = served.client_id().await;
-    // Within every cap, but each `%` is escaped twice on its way into the
-    // cookie.
+    // A long registered callback rides through sign-in twice (inside the
+    // client id and as redirect_uri), and each `%` of the state is escaped
+    // twice: within every cap, but too long for the cookie.
+    let callback = format!("https://chat.example/{}", "a".repeat(480));
+    let registered = served
+        .register(&json!({"redirect_uris": [callback], "client_name": "Long app"}))
+        .await;
+    assert_eq!(registered.status, 201, "{}", registered.body);
+    let client_id = registered.body["client_id"].as_str().unwrap().to_string();
     let state = "%".repeat(256);
     let query = form(&[
         ("response_type", "code"),
         ("client_id", &client_id),
-        ("redirect_uri", CALLBACK),
+        ("redirect_uri", &callback),
         ("code_challenge", &pkce_challenge(VERIFIER)),
         ("code_challenge_method", "S256"),
         ("state", &state),
