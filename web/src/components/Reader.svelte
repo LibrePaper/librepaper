@@ -993,7 +993,7 @@
     try {
       await fetch(`/api/documents/${SLUG}/compile/${id}`, {
         method: "POST", credentials: "same-origin",
-        headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+        headers: authHeaders(KEY, "application/json"), body: JSON.stringify(body),
       });
     } catch (error) { console.warn("compile reply failed", error); }
   }
