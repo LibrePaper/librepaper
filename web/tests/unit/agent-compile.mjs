@@ -102,3 +102,10 @@ test("a diagnostic message is cut by code points, never inside a surrogate pair"
   assert.equal(compact.message, "😀".repeat(1024));
   assert.equal(/[\ud800-\udbff](?![\udc00-\udfff])/.test(compact.message), false);
 });
+
+test("a diagnostic's hints are folded into its message", () => {
+  const reply = compileReply({ html: "<p>", diagnostics: [
+    { severity: "error", message: "Quarto failed", hints: ["real error", "second line"] },
+  ] }, "rev");
+  assert.match(reply.diagnostics[0].message, /^Quarto failed\nreal error\nsecond line/);
+});

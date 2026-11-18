@@ -116,6 +116,24 @@ export async function previewCandidate({ request, tree: sourceTree, render, titl
   const candidateRevision = await digest({ ...tree, main: "" });
   if (candidateRevision !== revision) throw new Error("The candidate revision does not match its source files.");
   const rendered = await render(tree, await title(tree));
+  // The shared LaTeX queue may have merged this job with a newer one, so the
+  // result can describe another tree than the one asked for.
+  if (rendered?.compiledTree && rendered.compiledTree !== tree) {
+    return {
+      revision: candidateRevision,
+      base_revision: baseRevision,
+      ok: false,
+      diagnostics: [{ severity: "error", message: "A newer preview replaced this verification. Try again." }],
+      provenance: {
+        renderer: "browser",
+        engine: formatOf(tree.main) || "markdown",
+        implementation: globalThis.__LIBREPAPER_RENDERER_BUILD__ || "web-renderer",
+        dependency_hash: referenced.dependency_hash || null,
+        settings_hash: referenced.settings_hash || null,
+      },
+      output: "none",
+    };
+  }
   const diagnostics = (rendered.diagnostics || []).map((item) => diagnosticContext(item, tree, candidateRevision));
   const hasOutput = typeof rendered.html === "string" || Boolean(rendered.pdf?.byteLength);
   const format = formatOf(tree.main) || "markdown";

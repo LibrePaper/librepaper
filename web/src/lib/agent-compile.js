@@ -35,7 +35,11 @@ export function tailBytes(text, limit = LOG_LIMIT) {
 export function compileReply(result, revision, requested = null) {
   const rendered = result || {};
   const output = rendered.pdf?.byteLength ? "pdf" : typeof rendered.html === "string" ? "html" : "none";
-  const items = Array.isArray(rendered.diagnostics) ? [...rendered.diagnostics] : [];
+  // The bounded form keeps no hints, and a fallback puts the real error there.
+  const items = Array.isArray(rendered.diagnostics) ? rendered.diagnostics.map((item) => {
+    const hints = item && Array.isArray(item.hints) ? item.hints.filter((hint) => typeof hint === "string") : [];
+    return hints.length ? { ...item, message: `${item.message ?? ""}\n${hints.join("\n")}` } : item;
+  }) : [];
   const mismatch = (requested === "pdf" || requested === "html") && output !== "none" && output !== requested;
   if (mismatch) items.push({ severity: "error", message: `Requested ${requested}, but this file's renderer produced ${output}.` });
   const diagnostics = boundedDiagnostics(items);

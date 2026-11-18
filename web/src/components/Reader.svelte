@@ -99,7 +99,7 @@
     import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
   import { leaf } from "../lib/reader/run-directory.js";
   import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
-  import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, readAgentRun, writeAgentRun, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import { buildPreferenceUser, readDefaultPreview, readLiveCompile, readShareResults, writeShareResults, readAgentRun, writeAgentRun, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { locale } from "../lib/locale.js";
   import { createSharedResults, publishProblem } from "../lib/reader/shared-results.svelte.js";
   import { splitResults, staleCells, tagCells } from "../lib/quarto-results.js";
@@ -957,11 +957,15 @@
     if (!(request.path in (live.texts || {}))) return errorReply("failed", "no such file");
     const format = renderers.formatOf(request.path) || "";
     if (!format) return errorReply("no_renderer", "This file type cannot be compiled.");
+    // The saved choices below belong to the file being previewed; another
+    // format falls back to its own saved default.
+    const sameFormat = format === (renderers.formatOf(previewPath) || "");
     const wantsPdf = request.output
       ? request.output === "pdf"
-      : format === "typst" ? typstOutput !== "html"
-        : format === "latex" ? latexOutput !== "html"
-          : markdownOutput === "pdf";
+      : !sameFormat ? readDefaultPreview(buildScope(), format) === "pdf"
+        : format === "typst" ? typstOutput !== "html"
+          : format === "latex" ? latexOutput !== "html"
+            : markdownOutput === "pdf";
     const output = wantsPdf ? "pdf" : "html";
     if (request.run) {
       if (!runCodeOffered || !runDir.usable || !["quarto", "typst"].includes(format)) {
@@ -975,10 +979,11 @@
       // No await between the check, the capture and the start, so the run and
       // the reply describe the same file.
       const tree = capturePreviewTree(treeNow());
-      const started = runCode({ output, tree });
+      const started = runCode({ output, tree, allowed: () => readAgentRun(buildScope(), SLUG) });
       const digest = renderers.snapshotDigest({ ...tree, main: "" });
       const outcome = await started;
       const revision = await digest;
+      if (outcome.reason === "run_disabled") return errorReply("run_disabled", "The owner has not enabled \"Let agents run code\" for this project.");
       if (outcome.cancelled) return errorReply("failed", "The run was stopped.");
       const diagnostics = outcome.diagnostics.map((item) => diagnosticContext(item, tree, revision));
       return compileReply({
@@ -999,10 +1004,9 @@
     const rendered = await renderers.render(tree, heading, { ...options, project: SLUG });
     // The preview queue may have merged this job with a newer one, so the
     // result can describe another tree than the one asked for.
-    const compiled = rendered?.compiledTree || tree;
-    if (compiled.main !== request.path) return errorReply("busy", "A newer preview replaced this compile. Try again.");
-    const revision = await renderers.snapshotDigest({ ...compiled, main: "" });
-    const diagnostics = (rendered?.diagnostics || []).map((item) => diagnosticContext(item, compiled, revision));
+    if (rendered?.compiledTree && rendered.compiledTree !== tree) return errorReply("busy", "A newer preview replaced this compile. Try again.");
+    const revision = await renderers.snapshotDigest({ ...tree, main: "" });
+    const diagnostics = (rendered?.diagnostics || []).map((item) => diagnosticContext(item, tree, revision));
     return compileReply({ ...rendered, diagnostics }, revision, request.output);
   }
   async function postCompileReply(id, body) {
@@ -2644,7 +2648,7 @@
   // makes is not the preview: its cell outputs are split out and spliced under
   // the draft's cells. For Typst, Calepin's stored files are kept instead, and
   // the browser's draft reads them back, so the preview stays the draft.
-  async function runCode({ refreshCache = false, output = "", tree: given = null } = {}) {
+  async function runCode({ refreshCache = false, output = "", tree: given = null, allowed = null } = {}) {
     const none = (reason, cancelled = false, log = "") => ({ ok: false, cancelled, output: "none", diagnostics: [], log, reason });
     if (runPhase === "running" || readerDisposed) return none("busy");
     if (!runDir.usable) {
@@ -2699,6 +2703,12 @@
       // them from the Run directory after the run.
       await figureSyntaxReady(tree);
       const wanted = wantedPaths(referencedFigures(tree), tree);
+      // Consent is read again just before the job goes out: it may have been
+      // withdrawn while the figures and heading were gathered.
+      if (allowed && !allowed()) {
+        runPhase = "idle";
+        return none("run_disabled");
+      }
       const rendered = await renderers.render(runTree, heading, {
         buildPreferences: { ...buildPreferences, backend: "local", output: toPdf ? "pdf" : "html" },
         project: SLUG,
