@@ -56,9 +56,9 @@ The `librepaper` command comes with the desktop app's Homebrew, Scoop, Windows i
 Run `librepaper login` once to sign in on this computer for 90 days. On a server or in CI, use a project token instead:
 
 1. In the project, open the Agent panel (the robot icon).
-2. Open the Agent tab, then click **New token**.
+2. Open the Connect tab, then click **New token**.
 3. Choose the **Edit** permission and set **Expires** to 180 days or 1 year. Edit tokens default to one day.
-4. Copy the token from "Other connection methods".
+4. Copy the token from "Command line and MCP configuration".
 
 See [Agent tokens](agents.html#agent-tokens).
 

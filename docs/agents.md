@@ -16,9 +16,9 @@ There are three ways to connect an agent:
 
 Use the connector to let a chat app or a coding agent work on one project. It is the main way to connect. You add the project's URL to the app, and the app opens a LibrePaper page where you approve the connection. No token goes into the chat, and you configure nothing by hand.
 
-Only the project owner sees the URL and can approve connections.
+Only the project owner sees the URL and can approve connections. Each project has its own URL, so you connect each project once.
 
-1. Open the project, then the Agent panel (the robot icon in the sidebar). In the Agent tab, under **Connect an app or agent**, click the copy icon next to the URL. It has the form `https://<server>/mcp/<slug>`, where `<slug>` is the project's slug in its address bar.
+1. Open the project, then the Agent panel (the robot icon in the sidebar). In the Connect tab, under **Connect an app**, click the copy icon next to the URL. It has the form `https://<server>/mcp/<slug>`, where `<slug>` is the project's slug in its address bar.
 2. Add the URL to your app as a remote MCP server or custom connector:
    - **claude.ai and Claude Desktop:** go to Settings → Connectors → Add custom connector, and paste the URL.
    - **Claude Code:** run `claude mcp add --transport http librepaper https://<server>/mcp/<slug>`. Then run `/mcp` in a session, and choose to authenticate. The approval page opens in your browser.
@@ -37,7 +37,7 @@ The app now has the LibrePaper tools for that project. The connection is an agen
 | Suggest | Everything Comment allows, plus tracked suggestions. |
 | Edit | Everything Suggest allows, plus direct edits, and creating, renaming or deleting text files. It can also read the project's history and sync its files. |
 
-The connection lasts 30 days and renews while the app keeps using it. It is listed under **Connected apps and tokens** in the Agent tab. To end it at any time, click the revoke button on its row. Revoking it stops the app at once.
+The connection lasts 30 days and renews while the app keeps using it. It is listed under **Connected** in the Connect tab. To end it at any time, click the revoke button on its row. Revoking it stops the app at once.
 
 Chat apps such as claude.ai and ChatGPT call the server from the app maker's servers. For them, the LibrePaper server must be reachable from the internet. A server that is only on a local network or a Tailscale network cannot be used by a chat app. Coding agents connect from your computer, so this does not apply to them.
 
@@ -45,11 +45,11 @@ A host can turn connectors off with `agent_connectors = false` in `librepaper.to
 
 ## Use a token
 
-Use a token for scripts, sync, or an agent that cannot add a connector. The one-paste flow below works in any session, with no setup, so it is the fallback when a connector is not possible. Tokens are listed under **Tokens** in the Agent tab.
+Use a token for scripts, sync, or an agent that cannot add a connector. The one-paste flow below works in any session, with no setup, so it is the fallback when a connector is not possible. Make tokens in the **Tokens** section of the Connect tab; they are listed under **Connected**.
 
 **Connecting takes one copy and one paste, all from the Agent panel.** You configure nothing by hand, and you need no local copy of the project: the token tells the agent which server and project to reach. Each project has its own token, so you repeat this for each project.
 
-Open the project, then the Agent panel (the robot icon in the sidebar), then the Agent tab.
+Open the project, then the Agent panel (the robot icon in the sidebar), then the Connect tab.
 
 1. Click **New token**.
 2. Choose a permission and an expiry.
@@ -159,7 +159,7 @@ When you click **New token**, you pick a permission and an expiry. The defaults 
 
 A token reaches only its own project. It cannot upload images, publish, share or run code. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
 
-A token stops working when it expires, when you revoke it with the revoke button on its row in the Agent tab, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
+A token stops working when it expires, when you revoke it with the revoke button on its row in the Connect tab, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
 
 ## Tasks
 
@@ -173,7 +173,7 @@ Each unresolved comment and each diagnostic has a robot button, which sends that
 
 Most people do not need this section. Use it to keep the token out of your agent's chat, or to connect a program that cannot use the skill.
 
-**Other connection methods**, at the bottom of the Agent tab, has copy icons for the Claude Code commands, an MCP configuration and the token itself. If you have several tokens, choose which one to use there.
+**Command line and MCP configuration**, in the Tokens section of the Connect tab, has copy icons for the Claude Code commands, an MCP configuration and the token itself. If you have several tokens, choose which one to use there.
 
 ### Claude Code
 
