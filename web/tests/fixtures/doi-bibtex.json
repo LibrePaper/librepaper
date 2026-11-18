@@ -1,0 +1,403 @@
+{
+  "convert": [
+    {
+      "name": "crossref-journal-article",
+      "doi": "10.1038/nature12373",
+      "csl": {
+        "type": "journal-article",
+        "author": [
+          {
+            "family": "Kucsko",
+            "given": "G."
+          },
+          {
+            "family": "Maurer",
+            "given": "P. C."
+          },
+          {
+            "family": "Yao",
+            "given": "N. Y."
+          },
+          {
+            "family": "Kubo",
+            "given": "M."
+          },
+          {
+            "family": "Noh",
+            "given": "H. J."
+          },
+          {
+            "family": "Lo",
+            "given": "P. K."
+          },
+          {
+            "family": "Park",
+            "given": "H."
+          },
+          {
+            "family": "Lukin",
+            "given": "M. D."
+          }
+        ],
+        "title": "Nanometre-scale thermometry in a living cell",
+        "container-title": "Nature",
+        "issued": {
+          "date-parts": [
+            [
+              2013,
+              7,
+              31
+            ]
+          ]
+        },
+        "volume": "500",
+        "issue": "7460",
+        "page": "54-58",
+        "publisher": "Springer Science and Business Media LLC",
+        "DOI": "10.1038/nature12373",
+        "URL": "http://dx.doi.org/10.1038/nature12373",
+        "ISSN": [
+          "0028-0836",
+          "1476-4687"
+        ]
+      },
+      "key": "KucMauYaoKubNoh2013",
+      "bibtex": "@misc{KucMauYaoKubNoh2013,\n  author = {Kucsko, G. and Maurer, P. C. and Yao, N. Y. and Kubo, M. and Noh, H. J. and Lo, P. K. and Park, H. and Lukin, M. D.},\n  title = {Nanometre-scale thermometry in a living cell},\n  year = {2013},\n  volume = {500},\n  number = {7460},\n  pages = {54--58},\n  publisher = {Springer Science and Business Media LLC},\n  doi = {10.1038/nature12373},\n  issn = {0028-0836}\n}\n"
+    },
+    {
+      "name": "datacite-arxiv-preprint",
+      "doi": "10.48550/arXiv.1706.03762",
+      "csl": {
+        "type": "article",
+        "author": [
+          {
+            "family": "Vaswani",
+            "given": "Ashish"
+          },
+          {
+            "family": "Shazeer",
+            "given": "Noam"
+          },
+          {
+            "family": "Parmar",
+            "given": "Niki"
+          },
+          {
+            "family": "Uszkoreit",
+            "given": "Jakob"
+          },
+          {
+            "family": "Jones",
+            "given": "Llion"
+          },
+          {
+            "family": "Gomez",
+            "given": "Aidan N."
+          },
+          {
+            "family": "Kaiser",
+            "given": "Lukasz"
+          },
+          {
+            "family": "Polosukhin",
+            "given": "Illia"
+          }
+        ],
+        "title": "Attention Is All You Need",
+        "issued": {
+          "date-parts": [
+            [
+              2017
+            ]
+          ]
+        },
+        "publisher": "arXiv",
+        "DOI": "10.48550/ARXIV.1706.03762",
+        "URL": "https://arxiv.org/abs/1706.03762"
+      },
+      "key": "VasShaParUszJon2017",
+      "bibtex": "@misc{VasShaParUszJon2017,\n  author = {Vaswani, Ashish and Shazeer, Noam and Parmar, Niki and Uszkoreit, Jakob and Jones, Llion and Gomez, Aidan N. and Kaiser, Lukasz and Polosukhin, Illia},\n  title = {Attention Is All You Need},\n  year = {2017},\n  publisher = {arXiv},\n  doi = {10.48550/ARXIV.1706.03762},\n  url = {https://arxiv.org/abs/1706.03762}\n}\n"
+    },
+    {
+      "name": "crossref-book-chapter",
+      "doi": "10.1007/978-3-030-58452-8_13",
+      "csl": {
+        "type": "book-chapter",
+        "author": [
+          {
+            "family": "Carion",
+            "given": "Nicolas"
+          },
+          {
+            "family": "Massa",
+            "given": "Francisco"
+          },
+          {
+            "family": "Synnaeve",
+            "given": "Gabriel"
+          },
+          {
+            "family": "Usunier",
+            "given": "Nicolas"
+          },
+          {
+            "family": "Kirillov",
+            "given": "Alexander"
+          },
+          {
+            "family": "Zagoruyko",
+            "given": "Sergey"
+          }
+        ],
+        "title": "End-to-End Object Detection with Transformers",
+        "container-title": "Lecture Notes in Computer Science",
+        "issued": {
+          "date-parts": [
+            [
+              2020
+            ]
+          ]
+        },
+        "page": "213-229",
+        "publisher": "Springer International Publishing",
+        "DOI": "10.1007/978-3-030-58452-8_13",
+        "URL": "http://dx.doi.org/10.1007/978-3-030-58452-8_13",
+        "ISBN": [
+          "9783030584511",
+          "9783030584528"
+        ],
+        "ISSN": [
+          "0302-9743",
+          "1611-3349"
+        ]
+      },
+      "key": "CarMasSynUsuKir2020",
+      "bibtex": "@misc{CarMasSynUsuKir2020,\n  author = {Carion, Nicolas and Massa, Francisco and Synnaeve, Gabriel and Usunier, Nicolas and Kirillov, Alexander and Zagoruyko, Sergey},\n  title = {End-to-End Object Detection with Transformers},\n  year = {2020},\n  pages = {213--229},\n  publisher = {Springer International Publishing},\n  doi = {10.1007/978-3-030-58452-8_13},\n  isbn = {9783030584511},\n  issn = {0302-9743}\n}\n"
+    },
+    {
+      "name": "crossref-book",
+      "doi": "10.1017/CBO9780511790942",
+      "csl": {
+        "type": "monograph",
+        "author": [
+          {
+            "family": "Gelman",
+            "given": "Andrew"
+          },
+          {
+            "family": "Hill",
+            "given": "Jennifer"
+          }
+        ],
+        "title": "Data Analysis Using Regression and Multilevel/Hierarchical Models",
+        "container-title": [],
+        "issued": {
+          "date-parts": [
+            [
+              2006,
+              12,
+              18
+            ]
+          ]
+        },
+        "publisher": "Cambridge University Press",
+        "DOI": "10.1017/cbo9780511790942",
+        "URL": "http://dx.doi.org/10.1017/CBO9780511790942",
+        "ISBN": [
+          "9780521867061",
+          "9780521686891",
+          "9780511790942"
+        ]
+      },
+      "key": "GelHil2006",
+      "bibtex": "@misc{GelHil2006,\n  author = {Gelman, Andrew and Hill, Jennifer},\n  title = {Data Analysis Using Regression and Multilevel/Hierarchical Models},\n  year = {2006},\n  publisher = {Cambridge University Press},\n  doi = {10.1017/cbo9780511790942},\n  isbn = {9780521867061}\n}\n"
+    },
+    {
+      "name": "crossref-proceedings-article",
+      "doi": "10.1145/3292500.3330701",
+      "csl": {
+        "type": "proceedings-article",
+        "author": [
+          {
+            "family": "Akiba",
+            "given": "Takuya"
+          },
+          {
+            "family": "Sano",
+            "given": "Shotaro"
+          },
+          {
+            "family": "Yanase",
+            "given": "Toshihiko"
+          },
+          {
+            "family": "Ohta",
+            "given": "Takeru"
+          },
+          {
+            "family": "Koyama",
+            "given": "Masanori"
+          }
+        ],
+        "title": "Optuna",
+        "container-title": "Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery &amp; Data Mining",
+        "issued": {
+          "date-parts": [
+            [
+              2019,
+              7,
+              25
+            ]
+          ]
+        },
+        "page": "2623-2631",
+        "publisher": "ACM",
+        "DOI": "10.1145/3292500.3330701",
+        "URL": "http://dx.doi.org/10.1145/3292500.3330701"
+      },
+      "key": "AkiSanYanOhtKoy2019",
+      "bibtex": "@misc{AkiSanYanOhtKoy2019,\n  author = {Akiba, Takuya and Sano, Shotaro and Yanase, Toshihiko and Ohta, Takeru and Koyama, Masanori},\n  title = {Optuna},\n  year = {2019},\n  pages = {2623--2631},\n  publisher = {ACM},\n  doi = {10.1145/3292500.3330701}\n}\n"
+    },
+    {
+      "name": "crossref-html-title",
+      "doi": "10.1128/ecosalplus.esp-0031-2019",
+      "csl": {
+        "type": "journal-article",
+        "author": [
+          {
+            "family": "Hemm",
+            "given": "Matthew R."
+          },
+          {
+            "family": "Weaver",
+            "given": "Jeremy"
+          },
+          {
+            "family": "Storz",
+            "given": "Gisela"
+          }
+        ],
+        "title": "<i>Escherichia coli</i>\n            Small Proteome",
+        "container-title": "EcoSal Plus",
+        "issued": {
+          "date-parts": [
+            [
+              2020,
+              12,
+              31
+            ]
+          ]
+        },
+        "volume": "9",
+        "issue": "1",
+        "publisher": "American Society for Microbiology",
+        "DOI": "10.1128/ecosalplus.esp-0031-2019",
+        "URL": "http://dx.doi.org/10.1128/ecosalplus.esp-0031-2019",
+        "ISSN": [
+          "2324-6200"
+        ]
+      },
+      "key": "HemWeaSto2020",
+      "bibtex": "@misc{HemWeaSto2020,\n  author = {Hemm, Matthew R. and Weaver, Jeremy and Storz, Gisela},\n  title = {Escherichia coli Small Proteome},\n  year = {2020},\n  volume = {9},\n  number = {1},\n  publisher = {American Society for Microbiology},\n  doi = {10.1128/ecosalplus.esp-0031-2019},\n  issn = {2324-6200}\n}\n"
+    },
+    {
+      "name": "synthetic-accents-literal-no-year",
+      "doi": "10.1234/synthetic",
+      "csl": {
+        "type": "article-journal",
+        "author": [
+          {
+            "family": "Müller",
+            "given": "Hans"
+          },
+          {
+            "family": "Ðoković",
+            "given": "Novak"
+          },
+          {
+            "literal": "World Health Organization"
+          }
+        ],
+        "title": [
+          "Gesundheit für alle",
+          "Zweiter Titel"
+        ],
+        "container-title": [
+          "Health &amp; Policy Review"
+        ],
+        "volume": 12,
+        "issue": "3",
+        "page": "101–120",
+        "publisher": "Editorial {Board} Ltd",
+        "publisher-place": "Geneva",
+        "URL": "https://dx.doi.org/10.1234/synthetic",
+        "ISBN": [
+          "978-0-00-000000-2",
+          "978-0-00-000001-9"
+        ]
+      },
+      "key": "MulOkoWorND",
+      "bibtex": "@article{MulOkoWorND,\n  author = {Müller, Hans and Ðoković, Novak and {World Health Organization}},\n  title = {Gesundheit für alle},\n  journal = {Health & Policy Review},\n  volume = {12},\n  number = {3},\n  pages = {101--120},\n  publisher = {Editorial Board Ltd},\n  address = {Geneva},\n  doi = {10.1234/synthetic},\n  isbn = {978-0-00-000000-2}\n}\n"
+    },
+    {
+      "name": "synthetic-no-authors",
+      "doi": "10.1234/commons",
+      "csl": {
+        "type": "book",
+        "title": "The Economics of the Commons",
+        "issued": {
+          "date-parts": [
+            [
+              1990
+            ]
+          ]
+        },
+        "publisher": "Cambridge University Press"
+      },
+      "key": "EcoCom1990",
+      "bibtex": "@book{EcoCom1990,\n  title = {The Economics of the Commons},\n  year = {1990},\n  publisher = {Cambridge University Press},\n  doi = {10.1234/commons}\n}\n"
+    }
+  ],
+  "normalise": [
+    {
+      "input": "10.1038/nature12373",
+      "doi": "10.1038/nature12373"
+    },
+    {
+      "input": "  doi:10.1038/nature12373 ",
+      "doi": "10.1038/nature12373"
+    },
+    {
+      "input": "DOI: 10.1038/nature12373",
+      "doi": "10.1038/nature12373"
+    },
+    {
+      "input": "https://doi.org/10.1038/nature12373",
+      "doi": "10.1038/nature12373"
+    },
+    {
+      "input": "http://dx.doi.org/10.1038/nature12373",
+      "doi": "10.1038/nature12373"
+    },
+    {
+      "input": "https://doi.org/10.1000%2Fabc",
+      "doi": "10.1000/abc"
+    },
+    {
+      "input": "10.48550/arXiv.1706.03762",
+      "doi": "10.48550/arXiv.1706.03762"
+    },
+    {
+      "input": "nature12373",
+      "doi": null
+    },
+    {
+      "input": "10.12/x",
+      "doi": null
+    },
+    {
+      "input": "",
+      "doi": null
+    }
+  ]
+}
