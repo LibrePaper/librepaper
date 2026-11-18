@@ -215,6 +215,9 @@ async fn run_with(
             expanded
                 .command
                 .push(run_dir.to_string_lossy().into_owned());
+            if request.options.refresh_cache {
+                expanded.command.push("--cache-refresh".into());
+            }
         }
     }
     // The check that the entry file exists comes after the uploads are in place.

@@ -508,7 +508,39 @@ async fn quarto_gets_execute_dir_and_the_run_directory_linked_in() {
         "{html}"
     );
     assert!(html.contains("1,2"), "{html}");
+    assert!(!html.contains("--cache-refresh"), "{html}");
     assert!(outcome.status.notices.is_empty());
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn quarto_gets_cache_refresh_only_when_asked() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut fixture = fixture("quarto", "html", "paper.qmd");
+    fixture.request.options.refresh_cache = true;
+    let run_dir = tempfile::tempdir().unwrap();
+    let run_path = std::fs::canonicalize(run_dir.path()).unwrap();
+    std::fs::write(run_path.join("data.csv"), "1,2").unwrap();
+    // The script prints its own arguments (after `sh -c body sh`), so the
+    // appended flag shows up in the result.
+    script(
+        "quarto.html",
+        "echo \"$0 $@\" > paper.html; cat data.csv >> paper.html",
+        "{stem}.html",
+    );
+    let outcome = run_fixture_in(&fixture, Some(run_path.clone())).await;
+    assert_eq!(
+        outcome.status.status,
+        JobState::Done,
+        "{:?}",
+        outcome.status.error
+    );
+    let html = String::from_utf8_lossy(&outcome.files["artifact"]).into_owned();
+    assert!(html.contains("--cache-refresh"), "{html}");
+    assert!(
+        html.contains(&format!("--execute-dir {}", run_path.display())),
+        "{html}"
+    );
 }
 
 #[tokio::test]

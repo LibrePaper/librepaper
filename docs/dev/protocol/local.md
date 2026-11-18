@@ -23,7 +23,7 @@ For the full rules, see [SPEC-wire.md](../../../SPEC-wire.md).
 | `3.0.0` | `0.0.52 or later` | 2026-10-25 | Render pipeline replaces typed builders; shapes changed after this without a bump |
 | `3.1.0` | `0.0.66` | 2026-11-04 | Version published in the page global; lenient decoding of non-confirmed request bodies |
 | `3.2.0` | `0.0.72` | 2026-11-11 | Run directory routes; `notices` on the job status |
-| `3.3.0` | `0.0.80` | 2026-11-16 | `run-directory/has`; `wanted` on job requests; Typst jobs run through Calepin and return `results`. Shipped in 0.0.75 and 0.0.78 without a bump |
+| `3.3.0` | `0.0.80` | 2026-11-16 | `run-directory/has`; `wanted` on job requests; `options.refresh_cache` on Quarto jobs; Typst jobs run through Calepin and return `results`. Shipped in 0.0.75 and 0.0.78 without a bump |
 
 ## Run directory (3.2.0)
 
@@ -35,6 +35,7 @@ uploaded. Before each Quarto render the companion links the folder's entries
 into the project's hidden workspace (the project's own files win on a clash)
 and runs Quarto with `--execute-dir <run directory>`. A Quarto render with no
 Run directory is refused, and the page asks the person to choose one.
+When the job's `options.refresh_cache` is true, Quarto also gets `--cache-refresh`. A page sends it with `since: "3.3.0"`.
 
 The routes authenticate like the `connections` routes: the bearer credential
 and the `X-LibrePaper-Origin` header. A page calls them with `since: "3.2.0"`.
