@@ -182,7 +182,10 @@ fn list_marker_len(text: &str) -> usize {
     let marker = match bytes.first().copied() {
         Some(b'-' | b'+') => 1,
         _ => {
-            let digits = bytes.iter().take_while(|byte| byte.is_ascii_digit()).count();
+            let digits = bytes
+                .iter()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count();
             if digits == 0 || !matches!(bytes.get(digits).copied(), Some(b'.' | b')')) {
                 return 0;
             }
