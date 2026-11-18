@@ -143,12 +143,15 @@ for (const refs of ["refs.json", "refs.yaml"]) {
   assert.throws(() => planDoiImport({ source, targetPath: "main.qmd", texts, entry: doiEntry }), { code: "bibliography_not_bibtex" });
 }
 
-// A DOI in any .bib of the project is reused, and its keys count for collisions.
+// A DOI is reused only from a .bib the document loads; every project .bib counts for collisions.
 {
-  const texts = { "refs.bib": "@book{Old2020,\n  title = {Old}\n}\n", "other.bib": "@article{Elsewhere,\n  doi = {10.1038/nature12373}\n}\n" };
-  const found = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts, entry: doiEntry });
-  assert.equal(found.already, true);
-  assert.equal(found.key, "Elsewhere");
+  const texts = { "refs.bib": "@book{Old2020,\n  title = {Old}\n}\n", "other.bib": "@article{Elsewhere,\n  doi = {10.1038/nature12373}\n}\n@book{Kuc2013,\n  title = {X}\n}\n" };
+  const skipped = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts, entry: doiEntry });
+  assert.equal(skipped.already, false);
+  assert.equal(skipped.key, "Kuc2013a");
+  const both = planDoiImport({ source: "bibliography: [refs.bib, other.bib]\n", targetPath: "main.qmd", texts, entry: doiEntry });
+  assert.equal(both.already, true);
+  assert.equal(both.key, "Elsewhere");
   const clash = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "", "other.bib": "@book{Kuc2013,\n  doi = {10.1/z}\n}\n" }, entry: doiEntry });
   assert.equal(clash.key, "Kuc2013a");
 }

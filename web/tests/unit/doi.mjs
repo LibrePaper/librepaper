@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { cslToBibtex, cslYear, fetchDoi, normaliseDoi } from "../../src/lib/doi.js";
+import { cslText, cslToBibtex, cslYear, fetchDoi, normaliseDoi, usableCsl } from "../../src/lib/doi.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../fixtures/doi-bibtex.json", import.meta.url), "utf8"));
 
@@ -19,9 +19,13 @@ const respond = (status, body) => async (url, init) => {
   calls.push({ url, init });
   return { status, ok: status >= 200 && status < 300, json: async () => body };
 };
-assert.deepEqual(await fetchDoi("10.1000/a b", respond(200, { title: "T" })), { title: "T" });
+assert.deepEqual(await fetchDoi("10.1000/a b", respond(200, { type: "misc", title: "T" })), { type: "misc", title: "T" });
 assert.equal(calls[0].url, "https://doi.org/10.1000/a%20b");
 assert.equal(calls[0].init.headers.Accept, "application/vnd.citationstyles.csl+json");
+await assert.rejects(fetchDoi("10.1000/x", respond(200, {})), { code: "not_found" });
+for (const csl of fixture.invalid ?? []) assert.equal(usableCsl(csl), false, `usableCsl(${JSON.stringify(csl)})`);
+assert.equal(cslText("Fitting <b>lme4</b> &amp; {co}"), "Fitting lme4 & co");
+assert.equal(cslYear({ issued: { "date-parts": [[-44]] } }), "");
 await assert.rejects(fetchDoi("10.1000/x", respond(404, null)), { code: "not_found" });
 await assert.rejects(fetchDoi("10.1000/x", respond(500, null)), { code: "unreachable" });
 await assert.rejects(fetchDoi("10.1000/x", async () => { throw new TypeError("network"); }), { code: "unreachable" });

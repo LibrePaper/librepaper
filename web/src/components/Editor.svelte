@@ -239,7 +239,7 @@
   import { pastesPlainAt } from "../lib/paste-context.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
-  import { cslToBibtex, cslYear, fetchDoi, normaliseDoi } from "../lib/doi.js";
+  import { cslText, cslToBibtex, cslYear, fetchDoi, normaliseDoi } from "../lib/doi.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planDoiImport, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, completionWake, formatOfPath } from "../lib/completion/index.js";
@@ -967,8 +967,6 @@
       view.dispatch({ changes, selection: view.state.selection.map(changes, plan.registration.from === 0 ? 1 : -1) });
     }
   }
-
-  const cslText = (value) => String(Array.isArray(value) ? value[0] ?? "" : value ?? "");
 
   /// Looks a DOI up on doi.org for the Insert > Citation dialog. It throws an Error with a message for the person.
   export async function lookupDoi(text) {

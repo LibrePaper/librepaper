@@ -370,7 +370,7 @@ function importTarget({ source, targetPath, texts, format }) {
     const depth = String(targetPath || "").split("/").slice(0, -1).length;
     return bibliographyRegistration(source, "../".repeat(depth) + path, format);
   };
-  return { path, previous, registration };
+  return { path, previous, registration, bibPaths };
 }
 
 function importPlan({ texts, path, previous, registration }, key, entryText, already) {
@@ -401,12 +401,14 @@ function doiEntryKey(bibtex, doi) {
   return null;
 }
 
-// Plans adding a reference fetched by DOI. entry is { doi, key, bibtex }. A DOI the .bib
+// Plans adding a reference fetched by DOI. entry is { doi, key, bibtex }. A DOI a loaded .bib
 // already holds is reused under its own key; otherwise the key is de-duplicated like Zotero's.
 export function planDoiImport({ source, targetPath, texts, entry, format = "markdown" }) {
   const target = importTarget({ source, targetPath, texts, format });
   const bibTexts = bibliographyFiles({ texts }).map((name) => string(texts[name]));
-  for (const text of [target.previous, ...bibTexts]) {
+  // A DOI is reused only from a bibliography the document loads; every .bib still counts for collisions.
+  const loaded = (target.bibPaths.length ? target.bibPaths : [target.path]).map((name) => string(texts[name]));
+  for (const text of loaded) {
     const existingKey = doiEntryKey(text, entry.doi);
     if (existingKey) return importPlan({ ...target, texts }, existingKey, entry.bibtex, true);
   }
