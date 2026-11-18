@@ -2556,6 +2556,9 @@
     }
     runPhase = "running";
     runStartedAt = Date.now();
+    // The document's format as the run starts: the reader may move to another
+    // file while figures are gathered, and the run is still this one's.
+    const format = sourceFormat;
     const mine = ++runGeneration;
     // What the run was started against: the unmatched fallback page is only
     // shown if the reader is still looking at the same document.
@@ -2587,12 +2590,12 @@
       }
       const heading = await headingOf(tree);
       if (gone()) return;
-      const typst = sourceFormat === "typst";
+      const typst = format === "typst";
       // Typst keeps its own output choice; Markdown and Quarto share theirs.
       const toPdf = typst ? typstOutput !== "html" : buildPreferences.output === "pdf";
       // Quarto HTML runs carry cell tags, so each output finds its cell even
       // when Quarto wrote no div for it. The tags are not in the stored record.
-      const runTree = sourceFormat === "quarto" && !toPdf ? tagCells(tree) : tree;
+      const runTree = format === "quarto" && !toPdf ? tagCells(tree) : tree;
       // Figures the document shows that are not project files: the app reads
       // them from the Run directory after the run.
       await figureSyntaxReady(tree);
@@ -2602,7 +2605,7 @@
         project: SLUG,
         wanted,
         ...(typst ? { format: toPdf ? "pdf" : "html" } : {}),
-        ...(sourceFormat === "quarto" && refreshCache ? { refreshCache: true } : {}),
+        ...(format === "quarto" && refreshCache ? { refreshCache: true } : {}),
         signal: controller.signal,
       });
       if (gone()) return;
