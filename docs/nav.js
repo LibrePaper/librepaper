@@ -23,6 +23,7 @@ export const nav = [
       { path: "notebooks/calepin", label: "Calepin" },
     ],
   },
+  { path: "bibliography", label: "Bibliography" },
   { path: "collaborate", label: "Collaborate" },
   { path: "git", label: "Git" },
   { path: "agents", label: "Agents" },
