@@ -22,6 +22,6 @@ for(const {id} of INSERT_ACTIONS) {
 handOver(engine,{main:'paper.md',texts:{'paper.md':text,'refs.bib':bib},assets:{},urls:{}});
 const rendered=call(engine,'compile',text,'Insert check');
 assert.equal(rendered.ok,true);assert.deepEqual(rendered.diagnostics,[]);
-for(const pattern of [/<table/,/class="citation"/,/Rivers/,/footnote/,/data-math-style="display"/,/<dl>/,/href="#intro"/,/<blockquote>/])assert.match(rendered.text,pattern);
+for(const pattern of [/<table/,/class="citation"/,/Rivers/,/footnote/,/data-math-style="display"/,/<dl[\s>]/,/href="#intro"/,/<blockquote[\s>]/])assert.match(rendered.text,pattern);
 assert.equal(count,30);
 console.log('insert-markdown-render: all 30 available actions rendered through LibrePaper WASM; math validated with KaTeX');

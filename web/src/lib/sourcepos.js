@@ -40,3 +40,14 @@ export function parseSourcepos(value) {
   if (!Number.isSafeInteger(tag) || from === null || to === null) return null;
   return { tag, from, to };
 }
+
+const ATTRIBUTE = / data-sourcepos="[^"]*"/g;
+
+/// HTML without its `data-sourcepos` attributes. Paper mode renders one block
+/// at a time, so the positions a renderer writes there count lines of that
+/// block alone, and nothing reads them; leaving them out keeps a block's HTML
+/// what it was before renderers wrote positions at all.
+/** @param {string} html @returns {string} */
+export function withoutSourcepos(html) {
+  return html.replace(ATTRIBUTE, "");
+}
