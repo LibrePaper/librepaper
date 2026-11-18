@@ -22,4 +22,4 @@ startTheme();
 // than an empty page. See src/components/Boundary.svelte.
 watchForUnhandled();
 watchNetwork();
-mount(Boundary, { target: document.body, props: { component: Connect, name: "connect a chat app" } });
+mount(Boundary, { target: document.body, props: { component: Connect, name: "connect an app" } });

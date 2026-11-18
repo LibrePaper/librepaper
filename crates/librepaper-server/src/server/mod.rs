@@ -297,7 +297,7 @@ pub struct Server {
     /// Which link roles an anonymous caller may hold, per the `[access]`
     /// switches. Everything is off until `serve` installs the operator's.
     pub anonymous: librepaper_base::role::AnonymousAccess,
-    /// Whether chat apps may connect to a project as a remote MCP connector
+    /// Whether apps and agents may connect to a project as a remote MCP connector
     /// (`/mcp/<slug>` and the OAuth routes).
     pub agent_connectors: bool,
     /// Days of invented history to write for the starter project a new

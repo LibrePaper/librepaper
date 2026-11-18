@@ -53,7 +53,7 @@ pub struct ServeOptions {
     pub commenters: Policy,
     /// Which link roles may be held without signing in.
     pub anonymous: librepaper_base::role::AnonymousAccess,
-    /// Whether chat apps may connect to a project as a remote MCP connector.
+    /// Whether apps and agents may connect to a project as a remote MCP connector.
     pub agent_connectors: bool,
     /// Write each new account's starter project as though it had been
     /// typed over this many days, so the history panel has something in it on a

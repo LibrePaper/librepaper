@@ -891,7 +891,7 @@
   "connect_expiry": "访问权限有效期为 30 天，只要应用持续使用就会自动续期。你可以随时在项目的智能体面板中撤销。",
   "connect_heading": "{client}想要处理{project}",
   "connect_load_failed": "无法加载此连接请求。",
-  "connect_owner_only": "只有项目所有者可以将聊天应用连接到该项目。",
+  "connect_owner_only": "只有项目所有者才能将应用连接到此项目。",
   "connect_redirect": "批准后将返回 {host}。",
   "connect_role_comment_help": "阅读项目并添加批注。",
   "connect_role_edit_help": "直接修改文件。",

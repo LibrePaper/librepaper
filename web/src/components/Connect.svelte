@@ -1,5 +1,5 @@
 <script>
-  // The consent page for a chat app that asks to work on one project. The
+  // The consent page for an app or agent that asks to work on one project. The
   // server has already sent a signed-out person through sign-in, and it names
   // the app, the project and the host the person will be sent back to.
   //

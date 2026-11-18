@@ -891,7 +891,7 @@
   "connect_expiry": "L’accès dure 30 jours et se renouvelle tant que l’application l’utilise. Vous pouvez le révoquer à tout moment dans le panneau Agent du projet.",
   "connect_heading": "{client} veut travailler sur {project}",
   "connect_load_failed": "Cette demande de connexion n’a pas pu être chargée.",
-  "connect_owner_only": "Seul le propriétaire du projet peut y connecter une application de clavardage.",
+  "connect_owner_only": "Seul le propriétaire du projet peut y connecter une application.",
   "connect_redirect": "Après approbation, vous serez renvoyé vers {host}.",
   "connect_role_comment_help": "Lit le projet et y ajoute des commentaires.",
   "connect_role_edit_help": "Modifie directement les fichiers.",

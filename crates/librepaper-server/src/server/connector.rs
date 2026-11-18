@@ -1,6 +1,6 @@
 //! The OAuth 2.1 authorization server behind a project's remote MCP connector.
 //!
-//! A chat app that supports remote MCP servers is given one URL, the
+//! An app or agent that supports remote MCP servers is given one URL, the
 //! project's `/mcp/<slug>`. It discovers this server from the metadata below,
 //! registers itself, sends the person through the consent page and ends up
 //! holding an ordinary agent token for that one project: the same `lpt_` row
@@ -56,7 +56,7 @@ const MAX_BODY: usize = 1 << 14;
 const CODE_SECONDS: i64 = 60;
 const TOKEN_DAYS: i64 = 30;
 
-/// The roles a person may hand a chat app, as the Agent panel names them.
+/// The roles a person may hand an app, as the Agent panel names them.
 const ROLES: [&str; 4] = ["read", "comment", "suggest", "edit"];
 
 /// A registered client, as its `client_id` carries it: the redirect URIs it
@@ -1029,7 +1029,7 @@ async fn register(
     server.register_client(&body)
 }
 
-/// `GET /oauth/authorize`: where the chat app sends the person. Problems with
+/// `GET /oauth/authorize`: where the app sends the person. Problems with
 /// the request are answered before anyone is asked to sign in; then a
 /// signed-out person goes through the ordinary door and comes back here, and
 /// a signed-in one is shown the consent page, which reads the query itself.

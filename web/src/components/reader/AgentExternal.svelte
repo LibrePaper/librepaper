@@ -32,7 +32,7 @@
   const allowed = (role) => allows(sharing.sharing, role);
   const tokens = $derived(sharing.sharing?.tokens ?? []);
   const copyable = $derived(tokens.filter((item) => item.token));
-  // The connector URL names the project; a chat app adds it as a custom
+  // The connector URL names the project; an app or agent adds it as a custom
   // connector. Shown only when the deployment offers connectors.
   const connectorUrl = $derived(slug ? `${location.origin}/mcp/${slug}` : "");
   const REVOKE = [m.share_revoke_token_title(), m.share_revoke_token_body(), m.common_revoke_token()];

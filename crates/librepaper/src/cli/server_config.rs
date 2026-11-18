@@ -76,7 +76,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) commenters: Policy,
     /// Which link roles may be held without signing in.
     pub(crate) anonymous: librepaper_base::role::AnonymousAccess,
-    /// Whether chat apps may connect to a project as a remote MCP connector.
+    /// Whether apps and agents may connect to a project as a remote MCP connector.
     pub(crate) agent_connectors: bool,
     pub(crate) simulate_activity: Option<u32>,
     pub(crate) expire_after: Option<String>,

@@ -87,7 +87,11 @@ fn encode_segment(segment: &str) -> String {
 /// The CSL-JSON record doi.org holds for a normalised DOI.
 pub async fn fetch(doi: &str) -> Result<Value, String> {
     const UNREACHABLE: &str = "could not reach doi.org";
-    let path = doi.split('/').map(encode_segment).collect::<Vec<_>>().join("/");
+    let path = doi
+        .split('/')
+        .map(encode_segment)
+        .collect::<Vec<_>>()
+        .join("/");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(Policy::limited(5))

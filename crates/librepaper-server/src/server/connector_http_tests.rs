@@ -829,7 +829,10 @@ async fn two_redemptions_of_one_code_at_once_leave_no_live_token() {
         served.exchange(&client_id, &code, VERIFIER),
         served.exchange(&client_id, &code, VERIFIER)
     );
-    let wins = [&a, &b].iter().filter(|answer| answer.status == 200).count();
+    let wins = [&a, &b]
+        .iter()
+        .filter(|answer| answer.status == 200)
+        .count();
     assert!(wins <= 1, "{} / {}", a.body, b.body);
     for answer in [&a, &b] {
         if answer.status != 200 {

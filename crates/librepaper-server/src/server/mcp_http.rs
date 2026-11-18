@@ -1,5 +1,5 @@
 //! The connector's MCP endpoint: `POST /mcp/{slug}`, a stateless
-//! streamable-HTTP server for one project, which a chat app reaches with an
+//! streamable-HTTP server for one project, which an app or agent reaches with an
 //! `lpt_` token it earned through the OAuth flow.
 //!
 //! Every POST carries one JSON-RPC message and is answered with one JSON body

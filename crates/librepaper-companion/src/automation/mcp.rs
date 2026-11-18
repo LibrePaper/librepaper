@@ -65,7 +65,11 @@ fn reference_from_doi_tool() -> Tool {
 
 /// Look a DOI up and shape the structured response the model sees.
 async fn reference_from_doi(args: &Value) -> Value {
-    let Some(doi) = args.get("doi").and_then(Value::as_str).and_then(doi::normalise) else {
+    let Some(doi) = args
+        .get("doi")
+        .and_then(Value::as_str)
+        .and_then(doi::normalise)
+    else {
         return json!({"error": {
             "code": "invalid_doi",
             "message": "that is not a DOI; expected something like 10.1038/nature12373"

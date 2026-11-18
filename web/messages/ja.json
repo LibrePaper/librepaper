@@ -891,7 +891,7 @@
   "connect_expiry": "アクセスは30日間有効で、アプリが使っている間は更新されます。プロジェクトのエージェントパネルからいつでも取り消せます。",
   "connect_heading": "{client}が{project}で作業したいと考えています",
   "connect_load_failed": "この接続リクエストを読み込めませんでした。",
-  "connect_owner_only": "このプロジェクトにチャットアプリを接続できるのは所有者だけです。",
+  "connect_owner_only": "このプロジェクトにアプリを接続できるのはプロジェクトの所有者だけです。",
   "connect_redirect": "承認すると{host}に戻ります。",
   "connect_role_comment_help": "プロジェクトを読み取り、コメントします。",
   "connect_role_edit_help": "ファイルを直接変更します。",

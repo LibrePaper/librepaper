@@ -891,7 +891,7 @@
   "connect_expiry": "El acceso dura 30 días y se renueva mientras la aplicación lo use. Puede revocarlo en cualquier momento desde el panel Agente del proyecto.",
   "connect_heading": "{client} quiere trabajar en {project}",
   "connect_load_failed": "No se pudo cargar esta solicitud de conexión.",
-  "connect_owner_only": "Solo el propietario del proyecto puede conectar una aplicación de chat.",
+  "connect_owner_only": "Solo el propietario del proyecto puede conectarle una aplicación.",
   "connect_redirect": "Tras aprobar, se le devolverá a {host}.",
   "connect_role_comment_help": "Lee el proyecto y añade comentarios.",
   "connect_role_edit_help": "Modifica los archivos directamente.",
