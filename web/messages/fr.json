@@ -178,7 +178,7 @@
   "agentexternal_connector_url_label": "Adresse du connecteur",
   "agentexternal_rows_title": "Connectés",
   "agentexternal_step_add": "Ajoutez-le à votre application comme connecteur.",
-  "agentexternal_step_approve": "Approuvez sur la page qui s’ouvre, puis choisissez ce que l’application peut faire.",
+  "agentexternal_step_approve": "Sur la page qui s’ouvre, choisissez ce que l’application peut faire, puis approuvez.",
   "agentexternal_step_copy": "Copiez ce lien",
   "agentexternal_tokens_help": "Un simple copier-coller pour les agents sur votre ordinateur, comme Claude Code, Codex ou Pi. Sert aussi à la synchronisation et aux scripts. Un jeton fonctionne comme un mot de passe pour ce projet.",
   "agentexternal_tokens_title": "Jetons",

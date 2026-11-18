@@ -178,7 +178,7 @@
   "agentexternal_connector_url_label": "コネクタのURL",
   "agentexternal_rows_title": "接続済み",
   "agentexternal_step_add": "アプリにコネクタとして追加します。",
-  "agentexternal_step_approve": "開いたページで承認して、アプリができることを選びます。",
+  "agentexternal_step_approve": "開いたページで、アプリができることを選んでから承認します。",
   "agentexternal_step_copy": "このリンクをコピー",
   "agentexternal_tokens_help": "Claude Code、Codex、Pi など、お使いのコンピューター上のエージェント向けに、コピーして貼り付けるだけです。同期やスクリプトにも使えます。トークンはこのプロジェクトのパスワードのように機能します。",
   "agentexternal_tokens_title": "トークン",

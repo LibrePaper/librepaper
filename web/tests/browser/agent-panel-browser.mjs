@@ -47,6 +47,8 @@ const originPart = btoa(location.origin).split("+").join("-").split("/").join("_
 const existingToken = "lpt_" + originPart + ".paper.existing";
 const state = {
   links: [],
+  // Off for most of the run; the connector case turns it on.
+  connectors: false,
   tokens: [
     { id: "b000000000000001", role: "commenter", name: "Paul's assistant", since: "2026-01-01T00:00:00Z", until: "2027-03-17T00:00:00Z", budget: null },
     { id: "b000000000000002", role: "reader", name: "Ana's laptop", since: "2026-02-01T00:00:00Z", until: "2027-02-01T00:00:00Z", budget: null, token: existingToken },
@@ -57,7 +59,7 @@ window.calls = [];
 const expiryOf = (until) => (until === "never" ? "" : week());
 const answer = (created) => ({
   slug: "paper", url: "/docs/paper", can_share: true, publishers: "anyone", commenters_policy: "anyone",
-  links: state.links, tokens: state.tokens, ...(created ? { created } : {}),
+  links: state.links, tokens: state.tokens, connectors: state.connectors, ...(created ? { created } : {}),
 });
 window.fetch = async (path, options) => {
   const body = options?.body ? JSON.parse(options.body) : null;
@@ -405,6 +407,24 @@ window.agentPanelCheck = async () => {
   await pressKey(searchBox(), "Escape");
   check(searchBox().value === "" && shownTasks().length === 12, "Escape in the search box clears it");
 
+  /* ------------------------------------------------ the connector, switched on */
+
+  // The deployment offers connectors only when the sharing answer says so. The
+  // owner is mounted again so the Connect tab loads that answer.
+  state.connectors = true;
+  owner.$destroy();
+  owner = mount(true);
+  await flush();
+  const connector = document.querySelector(".agent-connector");
+  check(connector && connector.querySelector("#agent-connector-title"), "the connector section shows when connectors are on");
+  const steps = connector.querySelectorAll(":scope > ol > li");
+  check(steps.length === 3, "the connector has three steps: " + steps.length);
+  check(getComputedStyle(connector.querySelector("ol")).listStyleType === "decimal", "the connector steps are numbered");
+  const connectorUrl = location.origin + "/mcp/paper";
+  check(connector.querySelector(".agent-connector-url").value === connectorUrl, "the connector URL names the project: " + connector.querySelector(".agent-connector-url").value);
+  await press(connector.querySelector(".agent-connector-row button"));
+  check(window.copied === connectorUrl, "the copy button copies the connector URL: " + window.copied);
+
   return viewerChecks();
 };
 `;
@@ -449,7 +469,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("agent panel component", () => tab.evaluate("Boolean(window.agentPanelReady && window.agentPanelReady())"));
   assert.equal(await tab.evaluate("window.agentPanelCheck()"), true);
-  console.log("agent panel: three tabs, the built-in notice, token rows and reveal copy the install command with the token, revoke, manual copy and late copy; tasks open and search; viewers see the tasks alone");
+  console.log("agent panel: three tabs, the built-in notice, token rows and reveal copy the install command with the token, revoke, manual copy and late copy; tasks open and search; the connector steps and its copy; viewers see the tasks alone");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }
