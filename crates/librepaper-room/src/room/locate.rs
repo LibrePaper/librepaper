@@ -1064,6 +1064,7 @@ mod tests {
             file: 0,
             start,
             end,
+            pick: None,
         };
         let found = locate_in(
             &one(text),
