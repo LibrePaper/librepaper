@@ -245,7 +245,7 @@ fn author_names(values: &[Creator]) -> Vec<String> {
         .collect()
 }
 
-fn fragment(value: &str) -> String {
+pub(crate) fn fragment(value: &str) -> String {
     let ascii: String = value
         .nfkd()
         .filter(|c| !is_combining_mark(*c) && c.is_ascii_alphabetic())

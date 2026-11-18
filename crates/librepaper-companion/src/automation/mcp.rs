@@ -27,6 +27,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::assistant::journal as runner_journal;
+use crate::automation::doi;
 use crate::automation::peer::AutomationPeer;
 
 /// The tools every assistant session needs. A Reader is served only these; a
@@ -43,6 +44,41 @@ const MUTATING_TOOLS: [&str; 5] = [
     "document_comment",
     "document_withdraw",
 ];
+
+/// Answered by the relay itself, from this machine, never forwarded.
+const REFERENCE_FROM_DOI: &str = "reference_from_doi";
+
+fn reference_from_doi_tool() -> Tool {
+    let schema = json!({
+        "type": "object",
+        "properties": {"doi": {"type": "string", "description": "A DOI, a doi: form or a doi.org link."}},
+        "required": ["doi"],
+        "additionalProperties": false,
+    });
+    serde_json::from_value(json!({
+        "name": REFERENCE_FROM_DOI,
+        "description": "Look up a DOI at doi.org from this machine and return a BibTeX entry with real metadata. Before appending, check the project's .bib for an entry with the same doi. If there is none, append `bibtex` verbatim with document_propose/document_apply. Change the key only if it collides with an existing key, by adding a letter suffix. Then cite the key. Never write reference metadata yourself.",
+        "inputSchema": schema,
+    }))
+    .expect("reference_from_doi tool schema")
+}
+
+/// Look a DOI up and shape the structured response the model sees.
+async fn reference_from_doi(args: &Value) -> Value {
+    let Some(doi) = args.get("doi").and_then(Value::as_str).and_then(doi::normalise) else {
+        return json!({"error": {
+            "code": "invalid_doi",
+            "message": "that is not a DOI; expected something like 10.1038/nature12373"
+        }});
+    };
+    match doi::fetch(&doi).await {
+        Ok(csl) => {
+            let converted = doi::convert(&csl, &doi);
+            json!({"result": {"doi": doi, "key": converted.key, "bibtex": converted.bibtex}})
+        }
+        Err(message) => json!({"error": {"code": "lookup_failed", "message": message}}),
+    }
+}
 
 fn missing_assistant_tools<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<&'static str> {
     let names = names.into_iter().collect::<std::collections::HashSet<_>>();
@@ -93,8 +129,10 @@ impl Bridge {
                 missing.join(", ")
             ));
         }
-        let served_tools: Vec<Tool> = serde_json::from_value(Value::Array(response.tools))
+        let mut served_tools: Vec<Tool> = serde_json::from_value(Value::Array(response.tools))
             .map_err(|error| format!("invalid document tool schema: {error}"))?;
+        // Public metadata only, so every role gets it.
+        served_tools.push(reference_from_doi_tool());
         Ok(Self {
             peer,
             instructions: response.instructions,
@@ -209,6 +247,20 @@ impl ServerHandler for Bridge {
             .arguments
             .map(Value::Object)
             .unwrap_or_else(|| json!({}));
+        if tool == REFERENCE_FROM_DOI {
+            let journal_path = journal_path();
+            let task_id = active_task_id();
+            if let Some(path) = journal_path.as_deref() {
+                runner_journal::record_tool_call(path, &task_id, &tool, &args)
+                    .map_err(internal_error)?;
+            }
+            let response = reference_from_doi(&args).await;
+            if let Some(path) = journal_path.as_deref() {
+                runner_journal::record_tool_result(path, &task_id, &tool, &args, &response)
+                    .map_err(internal_error)?;
+            }
+            return Ok(result_from_response(&response).into());
+        }
         if let Err(error) = self.inject_operation(&tool, &mut args) {
             return Ok(CallToolResult::structured_error(json!({
                 "error": {"code": "read_required", "message": error.message}
@@ -355,6 +407,21 @@ mod tests {
             missing_assistant_tools(["document_read"]),
             ["document_result"]
         );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_doi_is_refused_locally() {
+        let response = reference_from_doi(&json!({"doi": "not a doi"})).await;
+        assert_eq!(response["error"]["code"], "invalid_doi");
+        let response = reference_from_doi(&json!({})).await;
+        assert_eq!(response["error"]["code"], "invalid_doi");
+    }
+
+    #[test]
+    fn the_doi_tool_is_described_for_agents() {
+        let tool = reference_from_doi_tool();
+        assert_eq!(tool.name, REFERENCE_FROM_DOI);
+        assert!(!MUTATING_TOOLS.contains(&REFERENCE_FROM_DOI));
     }
 
     #[test]
@@ -556,6 +623,30 @@ mod tests {
         assert_eq!(
             response["result"]["structuredContent"]["status"],
             "committed"
+        );
+
+        // The DOI tool is listed and an invalid DOI never reaches the server
+        // (the fake peer above accepts no further connection).
+        let list = json!({"jsonrpc":"2.0","id":4,"method":"tools/list"});
+        input
+            .write_all(format!("{list}\n").as_bytes())
+            .await
+            .unwrap();
+        let response = read_response(&mut output, &mut buffered).await;
+        assert!(response["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "reference_from_doi"));
+        let invalid = json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"reference_from_doi","arguments":{"doi":"nope"}}});
+        input
+            .write_all(format!("{invalid}\n").as_bytes())
+            .await
+            .unwrap();
+        let response = read_response(&mut output, &mut buffered).await;
+        assert_eq!(
+            response["result"]["structuredContent"]["error"]["code"],
+            "invalid_doi"
         );
 
         drop(input);
