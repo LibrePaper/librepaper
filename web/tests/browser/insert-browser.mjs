@@ -217,10 +217,10 @@ try {
   await until("DOI row",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"] input[type="checkbox"][value="10.1000/xyz"]:checked'))`),5000);
   await confirm();
   assert.match((await evaluate("insertState()")).text,/@doe2024/,"a DOI lookup and insert cites the key returned by ondoiimport");
-  await evaluate("selectInsert(7)");await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  await evaluate("selectInsert(insertState().text.indexOf('Before') + 7)");await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
   assert.equal(await sourceValue(),"doi","the remembered source is restored when the dialog opens");
   await cancel();
-  await evaluate("Object.defineProperty(window,'localStorage',{get(){throw new Error('blocked')},configurable:true})");
+  await evaluate("Object.defineProperty(window,'localStorage',{get(){throw new Error('blocked')},configurable:true});0");
   await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
   assert.equal(await sourceValue(),"bibtex","a storage failure falls back to BibTeX");
   await cancel();
