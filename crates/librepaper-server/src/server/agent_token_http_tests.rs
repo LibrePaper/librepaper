@@ -1378,8 +1378,7 @@ impl Served {
             .await
             .unwrap();
         librepaper_document::document::session::put_text(&edited, "paper.md", text);
-        let update =
-            librepaper_document::document::session::encode_diff(&edited, &vector).unwrap();
+        let update = librepaper_document::document::session::encode_diff(&edited, &vector).unwrap();
         let ingested = room
             .ingest(999, "editor-999", "editor-999", 1, update)
             .await;
@@ -1438,7 +1437,10 @@ async fn a_thread_read_carries_the_anchor_of_each_comment() {
         )
         .await;
     assert_eq!(status, 200, "{one}");
-    assert_eq!(one["result"]["results"][0]["thread"]["anchor"]["exact"], passage);
+    assert_eq!(
+        one["result"]["results"][0]["thread"]["anchor"]["exact"],
+        passage
+    );
 
     // Text added above the passage moves it; the anchor follows.
     served

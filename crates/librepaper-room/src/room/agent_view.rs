@@ -96,6 +96,7 @@ impl Room {
 
     /// One comment and a bounded window of its replies, shaped as the
     /// `thread` query's `id` form returns them.
+    #[allow(clippy::too_many_arguments)]
     pub async fn thread_reply_window(
         &self,
         comment_id: Uuid,

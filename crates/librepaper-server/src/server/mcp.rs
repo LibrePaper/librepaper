@@ -1079,11 +1079,7 @@ fn thread_anchor(
         let text = &texts[path];
         let index = texts.keys().position(|p| p == path).unwrap_or_default();
         let before = &text[..start];
-        let from = before
-            .char_indices()
-            .rev()
-            .nth(31)
-            .map_or(0, |(at, _)| at);
+        let from = before.char_indices().rev().nth(31).map_or(0, |(at, _)| at);
         let after = &text[end..];
         let to = after
             .char_indices()
@@ -1143,7 +1139,13 @@ fn decorate_ranges(value: &mut Value, snapshot: &QuerySnapshot, view_id: &str, k
                 if let Some(index) = snapshot.texts().keys().position(|p| p == path) {
                     object.insert(
                         "range_id".into(),
-                        json!(range_handle(index, start as usize, end as usize, view_id, key)),
+                        json!(range_handle(
+                            index,
+                            start as usize,
+                            end as usize,
+                            view_id,
+                            key
+                        )),
                     );
                 }
             }
