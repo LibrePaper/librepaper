@@ -541,12 +541,8 @@ fn locate_anchor(
         let file = candidates
             .iter()
             .position(|candidate| candidate.path == hint.path.as_str())?;
-        let (start, end) = locate::line_region(
-            candidates[file].text,
-            hint.from_line,
-            hint.to_line,
-            PAD,
-        );
+        let (start, end) =
+            locate::line_region(candidates[file].text, hint.from_line, hint.to_line, PAD);
         Some(locate::Region { file, start, end })
     });
     let found = match region {

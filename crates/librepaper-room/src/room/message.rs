@@ -3,6 +3,10 @@ use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 /// One tagged client frame. Fields belonging to a different operation are
 /// discarded during deserialization instead of accumulating in a universal
 /// optional-field bag.
+///
+/// A frame lives only while it is parsed and dispatched, so the size of its
+/// largest variant costs nothing worth a box, as with [`super::command::Command`].
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum Message {
     Known(KnownMessage),
@@ -65,6 +69,7 @@ pub struct SourceHint {
     pub to_line: u32,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum KnownMessage {
