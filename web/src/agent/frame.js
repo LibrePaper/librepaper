@@ -611,22 +611,72 @@ import { morphChildren } from "./morph.js";
   // is only a hint that narrows the server's search, so anything unclear, or
   // too broad to help, gives none.
   const SOURCE_HINT_MAX_LINES = 200;
-  function sourceHint(range) {
+  const OCCURRENCE_MAX_COUNT = 1000;
+  function sourceHint(range, exact, selectedStart) {
     const sources = previewSources;
     if (!sources) return null;
-    const sourceAt = (node) => {
-      const element = node?.nodeType === 3 ? node.parentElement : node;
-      return parseSourcepos(element?.closest?.("[data-sourcepos]")?.getAttribute("data-sourcepos"));
-    };
-    const start = sourceAt(range.startContainer);
-    const end = sourceAt(range.endContainer);
+    const startElement = sourcedElementAt(range.startContainer);
+    const endElement = sourcedElementAt(range.endContainer);
+    const start = parseSourcepos(startElement?.getAttribute("data-sourcepos"));
+    const end = parseSourcepos(endElement?.getAttribute("data-sourcepos"));
     if (!start || !end || start.tag !== end.tag) return null;
     const path = sources[start.tag];
     if (typeof path !== "string" || !path) return null;
     const from_line = Math.min(start.from, end.from);
     const to_line = Math.max(start.to, end.to);
     if (to_line - from_line > SOURCE_HINT_MAX_LINES) return null;
-    return { path, from_line, to_line };
+    const hint = { path, from_line, to_line };
+    // Both ends in one element: its lines are the hint's lines, so the copy of
+    // the words the selection is can be named as well.
+    if (startElement && startElement === endElement) {
+      const copy = copyOf(startElement, exact, selectedStart);
+      if (copy) Object.assign(hint, copy);
+    }
+    return hint;
+  }
+
+  function sourcedElementAt(node) {
+    const element = node?.nodeType === 3 ? node.parentElement : node;
+    return element?.closest?.("[data-sourcepos]") ?? null;
+  }
+
+  // The stretch of the text table an element's own text fills, from its first
+  // text node to its last, or null when the table keeps none of it. Scripts
+  // and styles are not in the table, so they are not in the span.
+  function textSpanOf(element) {
+    let first = -1;
+    let last = -1;
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const index = table.index.get(node);
+      if (index === undefined) continue;
+      if (first < 0) first = index;
+      last = index;
+    }
+    if (first < 0) return null;
+    return { from: table.starts[first], to: table.starts[last] + table.nodes[last].data.length };
+  }
+
+  // Which copy of the selected words the selection is, among the copies inside
+  // its element: how many start before it, and how many there are. Counted in
+  // the same text the selection's offset is in, so the copy the selection
+  // starts at is the one the offset names. If no copy starts there, the two
+  // text models disagree and nothing is said. A single copy needs no index.
+  function copyOf(element, exact, selectedStart) {
+    const span = textSpanOf(element);
+    if (!span) return null;
+    const elementText = text().slice(span.from, span.to);
+    const before = selectedStart - span.from;
+    let count = 0;
+    let occurrence = -1;
+    for (let at = elementText.indexOf(exact); at !== -1; at = elementText.indexOf(exact, at + 1)) {
+      if (at === before) occurrence = count;
+      count++;
+      if (count > OCCURRENCE_MAX_COUNT) return null;
+    }
+    if (occurrence < 0 || count < 2) return null;
+    return { occurrence, count };
   }
 
   function captureSelection() {
@@ -672,7 +722,7 @@ import { morphChildren } from "./morph.js";
     if (!exact) return;
 
     const box = range.getBoundingClientRect();
-    const hint = sourceHint(range);
+    const hint = sourceHint(range, exact, start);
     post({
       type: "selection",
       selector: {
