@@ -39,7 +39,7 @@ fn valid_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-fn valid_path(path: &str) -> bool {
+pub(super) fn valid_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= MAX_SOURCE_PATH
         && !path.starts_with('/')

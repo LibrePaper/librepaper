@@ -156,6 +156,9 @@ pub(super) struct Connection {
     pub(super) query: Option<String>,
     pub(super) role: Role,
     pub(super) chat: Option<String>,
+    /// Authenticated by an agent token or marked as automation: not a browser
+    /// tab, so it cannot answer a compile request.
+    pub(super) agent: bool,
     pub(super) link: String,
     pub(super) comment_budget: Option<i64>,
     pub(super) authorized_at: tokio::time::Instant,
@@ -345,6 +348,7 @@ impl Server {
                 query,
                 role: who.rung(),
                 chat: None,
+                agent: who.token.is_some() || who.automation || Server::is_automation(&headers),
                 link: who.link.clone(),
                 comment_budget: who.comment_budget,
                 authorized_at: tokio::time::Instant::now(),

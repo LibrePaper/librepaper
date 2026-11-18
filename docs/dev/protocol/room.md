@@ -152,6 +152,53 @@ Other room frames include `doc-label`, annotation action results, and
 that need correlation should send them. Unauthorized operations receive an
 explicit error.
 
+### Compile requests
+
+The server asks one browser tab of the project owner to compile a file. It
+sends `compile_request` only on a room socket whose principal equals the
+caller's owner identity, with the slug matching. When several match, it uses
+the most recently connected one. Tabs that do not know the frame ignore it:
+
+```json
+{"type":"compile_request","id":"compile_<32 hex>","path":"paper.tex","output":"pdf","run":false,"expires_at":1763400000}
+```
+
+`output` is `"pdf"`, `"html"`, or `null` for the tab's own setting. `run` asks
+the tab to run code chunks. `expires_at` is 600 seconds after the request, as
+Unix seconds. When a tab answers `run_unavailable`, `run_disabled` or `busy`,
+the server sends the same frame to the owner's next open tab, newest first,
+before reporting that error.
+
+The tab answers with `POST /api/documents/{slug}/compile/{id}`, sent with its
+cookie session and `content-type: application/json`. The body is at most
+96 KiB. A compile that ran, succeeded or failed, is:
+
+```json
+{"revision":"<snapshotDigest of the tree compiled>","ok":true,"output":"pdf","diagnostics":[...],"log":"...","provenance":{...}}
+```
+
+A request that could not compile is:
+
+```json
+{"error":"busy","message":"..."}
+```
+
+`error` is one of `run_unavailable`, `run_disabled`, `busy`, `no_renderer`,
+or `failed`. The browser keeps diagnostics to `severity`, `file`, `line`,
+`column`, `message` and `source`, errors first, and sends the last 16 KiB of
+the log.
+
+The server accepts the reply only while `id` is pending and unexpired, and
+only when the authenticated viewer's principal equals the principal the
+request was sent for. It then returns 204. Any other case returns 404 with no
+detail. Diagnostics, log and provenance are each limited to 16 KiB, and
+`output` must be one of the three values; a body over a limit returns 413.
+
+The compile hub holds pending requests and finished results in memory. A
+finished result is kept for an hour, at most 64 at a time, and is returned to
+the caller that asked for it by `document_result` with `kind: "compile"`. A
+restart drops both.
+
 ### Tracked changes
 
 Tracked changes are ordinary document updates. They have no messages of their own. Accepting or rejecting one is a normal document edit that syncs through the same update path. See [track changes](../../architecture/review.html#track-changes).

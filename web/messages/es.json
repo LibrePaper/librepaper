@@ -3005,6 +3005,8 @@
   "rundirectorycontrol_choose_a_folder": "Elegir una carpeta",
   "rundirectorycontrol_share_results": "Publicar resultados",
   "rundirectorycontrol_share_hint": "Los colaboradores ven el resultado de tu última ejecución, incluso sin tus datos.",
+  "rundirectorycontrol_agents_run": "Permitir que los agentes ejecuten código",
+  "rundirectorycontrol_agents_run_hint": "Los agentes conectados a este proyecto pueden ejecutar sus bloques de código en tu carpeta de ejecución mientras esta ventana esté abierta.",
   "rundirectorycontrol_shared": "Resultados publicados · {size}",
   "rundirectorycontrol_shared_figures": [
     {

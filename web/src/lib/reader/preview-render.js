@@ -46,7 +46,7 @@ import { fillFigures, referenceFigures } from "../missing-figures.js";
  * facts: () => PreviewFacts, tree: () => PreviewTree,
  * gather: (digests: Record<string, string>, options?: { urls?: boolean | "reference" }) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string>, references: Array<{ sha: string, type: string, bytes: Uint8Array }> }, missing: string[] }>,
  * heading: (tree: PreviewTree) => Promise<string>, takeManual?: () => boolean, manualPending?: () => boolean,
- * onsynctex?: (map: unknown | null) => void, send?: (message: { type: string, html?: string }) => void,
+ * onsynctex?: (map: unknown | null) => void, repaint?: () => void, send?: (message: { type: string, html?: string }) => void,
  * clearDebounce?: () => void, refreshFrame?: () => void, debug?: (message: string, ...details: unknown[]) => void,
  * }} options
  */
@@ -89,6 +89,8 @@ export function createPreviewRenderer({
   /// The parsed SyncTeX map for the PDF just published, or null to drop the
   /// one being held.
   onsynctex = () => {},
+  /// Asks for a fresh preview render, for a result that must be thrown away.
+  repaint = () => {},
   /// A page to put in the frame directly, used only for the failure page.
   send = () => {},
   /// The debounced render that was pending, if one was: this is it.
@@ -323,6 +325,14 @@ export function createPreviewRenderer({
       rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug });
       debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
       if (facts().disposed) return;
+      // The compile queue merges jobs: this render may have been replaced by
+      // another caller's (an agent's compile), and the result then describes
+      // that tree. It is neither shown nor kept; the preview asks again.
+      if (rendered?.compiledTree && rendered.compiledTree !== source) {
+        debug("preview: result is for another tree, rendering again");
+        repaint();
+        return;
+      }
       if (format === "latex" && !htmlPreview) status.recordLatex(rendered);
       // Every other format keeps its tool's output too, so a failed Quarto
       // or Typst run on this computer can show its whole log. Each render replaces the last one,

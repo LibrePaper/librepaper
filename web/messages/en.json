@@ -3005,6 +3005,8 @@
   "rundirectorycontrol_choose_a_folder": "Choose a folder",
   "rundirectorycontrol_share_results": "Publish results",
   "rundirectorycontrol_share_hint": "Collaborators see the output of your last run, even without your data.",
+  "rundirectorycontrol_agents_run": "Let agents run code",
+  "rundirectorycontrol_agents_run_hint": "Agents connected to this project can run its code chunks in your Run directory while this window is open.",
   "rundirectorycontrol_shared": "Results published · {size}",
   "rundirectorycontrol_shared_figures": [
     {

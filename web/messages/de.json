@@ -3005,6 +3005,8 @@
   "rundirectorycontrol_choose_a_folder": "Ordner auswählen",
   "rundirectorycontrol_share_results": "Ergebnisse veröffentlichen",
   "rundirectorycontrol_share_hint": "Mitarbeitende sehen die Ausgabe Ihres letzten Laufs, auch ohne Ihre Daten.",
+  "rundirectorycontrol_agents_run": "Agenten Code ausführen lassen",
+  "rundirectorycontrol_agents_run_hint": "Mit diesem Projekt verbundene Agenten können dessen Codeblöcke in Ihrem Ausführungsordner ausführen, solange dieses Fenster geöffnet ist.",
   "rundirectorycontrol_shared": "Ergebnisse veröffentlicht · {size}",
   "rundirectorycontrol_shared_figures": [
     {

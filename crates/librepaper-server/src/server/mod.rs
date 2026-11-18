@@ -302,6 +302,8 @@ pub struct Server {
     /// Private agent channels are live coordination and never durable data.
     pub chat: chat::Hub,
     mcp_capacity: mcp::Capacity,
+    /// Compiles relayed to an owner's open browser tab, pending and finished.
+    compile: mcp::CompileHub,
     /// The pinned LaTeX release directory on the asset mirror
     /// (`{mirror}latex/{sha256}/`), or nothing. A deployment
     /// without one still stores and shows `.tex` documents; what it does not
@@ -880,6 +882,7 @@ impl Server {
             pending: PendingCodes::new(),
             chat: chat::Hub::default(),
             mcp_capacity,
+            compile: mcp::CompileHub::default(),
             latex: None,
             site: None,
             legal_terms_url: None,

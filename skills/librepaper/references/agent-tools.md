@@ -37,6 +37,30 @@ Read bounded exact source, search, outline, bibliography, comments and context. 
 
 The response carries `view_id`, `operation_epoch`, range handles and, for long results, `next_cursor`.
 
+## document_compile
+
+Ask the project owner's open browser tab to compile a file with the app's own engines, then return the status, diagnostics and log. Nothing compiles on the server. The tab must be open, because the owner's session does the work. Every role can call it. It takes no `operation`.
+
+When a tab answers `run_unavailable`, `run_disabled` or `busy`, the server tries the owner's next open tab, newest first, before reporting.
+
+- `path` (required): the file to compile, for example `paper.tex`, `index.qmd` or `main.typ`.
+- `output`: `"pdf"` or `"html"`. Omitted, the tab uses its own setting for that format.
+- `run`: default `false`. `true` runs the code chunks (Quarto and Typst). It needs an Editor token, the desktop app, a Run directory, and the owner's "Let agents run code" setting for the project. Otherwise the result is `run_unavailable`. A token without the Editor role is refused with `forbidden` before anything is sent.
+- `wait_ms`: 0 to 25000, default 20000. How long the call waits inline.
+
+The result has `compile_id`, `status`, `path`, `output` (`"pdf"`, `"html"` or `"none"`), `revision` (the tree the tab compiled), `current`, `diagnostics`, `log` (the last 16 KiB of the compiler log) and `provenance`. Each diagnostic has `severity`, `file`, `line`, `column`, `message` and `source`. `current` is `true` when `revision` is the tree the server holds for this call. If it is `false`, the tab compiled a different tree, so compile again before trusting the result.
+
+Statuses:
+
+- `succeeded`: the file compiled. `output` says what was made.
+- `failed`: the compile ran and failed. Read `diagnostics` and `log`.
+- `unavailable`: nothing compiled. `error` gives the reason (`run_unavailable`, `run_disabled`, `busy`, `no_renderer`, `failed`, `timeout`) and `message` says what to do.
+- `pending`: the inline wait ran out. Fetch the same object later with `document_result` `{"kind": "compile", "id": "<compile_id>", "wait_ms": N}`.
+
+If no eligible tab is connected, the call fails with the tool error `renderer_unavailable`, not with a result. Tell the user to open the project in a browser signed in as its owner, then try again.
+
+Workflow: edit the file, call `document_compile` on it, read the diagnostics (each has a `file` and `line`), fix those lines with a new edit, and compile again. Stop when the status is `succeeded` with no errors.
+
 ## document_comment
 
 Create or reply to comments, resolve threads, label versions. Required: `action`, `operation`.
@@ -84,6 +108,7 @@ Look up a retained result. No required fields.
 - `{"kind": "operation", "target_operation": {epoch, id}}`: did that write land?
 - `{"kind": "candidate", "id": "..."}`: a private candidate.
 - `{"kind": "render", "id": "...", "wait_ms": 0..10000}`: compile result for a candidate.
+- `{"kind": "compile", "id": "compile_...", "wait_ms": 0..10000}`: the result of a `document_compile` that returned `pending`. Results are kept for an hour.
 
 ## Errors worth knowing
 
@@ -91,3 +116,4 @@ Look up a retained result. No required fields.
 - `budget_exceeded`: hourly comment limit spent. Stop commenting; tell the user.
 - Stale epoch: read again.
 - Conflict on propose or apply: source moved. Read fresh and re-target.
+- `renderer_unavailable` from `document_compile`: no browser tab of the owner is open. Ask the user to open the project signed in as its owner.
