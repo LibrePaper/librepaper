@@ -496,7 +496,7 @@
   }}>
   <!-- A form, so Enter in any of these fields inserts, the way Enter in the
        name field of the rename dialog renames. -->
-  <form id="insert-dialog" class="flex min-h-0 flex-col gap-3" class:flex-1={dialog === "citation"} onsubmit={(event) => { event.preventDefault(); void submit(); }}>
+  <form id="insert-dialog" class="flex flex-col gap-3" class:min-h-0={dialog !== "citation"} class:flex-1={dialog === "citation"} onsubmit={(event) => { event.preventDefault(); void submit(); }}>
   {#if dialog === "citation"}
     <label class="label">{m.insertmenu_source()}
       <select class="select" value={source} onchange={(event) => chooseSource(event.currentTarget.value)}>

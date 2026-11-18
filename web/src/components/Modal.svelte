@@ -283,7 +283,7 @@
               <IconButton icon="x" label={m.common_close()} tone="plain" size="btn-icon-sm" onclick={close} />
             </header>
           </div>
-          <div bind:this={bodyEl} class={compact ? "flex min-h-0 flex-1 flex-col overflow-hidden" : `flex min-h-0 flex-col gap-3 overflow-y-auto${resizable ? " flex-1" : ""}`}>
+          <div bind:this={bodyEl} class={compact ? "flex min-h-0 flex-1 flex-col overflow-hidden" : resizable ? "flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto" : "flex min-h-0 flex-col gap-3 overflow-y-auto"}>
             {@render children?.()}
           </div>
         {/if}
