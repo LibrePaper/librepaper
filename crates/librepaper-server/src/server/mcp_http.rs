@@ -63,7 +63,7 @@ pub(super) async fn mcp_http(
         return plain(403, "origin refused");
     }
     let mut headers = request.headers().clone();
-    headers.insert(mcp::AUTOMATION_HEADER, HeaderValue::from_static("1"));
+    headers.insert(AUTOMATION_HEADER, HeaderValue::from_static("1"));
     let raw = match to_bytes(request.into_body(), mcp::MCP_MESSAGE_MAX_BYTES).await {
         Ok(raw) => raw,
         Err(_) => return plain(413, "request exceeds 16 MiB"),

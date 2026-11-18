@@ -10,7 +10,6 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer, Deployment};
-use super::Server;
 use crate::server::origins::Origins;
 use librepaper_engine::storage::postgres::WriterLease;
 use librepaper_engine::storage::store::DocumentInput;

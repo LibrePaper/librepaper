@@ -294,6 +294,18 @@ fn parse_json_fields(body: &[u8]) -> Option<HashMap<String, String>> {
     )
 }
 
+/// A role as the consent page and the Agent panel name it: the `scope` a
+/// token answer reports.
+fn scope_of(role: &str) -> &'static str {
+    match role.parse::<Role>() {
+        Ok(Role::Reader) => "read",
+        Ok(Role::Commenter) => "comment",
+        Ok(Role::Suggester) => "suggest",
+        Ok(Role::Editor | Role::Owner) => "edit",
+        Err(_) => "read",
+    }
+}
+
 fn token_error(error: &str) -> Reply {
     write_json(400, &json!({"error": error}))
 }
@@ -539,7 +551,7 @@ impl Server {
                 "token_type": "Bearer",
                 "expires_in": TOKEN_DAYS * 24 * 3600,
                 "refresh_token": refresh,
-                "scope": role,
+                "scope": scope_of(role),
             }),
         );
         set(&mut response, "cache-control", "no-store");
@@ -688,8 +700,15 @@ impl Server {
                 if let Some(id) = existing {
                     // The code was redeemed before. Whoever holds the token it
                     // made must not keep it, since either party to the replay
-                    // may be the thief.
-                    entry.drop_link(&id);
+                    // may be the thief. The row is expired rather than
+                    // dropped: dropped, it would leave nothing for a third
+                    // redemption to find, and that one would be granted a new
+                    // token. An expired row admits nobody and keeps the code
+                    // spent until the code itself runs out.
+                    if let Some(mut spent) = entry.link_by_id(&id).cloned() {
+                        spent.until = librepaper_base::util::timestamp();
+                        entry.replace_link(&id, spent);
+                    }
                     replayed.store(true, Ordering::SeqCst);
                     return Ok(());
                 }
