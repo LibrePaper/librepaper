@@ -1,6 +1,6 @@
 <script>
-  // Other connection methods: a discreet disclosure at the foot of the Tokens
-  // tab. It offers the MCP setup commands, the MCP config for one token, and the
+  // Command line and MCP configuration: a discreet disclosure at the end of the
+  // Tokens section. It offers the MCP setup commands, the MCP config for one token, and the
   // token itself, so it stays available with or without a reveal.
   import { m } from "../../../lib/paraglide/messages.js";
   import Icon from "../../Icon.svelte";
@@ -23,7 +23,7 @@ command = "librepaper"
 args = ["mcp"]
 env = { LIBREPAPER_AGENT_TOKEN = "${active}" }`);
 
-  // The rows in Other connection methods: the name shown, the icon's label, and
+  // The rows in the disclosure: the name shown, the icon's label, and
   // the payload it copies whole.
   const methods = $derived([
     { name: m.tokenreveal_commands_aria(), label: m.tokenreveal_commands_aria(), value: commands },
@@ -62,7 +62,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${active}" }`);
 </details>
 
 <style>
-  .token-other { font-size: 13px; margin-top: auto; padding-top: calc(var(--spacing) * 2); min-width: 0; }
+  .token-other { font-size: 13px; min-width: 0; }
   .token-help { margin: 0; font-size: 13px; color: var(--panel-muted); }
   .token-help a { color: var(--color-link); text-decoration: underline; }
   .token-other > summary { display: flex; align-items: center; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 1); cursor: pointer; font-size: var(--panel-meta-size); font-weight: 400; color: var(--panel-muted); border-radius: var(--radius-base); list-style: none; }

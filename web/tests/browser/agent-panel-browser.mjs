@@ -1,7 +1,7 @@
 // Browser regression check for the Agent panel. An owner gets three tabs,
-// Chat, Agent and Tasks, and opens on Agent. In a
+// Chat, Connect and Tasks, and opens on Connect. In a
 // browser the built-in agent shows the desktop-only notice and has no Run
-// buttons. The Agent tab holds the tokens: a token is made from New
+// buttons. The Connect tab holds the tokens: a token is made from New
 // token, and its connection instructions are copied from the reveal or from a
 // row, as one block with the install command and the token. A token is revoked.
 // Tasks, where each group starts closed and each instruction is copied. A viewer
@@ -125,7 +125,7 @@ const viewerChecks = async () => {
   await flush();
   const panel = document.querySelector(".agent-panel");
   check(tabNames() === "Chat|Tasks", "a viewer gets chat and the tasks: " + tabNames());
-  check(!document.querySelector("#agent-tab-external"), "a viewer has no Agent tab");
+  check(!document.querySelector("#agent-tab-external"), "a viewer has no Connect tab");
   check(selectedTab() === "Tasks", "a viewer opens on Tasks: " + selectedTab());
   check(!document.querySelector("[data-task-run]"), "a viewer has no Run buttons in a plain browser");
   check(!document.querySelector("[data-share-new]"), "a viewer sees no New button");
@@ -152,12 +152,12 @@ window.agentPanelCheck = async () => {
 
   /* ------------------------------------------- the tabs, and the default tab */
 
-  check(tabNames() === "Chat|Agent|Tasks", "three tabs for an owner, Chat first: " + tabNames());
-  check(selectedTab() === "Agent", "an owner opens on Agent: " + selectedTab());
+  check(tabNames() === "Chat|Connect|Tasks", "three tabs for an owner, Chat first: " + tabNames());
+  check(selectedTab() === "Connect", "an owner opens on Connect: " + selectedTab());
   check(!dialog(), "no dialog at rest");
   check(!panel.querySelector(".agent-step") && !text().includes("npx skills"), "the steps and the install command are gone");
   check(!panel.querySelector("textarea, input"), "no field is shown at rest");
-  check(panel.querySelector("details.token-other") && !panel.querySelector("details.token-other").open, "Other connection methods is there at rest, closed");
+  check(panel.querySelector("details.token-other") && !panel.querySelector("details.token-other").open, "Command line and MCP configuration is there at rest, closed");
 
   /* ------------------------------------------------------ the built-in agent */
 
@@ -169,8 +169,8 @@ window.agentPanelCheck = async () => {
   check(getComputedStyle(builtin).overflowY === "hidden", "the built-in pane is not scrolled as a whole");
   check(!document.querySelector(".chat-form"), "no chat form in a browser");
   check(!document.querySelector("[data-task-run]"), "a plain browser has no Run buttons");
-  await press(tabButton("Agent"));
-  check(selectedTab() === "Agent", "Agent can be picked again: " + selectedTab());
+  await press(tabButton("Connect"));
+  check(selectedTab() === "Connect", "Connect can be picked again: " + selectedTab());
 
   /* ---------------------------------------------------- the external agent */
 
@@ -243,7 +243,7 @@ window.agentPanelCheck = async () => {
   const issued = window.issuedToken;
   check(issued && issued.startsWith("lpt_" + originPart + ".paper.minted"), "the mock issued a token");
   check(!dialog(), "the reveal is not a dialog");
-  check(!text().includes("For scripts, project sync and agents that cannot add a connector"), "the tokens help is hidden during the reveal");
+  check(!text().includes("For project sync, scripts, and agents that cannot add a connector"), "the tokens help is hidden during the reveal");
   check(text().includes("Pasting a token into chat lets your model provider see it."), "the token warning shows in the reveal");
   check(rows().length === 0 && !document.querySelector("[data-share-new]"), "the reveal replaces the list and the New token button");
   check(!panel.textContent.includes(issued) && [...panel.querySelectorAll("textarea, input")].every((node) => !node.value.includes(issued)),
@@ -256,10 +256,10 @@ window.agentPanelCheck = async () => {
   check(copiedLabel(), "a copy button shows Copied afterwards");
   check(document.querySelector(".token-reveal") && rows().length === 0, "copying does not end the reveal");
 
-  // Other connection methods: copy icons only. No field, no code and no token text.
+  // Command line and MCP configuration: copy icons only. No field, no code and no token text.
   await press(panel.querySelector("summary"));
-  check(panel.querySelector("details").open, "Other connection methods opens");
-  check(text().includes("With MCP, you can avoid pasting the token into your agent's chat."), "the MCP advantage line");
+  check(panel.querySelector("details").open, "Command line and MCP configuration opens");
+  check(text().includes("Run librepaper mcp with a token so the token never goes into the chat."), "the MCP advantage line");
   check(!panel.querySelector("textarea, input, code") && !text().includes(issued), "opened, the methods show no field, no code and no token text");
   check(!text().includes("POST /api/documents") && !text().includes("Reveal token") && !text().includes("Hide token"), "no HTTP route and no reveal toggle");
   const commands = "claude mcp add librepaper --scope user -- librepaper mcp\\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude";
@@ -281,7 +281,7 @@ window.agentPanelCheck = async () => {
   check(rows().length === 3 && rows().some((row) => row.textContent.includes("Codex")), "and the token is in the list: " + text());
   check(labelled("Copy connection instructions for Codex"), "the new row has a copy button, since the next listing carries its token");
   check(document.activeElement === document.querySelector("[data-share-new]"), "focus goes to New token after Done");
-  check(panel.querySelector("details.token-other"), "Other connection methods stays after Done");
+  check(panel.querySelector("details.token-other"), "Command line and MCP configuration stays after Done");
   check(labelled("Claude Code commands"), "and it still offers the commands");
 
   /* ---------------------------------------------------------------- revoke */

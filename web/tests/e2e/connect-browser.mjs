@@ -164,6 +164,9 @@ try {
   await until("the project", () => tab.evaluate(`Boolean(document.querySelector(".cm-content") || document.querySelector(".explorer-name"))`), 45000);
   await until("the Agent rail button", () => tab.evaluate(`[...document.querySelectorAll('[aria-label="Agent"]')].some((node) => node.getClientRects().length > 0)`), 30000);
   await tab.evaluate(`[...document.querySelectorAll('[aria-label="Agent"]')].find((node) => node.getClientRects().length > 0).click()`);
+  // The connector lives on the Connect tab, which an owner opens by default; select it so the check does not depend on that.
+  await until("the Connect tab", () => tab.evaluate(`[...document.querySelectorAll('.agent-panel [role="tab"]')].some((node) => node.textContent.trim() === "Connect")`), 30000);
+  await tab.evaluate(`[...document.querySelectorAll('.agent-panel [role="tab"]')].find((node) => node.textContent.trim() === "Connect").click()`);
   await until("the connector block", () => tab.evaluate(`Boolean(document.querySelector(".agent-panel .agent-connector-url"))`), 30000);
   const connectorUrl = await tab.evaluate(`document.querySelector(".agent-panel .agent-connector-url").value`);
   assert.equal(connectorUrl, `${deployment.browserBase}/mcp/${slug}`, "the panel shows the connector URL for this project");
