@@ -3005,6 +3005,8 @@
   "runbutton_directory_named": "実行フォルダー: {name}",
   "runbutton_choose_directory": "実行フォルダーを選択…",
   "runbutton_view_last_run": "前回の実行の出力を表示",
+  "runbutton_refresh_cache": "キャッシュを使わずに実行",
+  "runbutton_refresh_cache_hint": "もう一度実行し、Quarto がキャッシュしたセルを再計算します。ドキュメントの外でデータが変わったときに使います",
   "runbutton_last_run": "前回の実行：{time}",
   "runbutton_failed": "前回の実行は失敗しました",
   "runbutton_running_in": "{name} でコードを実行中…",

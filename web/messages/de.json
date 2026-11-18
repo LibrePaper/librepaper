@@ -3020,6 +3020,8 @@
   "runbutton_directory_named": "Ausführungsordner: {name}",
   "runbutton_choose_directory": "Ausführungsordner wählen…",
   "runbutton_view_last_run": "Ausgabe des letzten Laufs anzeigen",
+  "runbutton_refresh_cache": "Ohne Cache ausführen",
+  "runbutton_refresh_cache_hint": "Erneut ausführen und die Zellen neu berechnen, die Quarto zwischengespeichert hat, etwa wenn sich Daten außerhalb des Dokuments geändert haben",
   "runbutton_last_run": "Letzter Lauf: {time}",
   "runbutton_failed": "Der letzte Lauf ist fehlgeschlagen",
   "runbutton_running_in": "Code wird in {name} ausgeführt…",

@@ -151,6 +151,36 @@ test("a job body has every key of the minimal job fixture and none beyond the fu
   assert.deepEqual([...missingKeys(body, minimal), ...extraKeys(body, full)], []);
 });
 
+test("Run without cache sends refresh_cache, needs a 3.3.0 app, and a plain job does not send it", async () => {
+  const jobs = [];
+  useDesktop(CURRENT, async (url, init = {}) => {
+    if (url.endsWith("/jobs") && init.method === "POST") {
+      const form = await formOf(init);
+      jobs.push(JSON.parse(await form.get("job").text()));
+      return response(202, { id: "job-1" });
+    }
+    if (url.endsWith("/jobs/job-1")) return response(200, { id: "job-1", status: "done", exit: 0, outputs: {} });
+    throw new Error(`unexpected request ${url}`);
+  });
+  await client.runRender({ job: { refreshCache: true }, tree: TREE, format: "quarto", output: "html" });
+  await client.runRender({ job: {}, tree: TREE, format: "quarto", output: "html" });
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[0].options.refresh_cache, true);
+  assert.equal("refresh_cache" in jobs[1].options, false);
+  // A 3.2.0 app predates the cache refresh: the job is refused before anything is sent.
+  const older = { base: BASE, version: "3.2.0", protocol: { oldest: 3, current: "3.2.0" } };
+  let requests = 0;
+  useDesktop(older, async () => {
+    requests += 1;
+    return response(202, { id: "job-1" });
+  });
+  await assert.rejects(
+    client.runRender({ job: { refreshCache: true }, tree: TREE, format: "quarto", output: "html" }),
+    (error) => error.name === "DesktopFeatureOutdated",
+  );
+  assert.equal(requests, 0);
+});
+
 test("renderer bodies match their fixtures, with the set fixture as both minimum and maximum", async () => {
   const set = await fixture("renderers.put.request.set.json");
   const reset = await fixture("renderers.put.request.reset.json");

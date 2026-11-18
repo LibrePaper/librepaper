@@ -212,7 +212,7 @@ async function localHtml(format, artifact) {
 /// An optional `signal` stops a render on this computer: one already aborted
 /// when the job would start throws an `AbortError` without starting it, and
 /// one that fires later cancels the job in flight.
-export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "", signal = null, wanted = [] } = {}) {
+export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "", signal = null, wanted = [], refreshCache = false } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = previewFormatOf(tree.main);
   // A format set to this computer renders there, through the command Settings
@@ -225,7 +225,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
     // Stop pressed while the snapshot was being hashed: nothing has started,
     // so the job in flight (if any) is not another render's to cancel.
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    const job = { snapshot: digest, generation: Date.now(), wanted };
+    const job = { snapshot: digest, generation: Date.now(), wanted, ...(refreshCache ? { refreshCache: true } : {}) };
     activeLocalAbort?.abort();
     const abort = new AbortController();
     signal?.addEventListener("abort", () => abort.abort(), { once: true });
