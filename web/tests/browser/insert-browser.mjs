@@ -222,8 +222,9 @@ try {
   await cancel();
   // With two candidate .bib files a labelled select picks the target, and the choice is remembered.
   await evaluate("window.extraMenuProps={...window.extraMenuProps,ontargets:()=>({files:['a.bib','b.bib'],declared:false}),ondoiimport:async(e,b)=>{window.__bibArgs=b;return e.map(x=>x.key)}};localStorage.removeItem('librepaper.insert.bibTarget');window.__bibArgs='unset';0");
+  await evaluate("setupInsert('markdown','Before AFTER')");
   await evaluate("selectInsert(insertState().text.indexOf('Before') + 7)");await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
-  const targetSelect=`document.querySelectorAll('[role="dialog"][data-state="open"] select.select')[1]`;
+  const targetSelect=`[...document.querySelectorAll('[role="dialog"][data-state="open"] select.select')].find(s=>[...s.options].some(o=>o.value==='a.bib'))`;
   await until("target select",()=>evaluate(`Boolean(${targetSelect})`),5000);
   assert.equal(await evaluate(`${targetSelect}.value`),"a.bib","the first file is selected by default");
   await evaluate(`(()=>{const s=${targetSelect};s.value='b.bib';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);

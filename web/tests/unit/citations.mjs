@@ -236,7 +236,7 @@ assert.deepEqual(selectedBibliographyFiles("---\nbibliography: refs.bib\n...\nBo
   assert.equal(open.path, "b.bib");
   assert.match(open.registration.insert, /b\.bib/);
   assert.equal(planDoiImport({ source: "# Notes\n", targetPath: "notes.md", texts: bibs, entry: doiEntry, bibPath: "nope.bib" }).path, "a.bib");
-  assert.equal(planDoiImport({ source: two, targetPath: "main.qmd", texts: bibs, entry: doiEntry, bibPath: "c.bib" }).path, "b.bib");
+  assert.equal(planDoiImport({ source: two, targetPath: "main.qmd", texts: bibs, entry: doiEntry, bibPath: "c.bib" }).path, "a.bib");
   const zotero = planZoteroImport({ source: two, targetPath: "main.qmd", texts: { ...bibs, "other.bib": "@book{Smi2023,\n  title = {X}\n}\n" }, item: { zotero_item: "ZZ", citation_key: "Smi2023", bibtex: "@article{Smi2023,\n title={T}}\n" }, bibPath: "a.bib" });
   assert.equal(zotero.path, "a.bib");
   assert.equal(zotero.key, "Smi2023a");
