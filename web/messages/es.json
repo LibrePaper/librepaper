@@ -3020,6 +3020,8 @@
   "runbutton_directory_named": "Carpeta de ejecución: {name}",
   "runbutton_choose_directory": "Elegir una carpeta de ejecución…",
   "runbutton_view_last_run": "Ver la salida de la última ejecución",
+  "runbutton_refresh_cache": "Ejecutar sin caché",
+  "runbutton_refresh_cache_hint": "Volver a ejecutar y recalcular las celdas que Quarto guardó en caché, para cuando los datos cambiaron fuera del documento",
   "runbutton_last_run": "Última ejecución : {time}",
   "runbutton_failed": "La última ejecución falló",
   "runbutton_running_in": "Ejecutando el código en {name}…",

@@ -3020,6 +3020,8 @@
   "runbutton_directory_named": "Dossier d’exécution : {name}",
   "runbutton_choose_directory": "Choisir un dossier d’exécution…",
   "runbutton_view_last_run": "Voir la sortie de la dernière exécution",
+  "runbutton_refresh_cache": "Exécuter sans cache",
+  "runbutton_refresh_cache_hint": "Exécuter à nouveau et recalculer les cellules que Quarto a mises en cache, lorsque les données ont changé hors du document",
   "runbutton_last_run": "Dernière exécution : {time}",
   "runbutton_failed": "La dernière exécution a échoué",
   "runbutton_running_in": "Exécution du code dans {name}…",

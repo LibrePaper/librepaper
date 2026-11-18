@@ -2544,7 +2544,7 @@
   // makes is not the preview: its cell outputs are split out and spliced under
   // the draft's cells. For Typst, Calepin's stored files are kept instead, and
   // the browser's draft reads them back, so the preview stays the draft.
-  async function runCode() {
+  async function runCode({ refreshCache = false } = {}) {
     if (runPhase === "running" || readerDisposed) return;
     if (!runDir.usable) {
       pendingRun = true;
@@ -2599,6 +2599,7 @@
         project: SLUG,
         wanted,
         ...(typst ? { format: toPdf ? "pdf" : "html" } : {}),
+        ...(sourceFormat === "quarto" && refreshCache ? { refreshCache: true } : {}),
         signal: controller.signal,
       });
       if (gone()) return;
@@ -4701,6 +4702,7 @@
 {#snippet localExecutionControl()}
   {#if runCodeOffered && runsExplicitly}
     <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun}
+      canRefresh={sourceFormat === "quarto"} onrefresh={() => runCode({ refreshCache: true })}
       share={shareResults} onshare={setShareResults}
       directoryName={runDir.status?.path ? leaf(runDir.status.path) : ""}
       directoryPath={runDir.status?.path ? runDir.shorten(runDir.status.path) : ""}

@@ -3020,6 +3020,8 @@
   "runbutton_directory_named": "Pasta de execução: {name}",
   "runbutton_choose_directory": "Escolher uma pasta de execução…",
   "runbutton_view_last_run": "Ver a saída da última execução",
+  "runbutton_refresh_cache": "Executar sem cache",
+  "runbutton_refresh_cache_hint": "Executar novamente e recalcular as células que o Quarto guardou em cache, para quando os dados mudaram fora do documento",
   "runbutton_last_run": "Última execução: {time}",
   "runbutton_failed": "A última execução falhou",
   "runbutton_running_in": "A executar o código em {name}…",

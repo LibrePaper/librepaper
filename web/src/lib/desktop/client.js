@@ -20,7 +20,7 @@ import { m } from "../paraglide/messages.js";
 import { isLegacy, outcome, rangeOf, sinceMet } from "./negotiate.js";
 
 /** @typedef {{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, replaceHash: (hash: string) => void }} DesktopDeps */
-/** @typedef {{ generation?: number, deadlineSeconds?: number, snapshot?: string, wanted?: string[] }} DesktopJob */
+/** @typedef {{ generation?: number, deadlineSeconds?: number, snapshot?: string, wanted?: string[], refreshCache?: boolean }} DesktopJob */
 /** @typedef {{ main: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array | ArrayBuffer | string>, digests?: Record<string, string>, files?: Record<string, unknown> }} DesktopTree */
 /** @typedef {{ path: string, sha256: string, size: number }} ManifestFile */
 /** @typedef {{ signal?: AbortSignal, onProgress?: (progress: { done: number, total: number, scope?: string }) => void }} BuildCallbacks */
@@ -512,6 +512,9 @@ export const rendererKey = (format, output) => `${format}.${output}`;
 // Typst jobs run through Calepin, and return its stored results, from 3.3.0.
 const CALEPIN_SINCE = "3.3.0";
 
+// Quarto's cache refresh came in 3.3.0.
+const REFRESH_CACHE_SINCE = "3.3.0";
+
 /** Render one document with the command the desktop app holds for its
  * format and output. The page sends a job and never a command. Resolves with
  * the result file, the SyncTeX file when the tool wrote one, the files a
@@ -536,6 +539,7 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
     manifest,
     options: {
       deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
+      ...(job.refreshCache ? { refresh_cache: true } : {}),
     },
     // Figures the document references that are not project files: the app
     // reads them from the Run directory after the run.
@@ -543,7 +547,7 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
   };
   const scope = `local ${format}`;
   onProgress?.({ done: 0, total: 1, scope });
-  const finished = await submitAndAwait(formOf(request, files), signal, format === "typst" ? CALEPIN_SINCE : undefined);
+  const finished = await submitAndAwait(formOf(request, files), signal, format === "typst" ? CALEPIN_SINCE : job.refreshCache ? REFRESH_CACHE_SINCE : undefined);
   const { id, status } = finished;
   const artifact = await fetchVerifiedOutput(id, "artifact", status);
   const synctex = await fetchVerifiedOutput(id, "synctex", status);
