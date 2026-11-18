@@ -867,11 +867,16 @@ async fn a_revoke_racing_a_refresh_stays_revoked() {
         served.refresh(&client_id, &refresh)
     );
     // If the refresh swapped the row first, the owner's revoke names a row
-    // that is already gone and answers not found; either way the old access
-    // token is dead. Before the save compared its rows, a revoke landing
-    // between the refresh's read and write was undone and this was 200.
+    // that is already gone: not found before its write, or refused as
+    // nothing shared under that id when its retried pass finds the row
+    // swapped. Either way the old access token is dead. Before the save
+    // compared its rows, a revoke landing between the refresh's read and
+    // write was undone.
     assert!(
-        revoked.status == 200 || revoked.status == 404,
+        revoked.status == 200
+            || revoked.status == 404
+            || (revoked.status == 400
+                && revoked.body["error"] == "nothing is shared under that id"),
         "{}",
         revoked.body
     );
