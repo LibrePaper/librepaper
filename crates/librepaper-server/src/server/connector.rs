@@ -559,6 +559,7 @@ impl Server {
     /// The answer to a finished grant: the access token, the refresh token
     /// that renews the row and the seconds the access token has left, from
     /// the row's `until`.
+    #[allow(clippy::too_many_arguments)]
     fn issued(
         &self,
         origin: &str,
