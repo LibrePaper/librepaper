@@ -1,6 +1,7 @@
 // Matching and cache policy for bibliography completion. Parsing itself lives
 // in the engine WASM module; these helpers are also usable by check scripts.
 import { m } from "./paraglide/messages.js";
+import { normaliseDoi } from "./doi.js";
 
 const WORD = /[-\p{L}\p{N}_:.+]/u;
 const KEY = /^[-\p{L}\p{N}_:.+]*$/u;
@@ -384,10 +385,11 @@ export function planZoteroImport({ source, targetPath, texts, item, format = "ma
 
 // The key of the entry in a .bib whose doi field equals `doi`, or null.
 function doiEntryKey(bibtex, doi) {
-  const wanted = String(doi).trim().toLocaleLowerCase();
+  const same = (text) => (normaliseDoi(text) ?? String(text).trim()).toLocaleLowerCase();
+  const wanted = same(doi);
   const field = /\bdoi\s*=\s*(?:\{([^}]*)\}|"([^"]*)")/gi;
   for (const found of string(bibtex).matchAll(field)) {
-    if ((found[1] ?? found[2]).trim().toLocaleLowerCase() !== wanted) continue;
+    if (same(found[1] ?? found[2]) !== wanted) continue;
     const headers = [...string(bibtex).slice(0, found.index).matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)];
     if (headers.length) return headers.at(-1)[1];
   }

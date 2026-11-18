@@ -47,10 +47,17 @@ export async function fetchDoi(doi, fetchImpl = fetch) {
 
 const TYPES = {
   "article-journal": "article",
+  "journal-article": "article",
   book: "book",
+  monograph: "book",
+  "edited-book": "book",
+  "reference-book": "book",
   chapter: "incollection",
+  "book-chapter": "incollection",
   "paper-conference": "inproceedings",
+  "proceedings-article": "inproceedings",
   thesis: "phdthesis",
+  dissertation: "phdthesis",
   report: "techreport",
   webpage: "online",
 };
@@ -81,6 +88,13 @@ function pagesOf(value) {
   return value.replace(/–/g, "--").replace(/(?<!-)-(?!-)/g, "--");
 }
 
+/** The issued year as a decimal string, or "" when the record has none. @param {any} csl */
+export function cslYear(csl) {
+  const value = csl?.issued?.["date-parts"]?.[0]?.[0];
+  if (Number.isInteger(value)) return String(value);
+  return typeof value === "string" && /^\d+$/.test(value) ? value : "";
+}
+
 /**
  * @param {any} csl
  * @param {string} doi the normalised DOI the person typed
@@ -96,9 +110,7 @@ export function cslToBibtex(csl, doi) {
   const authorText = authors.map((author) => author.family
     ? (author.given ? `${author.family}, ${author.given}` : author.family)
     : `{${author.literal}}`).join(" and ");
-  const parts = csl.issued?.["date-parts"];
-  const rawYear = Array.isArray(parts) && Array.isArray(parts[0]) ? Number(parts[0][0]) : NaN;
-  const year = Number.isFinite(rawYear) ? String(Math.trunc(rawYear)) : "";
+  const year = cslYear(csl);
   const title = clean(csl.title);
   const container = clean(csl["container-title"]);
   const page = clean(csl.page);

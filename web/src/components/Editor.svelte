@@ -239,7 +239,7 @@
   import { pastesPlainAt } from "../lib/paste-context.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
-  import { cslToBibtex, fetchDoi, normaliseDoi } from "../lib/doi.js";
+  import { cslToBibtex, cslYear, fetchDoi, normaliseDoi } from "../lib/doi.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planDoiImport, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, completionWake, formatOfPath } from "../lib/completion/index.js";
@@ -970,8 +970,8 @@
     catch (error) { throw new Error(error?.code === "not_found" ? m.editor_doi_not_found() : m.editor_doi_unreachable()); }
     const { key, bibtex } = cslToBibtex(csl, doi);
     const authors = (Array.isArray(csl?.author) ? csl.author : []).map((author) => cslText(author?.family || author?.literal)).filter(Boolean);
-    const year = Number(csl?.issued?.["date-parts"]?.[0]?.[0]);
-    return { doi, key, bibtex, title: cslText(csl?.title), authors, year: Number.isFinite(year) ? year : "", type: cslText(csl?.type) };
+    const year = cslYear(csl);
+    return { doi, key, bibtex, title: cslText(csl?.title), authors, year: year ? Number(year) : "", type: cslText(csl?.type) };
   }
 
   /// Adds looked-up DOI entries ({ doi, key, bibtex }) to the project's .bib for the Insert > Citation dialog. It returns the citation key of each entry, in order.

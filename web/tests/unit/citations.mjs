@@ -131,3 +131,7 @@ const doiRegistered = planDoiImport({ source: "# Notes\n", targetPath: "notes.md
 assert.equal(doiRegistered.create, true);
 assert.equal(doiRegistered.path, "references.bib");
 assert.equal(doiRegistered.registration.insert, "---\nbibliography: references.bib\n---\n\n");
+
+const doiLinked = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "@article{Linked,\n  doi = {https://doi.org/10.1038/Nature12373}\n}\n" }, entry: doiEntry });
+assert.equal(doiLinked.already, true);
+assert.equal(doiLinked.key, "Linked");
