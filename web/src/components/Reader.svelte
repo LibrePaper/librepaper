@@ -481,15 +481,18 @@
   // never runs on this computer until Run is pressed and a folder is set.
   let runDirectory = $state("");
   const runDirectoryReady = $derived(runDirectory !== "");
-  // Run was pressed before a folder was set: choosing one carries on with it.
-  let pendingRun = false;
+  // Run was pressed before a folder was set: choosing one carries on with it,
+  // as the same kind of run (Run without cache stays one).
+  /** @type {{ refreshCache: boolean } | null} */
+  let pendingRun = null;
   function setRunDirectory(path) {
     const next = path || "";
     if (next === runDirectory) return;
     runDirectory = next;
     if (next && pendingRun && !readerDisposed) {
-      pendingRun = false;
-      void runCode();
+      const options = pendingRun;
+      pendingRun = null;
+      void runCode(options);
     }
   }
   // The Run button's menu and the Run directory dialog share this state.
@@ -2409,7 +2412,7 @@
   }
   // Dismissing the dialog gives up a Run that was waiting for a folder.
   function dismissRunDir() {
-    pendingRun = false;
+    pendingRun = null;
     runDirPageOpen = false;
   }
   const latexOutput = $derived(buildSettings.state.latexOutput);
@@ -2547,7 +2550,7 @@
   async function runCode({ refreshCache = false } = {}) {
     if (runPhase === "running" || readerDisposed) return;
     if (!runDir.usable) {
-      pendingRun = true;
+      pendingRun = { refreshCache };
       runDirPageOpen = true;
       return;
     }
