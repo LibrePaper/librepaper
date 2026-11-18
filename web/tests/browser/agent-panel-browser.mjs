@@ -243,7 +243,7 @@ window.agentPanelCheck = async () => {
   const issued = window.issuedToken;
   check(issued && issued.startsWith("lpt_" + originPart + ".paper.minted"), "the mock issued a token");
   check(!dialog(), "the reveal is not a dialog");
-  check(!text().includes("Create a token, copy its instructions"), "the connect help is hidden during the reveal");
+  check(!text().includes("For scripts, project sync and agents that cannot add a connector"), "the tokens help is hidden during the reveal");
   check(text().includes("Pasting a token into chat lets your model provider see it."), "the token warning shows in the reveal");
   check(rows().length === 0 && !document.querySelector("[data-share-new]"), "the reveal replaces the list and the New token button");
   check(!panel.textContent.includes(issued) && [...panel.querySelectorAll("textarea, input")].every((node) => !node.value.includes(issued)),
