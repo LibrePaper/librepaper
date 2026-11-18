@@ -32,7 +32,9 @@ pub fn normalise(input: &str) -> Option<String> {
     .find(|prefix| lower.starts_with(**prefix))
     .map(|prefix| prefix.len())
     {
-        percent_decode(&trimmed[length..])
+        let tail = &trimmed[length..];
+        let end = tail.find(['?', '#']).unwrap_or(tail.len());
+        percent_decode(&tail[..end])
     } else {
         trimmed.to_owned()
     };
@@ -158,6 +160,23 @@ fn clean(value: &Value) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
     (!joined.is_empty()).then_some(joined)
+}
+
+/// TeX escaping for a value being written: backslashes are dropped, then
+/// `& % # _ $` get a backslash.
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => {}
+            '&' | '%' | '#' | '_' | '$' => {
+                out.push('\\');
+                out.push(c);
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn field(csl: &Value, name: &str) -> Option<String> {
@@ -324,7 +343,15 @@ pub fn convert(csl: &Value, doi: &str) -> Converted {
     let key = key_for(&authors, title.as_deref(), year.as_deref());
     let body = fields
         .iter()
-        .map(|(name, value)| format!("  {name} = {{{}}}", value.as_deref().unwrap_or("")))
+        .map(|(name, value)| {
+            let value = value.as_deref().unwrap_or("");
+            let value = if *name == "doi" || *name == "url" {
+                value.to_owned()
+            } else {
+                escape(value)
+            };
+            format!("  {name} = {{{value}}}")
+        })
         .collect::<Vec<_>>()
         .join(",\n");
     Converted {
