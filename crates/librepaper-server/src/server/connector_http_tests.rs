@@ -714,21 +714,25 @@ async fn the_token_endpoint_holds_a_resource_to_the_codes_project() {
     };
     let (client_id, code) = served.approved().await;
     let wrong = format!("{READER}/mcp/another-paper");
-    let exchange = |resource: Option<&str>| {
+    fn exchange<'a>(
+        code: &'a str,
+        client_id: &'a str,
+        resource: Option<&'a str>,
+    ) -> Vec<(&'a str, &'a str)> {
         let mut fields = vec![
             ("grant_type", "authorization_code"),
-            ("code", code.as_str()),
+            ("code", code),
             ("redirect_uri", CALLBACK),
-            ("client_id", client_id.as_str()),
+            ("client_id", client_id),
             ("code_verifier", VERIFIER),
         ];
         if let Some(resource) = resource {
             fields.push(("resource", resource));
         }
         fields
-    };
+    }
     let refused = served
-        .post_form("/oauth/token", &exchange(Some(&wrong)))
+        .post_form("/oauth/token", &exchange(&code, &client_id, Some(&wrong)))
         .await;
     assert_eq!(refused.status, 400, "{}", refused.body);
     assert_eq!(refused.body["error"], "invalid_target");
@@ -740,13 +744,20 @@ async fn the_token_endpoint_holds_a_resource_to_the_codes_project() {
     // The code was not spent, and its own resource is accepted.
     let resource = served.resource();
     let issued = served
-        .post_form("/oauth/token", &exchange(Some(&resource)))
+        .post_form(
+            "/oauth/token",
+            &exchange(&code, &client_id, Some(&resource)),
+        )
         .await;
     assert_eq!(issued.status, 200, "{}", issued.body);
     let refresh = issued.body["refresh_token"].as_str().unwrap().to_string();
     let ids = agent_row_ids(&served).await;
     let until = |entry: librepaper_engine::storage::store::IndexEntry| {
-        entry.links.iter().map(|link| link.until.clone()).collect::<Vec<_>>()
+        entry
+            .links
+            .iter()
+            .map(|link| link.until.clone())
+            .collect::<Vec<_>>()
     };
     let before = until(
         served

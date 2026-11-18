@@ -64,7 +64,11 @@ pub(super) async fn mcp_http(
             401,
             &json!({"error": "a bearer token for this project is required"}),
         );
-        set(&mut reply, "www-authenticate", &mcp_challenge(&origin, &slug));
+        set(
+            &mut reply,
+            "www-authenticate",
+            &mcp_challenge(&origin, &slug),
+        );
         set(&mut reply, "cache-control", "no-store");
         return reply;
     }
@@ -80,9 +84,11 @@ pub(super) async fn mcp_http(
     }
     // A client that names a revision this endpoint does not speak is told so
     // before anything is read or run. One that names none is an older client.
-    if header_of(request.headers(), "mcp-protocol-version")
-        .is_some_and(|version| !PROTOCOL_VERSIONS.iter().any(|supported| *supported == version))
-    {
+    if header_of(request.headers(), "mcp-protocol-version").is_some_and(|version| {
+        !PROTOCOL_VERSIONS
+            .iter()
+            .any(|supported| *supported == version)
+    }) {
         return rpc_error(400, Value::Null, -32600, "unsupported MCP-Protocol-Version");
     }
     let mut headers = request.headers().clone();

@@ -431,10 +431,8 @@ impl Server {
             return Err(Problem::Refuse("redirect URI is not registered"));
         }
         let state = field(params, "state");
-        let bounce = |error: &'static str, description: &'static str| Problem::Bounce {
-            error,
-            description,
-        };
+        let bounce =
+            |error: &'static str, description: &'static str| Problem::Bounce { error, description };
         if state.len() > MAX_STATE {
             return Err(bounce("invalid_request", "state is too long"));
         }
@@ -996,7 +994,9 @@ impl Server {
             }
             // The row went before this got to it: the token is gone.
             Err(ModifyError::NotFound) => Ok(()),
-            Err(ModifyError::Refused(message)) if message == ROW_GONE || message == TOKEN_REVOKED => {
+            Err(ModifyError::Refused(message))
+                if message == ROW_GONE || message == TOKEN_REVOKED =>
+            {
                 Ok(())
             }
             // The owner no longer holds the project, or the write was
@@ -1127,7 +1127,10 @@ async fn authorize(
         // Nobody has approved anything yet, so the registered address is not
         // sent the person: the error is shown here.
         Err(Problem::Bounce { description, .. }) => {
-            return plain(400, &format!("invalid authorization request: {description}"))
+            return plain(
+                400,
+                &format!("invalid authorization request: {description}"),
+            )
         }
     };
     match &ctx.authentication {
@@ -1149,7 +1152,10 @@ async fn authorize(
             if !asked.state.is_empty() {
                 next.append_pair("state", &asked.state);
             }
-            next.append_pair("resource", &format!("{}/mcp/{}", ctx.arrival.reader_origin(), asked.slug));
+            next.append_pair(
+                "resource",
+                &format!("{}/mcp/{}", ctx.arrival.reader_origin(), asked.slug),
+            );
             return redirect(&format!(
                 "/auth/login?next={}",
                 url_escape(&format!("/oauth/authorize?{}", next.finish()))
