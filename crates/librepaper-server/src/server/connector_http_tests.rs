@@ -858,3 +858,124 @@ async fn with_connectors_off_every_route_is_not_found() {
         .await;
     assert_eq!(approve.status, 404);
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_missing_project_and_someone_elses_look_the_same_to_a_signed_in_person() {
+    let Some(served) = serve("connector-oracle", true).await else {
+        return;
+    };
+    let client_id = served.client_id().await;
+    let stranger = served.stranger_cookie().await;
+    let query_for = |slug: &str| {
+        form(&[
+            ("response_type", "code"),
+            ("client_id", &client_id),
+            ("redirect_uri", CALLBACK),
+            ("code_challenge", &pkce_challenge(VERIFIER)),
+            ("code_challenge_method", "S256"),
+            ("state", "xyz"),
+            ("resource", &format!("{READER}/mcp/{slug}")),
+        ])
+    };
+    let existing = query_for(&served.slug);
+    let missing = query_for("no-such-paper");
+
+    let page = served
+        .get(&format!("/oauth/authorize?{missing}"), Some(&stranger))
+        .await;
+    assert_eq!(page.status, 200, "a missing slug is not redirected away");
+
+    let theirs = served
+        .get(
+            &format!("/api/oauth/authorize-info?{existing}"),
+            Some(&stranger),
+        )
+        .await;
+    let nothing = served
+        .get(
+            &format!("/api/oauth/authorize-info?{missing}"),
+            Some(&stranger),
+        )
+        .await;
+    assert_eq!(theirs.status, 200, "{}", theirs.body);
+    assert_eq!(nothing.status, 200, "{}", nothing.body);
+    let mut theirs = theirs.body;
+    let mut nothing = nothing.body;
+    assert_eq!(theirs["project"]["slug"], served.slug.as_str());
+    assert_eq!(nothing["project"]["slug"], "no-such-paper");
+    // Apart from the slug the caller supplied, the bodies are identical.
+    theirs["project"]["slug"] = Value::Null;
+    theirs["project"]["title"] = Value::Null;
+    nothing["project"]["slug"] = Value::Null;
+    nothing["project"]["title"] = Value::Null;
+    assert_eq!(theirs, nothing);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_largest_registration_still_completes_a_grant_and_a_refresh() {
+    let Some(served) = serve("connector-large", true).await else {
+        return;
+    };
+    // Five URIs totalling exactly 2048 characters, one of them the callback.
+    let padded = |fill: char| format!("https://chat.example/{}", fill.to_string().repeat(482));
+    let uris = vec![
+        CALLBACK.to_string(),
+        padded('a'),
+        padded('b'),
+        padded('c'),
+        padded('d'),
+    ];
+    assert_eq!(uris.iter().map(String::len).sum::<usize>(), 2048);
+    let answer = served
+        .register(&json!({"redirect_uris": uris, "client_name": "Big app"}))
+        .await;
+    assert_eq!(answer.status, 201, "{}", answer.body);
+    let client_id = answer.body["client_id"].as_str().unwrap().to_string();
+
+    let approve = served
+        .post_json(
+            "/api/oauth/approve",
+            Some(&served.owner_cookie()),
+            &served.decision(&client_id, "suggest", "approve"),
+        )
+        .await;
+    assert_eq!(approve.status, 200, "{}", approve.body);
+    let redirect = url::Url::parse(approve.body["redirect"].as_str().unwrap()).unwrap();
+    let code = redirect
+        .query_pairs()
+        .find(|(name, _)| name == "code")
+        .unwrap()
+        .1
+        .into_owned();
+    let issued = served.exchange(&client_id, &code, VERIFIER).await;
+    assert_eq!(issued.status, 200, "{}", issued.body);
+    let refresh = issued.body["refresh_token"].as_str().unwrap().to_string();
+    let renewed = served.refresh(&client_id, &refresh).await;
+    assert_eq!(renewed.status, 200, "{}", renewed.body);
+
+    // One character more is refused.
+    let mut too_many = vec![CALLBACK.to_string()];
+    too_many.extend([padded('a'), padded('b'), padded('c'), padded('d')]);
+    too_many[1].push('x');
+    let refused = served.register(&json!({"redirect_uris": too_many})).await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.body["error"], "invalid_redirect_uri");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_connector_routes_are_not_found_on_the_documents_host() {
+    let Some(served) = serve("connector-docs-host", true).await else {
+        return;
+    };
+    let response = served
+        .client()
+        .get(format!("{}/.well-known/oauth-authorization-server", served.base))
+        .header("host", "docs.paper.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 404);
+}
