@@ -111,6 +111,7 @@ try {
     code_challenge: challenge,
     code_challenge_method: "S256",
     state: STATE,
+    scope: "offline_access",
     resource,
   });
   const consent = `${deployment.browserBase}/oauth/authorize?${query}`;
@@ -150,13 +151,30 @@ try {
   const granted = await exchange.json();
   assert.equal(exchange.status, 200, JSON.stringify(granted));
   assert.equal(granted.scope, "suggest offline_access", "the connection has the role the owner chose");
-  const mcp = await fetch(`${deployment.base}/mcp/${slug}`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${granted.access_token}` },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-  });
-  const listed = await mcp.json();
+  // Lists the MCP tools with a bearer token; used for the first token and the refreshed one.
+  const listTools = async (accessToken) => {
+    const mcp = await fetch(`${deployment.base}/mcp/${slug}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    return mcp.json();
+  };
+  const listed = await listTools(granted.access_token);
   assert.ok(listed.result?.tools?.some((tool) => tool.name === "document_read"), `the token reaches the MCP endpoint: ${JSON.stringify(listed)}`);
+  assert.ok(granted.refresh_token, "offline_access returns a refresh token");
+
+  // The app keeps the connection alive by redeeming the refresh token.
+  const refresh = await fetch(`${deployment.base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: granted.refresh_token, client_id: clientId }),
+  });
+  const refreshed = await refresh.json();
+  assert.equal(refresh.status, 200, JSON.stringify(refreshed));
+  assert.ok(refreshed.access_token, "the refresh returns an access token");
+  const relisted = await listTools(refreshed.access_token);
+  assert.ok(relisted.result?.tools?.some((tool) => tool.name === "document_read"), `the refreshed token still reaches the MCP endpoint: ${JSON.stringify(relisted)}`);
 
   /* ------------------------------------------------------- the Agent panel */
 
