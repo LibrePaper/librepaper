@@ -905,6 +905,7 @@
   // receives { source, targetPath, texts, format } and returns the import plan.
   // The registration is written here only when it belongs to another file.
   // The import functions dispatch it through the view when it belongs to the file on screen.
+  // makePlan runs before anything is written, so a plan that throws leaves the project untouched.
   function writeBibliographyImport(doc, activeFile, activePath, makePlan) {
     const tree = treeForDoc(doc);
     // The bibliography is registered in the preview's file when it shares the citing file's format family, else in the citing file.
@@ -927,6 +928,11 @@
     return { plan, regId };
   }
 
+  // The plan throws this code when the document's bibliography is not a BibTeX file.
+  function importError(error) {
+    return error?.code === "bibliography_not_bibtex" ? new Error(m.editor_bibliography_not_bibtex()) : error;
+  }
+
   /// Imports several Zotero items for the Insert > Citation dialog. Errors throw to the caller. It returns the citation key of each item, in order.
   export async function importZoteroItems(items) {
     if (!editable || !session || !showing || !view) throw new Error(m.editor_zotero_needs_file());
@@ -937,11 +943,14 @@
     }
     const keys = [];
     for (let index = 0; index < items.length; index++) {
-      const { plan, regId } = writeBibliographyImport(doc, activeFile, activePath, (target) => planZoteroImport({
-        ...target, item: { ...fetchedItems[index], zotero_item: items[index].zotero_item },
-      }));
-      keys.push(plan.key);
-      registerImport(plan, regId, activeFile);
+      let written;
+      try {
+        written = writeBibliographyImport(doc, activeFile, activePath, (target) => planZoteroImport({
+          ...target, item: { ...fetchedItems[index], zotero_item: items[index].zotero_item },
+        }));
+      } catch (error) { throw importError(error); }
+      keys.push(written.plan.key);
+      registerImport(written.plan, written.regId, activeFile);
     }
     if (tracked) prune(doc);
     doc.commit();
@@ -980,9 +989,11 @@
     const doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
     const keys = [];
     for (const doiEntry of entries) {
-      const { plan, regId } = writeBibliographyImport(doc, activeFile, activePath, (target) => planDoiImport({ ...target, entry: doiEntry }));
-      keys.push(plan.key);
-      registerImport(plan, regId, activeFile);
+      let written;
+      try { written = writeBibliographyImport(doc, activeFile, activePath, (target) => planDoiImport({ ...target, entry: doiEntry })); }
+      catch (error) { throw importError(error); }
+      keys.push(written.plan.key);
+      registerImport(written.plan, written.regId, activeFile);
     }
     if (tracked) prune(doc);
     doc.commit();
