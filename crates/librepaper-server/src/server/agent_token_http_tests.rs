@@ -674,6 +674,10 @@ async fn the_tools_route_tells_a_direct_caller_what_a_write_needs() {
         .as_str()
         .unwrap()
         .contains("identified automatically"));
+    assert!(default["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("there is no main file"));
 
     // `?schema=full` is the direct caller's view: every write names its
     // operation, and the instructions say how to build it.
@@ -691,6 +695,7 @@ async fn the_tools_route_tells_a_direct_caller_what_a_write_needs() {
         .contains(&json!("operation")));
     let instructions = direct["instructions"].as_str().unwrap();
     assert!(instructions.contains("operation_epoch"));
+    assert!(instructions.contains("there is no main file"));
     assert!(!instructions.contains("identified automatically"));
 
     // A commenter gets the full schema too, but still not the editor's tools.
