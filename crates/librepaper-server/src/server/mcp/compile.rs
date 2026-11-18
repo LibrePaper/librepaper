@@ -326,10 +326,8 @@ impl CompileHub {
                     result["error"].as_str(),
                     Some("run_unavailable" | "run_disabled" | "busy")
                 );
-                if declined {
-                    if send_to_next_tab(&mut entry.fallback) {
-                        return Completion::Accepted;
-                    }
+                if declined && send_to_next_tab(&mut entry.fallback) {
+                    return Completion::Accepted;
                 }
                 entry.fallback = None;
                 entry.finished_at = Some(now);

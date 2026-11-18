@@ -46,7 +46,7 @@ import { fillFigures, referenceFigures } from "../missing-figures.js";
  * facts: () => PreviewFacts, tree: () => PreviewTree,
  * gather: (digests: Record<string, string>, options?: { urls?: boolean | "reference" }) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string>, references: Array<{ sha: string, type: string, bytes: Uint8Array }> }, missing: string[] }>,
  * heading: (tree: PreviewTree) => Promise<string>, takeManual?: () => boolean, manualPending?: () => boolean,
- * onsynctex?: (map: unknown | null) => void, send?: (message: { type: string, html?: string }) => void,
+ * onsynctex?: (map: unknown | null) => void, repaint?: () => void, send?: (message: { type: string, html?: string }) => void,
  * clearDebounce?: () => void, refreshFrame?: () => void, debug?: (message: string, ...details: unknown[]) => void,
  * }} options
  */
