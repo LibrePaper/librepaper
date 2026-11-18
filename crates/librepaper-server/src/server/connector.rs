@@ -68,6 +68,12 @@ const MAX_BODY: usize = 1 << 14;
 const CODE_SECONDS: i64 = 60;
 const TOKEN_DAYS: i64 = 30;
 
+/// What the closure that drops a row says when the row is not there, and what
+/// the store says when the row was revoked first. Both mean the token is
+/// already dead.
+const ROW_GONE: &str = "the connection is gone";
+const TOKEN_REVOKED: &str = "that token was revoked";
+
 /// The roles a person may hand an app, as the Agent panel names them.
 const ROLES: [&str; 4] = ["read", "comment", "suggest", "edit"];
 
@@ -116,13 +122,13 @@ enum Problem {
     /// person is never redirected, since the address is the attacker's to
     /// choose.
     Refuse(&'static str),
-    /// A problem with the request itself, reported to the app through its
-    /// own, already verified, redirect URI.
+    /// A problem with the request itself. It is answered here and never
+    /// redirected: registration is public and signs any https callback, so a
+    /// redirect before anyone approved would make this server a redirector.
+    /// The app hears of a refusal only from the person's own decision.
     Bounce {
         error: &'static str,
         description: &'static str,
-        redirect_uri: String,
-        state: String,
     },
 }
 
@@ -357,6 +363,16 @@ fn unavailable() -> Reply {
     )
 }
 
+/// Whether the token request's `resource` indicator, when it has one, names
+/// the project the code or refresh token is for. Absent is accepted: it is
+/// what an app that never sent one gets.
+fn resource_matches(origin: &str, form: &HashMap<String, String>, slug: &str) -> bool {
+    match form.get("resource") {
+        None => true,
+        Some(resource) => *resource == format!("{origin}/mcp/{slug}"),
+    }
+}
+
 /// A discovery document: public, and readable by a chat app running in a
 /// browser, so any origin may fetch it.
 fn document(body: &Value) -> Reply {
@@ -399,9 +415,8 @@ impl Server {
         (!slug.contains('/') && self.valid_slug(slug)).then(|| slug.to_string())
     }
 
-    /// Every check on an authorize request that needs no lookup. The client
-    /// and its redirect URI come first and are never answered with a
-    /// redirect; once they hold, the rest is answered to the app.
+    /// Every check on an authorize request that needs no lookup. None of its
+    /// refusals is answered with a redirect.
     fn check_authorize(
         &self,
         origin: &str,
@@ -419,8 +434,6 @@ impl Server {
         let bounce = |error: &'static str, description: &'static str| Problem::Bounce {
             error,
             description,
-            redirect_uri: redirect_uri.to_string(),
-            state: state.to_string(),
         };
         if state.len() > MAX_STATE {
             return Err(bounce("invalid_request", "state is too long"));
@@ -480,9 +493,7 @@ impl Server {
     fn problem_json(problem: Problem) -> Reply {
         match problem {
             Problem::Refuse(message) => write_json(400, &json!({"error": message})),
-            Problem::Bounce {
-                error, description, ..
-            } => write_json(
+            Problem::Bounce { error, description } => write_json(
                 400,
                 &json!({"error": error, "error_description": description}),
             ),
@@ -693,6 +704,9 @@ impl Server {
         let Some(code) = unseal::<Code>(&self.key, "lpo1", field(form, "code")) else {
             return token_error("invalid_grant");
         };
+        if !resource_matches(&arrival.reader_origin(), form, &code.s) {
+            return token_error("invalid_target");
+        }
         let Some(client) = self.read_client(field(form, "client_id")) else {
             return token_error("invalid_client");
         };
@@ -835,6 +849,9 @@ impl Server {
         else {
             return token_error("invalid_grant");
         };
+        if !resource_matches(&arrival.reader_origin(), form, &refresh.s) {
+            return token_error("invalid_target");
+        }
         if self.read_client(field(form, "client_id")).is_none() {
             return token_error("invalid_client");
         }
@@ -961,8 +978,11 @@ impl Server {
         let written = self
             .store
             .modify_as_owner(&slug, &authority, |entry| {
-                entry.drop_link(&id);
-                Ok(())
+                if entry.drop_link(&id) {
+                    Ok(())
+                } else {
+                    Err(ROW_GONE.to_string())
+                }
             })
             .await;
         match written {
@@ -975,7 +995,23 @@ impl Server {
                 Err(unavailable())
             }
             // The row went before this got to it: the token is gone.
-            Err(_) => Ok(()),
+            Err(ModifyError::NotFound) => Ok(()),
+            Err(ModifyError::Refused(message)) if message == ROW_GONE || message == TOKEN_REVOKED => {
+                Ok(())
+            }
+            // The owner no longer holds the project, or the write was
+            // refused for another reason: the row is still live, so this
+            // must not answer success. A retry would be refused again.
+            Err(error) => {
+                tracing::warn!("a connector revoke for {slug} was refused: {error:?}");
+                Err(write_json(
+                    400,
+                    &json!({
+                        "error": "invalid_request",
+                        "error_description": "the connection could not be revoked here; the project owner can revoke it in the Agent panel",
+                    }),
+                ))
+            }
         }
     }
 }
@@ -1082,26 +1118,16 @@ async fn authorize(
     }
     let query = request.uri().query().unwrap_or_default();
     let params = parse_form(query.as_bytes());
-    // Checked for its refusals only: the page reads the query itself.
-    match server.check_authorize(&ctx.arrival.reader_origin(), &params) {
-        Ok(_) => {}
+    // Checked for its refusals, and for the fields the sign-in carries back.
+    let asked = match server.check_authorize(&ctx.arrival.reader_origin(), &params) {
+        Ok(asked) => asked,
         Err(Problem::Refuse(message)) => {
             return plain(400, &format!("invalid authorization request: {message}"))
         }
-        Err(Problem::Bounce {
-            error,
-            description,
-            redirect_uri,
-            state,
-        }) => {
-            return redirect(&back(
-                &redirect_uri,
-                &[
-                    ("error", error),
-                    ("error_description", description),
-                    ("state", &state),
-                ],
-            ))
+        // Nobody has approved anything yet, so the registered address is not
+        // sent the person: the error is shown here.
+        Err(Problem::Bounce { description, .. }) => {
+            return plain(400, &format!("invalid authorization request: {description}"))
         }
     };
     match &ctx.authentication {
@@ -1109,12 +1135,24 @@ async fn authorize(
         Err(AuthenticationFailure::Unavailable) => {
             return plain(503, "authentication service temporarily unavailable");
         }
-        // The whole request rides through the sign-in in `next`, so the
-        // person lands back on this consent and not on the front page.
+        // The validated request rides through the sign-in in `next`, so the
+        // person lands back on this consent and not on the front page. Only
+        // the fields the consent reads are carried: anything else the app
+        // sent would only swell the cookie `next` is kept in.
         _ => {
+            let mut next = url::form_urlencoded::Serializer::new(String::new());
+            next.append_pair("response_type", "code")
+                .append_pair("client_id", &asked.client_id)
+                .append_pair("redirect_uri", &asked.redirect_uri)
+                .append_pair("code_challenge", &asked.code_challenge)
+                .append_pair("code_challenge_method", "S256");
+            if !asked.state.is_empty() {
+                next.append_pair("state", &asked.state);
+            }
+            next.append_pair("resource", &format!("{}/mcp/{}", ctx.arrival.reader_origin(), asked.slug));
             return redirect(&format!(
                 "/auth/login?next={}",
-                url_escape(&format!("/oauth/authorize?{query}"))
+                url_escape(&format!("/oauth/authorize?{}", next.finish()))
             ));
         }
     }

@@ -526,10 +526,27 @@ async fn middleware_inner(
             None => false,
         };
         if !admitted {
-            return write_json(
+            let mut reply = write_json(
                 401,
                 &json!({"error": "an agent token works only on its document's tools (and its /mcp endpoint), and an Edit token also on its history, project, assets and source-change routes"}),
             );
+            // A token for another project on a connector's `/mcp/<slug>` is
+            // sent to that project's authorization server, as the handler
+            // would have done for a missing one.
+            if server.agent_connectors && !arrival.is_docs_host() {
+                if let Some(slug) = path
+                    .strip_prefix("/mcp/")
+                    .filter(|slug| !slug.contains('/') && server.valid_slug(slug))
+                {
+                    set(
+                        &mut reply,
+                        "www-authenticate",
+                        &super::mcp_http::mcp_challenge(&arrival.reader_origin(), slug),
+                    );
+                    set(&mut reply, "cache-control", "no-store");
+                }
+            }
+            return reply;
         }
     }
     // Authenticate before request-budget admission so the budget can be

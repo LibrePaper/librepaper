@@ -171,13 +171,21 @@ async fn a_missing_or_foreign_token_is_sent_to_the_authorization_server() {
         key: "key".into(),
     }
     .to_string();
-    let (status, _) = served
-        .rpc(
-            &foreign,
-            json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+    let response = served
+        .send(
+            reqwest::Method::POST,
+            Some(&foreign),
+            Some(json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
         )
         .await;
-    assert_eq!(status, 401);
+    assert_eq!(response.status().as_u16(), 401);
+    assert_eq!(
+        response.headers()["www-authenticate"],
+        format!(
+            "Bearer resource_metadata=\"{READER}/.well-known/oauth-protected-resource/mcp/mcp-auth\""
+        ),
+        "a token for another project is pointed at this project's authorization server"
+    );
 
     // A well-formed token for this project that names no row is refused with
     // the same pointer to the authorization server.
@@ -471,4 +479,54 @@ async fn a_message_that_is_not_json_rpc_two_runs_nothing() {
         )
         .await;
     assert_eq!(response.status().as_u16(), 400);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_protocol_version_the_endpoint_does_not_speak_runs_nothing() {
+    let Some(served) = serve("mcp-version", true).await else {
+        return;
+    };
+    let token = served.mint_token("comment").await;
+    let create = |body: &str, id: u64| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "document_comment",
+                "arguments": {"action": "create", "body": body}}})
+    };
+    let with_version = |version: &'static str, body: Value| {
+        let token = token.clone();
+        let base = served.base.clone();
+        let slug = served.slug.clone();
+        async move {
+            reqwest::Client::new()
+                .post(format!("{base}/mcp/{slug}"))
+                .header("host", "paper.example")
+                .header("authorization", format!("Bearer {token}"))
+                .header("mcp-protocol-version", version)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let response = with_version("1999-01-01", create("Should not exist", 1)).await;
+    assert_eq!(response.status().as_u16(), 400);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], -32600, "{body}");
+    assert_eq!(body["id"], Value::Null);
+    let listed = served
+        .call(
+            &token,
+            "document_read",
+            json!({"queries": [{"kind": "context"}]}),
+        )
+        .await;
+    assert!(!listed.to_string().contains("Should not exist"), "{listed}");
+
+    // A supported revision works, and so does no header at all.
+    let response = with_version("2025-06-18", create("Does exist", 2)).await;
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["result"]["isError"], false, "{body}");
 }

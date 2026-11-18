@@ -458,11 +458,15 @@ async fn authorize_never_redirects_to_an_address_it_cannot_vouch_for() {
         .authorize_query(&client_id, CALLBACK)
         .replace("response_type=code", "response_type=token");
     let wrong = served.get(&format!("/oauth/authorize?{query}"), None).await;
-    assert_eq!(wrong.status, 302);
-    let location = wrong.location.unwrap();
-    assert!(location.starts_with(CALLBACK), "{location}");
-    assert!(location.contains("error=invalid_request"), "{location}");
-    assert!(location.contains("state=xyz"), "{location}");
+    assert_eq!(wrong.status, 400);
+    assert_eq!(wrong.location, None, "nobody approved, so nobody is sent");
+
+    let query = served
+        .authorize_query(&client_id, CALLBACK)
+        .replace("code_challenge_method=S256", "code_challenge_method=plain");
+    let weak = served.get(&format!("/oauth/authorize?{query}"), None).await;
+    assert_eq!(weak.status, 400);
+    assert_eq!(weak.location, None);
 
     let query = form(&[
         ("response_type", "code"),
@@ -473,11 +477,11 @@ async fn authorize_never_redirects_to_an_address_it_cannot_vouch_for() {
         ("resource", "https://elsewhere.example/mcp/x"),
     ]);
     let target = served.get(&format!("/oauth/authorize?{query}"), None).await;
-    assert_eq!(target.status, 302);
-    assert!(
-        target.location.unwrap().contains("error=invalid_target"),
+    assert_eq!(
+        target.status, 400,
         "a resource that is not this server's project is a bad target"
     );
+    assert_eq!(target.location, None);
 }
 
 #[tokio::test]
@@ -634,7 +638,7 @@ async fn the_code_becomes_a_token_that_works_on_the_projects_tools() {
     let answer = served.exchange(&client_id, &code, VERIFIER).await;
     assert_eq!(answer.status, 200, "{}", answer.body);
     assert_eq!(answer.body["token_type"], "Bearer");
-    assert_eq!(answer.body["expires_in"], 30 * 24 * 3600);
+    assert_within_thirty_days(&answer.body);
     assert_eq!(answer.body["scope"], "suggest");
     let access = answer.body["access_token"].as_str().unwrap();
     assert!(access.starts_with("lpt_"), "{access}");
@@ -704,6 +708,84 @@ async fn a_wrong_verifier_or_client_is_refused_and_leaves_no_token() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_token_endpoint_holds_a_resource_to_the_codes_project() {
+    let Some(served) = serve("connector-resource", true).await else {
+        return;
+    };
+    let (client_id, code) = served.approved().await;
+    let wrong = format!("{READER}/mcp/another-paper");
+    let exchange = |resource: Option<&str>| {
+        let mut fields = vec![
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", CALLBACK),
+            ("client_id", client_id.as_str()),
+            ("code_verifier", VERIFIER),
+        ];
+        if let Some(resource) = resource {
+            fields.push(("resource", resource));
+        }
+        fields
+    };
+    let refused = served
+        .post_form("/oauth/token", &exchange(Some(&wrong)))
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.body["error"], "invalid_target");
+    assert!(
+        agent_row_ids(&served).await.is_empty(),
+        "no token was made for the wrong resource"
+    );
+
+    // The code was not spent, and its own resource is accepted.
+    let resource = served.resource();
+    let issued = served
+        .post_form("/oauth/token", &exchange(Some(&resource)))
+        .await;
+    assert_eq!(issued.status, 200, "{}", issued.body);
+    let refresh = issued.body["refresh_token"].as_str().unwrap().to_string();
+    let ids = agent_row_ids(&served).await;
+    let until = |entry: librepaper_engine::storage::store::IndexEntry| {
+        entry.links.iter().map(|link| link.until.clone()).collect::<Vec<_>>()
+    };
+    let before = until(
+        served
+            .server
+            .store
+            .get_result(&served.slug)
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+
+    let refused = served
+        .post_form(
+            "/oauth/token",
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh),
+                ("client_id", &client_id),
+                ("resource", &wrong),
+            ],
+        )
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.body["error"], "invalid_target");
+    let after = until(
+        served
+            .server
+            .store
+            .get_result(&served.slug)
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    assert_eq!(after, before, "the expiry did not move");
+    assert_eq!(agent_row_ids(&served).await, ids);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn replaying_a_code_kills_the_token_it_made() {
     let Some(served) = serve("connector-replay", true).await else {
         return;
@@ -725,6 +807,16 @@ async fn replaying_a_code_kills_the_token_it_made() {
 
     let third = served.exchange(&client_id, &code, VERIFIER).await;
     assert_eq!(third.body["error"], "invalid_grant");
+}
+
+/// A fresh token has thirty days, less the seconds the request took.
+fn assert_within_thirty_days(body: &Value) {
+    let thirty = 30 * 24 * 3600;
+    let left = body["expires_in"].as_i64().unwrap();
+    assert!(
+        (thirty - 5..=thirty).contains(&left),
+        "expires_in {left} is not within 5 s of thirty days"
+    );
 }
 
 /// The ids of the project's agent-token rows as the owner would see them.
@@ -932,11 +1024,7 @@ async fn refreshing_keeps_the_token_and_extends_it() {
         "the app keeps the token it already holds"
     );
     assert_eq!(second.body["scope"], "suggest");
-    assert!(
-        second.body["expires_in"].as_i64().unwrap() > 29 * 24 * 3600,
-        "{}",
-        second.body
-    );
+    assert_within_thirty_days(&second.body);
     assert_eq!(served.tools(&access).await, 200);
     assert_eq!(
         agent_row_ids(&served).await,
@@ -1181,11 +1269,16 @@ async fn the_largest_registration_still_completes_a_grant_and_a_refresh() {
         ("state", &state),
         ("resource", &served.resource()),
     ]);
+    // Parameters the consent does not read are not carried through sign-in.
+    let junk = "j".repeat(4000);
+    let query = format!("{query}&junk_param={junk}&extra=1");
     let signed_out = served.get(&format!("/oauth/authorize?{query}"), None).await;
     assert_eq!(signed_out.status, 302);
     let location = signed_out.location.unwrap();
     assert!(location.starts_with("/auth/login?next="), "{location}");
     assert!(location.len() < 3000, "{} bytes", location.len());
+    assert!(!location.contains("junk"), "{location}");
+    assert!(!location.contains("extra"), "{location}");
 
     // One character more is refused.
     let mut too_many = uris.clone();
