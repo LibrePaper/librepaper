@@ -28,6 +28,10 @@
   // The token just made. It is kept only here and never written to any storage.
   // The reveal shows its connection block until Done.
   let reveal = $state(null);
+  // The "Command line and MCP configuration" disclosure. It lives here, not in
+  // ConnectionMethods, because the reveal and the normal view mount separate
+  // instances, and Done would otherwise fold it shut.
+  let methodsOpen = $state(false);
 
   const allowed = (role) => allows(sharing.sharing, role);
   const tokens = $derived(sharing.sharing?.tokens ?? []);
@@ -98,7 +102,7 @@
 {/snippet}
 
 {#snippet methods()}
-  <ConnectionMethods token={reveal?.token ?? ""} tokens={copyable} copied={sharing.copied} copyFallback={sharing.copyFallback} oncopy={sharing.copy} />
+  <ConnectionMethods token={reveal?.token ?? ""} tokens={copyable} copied={sharing.copied} copyFallback={sharing.copyFallback} oncopy={sharing.copy} bind:open={methodsOpen} />
 {/snippet}
 
 <div class="agent-external" bind:this={root}>
@@ -129,16 +133,20 @@
         <p class="agent-help">{m.agentexternal_connect_lede()}</p>
         <ol class="agent-help agent-steps">
           <li>
-            {m.agentexternal_step_copy()}
-            <div class="agent-connector-row">
-              <input class="input agent-connector-url" readonly value={connectorUrl} aria-label={m.agentexternal_connector_url_label()} onclick={(event) => event.currentTarget.select()} />
-              <IconButton icon={sharing.copied === connectorUrl ? "check" : "copy"} label={m.agentexternal_connector_copy()} title={m.agentexternal_connector_copy()} tone="plain" size="btn-icon-sm"
-                          colour={sharing.copyFallback === connectorUrl ? "lp-text-error" : null} onclick={() => sharing.copy(connectorUrl)} />
+            <div class="agent-step-body">
+              {m.agentexternal_step_copy()}
+              <div class="agent-connector-row">
+                <input class="input agent-connector-url" readonly value={connectorUrl} aria-label={m.agentexternal_connector_url_label()} onclick={(event) => event.currentTarget.select()} />
+                <IconButton icon={sharing.copied === connectorUrl ? "check" : "copy"} label={m.agentexternal_connector_copy()} title={m.agentexternal_connector_copy()} tone="plain" size="btn-icon-sm"
+                            colour={sharing.copyFallback === connectorUrl ? "lp-text-error" : null} onclick={() => sharing.copy(connectorUrl)} />
+              </div>
             </div>
           </li>
           <li>
-            {m.agentexternal_step_add()}
-            <a href={AGENTS_CONNECT_URL} target="_blank" rel="noreferrer">{m.agentexternal_connect_docs()}</a>
+            <div class="agent-step-body">
+              {m.agentexternal_step_add()}
+              <a href={AGENTS_CONNECT_URL} target="_blank" rel="noreferrer">{m.agentexternal_connect_docs()}</a>
+            </div>
           </li>
           <li>{m.agentexternal_step_approve()}</li>
         </ol>
@@ -175,9 +183,12 @@
   .agent-subtitle { margin: 0; font-size: 13px; font-weight: 600; color: var(--panel-muted); }
   .agent-connector { display: grid; gap: calc(var(--spacing) * 2); min-width: 0; }
   /* The connector steps are numbered by the list; each step's controls sit under its text. */
-  .agent-steps { margin: 0; padding-left: 1.25rem; display: grid; gap: calc(var(--spacing) * 2); }
-  .agent-steps li { display: grid; gap: calc(var(--spacing) * 1.5); min-width: 0; }
-  .agent-steps a { color: var(--color-link); text-decoration: underline; justify-self: start; }
+  /* The list draws the step numbers; each li stays a list item so the marker shows. */
+  .agent-steps { margin: 0; padding-left: 1.25em; list-style: decimal; min-width: 0; }
+  .agent-steps li { display: list-item; min-width: 0; }
+  .agent-steps li + li { margin-top: calc(var(--spacing) * 2); }
+  .agent-step-body { display: grid; gap: calc(var(--spacing) * 1.5); min-width: 0; }
+  .agent-steps a { color: var(--color-link); text-decoration: underline; justify-self: start; overflow-wrap: anywhere; }
   .agent-connector-row { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-width: 0; }
   .agent-connector-url { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono, monospace); font-size: 12px; }
   .agent-new { display: flex; align-items: center; justify-content: center; gap: calc(var(--spacing) * 2); width: 100%; }

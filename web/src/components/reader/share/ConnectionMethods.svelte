@@ -7,7 +7,8 @@
   import IconButton from "../../IconButton.svelte";
   import { displayName } from "./shared.js";
 
-  let { token = "", tokens = [], copied = "", copyFallback = "", oncopy } = $props();
+  // open is bound by the parent, so the disclosure survives the reveal and the normal view remounting.
+  let { token = "", tokens = [], copied = "", copyFallback = "", oncopy, open = $bindable(false) } = $props();
 
   // Claude Code passes its environment to the servers it starts, so the
   // server is registered once and the token is given at launch. The token is
@@ -15,7 +16,6 @@
   // shell history.
   const commands = "claude mcp add librepaper --scope user -- librepaper mcp\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude";
   let chosen = $state("");
-  let open = $state(false);
   // The token the methods use: the one just revealed, else the row picked here, else the first.
   const active = $derived(token || tokens.find((item) => item.id === chosen)?.token || tokens[0]?.token || "");
   const config = $derived(`[mcp_servers.librepaper]
