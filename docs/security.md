@@ -6,7 +6,12 @@ This is a weird world. A single developer can now build a massive code base for 
 
 For LibrePaper, I try to follow best practices: I run several rounds of automated and supervised review, with multiple frontier agents. But no single developer can read or assess every line of a code base this large, this recent, and moving this fast. That raises important security concerns. Unfortunately, I do not have the budget for an independent external audit.
 
-This page is for people who use the free service at librepaper.org, and for people who run LibrePaper on a spare laptop, a Raspberry Pi or a $6-a-month virtual private server. LibrePaper is designed to serve hundreds of people on a machine with very limited resources, where the blast radius is small. I understand that institutions, such as the IT staff of a university, may be more reluctant to deploy it. I would be too! Still, some features of the architecture, and some habits on the host's side, limit the blast radius.
+My primary audience for LibrePaper is:
+
+- People who use the free service at librepaper.org.
+- People who run LibrePaper on a spare laptop, a Raspberry Pi or a $6-a-month virtual private server.
+
+LibrePaper is designed to serve hundreds of people on a machine with very limited resources, where the blast radius is small. I understand that institutions, such as the IT staff of a university, may be more reluctant to deploy it. I would be too! Still, some features of the architecture, and some habits on the host's side, limit the blast radius.
 
 ## What the design limits
 
