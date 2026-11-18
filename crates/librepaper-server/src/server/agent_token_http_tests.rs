@@ -1343,3 +1343,121 @@ async fn a_token_may_last_a_year() {
         .await;
     assert_eq!(status, 200, "{created}");
 }
+
+impl Served {
+    /// The thread query's first comment as `token` reads it, with the view
+    /// and epoch of that same read.
+    async fn first_thread(&self, token: &str) -> (Value, String, String) {
+        let (status, response) = self
+            .call(
+                token,
+                "document_read",
+                json!({"queries": [{"kind": "thread"}]}),
+            )
+            .await;
+        assert_eq!(status, 200, "{response}");
+        let value = &response["result"];
+        (
+            value["results"][0]["threads"][0].clone(),
+            value["view_id"].as_str().unwrap().to_string(),
+            value["operation_epoch"].as_str().unwrap().to_string(),
+        )
+    }
+
+    /// Replaces the whole text of `paper.md` as an editor's update would.
+    async fn rewrite_paper(&self, text: &str) {
+        let room = self.server.documents.rooms.get(&self.slug).await.unwrap();
+        let (vector, edited) = room
+            .log()
+            .with_head(|doc| {
+                (
+                    librepaper_document::document::session::encode_vector(doc),
+                    doc.fork(),
+                )
+            })
+            .await
+            .unwrap();
+        librepaper_document::document::session::put_text(&edited, "paper.md", text);
+        let update =
+            librepaper_document::document::session::encode_diff(&edited, &vector).unwrap();
+        let ingested = room
+            .ingest(999, "editor-999", "editor-999", 1, update)
+            .await;
+        assert!(
+            matches!(ingested, librepaper_engine::log::Ingested::Accepted),
+            "{ingested:?}"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_thread_read_carries_the_anchor_of_each_comment() {
+    let Some(served) = serve("token-thread-anchor").await else {
+        return;
+    };
+    let (comment, _) = served.mint_token("comment", "Reviewer bot").await;
+    let passage = "interval covers the mean";
+    let (view, epoch, range) = served.read(&comment, passage).await;
+    let (status, created) = served
+        .call(
+            &comment,
+            "document_comment",
+            json!({"action": "create", "view_id": view, "range_id": range,
+                   "body": "How could we put this?", "operation": operation(&epoch)}),
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+    assert!(created["error"].is_null(), "{created}");
+
+    // A Comment token is told where the comment sits, and the handle works.
+    let (thread, view, epoch) = served.first_thread(&comment).await;
+    let anchor = &thread["anchor"];
+    assert_eq!(anchor["path"], "paper.md", "{thread}");
+    assert_eq!(anchor["exact"], passage, "{thread}");
+    assert_eq!(anchor["status"], "exact");
+    let handle = anchor["range_id"].as_str().expect("a range handle");
+    let (status, again) = served
+        .call(
+            &comment,
+            "document_comment",
+            json!({"action": "create", "view_id": view, "range_id": handle,
+                   "body": "A second remark on the same words", "operation": operation(&epoch)}),
+        )
+        .await;
+    assert_eq!(status, 200, "{again}");
+    assert!(again["error"].is_null(), "{again}");
+
+    // The one-thread form carries it too.
+    let id = thread["id"].as_str().unwrap();
+    let (status, one) = served
+        .call(
+            &comment,
+            "document_read",
+            json!({"queries": [{"kind": "thread", "id": id}]}),
+        )
+        .await;
+    assert_eq!(status, 200, "{one}");
+    assert_eq!(one["result"]["results"][0]["thread"]["anchor"]["exact"], passage);
+
+    // Text added above the passage moves it; the anchor follows.
+    served
+        .rewrite_paper(&format!(
+            "# Interval estimates\n\nA new opening paragraph.\n{}",
+            &PAPER[21..]
+        ))
+        .await;
+    let (moved, _, _) = served.first_thread(&comment).await;
+    assert_eq!(moved["anchor"]["exact"], passage, "{moved}");
+    assert!(moved["anchor"]["range_id"].is_string());
+
+    // Taking the passage out leaves a status and the original words only.
+    served
+        .rewrite_paper("# Interval estimates\n\nNothing is left here.\n")
+        .await;
+    let (gone, _, _) = served.first_thread(&comment).await;
+    assert_ne!(gone["anchor"]["status"], "exact", "{gone}");
+    assert!(gone["anchor"]["range_id"].is_null(), "{gone}");
+    assert!(gone["anchor"]["path"].is_null(), "{gone}");
+    assert_eq!(gone["anchor"]["original_exact"], passage);
+}

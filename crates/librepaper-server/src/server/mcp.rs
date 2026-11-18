@@ -742,6 +742,7 @@ impl Server {
         headers: &HeaderMap,
         arrival: &Arrival,
         queries: &[Value],
+        view_id: &str,
         view: &mut View,
         room: Option<&librepaper_room::room::Room>,
     ) -> Result<(), Failure> {
@@ -791,6 +792,12 @@ impl Server {
                 ),
                 None => None,
             };
+            // Every reader of the project is told where a comment sits, as
+            // the source read already lets them see it, so this is not
+            // gated on `sees_source`.
+            let anchor_of = |comment: &librepaper_room::room::Comment| {
+                thread_anchor(view, view_id, &self.key, comment)
+            };
             let window = match thread {
                 Some(comment_id) => room
                     .thread_reply_window(
@@ -800,11 +807,19 @@ impl Server {
                         moderates,
                         after,
                         AGENT_THREAD_WINDOW,
+                        &anchor_of,
                     )
                     .await
                     .map_err(operations::failure)?,
                 None => room
-                    .thread_query_page(&author, sees_source, moderates, after, AGENT_THREAD_WINDOW)
+                    .thread_query_page(
+                        &author,
+                        sees_source,
+                        moderates,
+                        after,
+                        AGENT_THREAD_WINDOW,
+                        &anchor_of,
+                    )
                     .await
                     .map_err(operations::failure)?,
             };
@@ -947,6 +962,7 @@ impl Server {
             headers,
             arrival,
             &queries,
+            view_id,
             &mut view,
             room.as_deref(),
         )
@@ -1015,6 +1031,101 @@ impl Server {
     }
 }
 
+/// The handle for bytes `start..end` of the `index`th file of a view, bound to
+/// that view's id so it works nowhere else.
+fn range_handle(index: usize, start: usize, end: usize, view_id: &str, key: &[u8]) -> String {
+    let payload = format!("{index}.{start}.{end}");
+    format!("r.{payload}.{}", sign(key, view_id, &payload))
+}
+
+/// Where a comment's passage is in this view, the way an agent reads it: the
+/// file, the words as they stand now with up to 32 characters either side,
+/// the attachment status, and a range handle for exactly those words.
+///
+/// `None` for a remark about the document as a whole. A passage that cannot
+/// be placed in this view -- gone, unresolved, or attached to a different
+/// tree than the one this view captured -- gets its status and the words it
+/// was made on, and no path or handle, so nothing points at the wrong text.
+fn thread_anchor(
+    view: &View,
+    view_id: &str,
+    key: &[u8],
+    comment: &librepaper_room::room::Comment,
+) -> Option<Value> {
+    let original = comment.source()?;
+    let mut anchor = serde_json::Map::new();
+    if !original.exact.is_empty() {
+        anchor.insert("original_exact".into(), json!(original.exact));
+    }
+    let attachment = match comment.attachment.as_ref() {
+        None => {
+            anchor.insert("status".into(), json!("unresolved"));
+            return Some(Value::Object(anchor));
+        }
+        Some(attachment) => attachment,
+    };
+    if attachment.tree_digest != view.snapshot.tree_digest {
+        // Attached to a newer or older tree than this view: there is no
+        // resolver to re-derive it against the view, so say so.
+        anchor.insert("status".into(), json!("stale"));
+        return Some(Value::Object(anchor));
+    }
+    anchor.insert("status".into(), json!(attachment.status.name()));
+    if !attachment.status.is_placed() {
+        return Some(Value::Object(anchor));
+    }
+    if let Some((path, start, end)) = placed_range(view, attachment) {
+        let texts = view.snapshot.texts();
+        let text = &texts[path];
+        let index = texts.keys().position(|p| p == path).unwrap_or_default();
+        let before = &text[..start];
+        let from = before
+            .char_indices()
+            .rev()
+            .nth(31)
+            .map_or(0, |(at, _)| at);
+        let after = &text[end..];
+        let to = after
+            .char_indices()
+            .nth(32)
+            .map_or(text.len(), |(at, _)| end + at);
+        anchor.insert("path".into(), json!(path));
+        anchor.insert("exact".into(), json!(&text[start..end]));
+        anchor.insert("prefix".into(), json!(&text[from..start]));
+        anchor.insert("suffix".into(), json!(&text[end..to]));
+        anchor.insert(
+            "range_id".into(),
+            json!(range_handle(index, start, end, view_id, key)),
+        );
+    } else {
+        anchor.insert("status".into(), json!("unresolved"));
+    }
+    Some(Value::Object(anchor))
+}
+
+/// The file path and byte range of an attachment in the view's source. The
+/// attachment counts characters the way the editor does, in UTF-16 code
+/// units; source reads and range handles count bytes, so it crosses over
+/// here. `None` when the file is absent or an end falls inside a character.
+fn placed_range<'a>(
+    view: &'a View,
+    attachment: &librepaper_engine::storage::annotation::DerivedAttachment,
+) -> Option<(&'a str, usize, usize)> {
+    let (start, end) = attachment.resolved_range_utf16?;
+    let file_id = attachment.resolved_file_id.as_ref()?;
+    let (path, _) = view
+        .snapshot
+        .projection()
+        .files
+        .iter()
+        .find(|(_, file)| file.id == file_id.0)?;
+    let text = view.snapshot.texts().get(path)?;
+    let index = TextIndex::new(text);
+    let start = index.utf8_of(Utf16(start as usize)).ok()?.0;
+    let end = index.utf8_of(Utf16(end as usize)).ok()?.0;
+    (start < end).then_some((path.as_str(), start, end))
+}
+
 fn decorate_ranges(value: &mut Value, snapshot: &QuerySnapshot, view_id: &str, key: &[u8]) {
     if let Some(object) = value.as_object_mut() {
         if let (Some(path), Some(start), Some(end)) = (
@@ -1030,10 +1141,9 @@ fn decorate_ranges(value: &mut Value, snapshot: &QuerySnapshot, view_id: &str, k
                     .is_some_and(|text| text.get(start as usize..end as usize).is_some())
             {
                 if let Some(index) = snapshot.texts().keys().position(|p| p == path) {
-                    let payload = format!("{index}.{start}.{end}");
                     object.insert(
                         "range_id".into(),
-                        json!(format!("r.{payload}.{}", sign(key, view_id, &payload))),
+                        json!(range_handle(index, start as usize, end as usize, view_id, key)),
                     );
                 }
             }
@@ -1287,6 +1397,55 @@ mod selection_tests {
             locate_comment_selection(&other, &comment).is_err(),
             "matching words in another file cannot replace a lost comment anchor"
         );
+    }
+
+    /// The attachment counts in UTF-16 code units and the source is read in
+    /// bytes: a letter with an accent and an emoji before the passage make
+    /// the two differ, and the anchor must still quote the right words.
+    #[test]
+    fn a_thread_anchor_converts_utf16_offsets_to_source_bytes() {
+        // "é" is 1 unit and 2 bytes; the emoji is 2 units and 4 bytes.
+        let text = "é😀 lead the passage here, then more.";
+        let view = view_of("paper.typ", text);
+        let start_utf16 = "é😀 lead the ".encode_utf16().count() as u32;
+        let end_utf16 = start_utf16 + "passage".encode_utf16().count() as u32;
+        let mut comment: librepaper_room::room::Comment = serde_json::from_value(json!({
+            "id":"comment", "original_anchor":{"source_sequence":1,"frontier":"","kind":"source_text","target":{
+                "file_id":"f1","start_utf16":0,"end_utf16":7,"start_side":"left","end_side":"right",
+                "exact":"passage","prefix":"","suffix":""
+            }},
+            "render_digest":"r",
+            "attachment":{
+                "tree_digest":"rev","status":"exact",
+                "resolved_file_id":"f1","resolved_range_utf16":[start_utf16, end_utf16]
+            }
+        })).unwrap();
+        let anchor = thread_anchor(&view, "view", b"key", &comment).unwrap();
+        assert_eq!(anchor["path"], "paper.typ");
+        assert_eq!(anchor["exact"], "passage");
+        assert_eq!(anchor["prefix"], "é😀 lead the ");
+        assert_eq!(anchor["suffix"], " here, then more.");
+        assert_eq!(anchor["status"], "exact");
+        let handle = anchor["range_id"].as_str().unwrap();
+        let (path, start, end) = resolve_range(&view, "view", handle, b"key").unwrap();
+        assert_eq!(path, "paper.typ");
+        assert_eq!(&text[start..end], "passage");
+
+        // Words that were taken out keep their status and quote, with no handle.
+        comment.attachment.as_mut().unwrap().status =
+            librepaper_engine::storage::annotation::AnchorStatus::Deleted;
+        let gone = thread_anchor(&view, "view", b"key", &comment).unwrap();
+        assert_eq!(gone["status"], "deleted");
+        assert_eq!(gone["original_exact"], "passage");
+        assert!(gone.get("range_id").is_none() && gone.get("path").is_none());
+
+        // An attachment to another tree is reported stale, not guessed at.
+        comment.attachment.as_mut().unwrap().status =
+            librepaper_engine::storage::annotation::AnchorStatus::Exact;
+        comment.attachment.as_mut().unwrap().tree_digest = "old".into();
+        let stale = thread_anchor(&view, "view", b"key", &comment).unwrap();
+        assert_eq!(stale["status"], "stale");
+        assert!(stale.get("range_id").is_none());
     }
 
     /// A browser sends the words it saw, not offsets: the markup around them

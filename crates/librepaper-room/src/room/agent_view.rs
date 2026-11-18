@@ -44,6 +44,10 @@ impl Room {
     /// One page of comments, shaped the way `agent_query`'s `thread` query
     /// reads them, plus the revision that page was read at.
     ///
+    /// `anchor_of` gives each comment the `anchor` an agent reads it by. It
+    /// sees the whole comment, not the stripped view, because the passage is
+    /// worked out against the reader's own view of the source.
+    ///
     /// `after` is the position a continuation cursor decoded to. The
     /// revision is what a cursor binds to, exactly as it bound to the old
     /// whole-collection digest: an agent that keeps paging across a change
@@ -56,18 +60,26 @@ impl Room {
         moderates: bool,
         after: Option<comments::Position>,
         limit: usize,
+        anchor_of: &(dyn Fn(&crate::room::Comment) -> Option<Value> + Sync),
     ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError>
     {
-        let (views, page) = self
-            .comment_page(after, limit, author, sees_source, moderates)
+        // Derived for every reader, not only one who sees the source:
+        // `comment_page` skips that below the suggest rung, and the anchor
+        // is the one source-level thing a reader of any role is given.
+        let mut page = comments::page(&self.catalog, self.document_id, after, limit)
             .await
             .map_err(crate::room::source_change::AgentError::from)?;
-        let items = views
-            .into_iter()
-            .zip(page.comments.iter())
-            .map(|(view, c)| {
+        self.derive(&mut page.comments).await;
+        let items = page
+            .comments
+            .iter()
+            .map(|c| {
+                let view = CommentView::for_viewer(c, author, sees_source, moderates);
                 let mut view = serde_json::to_value(view).unwrap_or(Value::Null);
                 view["comment_version"] = json!(c.version());
+                if let Some(anchor) = anchor_of(c) {
+                    view["anchor"] = anchor;
+                }
                 if let Some(at) = c.at {
                     view["cursor"] = json!(comments::encode_cursor(self.document_id, None, at));
                 }
@@ -92,6 +104,7 @@ impl Room {
         moderates: bool,
         after: Option<comments::Position>,
         limit: usize,
+        anchor_of: &(dyn Fn(&crate::room::Comment) -> Option<Value> + Sync),
     ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError>
     {
         let missing = crate::room::agent_query::ThreadWindow {
@@ -121,6 +134,9 @@ impl Room {
         ))
         .unwrap_or(Value::Null);
         thread["comment_version"] = json!(comment.version());
+        if let Some(anchor) = anchor_of(&comment) {
+            thread["anchor"] = anchor;
+        }
         let items = page
             .replies
             .iter()

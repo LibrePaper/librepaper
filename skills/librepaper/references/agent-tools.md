@@ -27,7 +27,7 @@ Read bounded exact source, search, outline, bibliography, comments and context. 
   - `outline`: headings of a file, for large files.
   - `search`: `query` text across the project.
   - `bibliography`: entries; `key` for one.
-  - `thread`: comments; `comment_id` for one thread, `include: "all" | "unresolved"`.
+  - `thread`: comments; `comment_id` for one thread, `include: "all" | "unresolved"`. Each comment on a passage carries an `anchor`: `path`, `exact` (the passage as it reads now), `prefix` and `suffix` (up to 32 characters either side), `status` (`exact`, `modified`, `pending_deletion`, `deleted`, `unresolved` or `stale`) and a `range_id` for that passage in this read's view, usable in `document_comment` and `document_propose`. When the passage cannot be placed, `path`, `exact` and `range_id` are absent and `original_exact` holds the words the comment was made on.
   - `diagnostics`: build errors and warnings.
   - `changes`: pending tracked changes.
   - `rendered`: rendered output.
