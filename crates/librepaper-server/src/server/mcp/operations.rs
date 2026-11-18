@@ -1416,6 +1416,7 @@ impl Server {
                     json!({"candidate_id":args["id"],"tree_digest":candidate.tree_digest,"base_tree_digest":candidate.base_tree_digest,"validation":candidate.validation,"expires_at":candidate.expires_at,"status":if candidate.validation=="compile"{"awaiting_renderer"}else{"ready"}}),
                 )
             }
+            "compile" => self.mcp_compile_result(&who, slug, args).await,
             _ => Err(Failure::new("invalid_params", "unknown result kind")),
         }
     }

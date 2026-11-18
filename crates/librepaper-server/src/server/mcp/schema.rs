@@ -48,7 +48,7 @@ const SUGGESTER_TOOLS: [&str; 2] = ["document_propose", "document_withdraw"];
 
 /// The tools a Reader may call: read the source and fetch a result. Every
 /// other tool needs Commenter or better.
-const READER_TOOLS: [&str; 2] = ["document_read", "document_result"];
+const READER_TOOLS: [&str; 3] = ["document_read", "document_compile", "document_result"];
 
 /// The tools a caller may be offered for its role. An Editor gets every
 /// served tool. A Suggester gets what a Commenter gets plus `document_propose`,
@@ -389,7 +389,7 @@ mod tests {
             .expect("result");
         assert_eq!(
             result["inputSchema"]["properties"]["kind"]["enum"],
-            json!(["candidate", "render"])
+            json!(["candidate", "render", "compile"])
         );
         assert!(result["inputSchema"]["required"]
             .as_array()
@@ -429,7 +429,10 @@ mod tests {
             .iter()
             .filter_map(|tool| tool["name"].as_str())
             .collect();
-        assert_eq!(names, ["document_read", "document_result"]);
+        assert_eq!(
+            names,
+            ["document_read", "document_compile", "document_result"]
+        );
     }
 
     /// A Suggester is offered what a Commenter is offered plus propose, whose
@@ -449,6 +452,7 @@ mod tests {
                 "document_propose",
                 "document_withdraw",
                 "document_comment",
+                "document_compile",
                 "document_result"
             ]
         );
@@ -486,6 +490,7 @@ mod tests {
                 "document_propose",
                 "document_withdraw",
                 "document_comment",
+                "document_compile",
                 "document_result"
             ]
         );
@@ -502,7 +507,12 @@ mod tests {
             .collect();
         assert_eq!(
             commenter,
-            ["document_read", "document_comment", "document_result"]
+            [
+                "document_read",
+                "document_comment",
+                "document_compile",
+                "document_result"
+            ]
         );
         let editor_tools = served_tools(Role::Editor);
         let editor: Vec<&str> = editor_tools
@@ -513,7 +523,7 @@ mod tests {
         assert!(editor.contains(&"document_apply"));
         assert!(editor.contains(&"document_files"));
         assert!(editor.contains(&"document_withdraw"));
-        assert_eq!(editor.len(), 7);
+        assert_eq!(editor.len(), 8);
         // Labelling needs Editor: a Commenter's document_comment offers no
         // `label` action and its description does not mention labels.
         let comment_for = |role: Role| {
