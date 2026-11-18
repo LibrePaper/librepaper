@@ -1348,7 +1348,11 @@ async fn an_expired_but_renewable_connection_stays_listed_and_revocable() {
 
     let listed = served.get(&path, Some(&owner)).await;
     assert_eq!(listed.status, 200, "{}", listed.body);
-    assert_eq!(listed.body["tokens"][0]["expired"], false, "{}", listed.body);
+    assert_eq!(
+        listed.body["tokens"][0]["expired"], false,
+        "{}",
+        listed.body
+    );
 
     sqlx::query(
         "UPDATE share_links SET created_at=now()-interval '2 hours', expires_at=now()-interval '1 hour'

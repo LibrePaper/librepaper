@@ -78,6 +78,10 @@ const TOKEN_DAYS: i64 = 30;
 /// owner can revoke what could still come back.
 pub(super) const REFRESH_GRACE_SECONDS: i64 = TOKEN_DAYS * 24 * 3600;
 
+/// The owner generation a row is given when a replayed code kills it. No
+/// account has it, so the row's token is refused at once.
+pub(super) const SPENT_GENERATION: &str = "spent";
+
 /// What the closure that drops a row says when the row is not there, and what
 /// the store says when the row was revoked first. Both mean the token is
 /// already dead.
@@ -810,7 +814,7 @@ impl Server {
                     // holds an expiry to no earlier than the row's creation,
                     // which may be this very second.
                     if let Some(mut spent) = entry.link_by_id(&id).cloned() {
-                        spent.owner_generation = "spent".to_string();
+                        spent.owner_generation = SPENT_GENERATION.to_string();
                         spent.until = librepaper_base::util::format_unix(now_unix() + 1);
                         entry.replace_link(&id, spent);
                     }
@@ -1247,7 +1251,10 @@ async fn authorize_info(
     let offered: Vec<&str> = ROLES
         .iter()
         .copied()
-        .filter(|name| name.parse::<Role>().is_ok_and(|role| ceiling.clamp(role) == role))
+        .filter(|name| {
+            name.parse::<Role>()
+                .is_ok_and(|role| ceiling.clamp(role) == role)
+        })
         .collect();
     let default_role = if offered.contains(&"suggest") {
         "suggest"

@@ -238,7 +238,13 @@ fn tool_result(status: u16, body: Value) -> Value {
 /// working is the same 401 with its challenge as at the door, a store that
 /// cannot be asked is the same 503 with its retry hint, and anything else is
 /// a JSON-RPC error.
-pub(super) fn list_failure(origin: &str, slug: &str, id: Value, status: u16, body: &Value) -> Reply {
+pub(super) fn list_failure(
+    origin: &str,
+    slug: &str,
+    id: Value,
+    status: u16,
+    body: &Value,
+) -> Reply {
     let text = match body {
         Value::String(text) if !text.is_empty() => text.clone(),
         _ => match body.get("error") {
