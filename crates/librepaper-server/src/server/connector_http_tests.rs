@@ -758,13 +758,15 @@ async fn a_code_stays_spent_after_its_token_was_refreshed() {
     let renewed = second.body["access_token"].as_str().unwrap().to_string();
     assert_eq!(served.tools(&renewed).await, 200);
 
+    // The row is live under the code's own hash, so the replay finds it and
+    // tombstones it.
     let replay = served.exchange(&client_id, &code, VERIFIER).await;
     assert_eq!(replay.status, 400, "{}", replay.body);
     assert_eq!(replay.body["error"], "invalid_grant");
     assert_eq!(
         served.tools(&renewed).await,
-        200,
-        "the refreshed token is not the code's row and keeps working"
+        401,
+        "a refresh keeps the code's row, so the replay kills the token"
     );
 }
 
@@ -866,12 +868,11 @@ async fn a_revoke_racing_a_refresh_stays_revoked() {
         served.post_json(&path, Some(&cookie), &body),
         served.refresh(&client_id, &refresh)
     );
-    // If the refresh swapped the row first, the owner's revoke names a row
-    // that is already gone: not found before its write, or refused as
-    // nothing shared under that id when its retried pass finds the row
-    // swapped. Either way the old access token is dead. Before the save
-    // compared its rows, a revoke landing between the refresh's read and
-    // write was undone.
+    // A refresh keeps the row and its id, so the owner's revoke always names
+    // the current row. It may find it already gone only if a second revoke got
+    // there first. Either way the access token is dead: the revoke's save
+    // refuses to bring a revoked row back, so a refresh landing between the
+    // revoke's read and write cannot undo it.
     assert!(
         revoked.status == 200
             || revoked.status == 404
@@ -882,9 +883,17 @@ async fn a_revoke_racing_a_refresh_stays_revoked() {
     );
     assert_eq!(served.tools(&access).await, 401);
     if revoked.status == 200 {
-        // The revoke won, so the refresh found no live row to swap.
-        assert_eq!(renewed.status, 400, "{}", renewed.body);
-        assert!(agent_row_ids(&served).await.is_empty());
+        assert!(
+            agent_row_ids(&served).await.is_empty(),
+            "no live agent row remains after a successful revoke"
+        );
+        if renewed.status == 200 {
+            // The refresh won the race and the revoke then dropped the row.
+            let token = renewed.body["access_token"].as_str().unwrap();
+            assert_eq!(served.tools(token).await, 401);
+        } else {
+            assert_eq!(renewed.body["error"], "invalid_grant", "{}", renewed.body);
+        }
     }
     assert!(
         agent_row_ids(&served).await.len() <= 1,
@@ -894,7 +903,7 @@ async fn a_revoke_racing_a_refresh_stays_revoked() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn refreshing_rotates_both_tokens() {
+async fn refreshing_keeps_the_token_and_extends_it() {
     let Some(served) = serve("connector-refresh", true).await else {
         return;
     };
@@ -902,6 +911,8 @@ async fn refreshing_rotates_both_tokens() {
     let first = served.exchange(&client_id, &code, VERIFIER).await;
     let access = first.body["access_token"].as_str().unwrap().to_string();
     let refresh = first.body["refresh_token"].as_str().unwrap().to_string();
+    let ids = agent_row_ids(&served).await;
+    assert_eq!(ids.len(), 1);
 
     let other = served
         .register(&json!({"redirect_uris": [CALLBACK]}))
@@ -915,40 +926,72 @@ async fn refreshing_rotates_both_tokens() {
 
     let second = served.refresh(&client_id, &refresh).await;
     assert_eq!(second.status, 200, "{}", second.body);
-    let new_access = second.body["access_token"].as_str().unwrap().to_string();
-    let new_refresh = second.body["refresh_token"].as_str().unwrap().to_string();
-    assert_ne!(new_access, access);
-    assert_ne!(new_refresh, refresh);
-    assert_eq!(second.body["scope"], "suggest");
-    assert_eq!(served.tools(&new_access).await, 200);
     assert_eq!(
-        served.tools(&access).await,
-        401,
-        "the old access token died"
+        second.body["access_token"].as_str().unwrap(),
+        access,
+        "the app keeps the token it already holds"
+    );
+    assert_eq!(second.body["scope"], "suggest");
+    assert!(
+        second.body["expires_in"].as_i64().unwrap() > 29 * 24 * 3600,
+        "{}",
+        second.body
+    );
+    assert_eq!(served.tools(&access).await, 200);
+    assert_eq!(
+        agent_row_ids(&served).await,
+        ids,
+        "the row keeps its id and none is added"
     );
 
+    // Refresh tokens stay usable while the row lives.
+    let new_refresh = second.body["refresh_token"].as_str().unwrap().to_string();
     let again = served.refresh(&client_id, &refresh).await;
-    assert_eq!(again.status, 400, "{}", again.body);
-    assert_eq!(again.body["error"], "invalid_grant");
-
+    assert_eq!(again.status, 200, "{}", again.body);
     let third = served.refresh(&client_id, &new_refresh).await;
     assert_eq!(third.status, 200, "{}", third.body);
-    let entry = served
-        .server
-        .store
-        .get_result(&served.slug)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        entry
-            .links
-            .iter()
-            .filter(|link| link.kind == librepaper_engine::storage::store::LinkKind::Agent)
-            .count(),
-        1,
-        "rotation replaces the row and never adds one"
-    );
+    assert_eq!(agent_row_ids(&served).await, ids);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_refresh_after_expiry_within_the_grace_renews() {
+    let Some(served) = serve("connector-refresh-grace", true).await else {
+        return;
+    };
+    let (client_id, code) = served.approved().await;
+    let first = served.exchange(&client_id, &code, VERIFIER).await;
+    let access = first.body["access_token"].as_str().unwrap().to_string();
+    let refresh = first.body["refresh_token"].as_str().unwrap().to_string();
+    assert_eq!(served.tools(&access).await, 200);
+
+    sqlx::query(
+        "UPDATE share_links SET created_at=now()-interval '2 hours', expires_at=now()-interval '1 hour'
+         WHERE document_id=(SELECT id FROM documents WHERE slug=$1) AND label='Test app'",
+    )
+    .bind(&served.slug)
+    .execute(served.catalog.pool())
+    .await
+    .unwrap();
+    assert_eq!(served.tools(&access).await, 401, "the token expired");
+
+    let renewed = served.refresh(&client_id, &refresh).await;
+    assert_eq!(renewed.status, 200, "{}", renewed.body);
+    assert_eq!(renewed.body["access_token"].as_str().unwrap(), access);
+    assert_eq!(served.tools(&access).await, 200, "the refresh revived it");
+
+    // Past the grace the connection must be approved again.
+    sqlx::query(
+        "UPDATE share_links SET created_at=now()-interval '90 days', expires_at=now()-interval '31 days'
+         WHERE document_id=(SELECT id FROM documents WHERE slug=$1) AND label='Test app'",
+    )
+    .bind(&served.slug)
+    .execute(served.catalog.pool())
+    .await
+    .unwrap();
+    let late = served.refresh(&client_id, &refresh).await;
+    assert_eq!(late.status, 400, "{}", late.body);
+    assert_eq!(late.body["error"], "invalid_grant");
 }
 
 #[tokio::test]
