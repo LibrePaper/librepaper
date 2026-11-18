@@ -14,6 +14,7 @@ import { call, needsOf } from "../renderer-wasm.js";
 import { fetchNeeds as fetchPackages, ROUNDS } from "../needs.js";
 import { referencedFigures } from "../figure-references.js";
 import { fillFigures } from "../missing-figures.js";
+import { withoutSourcepos } from "../sourcepos.js";
 
 // Enough for a screenful of blocks and their recent edits, without holding a
 // whole long document's worth of HTML.
@@ -74,7 +75,7 @@ function styleOf(page) {
  */
 function bodyOf(page) {
   const match = /<body[^>]*>([\s\S]*)<\/body>/.exec(page);
-  return match ? match[1].trim() : "";
+  return match ? withoutSourcepos(match[1]).trim() : "";
 }
 
 /**

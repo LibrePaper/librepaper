@@ -966,6 +966,7 @@
   "downloads_selection_incomplete": "選択したファイルをすべてダウンロードできませんでした。",
   "editor_aria_label_of": "{path}のエディター",
   "editor_bibliography_unavailable": "参考文献を利用できません：{reason}",
+  "editor_bibliography_not_bibtex": "このドキュメントの参考文献はBibTeXファイルではありません。参考文献を取り込むには、.bibファイルを追加してください。",
   "editor_cut_changed": "切り取りが完了する前にソースが変更されました。もう一度テキストを選択してください。",
   "editor_parser_not_loaded": "パーサーを読み込めませんでした",
   "editor_paste_blocked": "このブラウザーでは、LibrePaperがここでクリップボードを読み取ることはできません。",

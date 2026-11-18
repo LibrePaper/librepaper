@@ -1382,11 +1382,13 @@ fn app_origin() -> &'static str {
 fn check_server(app: &AppHandle, label: String, server: Url) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if reachable(&server).await {
+        let Err(why) = probe(&server).await else {
             return;
-        }
+        };
+        // The offline page looks the same whether the name did not resolve,
+        // the connection was refused or the certificate was bad. The log says which.
         shell_log::write(&format!(
-            "{} did not answer",
+            "{} did not answer: {why}",
             server.origin().ascii_serialization()
         ));
         let Ok(mut page) = Url::parse(&format!("{}/offline.html", app_origin())) else {
@@ -1405,15 +1407,34 @@ fn check_server(app: &AppHandle, label: String, server: Url) {
     });
 }
 
-// Any HTTP answer counts: the server is there, whatever it says.
-async fn reachable(server: &Url) -> bool {
+// Any HTTP answer counts: the server is there, whatever it says. Without one,
+// the error says why.
+async fn probe(server: &Url) -> Result<(), String> {
     let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
     else {
-        return true;
+        return Ok(());
     };
-    client.get(server.clone()).send().await.is_ok()
+    match client.get(server.clone()).send().await {
+        Ok(_) => Ok(()),
+        // The log line already names the server.
+        Err(err) => Err(causes(&err.without_url())),
+    }
+}
+
+// An error's message, then the message of each error under it. reqwest's own
+// message stops at "error sending request"; the failed lookup, refused
+// connection or rejected certificate is further down the chain.
+fn causes(err: &dyn std::error::Error) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 // The origin a request from the window's page carries. A bundled page has an
@@ -1429,7 +1450,7 @@ fn serve_origin(app: &AppHandle, label: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::prompt_for;
+    use super::{causes, prompt_for};
     use tauri::http::Method;
 
     const ORIGIN: &str = "https://librepaper.example";
@@ -1540,5 +1561,30 @@ mod tests {
             crate::wire::VERSION
         );
         assert!(script.contains(&expected), "{script}");
+    }
+
+    #[test]
+    fn causes_lists_every_error_in_the_chain() {
+        #[derive(Debug)]
+        struct Layer(&'static str, Option<Box<Layer>>);
+        impl std::fmt::Display for Layer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for Layer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_deref().map(|cause| cause as _)
+            }
+        }
+
+        let lookup = Layer("dns error", None);
+        let connect = Layer("client error (Connect)", Some(Box::new(lookup)));
+        let request = Layer("error sending request", Some(Box::new(connect)));
+        assert_eq!(
+            causes(&request),
+            "error sending request: client error (Connect): dns error"
+        );
+        assert_eq!(causes(&Layer("alone", None)), "alone");
     }
 }

@@ -343,10 +343,19 @@ export async function render(tree, title, { manual = false, format: requestedFor
   }
   const module = format === "markdown" && needsBibliography({ source }) ? "citations" : format;
   const renderable = format === "org" ? expandOrgIncludes(tree) : tree;
-  return housed(await request(module, "render", {
+  const page = housed(await request(module, "render", {
     tree: renderTree(renderable, capturedSettings),
     title,
   }, capturedModules));
+  // Plain Markdown through citations.wasm still renders the main file as it
+  // is, so its positions are that file's lines too.
+  return format === "markdown" ? withMainSource(page, tree.main) : page;
+}
+
+// Untagged `data-sourcepos` positions name lines of the main file, so a page
+// that carries them names that file as its one source (tag 0).
+function withMainSource(page, main) {
+  return typeof page?.html === "string" ? { ...page, sources: [main] } : page;
 }
 
 // The wasm renderers' pages carry no house stylesheet of their own: the app
@@ -379,7 +388,9 @@ async function renderQuarto(tree, title, moduleUrls, settings, source) {
     return housed({ ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] });
   }
   const result = await request("markdown", "render", { tree: renderTree(withSidecar, settings), title }, moduleUrls);
-  return result ? housed({ ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) }) : result;
+  // Rendered from the .qmd itself, so its positions are that file's lines.
+  // The citations path above drafts the document first, and gets none.
+  return result ? withMainSource(housed({ ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) }), tree.main) : result;
 }
 
 // The module's Quarto draft of a tree, as Markdown with its line map.

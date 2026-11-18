@@ -3,6 +3,7 @@
 //! mirrored byte for byte by `web/src/lib/doi.js`; both are tested against
 //! `web/tests/fixtures/doi-bibtex.json`.
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use reqwest::{redirect::Policy, StatusCode};
@@ -32,7 +33,9 @@ pub fn normalise(input: &str) -> Option<String> {
     .find(|prefix| lower.starts_with(**prefix))
     .map(|prefix| prefix.len())
     {
-        percent_decode(&trimmed[length..])
+        let tail = &trimmed[length..];
+        let end = tail.find(['?', '#']).unwrap_or(tail.len());
+        percent_decode(&tail[..end])
     } else {
         trimmed.to_owned()
     };
@@ -84,6 +87,43 @@ fn encode_segment(segment: &str) -> String {
     out
 }
 
+/// Whether a redirect hop may be followed: HTTPS only, and never to a local
+/// or private host (a DOI registrant controls where its DOI resolves).
+fn redirect_allowed(url: &reqwest::Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return false;
+    }
+    let literal = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(&host);
+    match literal.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => !private_v4(ip),
+        Ok(IpAddr::V6(ip)) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return !private_v4(mapped);
+            }
+            let first = ip.segments()[0];
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || first & 0xffc0 == 0xfe80
+                || first & 0xfe00 == 0xfc00)
+        }
+        Err(_) => true,
+    }
+}
+
+fn private_v4(ip: Ipv4Addr) -> bool {
+    ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified()
+}
+
 /// The CSL-JSON record doi.org holds for a normalised DOI.
 pub async fn fetch(doi: &str) -> Result<Value, String> {
     const UNREACHABLE: &str = "could not reach doi.org";
@@ -94,7 +134,15 @@ pub async fn fetch(doi: &str) -> Result<Value, String> {
         .join("/");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
-        .redirect(Policy::limited(5))
+        .redirect(Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                attempt.error("too many redirects")
+            } else if redirect_allowed(attempt.url()) {
+                attempt.follow()
+            } else {
+                attempt.error("redirect refused")
+            }
+        }))
         .build()
         .map_err(|_| UNREACHABLE.to_owned())?;
     let response = client
@@ -109,10 +157,28 @@ pub async fn fetch(doi: &str) -> Result<Value, String> {
     if !response.status().is_success() {
         return Err(UNREACHABLE.to_owned());
     }
-    response
+    let csl = response
         .json::<Value>()
         .await
-        .map_err(|_| UNREACHABLE.to_owned())
+        .map_err(|_| UNREACHABLE.to_owned())?;
+    if !usable(&csl) {
+        return Err("no record for this DOI".to_owned());
+    }
+    Ok(csl)
+}
+
+/// Whether a response is a usable CSL record: an object with a non-empty
+/// string `type` and a non-empty `title` (a string, or an array whose first
+/// element is a non-empty string).
+pub fn usable(csl: &Value) -> bool {
+    let non_empty = |value: Option<&Value>| value.and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    if !csl.is_object() || !non_empty(csl.get("type")) {
+        return false;
+    }
+    match csl.get("title") {
+        Some(Value::Array(items)) => non_empty(items.first()),
+        other => non_empty(other),
+    }
 }
 
 /// Text cleanup applied to every value; `None` when nothing is left.
@@ -164,6 +230,24 @@ fn clean(value: &Value) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
+/// TeX escaping for a value being written: backslashes are dropped, then
+/// `& % # _ $` get a backslash, and `^` becomes `\^{}`.
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => {}
+            '&' | '%' | '#' | '_' | '$' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '^' => out.push_str("\\^{}"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn field(csl: &Value, name: &str) -> Option<String> {
     csl.get(name).and_then(clean)
 }
@@ -171,7 +255,10 @@ fn field(csl: &Value, name: &str) -> Option<String> {
 fn year(csl: &Value) -> Option<String> {
     let first = csl.get("issued")?.get("date-parts")?.get(0)?.get(0)?;
     match first {
-        Value::Number(number) => number.as_u64().map(|year| year.to_string()),
+        Value::Number(number) => number
+            .as_f64()
+            .filter(|year| year.fract() == 0.0 && *year >= 0.0)
+            .map(|year| format!("{year:.0}")),
         Value::String(text) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) => {
             Some(text.clone())
         }
@@ -232,6 +319,7 @@ fn authors(csl: &Value) -> Vec<Author> {
             if let Some(family) = family {
                 let written = match field(author, "given") {
                     Some(given) => format!("{family}, {given}"),
+                    None if family.contains(char::is_whitespace) => format!("{{{family}}}"),
                     None => family.clone(),
                 };
                 Some(Author {
@@ -328,7 +416,15 @@ pub fn convert(csl: &Value, doi: &str) -> Converted {
     let key = key_for(&authors, title.as_deref(), year.as_deref());
     let body = fields
         .iter()
-        .map(|(name, value)| format!("  {name} = {{{}}}", value.as_deref().unwrap_or("")))
+        .map(|(name, value)| {
+            let value = value.as_deref().unwrap_or("");
+            let value = if *name == "doi" || *name == "url" {
+                value.to_owned()
+            } else {
+                escape(value)
+            };
+            format!("  {name} = {{{value}}}")
+        })
         .collect::<Vec<_>>()
         .join(",\n");
     Converted {
@@ -357,6 +453,38 @@ mod tests {
                 case["bibtex"].as_str().unwrap(),
                 "{name}: bibtex"
             );
+        }
+    }
+
+    #[test]
+    fn invalid_responses_are_not_usable() {
+        let fixtures: Value = serde_json::from_str(FIXTURES).unwrap();
+        let Some(cases) = fixtures.get("invalid").and_then(Value::as_array) else {
+            return;
+        };
+        for case in cases {
+            assert!(!usable(case), "{case}");
+        }
+    }
+
+    #[test]
+    fn redirects_stay_on_public_https_hosts() {
+        let allowed = |url: &str| redirect_allowed(&reqwest::Url::parse(url).unwrap());
+        assert!(allowed("https://api.crossref.org/works/10.1038/x"));
+        assert!(allowed("https://8.8.8.8/"));
+        for refused in [
+            "http://api.crossref.org/works",
+            "https://localhost/",
+            "https://foo.localhost/",
+            "https://127.0.0.1/",
+            "https://10.1.2.3/",
+            "https://192.168.0.1/",
+            "https://169.254.169.254/",
+            "https://[::1]/",
+            "https://[fd00::1]/",
+            "https://[::ffff:127.0.0.1]/",
+        ] {
+            assert!(!allowed(refused), "{refused}");
         }
     }
 

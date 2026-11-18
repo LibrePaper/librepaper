@@ -5,6 +5,7 @@
 
 import { verifiedModuleBytes } from "../renderer-wasm.js";
 import { createTypstPaperRenderer } from "./typst-renderer.js";
+import { withoutSourcepos } from "../sourcepos.js";
 
 // Enough for a screenful of blocks and their recent edits, without holding a
 // whole long document's worth of HTML.
@@ -96,7 +97,8 @@ function compileBlocks(wasm, source, main) {
 /**
  * The inner HTML of the page's body, with the footnotes section taken out:
  * the editor shows a block alone, and the footnotes come from its definitions
- * in the document, not from a list at the end of this one block. Org wraps
+ * in the document, not from a list at the end of this one block. The class
+ * need not come first: the section may carry its `data-sourcepos` before it. Org wraps
  * its content in sections, so the empty ones a block leaves behind go too.
  * @param {string} page
  * @returns {string}
@@ -104,7 +106,7 @@ function compileBlocks(wasm, source, main) {
 function bodyOf(page) {
   const match = /<body[^>]*>([\s\S]*)<\/body>/.exec(page);
   if (!match) return "";
-  let body = match[1].replace(/<section class="footnotes"[^>]*>[\s\S]*?<\/section>/g, "");
+  let body = withoutSourcepos(match[1]).replace(/<section\b[^>]*\bclass="footnotes"[^>]*>[\s\S]*?<\/section>/g, "");
   // Nested empty sections empty their parents, so the pass repeats until none is left.
   let next = body.replace(/<section[^>]*>\s*<\/section>/g, "");
   while (next !== body) {

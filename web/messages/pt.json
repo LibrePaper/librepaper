@@ -966,6 +966,7 @@
   "downloads_selection_incomplete": "Não foi possível baixar todos os arquivos selecionados.",
   "editor_aria_label_of": "Editor de {path}",
   "editor_bibliography_unavailable": "Bibliografia indisponível: {reason}",
+  "editor_bibliography_not_bibtex": "A bibliografia deste documento não é um arquivo BibTeX. Adicione um arquivo .bib à bibliografia para importar referências.",
   "editor_cut_changed": "O código-fonte mudou antes de Recortar terminar. Selecione o texto novamente.",
   "editor_parser_not_loaded": "não foi possível carregar o analisador",
   "editor_paste_blocked": "O navegador não permite que o LibrePaper leia a área de transferência aqui.",

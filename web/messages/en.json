@@ -966,6 +966,7 @@
   "downloads_selection_incomplete": "Could not download all selected files.",
   "editor_aria_label_of": "Editor of {path}",
   "editor_bibliography_unavailable": "Bibliography unavailable: {reason}",
+  "editor_bibliography_not_bibtex": "This document's bibliography is not a BibTeX file. Add a .bib file to its bibliography to import references.",
   "editor_cut_changed": "The source changed before Cut finished. Select the text again.",
   "editor_parser_not_loaded": "the parser could not be loaded",
   "editor_paste_blocked": "The browser will not let LibrePaper read the clipboard here.",
