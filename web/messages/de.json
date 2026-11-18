@@ -173,7 +173,7 @@
   "agent_your_agent": "Ihr Agent",
   "agentexternal_connect_docs": "Anleitung zum Verbinden",
   "agentexternal_connect_title": "Eine App verbinden",
-  "agentexternal_connect_lede": "Funktioniert in Claude und ChatGPT, im Browser und in den Desktop-Apps. Ein paar Schritte pro Projekt.",
+  "agentexternal_connect_lede": "Funktioniert in Claude, im Web und in der Desktop-App sowie in ChatGPT im Web. Ein paar Schritte pro Projekt.",
   "agentexternal_connector_copy": "Connector-URL kopieren",
   "agentexternal_connector_url_label": "Connector-URL",
   "agentexternal_rows_title": "Verbunden",

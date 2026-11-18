@@ -203,6 +203,9 @@ window.agentPanelCheck = async () => {
 
   /* ------------------------------------------------------------ a new token */
 
+  const tokensTitle = document.getElementById("agent-tokens-title");
+  check(tokensTitle && tokensTitle.getClientRects().length > 0 && tokensTitle.textContent.trim() === "Tokens",
+    "the Tokens section heading is visible before a token is created");
   await press(document.querySelector("[data-share-new]"));
   const form = document.querySelector(".share-form");
   check(form && rows().length === 0, "creating shows only the form: " + text());
@@ -243,7 +246,7 @@ window.agentPanelCheck = async () => {
   const issued = window.issuedToken;
   check(issued && issued.startsWith("lpt_" + originPart + ".paper.minted"), "the mock issued a token");
   check(!dialog(), "the reveal is not a dialog");
-  check(!text().includes("For project sync, scripts, and agents that cannot add a connector"), "the tokens help is hidden during the reveal");
+  check(!document.getElementById("agent-tokens-title"), "the Tokens section is absent during the reveal");
   check(text().includes("Pasting a token into chat lets your model provider see it."), "the token warning shows in the reveal");
   check(rows().length === 0 && !document.querySelector("[data-share-new]"), "the reveal replaces the list and the New token button");
   check(!panel.textContent.includes(issued) && [...panel.querySelectorAll("textarea, input")].every((node) => !node.value.includes(issued)),
@@ -281,8 +284,9 @@ window.agentPanelCheck = async () => {
   check(rows().length === 3 && rows().some((row) => row.textContent.includes("Codex")), "and the token is in the list: " + text());
   check(labelled("Copy connection instructions for Codex"), "the new row has a copy button, since the next listing carries its token");
   check(document.activeElement === document.querySelector("[data-share-new]"), "focus goes to New token after Done");
-  check(panel.querySelector("details.token-other"), "Command line and MCP configuration stays after Done");
-  check(labelled("Claude Code commands"), "and it still offers the commands");
+  check(panel.querySelector("details.token-other")?.open, "Command line and MCP configuration stays open after Done");
+  check(labelled("Claude Code commands")?.getClientRects().length > 0 && labelled("MCP configuration")?.getClientRects().length > 0,
+    "and its copy buttons are visible after Done");
 
   /* ---------------------------------------------------------------- revoke */
 
