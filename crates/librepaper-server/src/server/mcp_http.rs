@@ -172,7 +172,7 @@ async fn answer(
             Ok(tools) => rpc_result(id, json!({"tools": tools})),
             Err(reply) => {
                 let (status, body) = unpack(reply).await;
-                rpc_result(id, tool_result(status, body))
+                list_failure(&ctx.arrival.reader_origin(), slug, id, status, &body)
             }
         },
         "tools/call" => {
@@ -231,6 +231,37 @@ fn tool_result(status: u16, body: Value) -> Value {
         result["structuredContent"] = payload;
     }
     result
+}
+
+/// What a failed `tools/list` is answered with. The listing is not a tool
+/// call, so it never takes a tool result's shape: a token that stopped
+/// working is the same 401 with its challenge as at the door, a store that
+/// cannot be asked is the same 503 with its retry hint, and anything else is
+/// a JSON-RPC error.
+pub(super) fn list_failure(origin: &str, slug: &str, id: Value, status: u16, body: &Value) -> Reply {
+    let text = match body {
+        Value::String(text) if !text.is_empty() => text.clone(),
+        _ => match body.get("error") {
+            Some(Value::String(text)) => text.clone(),
+            Some(error) if error["message"].is_string() => {
+                error["message"].as_str().unwrap_or_default().to_string()
+            }
+            _ => format!("the document service answered {status}"),
+        },
+    };
+    match status {
+        401 => {
+            let mut reply = write_json(401, &json!({"error": text}));
+            set(&mut reply, "www-authenticate", &mcp_challenge(origin, slug));
+            reply
+        }
+        503 => {
+            let mut reply = write_json(503, &json!({"error": text}));
+            set(&mut reply, "retry-after", "5");
+            reply
+        }
+        _ => rpc_error(200, id, -32603, &text),
+    }
 }
 
 fn rpc_result(id: Value, result: Value) -> Reply {

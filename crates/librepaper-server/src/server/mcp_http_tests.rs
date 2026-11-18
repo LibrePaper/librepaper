@@ -127,6 +127,19 @@ impl Served {
         (status, response.json().await.unwrap_or(Value::Null))
     }
 
+    /// Every comment thread of the project, as the text a read returns.
+    async fn threads(&self, token: &str) -> String {
+        let result = self
+            .call(
+                token,
+                "document_read",
+                json!({"queries": [{"kind": "thread", "include": "all"}]}),
+            )
+            .await;
+        assert_eq!(result["isError"], false, "{result}");
+        result.to_string()
+    }
+
     async fn call(&self, token: &str, tool: &str, arguments: Value) -> Value {
         let (status, body) = self
             .rpc(
@@ -451,14 +464,19 @@ async fn a_message_that_is_not_json_rpc_two_runs_nothing() {
     assert_eq!(status, 400, "{body}");
     assert_eq!(body["error"]["code"], -32600);
     assert_eq!(body["id"], Value::Null);
-    let listed = served
+    // The same read sees a comment a valid request made, so its silence
+    // about the refused one means something.
+    let made = served
         .call(
             &token,
-            "document_read",
-            json!({"queries": [{"kind": "context"}]}),
+            "document_comment",
+            json!({"action": "create", "body": "Does exist"}),
         )
         .await;
-    assert!(!listed.to_string().contains("Should not exist"), "{listed}");
+    assert_eq!(made["isError"], false, "{made}");
+    let listed = served.threads(&token).await;
+    assert!(listed.contains("Does exist"), "{listed}");
+    assert!(!listed.contains("Should not exist"), "{listed}");
 
     // An object as the id would be echoed into the answer.
     let (status, body) = served
@@ -515,18 +533,90 @@ async fn a_protocol_version_the_endpoint_does_not_speak_runs_nothing() {
     let body: Value = response.json().await.unwrap();
     assert_eq!(body["error"]["code"], -32600, "{body}");
     assert_eq!(body["id"], Value::Null);
-    let listed = served
+    // The same read sees a comment a valid request makes, so its silence
+    // about the refused one means something.
+    let made = served
         .call(
             &token,
-            "document_read",
-            json!({"queries": [{"kind": "context"}]}),
+            "document_comment",
+            json!({"action": "create", "body": "Does exist"}),
         )
         .await;
-    assert!(!listed.to_string().contains("Should not exist"), "{listed}");
+    assert_eq!(made["isError"], false, "{made}");
+    let listed = served.threads(&token).await;
+    assert!(listed.contains("Does exist"), "{listed}");
+    assert!(!listed.contains("Should not exist"), "{listed}");
 
     // A supported revision works, and so does no header at all.
-    let response = with_version("2025-06-18", create("Does exist", 2)).await;
+    let response = with_version("2025-06-18", create("Also exists", 2)).await;
     assert_eq!(response.status().as_u16(), 200);
     let body: Value = response.json().await.unwrap();
     assert_eq!(body["result"]["isError"], false, "{body}");
+}
+
+#[tokio::test]
+async fn a_failed_tool_list_keeps_its_status_and_never_looks_like_a_tool_result() {
+    use super::mcp_http::list_failure;
+    let origin = "https://paper.example";
+    let read = |reply: super::Reply| async move {
+        let status = reply.status().as_u16();
+        let challenge = reply
+            .headers()
+            .get("www-authenticate")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let retry = reply
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        (status, challenge, retry, body)
+    };
+
+    let (status, challenge, _, body) = read(list_failure(
+        origin,
+        "paper",
+        json!(3),
+        401,
+        &json!({"error": "that token was revoked"}),
+    ))
+    .await;
+    assert_eq!(status, 401);
+    assert_eq!(
+        challenge.as_deref(),
+        Some(super::mcp_http::mcp_challenge(origin, "paper").as_str())
+    );
+    assert_eq!(body["error"], "that token was revoked");
+    assert!(body.get("result").is_none(), "{body}");
+
+    let (status, _, retry, body) = read(list_failure(
+        origin,
+        "paper",
+        json!(3),
+        503,
+        &json!({"error": "store unavailable"}),
+    ))
+    .await;
+    assert_eq!(status, 503);
+    assert_eq!(retry.as_deref(), Some("5"));
+    assert!(body.get("result").is_none(), "{body}");
+
+    let (status, challenge, _, body) = read(list_failure(
+        origin,
+        "paper",
+        json!(3),
+        500,
+        &json!({"error": {"code": "internal", "message": "it broke"}}),
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert!(challenge.is_none());
+    assert_eq!(body["id"], 3);
+    assert_eq!(body["error"]["code"], -32603);
+    assert_eq!(body["error"]["message"], "it broke");
+    assert!(body.get("result").is_none(), "{body}");
 }

@@ -39,6 +39,22 @@ struct Served {
 }
 
 async fn serve(slug: &str, connectors: bool) -> Option<Served> {
+    serve_with(
+        slug,
+        connectors,
+        Policy::allowing("github", &["owner"]),
+        Policy::allowing("github", &["owner"]),
+    )
+    .await
+}
+
+/// `serve` with the deployment's `publishers` and `commenters` lists given.
+async fn serve_with(
+    slug: &str,
+    connectors: bool,
+    publishers: Policy,
+    commenters: Policy,
+) -> Option<Served> {
     let mut deployment = http_deployment(
         DocumentInput {
             slug: slug.into(),
@@ -46,8 +62,8 @@ async fn serve(slug: &str, connectors: bool) -> Option<Served> {
             source_format: "markdown".into(),
         },
         vec![("paper.md".into(), PAPER.as_bytes().to_vec())],
-        Policy::allowing("github", &["owner"]),
-        Policy::allowing("github", &["owner"]),
+        publishers,
+        commenters,
     )
     .await?;
     sqlx::query("UPDATE accounts SET provider='github' WHERE id=$1")
@@ -1316,4 +1332,128 @@ async fn the_connector_routes_are_not_found_on_the_documents_host() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 404);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_expired_but_renewable_connection_stays_listed_and_revocable() {
+    let Some(served) = serve("connector-expired-listed", true).await else {
+        return;
+    };
+    let (client_id, code) = served.approved().await;
+    let first = served.exchange(&client_id, &code, VERIFIER).await;
+    let refresh = first.body["refresh_token"].as_str().unwrap().to_string();
+    let owner = served.owner_cookie();
+    let path = format!("/api/documents/{}/share", served.slug);
+
+    let listed = served.get(&path, Some(&owner)).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert_eq!(listed.body["tokens"][0]["expired"], false, "{}", listed.body);
+
+    sqlx::query(
+        "UPDATE share_links SET created_at=now()-interval '2 hours', expires_at=now()-interval '1 hour'
+         WHERE document_id=(SELECT id FROM documents WHERE slug=$1) AND label='Test app'",
+    )
+    .bind(&served.slug)
+    .execute(served.catalog.pool())
+    .await
+    .unwrap();
+    let listed = served.get(&path, Some(&owner)).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let tokens = listed.body["tokens"].as_array().unwrap();
+    assert_eq!(tokens.len(), 1, "{}", listed.body);
+    assert_eq!(tokens[0]["expired"], true, "{}", listed.body);
+    let id = tokens[0]["id"].as_str().unwrap().to_string();
+
+    let revoked = served
+        .post_json(&path, Some(&owner), &json!({"revoke": {"id": id}}))
+        .await;
+    assert_eq!(revoked.status, 200, "{}", revoked.body);
+    assert!(revoked.body["tokens"].as_array().unwrap().is_empty());
+    let late = served.refresh(&client_id, &refresh).await;
+    assert_eq!(late.status, 400, "{}", late.body);
+    assert_eq!(late.body["error"], "invalid_grant");
+
+    // Past the grace nothing can renew it, so it is no longer listed.
+    let (client_id, code) = served.approved().await;
+    served.exchange(&client_id, &code, VERIFIER).await;
+    sqlx::query(
+        "UPDATE share_links SET created_at=now()-interval '90 days', expires_at=now()-interval '31 days'
+         WHERE document_id=(SELECT id FROM documents WHERE slug=$1) AND label='Test app'",
+    )
+    .bind(&served.slug)
+    .execute(served.catalog.pool())
+    .await
+    .unwrap();
+    let listed = served.get(&path, Some(&owner)).await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert!(listed.body["tokens"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_continuation_too_long_to_carry_through_sign_in_is_refused_here() {
+    let Some(served) = serve("connector-long-next", true).await else {
+        return;
+    };
+    let client_id = served.client_id().await;
+    // Within every cap, but each `%` is escaped twice on its way into the
+    // cookie.
+    let state = "%".repeat(256);
+    let query = form(&[
+        ("response_type", "code"),
+        ("client_id", &client_id),
+        ("redirect_uri", CALLBACK),
+        ("code_challenge", &pkce_challenge(VERIFIER)),
+        ("code_challenge_method", "S256"),
+        ("state", &state),
+        ("resource", &served.resource()),
+    ]);
+    let answer = served.get(&format!("/oauth/authorize?{query}"), None).await;
+    assert_eq!(answer.status, 400);
+    assert!(answer.location.is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_roles_offered_follow_what_the_owner_may_do_here() {
+    // The owner may publish but not comment: a commenter is clamped to read,
+    // while a suggester and an editor stand.
+    let Some(served) = serve_with(
+        "connector-roles",
+        true,
+        Policy::allowing("github", &["owner"]),
+        Policy::default(),
+    )
+    .await
+    else {
+        return;
+    };
+    let client_id = served.client_id().await;
+    let query = served.authorize_query(&client_id, CALLBACK);
+    let owner = served.owner_cookie();
+    let info = served
+        .get(&format!("/api/oauth/authorize-info?{query}"), Some(&owner))
+        .await;
+    assert_eq!(info.status, 200, "{}", info.body);
+    assert_eq!(info.body["roles"], json!(["read", "suggest", "edit"]));
+    assert_eq!(info.body["default_role"], "suggest");
+
+    let refused = served
+        .post_json(
+            "/api/oauth/approve",
+            Some(&owner),
+            &served.decision(&client_id, "comment", "approve"),
+        )
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(
+        refused.body["error"],
+        "that role is not available on this server"
+    );
+
+    let (client_id, code) = served.approved().await;
+    let issued = served.exchange(&client_id, &code, VERIFIER).await;
+    assert_eq!(issued.status, 200, "{}", issued.body);
+    assert_eq!(issued.body["scope"], "suggest");
 }

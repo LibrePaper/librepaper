@@ -57,6 +57,11 @@ const MAX_REDIRECT_LENGTH: usize = 512;
 /// sized so the largest of each together still fits.
 const MAX_REDIRECT_TOTAL: usize = 512;
 
+/// The longest continuation, escaped as it sits in `/auth/login?next=`, that
+/// is sent through sign-in. Above it the cookie risks passing what a browser
+/// holds.
+const MAX_NEXT_ESCAPED: usize = 1800;
+
 /// The longest `state` an authorize request may carry. See the total above.
 const MAX_STATE: usize = 256;
 
@@ -67,6 +72,11 @@ const MAX_BODY: usize = 1 << 14;
 /// must be renewed. Using the refresh token renews it for as long again.
 const CODE_SECONDS: i64 = 60;
 const TOKEN_DAYS: i64 = 30;
+
+/// How long after its `until` a connection can still be renewed with its
+/// refresh token. The Sharing panel keeps listing the row for as long, so the
+/// owner can revoke what could still come back.
+pub(super) const REFRESH_GRACE_SECONDS: i64 = TOKEN_DAYS * 24 * 3600;
 
 /// What the closure that drops a row says when the row is not there, and what
 /// the store says when the row was revoked first. Both mean the token is
@@ -543,6 +553,15 @@ impl Server {
         }
     }
 
+    /// The most this deployment lets the owner hand an app: the same switches
+    /// that bound a token's viewer.
+    fn owner_ceiling(&self, owner: &Identity) -> Ceiling {
+        Ceiling {
+            comment: self.commenters.allows(owner),
+            edit: self.publishers.allows(owner),
+        }
+    }
+
     /// What a write on the owner's behalf is authorized as: the owner's
     /// account under its current session generation, with the deployment's
     /// ceilings, as the share route builds it for the signed-in owner.
@@ -551,10 +570,7 @@ impl Server {
         &self,
         owner: &Identity,
     ) -> Result<librepaper_engine::storage::postgres::Authority, Reply> {
-        let ceiling = Ceiling {
-            comment: self.commenters.allows(owner),
-            edit: self.publishers.allows(owner),
-        };
+        let ceiling = self.owner_ceiling(owner);
         let credentials = parse_credentials(&owner.id, &owner.session_generation, "")
             .map_err(|_| token_error("invalid_grant"))?;
         Ok(librepaper_engine::storage::postgres::Authority {
@@ -739,6 +755,9 @@ impl Server {
             Ok(authority) => authority,
             Err(reply) => return reply,
         };
+        // The scope an app is told is what the token will do under today's
+        // switches, which may be narrower than what was approved.
+        let effective = self.owner_ceiling(&owner).clamp(role);
         let Ok(until) = token_expiry(&format!("{TOKEN_DAYS}d")) else {
             return server_error();
         };
@@ -831,7 +850,7 @@ impl Server {
             &grant.until,
             &code.c,
             &code.o,
-            role.as_str(),
+            effective.as_str(),
         )
     }
 
@@ -861,12 +880,11 @@ impl Server {
             Ok(None) => return token_error("invalid_grant"),
             Err(()) => return unavailable(),
         };
-        let grace = TOKEN_DAYS * 24 * 3600;
         let Some(row) = entry.links.iter().find(|link| {
             link.kind == LinkKind::Agent
                 && link.hash == refresh.h
                 && librepaper_base::util::parse_timestamp(&link.until)
-                    .is_some_and(|until| now_unix() < until + grace)
+                    .is_some_and(|until| now_unix() < until + REFRESH_GRACE_SECONDS)
         }) else {
             return token_error("invalid_grant");
         };
@@ -883,7 +901,11 @@ impl Server {
         let Ok(key) = open_link_key(&self.key, &row.sealed).parse::<LinkKey>() else {
             return token_error("invalid_grant");
         };
-        let role = row.role.clone();
+        let role = self
+            .owner_ceiling(&owner)
+            .clamp(row.role.parse().unwrap_or(Role::Reader))
+            .as_str()
+            .to_string();
         let authority = match self.owner_authority(&owner) {
             Ok(authority) => authority,
             Err(reply) => return reply,
@@ -1156,10 +1178,16 @@ async fn authorize(
                 "resource",
                 &format!("{}/mcp/{}", ctx.arrival.reader_origin(), asked.slug),
             );
-            return redirect(&format!(
-                "/auth/login?next={}",
-                url_escape(&format!("/oauth/authorize?{}", next.finish()))
-            ));
+            let escaped = url_escape(&format!("/oauth/authorize?{}", next.finish()));
+            // The cookie that holds `next` is sized for the escaped form, which
+            // percent-encoding can swell to three times the raw fields.
+            if escaped.len() > MAX_NEXT_ESCAPED {
+                return plain(
+                    400,
+                    "invalid authorization request: the request is too long to carry through sign-in",
+                );
+            }
+            return redirect(&format!("/auth/login?next={escaped}"));
         }
     }
     // Whether the project exists is deliberately not looked up: a signed-in
@@ -1183,9 +1211,10 @@ async fn authorize_info(
     if request.method() != Method::GET {
         return server.not_found(headers);
     }
-    if let Err(reply) = server.consenting(&ctx, headers) {
-        return reply;
-    }
+    let who = match server.consenting(&ctx, headers) {
+        Ok(who) => who,
+        Err(reply) => return reply,
+    };
     let params = parse_form(request.uri().query().unwrap_or_default().as_bytes());
     let asked = match server.check_authorize(&ctx.arrival.reader_origin(), &params) {
         Ok(asked) => asked,
@@ -1214,6 +1243,17 @@ async fn authorize_info(
         None => None,
     };
     let owner = owned.is_some();
+    let ceiling = server.owner_ceiling(&who);
+    let offered: Vec<&str> = ROLES
+        .iter()
+        .copied()
+        .filter(|name| name.parse::<Role>().is_ok_and(|role| ceiling.clamp(role) == role))
+        .collect();
+    let default_role = if offered.contains(&"suggest") {
+        "suggest"
+    } else {
+        offered.last().copied().unwrap_or("read")
+    };
     let redirect_host = url::Url::parse(&asked.redirect_uri)
         .ok()
         .and_then(|url| {
@@ -1234,8 +1274,8 @@ async fn authorize_info(
             "redirect_host": redirect_host,
             "project": {"slug": asked.slug, "title": title},
             "owner": owner,
-            "roles": ROLES,
-            "default_role": "suggest",
+            "roles": offered,
+            "default_role": default_role,
             "expires_days": TOKEN_DAYS,
         }),
     );
@@ -1309,6 +1349,13 @@ async fn approve(
             &json!({"error": "role is read, comment, suggest or edit"}),
         );
     };
+    let ceiling = server.owner_ceiling(&who);
+    if ceiling.clamp(role) != role {
+        return write_json(
+            400,
+            &json!({"error": "that role is not available on this server"}),
+        );
+    }
     match server
         .authorize::<access::rung::Owner>(&ctx, &headers, &asked.slug, None)
         .await

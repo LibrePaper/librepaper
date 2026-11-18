@@ -565,8 +565,16 @@ impl Server {
         let now = librepaper_base::util::now_unix();
         let mut links = Vec::new();
         let mut tokens = Vec::new();
-        // An expired row admits nobody, so the panel is not shown it.
-        for row in entry.links.iter().filter(|row| row.live_at(now)) {
+        // An expired link admits nobody, so the panel is not shown it. An
+        // expired connection can still be renewed with its refresh token until
+        // the grace runs out, so the owner keeps seeing it, to revoke it.
+        let renewable_since = now - super::connector::REFRESH_GRACE_SECONDS;
+        for row in entry.links.iter().filter(|row| {
+            row.live_at(now)
+                || (row.kind == LinkKind::Agent
+                    && librepaper_base::util::parse_timestamp(&row.until)
+                        .is_some_and(|until| until > renewable_since))
+        }) {
             match row.kind {
                 LinkKind::Link => {
                     // The key itself, from the sealed copy the catalogue keeps.
@@ -607,6 +615,7 @@ impl Server {
                         "since": row.since,
                         "until": row.until,
                         "budget": row.budget,
+                        "expired": !row.live_at(now),
                     });
                     if let Some(token) = token {
                         shown["token"] = json!(token);
