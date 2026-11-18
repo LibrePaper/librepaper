@@ -58,13 +58,7 @@ async function createProject(deployment, title) {
 
 // The chat app's callback: the first request the browser makes to it.
 const callbacks = [];
-const app = createServer((request, response) => {
-  callbacks.push(new URL(request.url, "http://127.0.0.1"));
-  response.writeHead(200, { "content-type": "text/plain" });
-  response.end("connected");
-});
-await new Promise((done) => app.listen(0, "127.0.0.1", done));
-const REDIRECT = `http://127.0.0.1:${app.address().port}/cb`;
+let REDIRECT;
 
 // A chat app registers itself. Registration is stateless, so it needs no sign-in.
 async function register(deployment) {
@@ -80,16 +74,29 @@ async function register(deployment) {
 
 const randomPort = () => 19000 + Math.floor(Math.random() * 3000);
 
-const deployment = await startDeployment({ label: "connect_browser", binary });
-// A deployment scenario fails rather than skips, like the others in this
-// suite: the suite provides the binary and Postgres, so a missing one is a fault.
-if (!deployment || deployment.unavailable) {
-  throw new Error(deployment?.unavailable || `no librepaper binary at ${binary}; build it first`);
-}
-
 const scratch = mkdtempSync(join(tmpdir(), "librepaper-connect-check-"));
+let app;
+let deployment;
 let tab;
 try {
+  // The listener and the deployment start inside the cleanup scope, so a
+  // setup that throws still closes whichever of them came up.
+  app = createServer((request, response) => {
+    callbacks.push(new URL(request.url, "http://127.0.0.1"));
+    response.writeHead(200, { "content-type": "text/plain" });
+    response.end("connected");
+  });
+  await new Promise((done) => app.listen(0, "127.0.0.1", done));
+  REDIRECT = `http://127.0.0.1:${app.address().port}/cb`;
+
+  deployment = await startDeployment({ label: "connect_browser", binary });
+  // A deployment scenario fails rather than skips, like the others in this
+  // suite: the suite provides the binary and Postgres, so a missing one is a fault.
+  if (!deployment || deployment.unavailable) {
+    const reason = deployment?.unavailable || `no librepaper binary at ${binary}; build it first`;
+    deployment = undefined;
+    throw new Error(reason);
+  }
   const slug = await createProject(deployment, "Connect project");
   const clientId = await register(deployment);
 
@@ -166,7 +173,7 @@ try {
   log(`consent page: heading, Suggest preselected, Approve sends code and state to the app, the code redeems for a token that lists the MCP tools; the Agent panel shows ${connectorUrl} and lists "${CLIENT_NAME}"`);
 } finally {
   await tab?.close();
-  await deployment.stop();
-  app.close();
+  await deployment?.stop();
+  app?.close();
   removeTemporary(scratch);
 }

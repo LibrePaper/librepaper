@@ -41,12 +41,17 @@ const DEFAULT_CLIENT_NAME: &str = "Chat app";
 
 /// The most redirect URIs and the longest one a client may register.
 const MAX_REDIRECT_URIS: usize = 5;
-const MAX_REDIRECT_LENGTH: usize = 2048;
+const MAX_REDIRECT_LENGTH: usize = 512;
 
 /// The most all of a client's redirect URIs may total. The `client_id` is the
-/// registration itself, and it rides in forms and in the sign-in cookie, so
-/// five URIs of the longest length each would not fit.
-const MAX_REDIRECT_TOTAL: usize = 2048;
+/// registration itself, and a signed-out authorize carries it, the
+/// `redirect_uri` and the `state` through sign-in in the `next` field of one
+/// cookie, which a browser stops holding at about 4 KiB. The three caps are
+/// sized so the largest of each together still fits.
+const MAX_REDIRECT_TOTAL: usize = 512;
+
+/// The longest `state` an authorize request may carry. See the total above.
+const MAX_STATE: usize = 256;
 
 /// Every body here is a few fields: a registration, a form, a decision.
 const MAX_BODY: usize = 1 << 14;
@@ -410,7 +415,7 @@ impl Server {
             redirect_uri: redirect_uri.to_string(),
             state: state.to_string(),
         };
-        if state.len() > 512 {
+        if state.len() > MAX_STATE {
             return Err(bounce("invalid_request", "state is too long"));
         }
         if field(params, "response_type") != "code" {
@@ -624,7 +629,7 @@ impl Server {
         if total > MAX_REDIRECT_TOTAL {
             return refuse(
                 "invalid_redirect_uri",
-                "redirect URIs may total at most 2048 characters",
+                "redirect URIs may total at most 512 characters",
             );
         }
         let name = match asked.get("client_name") {
@@ -726,9 +731,11 @@ impl Server {
         };
         // A code is spent once its hash has ever been a row of the document.
         // The row itself may be long gone from the live set: a refresh swaps
-        // it for one under a new key and a revoke marks it revoked, and either
-        // would otherwise leave nothing for this redemption to find. Revoked
-        // rows are kept, so the lookup still sees them.
+        // it for one under a new key and a revoke marks it revoked. Revoked
+        // rows are kept, so this lookup still sees them and answers early.
+        // It is only a fast path: the save refuses to bring a revoked token
+        // back, so a redemption that gets past it, or races it, still fails
+        // with the same `invalid_grant` when the row is added.
         let digest = *key.digest().as_bytes();
         let spent_before = match self.store.share_link_hash_known(&code.s, &digest).await {
             Ok(known) => known,
@@ -769,7 +776,9 @@ impl Server {
                 if spent_before {
                     // The row is no longer live, so there is nothing left to
                     // kill: the token it made was refreshed or revoked. The
-                    // code still must not make another.
+                    // code still must not make another. Without this answer
+                    // the save below would refuse the row as revoked, which
+                    // is the same `invalid_grant`.
                     replayed.store(true, Ordering::SeqCst);
                     return Ok(());
                 }

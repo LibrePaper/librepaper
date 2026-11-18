@@ -894,7 +894,7 @@
   "connect_owner_only": "Solo el propietario del proyecto puede conectarle una aplicación.",
   "connect_redirect": "Tras aprobar, se le devolverá a {host}.",
   "connect_role_comment_help": "Lee el proyecto y añade comentarios.",
-  "connect_role_edit_help": "Modifica los archivos directamente.",
+  "connect_role_edit_help": "Modifica los archivos directamente, y puede leer el historial del proyecto y sincronizar sus archivos.",
   "connect_role_read_help": "Lee el proyecto.",
   "connect_role_suggest_help": "Propone cambios con control de cambios que usted puede aceptar o rechazar.",
   "connectionmethods_choose_token": "Token a usar",

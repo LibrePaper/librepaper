@@ -894,7 +894,7 @@
   "connect_owner_only": "只有项目所有者才能将应用连接到此项目。",
   "connect_redirect": "批准后将返回 {host}。",
   "connect_role_comment_help": "阅读项目并添加批注。",
-  "connect_role_edit_help": "直接修改文件。",
+  "connect_role_edit_help": "直接修改文件，并可读取项目历史记录、同步项目文件。",
   "connect_role_read_help": "阅读项目。",
   "connect_role_suggest_help": "提出修订建议，由你接受或拒绝。",
   "connectionmethods_choose_token": "要使用的令牌",

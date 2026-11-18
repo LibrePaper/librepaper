@@ -894,7 +894,7 @@
   "connect_owner_only": "このプロジェクトにアプリを接続できるのはプロジェクトの所有者だけです。",
   "connect_redirect": "承認すると{host}に戻ります。",
   "connect_role_comment_help": "プロジェクトを読み取り、コメントします。",
-  "connect_role_edit_help": "ファイルを直接変更します。",
+  "connect_role_edit_help": "ファイルを直接変更し、プロジェクトの履歴を読み取り、ファイルを同期できます。",
   "connect_role_read_help": "プロジェクトを読み取ります。",
   "connect_role_suggest_help": "変更履歴付きで提案し、あなたが承諾または却下できます。",
   "connectionmethods_choose_token": "使用するトークン",
