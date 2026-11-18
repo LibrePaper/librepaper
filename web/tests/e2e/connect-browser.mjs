@@ -12,8 +12,10 @@
 // for the chat app: it records the code and state the browser brings back, and
 // the test then redeems the code at /oauth/token the way the app would.
 //
-// Needs: LIBREPAPER_BIN (or LIBREPAPER_TEST_BINARY, or target/debug/librepaper),
-// a Postgres (LIBREPAPER_TEST_POSTGRES_URL) and Chromium. Skips politely when the
+// Usage: LIBREPAPER_TEST_POSTGRES_URL=<administrative postgres url> \
+//        connect-browser.mjs <path-to-librepaper-binary>
+// Needs: the binary (the first argument, or the default deployment binary), a
+// Postgres (LIBREPAPER_TEST_POSTGRES_URL) and Chromium. Skips politely when the
 // binary or Postgres is missing.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
@@ -29,7 +31,7 @@ const log = (line) => console.log(`${name}: ${line}`);
 const CLIENT_NAME = "Test app";
 const STATE = "xyz";
 
-const binary = process.env.LIBREPAPER_BIN ? resolve(process.env.LIBREPAPER_BIN) : deploymentBinary();
+const binary = resolve(process.argv[2] || deploymentBinary());
 if (!existsSync(binary)) {
   log(`no librepaper binary at ${binary}; skipping (set LIBREPAPER_BIN)`);
   process.exit(0);
@@ -82,7 +84,7 @@ async function register(deployment) {
 
 const randomPort = () => 19000 + Math.floor(Math.random() * 3000);
 
-const deployment = await startDeployment({ label: "connect_browser" });
+const deployment = await startDeployment({ label: "connect_browser", binary });
 if (!deployment) {
   log("no binary; skipping");
   process.exit(0);

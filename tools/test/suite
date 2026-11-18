@@ -124,6 +124,7 @@ suite_e2e() {
 	node web/tests/e2e/history-browser.mjs "$BIN"
 	node web/tests/e2e/track-changes-browser.mjs "$BIN"
 	node web/tests/e2e/quarto-publish.mjs "$BIN"
+	node web/tests/e2e/connect-browser.mjs "$BIN"
 }
 
 suite_external() {
