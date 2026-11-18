@@ -27,7 +27,12 @@ pub(super) async fn mcp_http(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    if !server.agent_connectors || !server.valid_slug(&slug) {
+    // The same gate as the OAuth routes: off when connectors are off, and
+    // nothing at all on the documents origin.
+    if let Some(reply) = server.connector_gate(&ctx, request.headers()) {
+        return reply;
+    }
+    if !server.valid_slug(&slug) {
         return server.not_found(request.headers());
     }
     let origin = ctx.arrival.reader_origin();
@@ -37,6 +42,17 @@ pub(super) async fn mcp_http(
     let named = agent_token_bearer(request.headers())
         .and_then(|token| token.parse::<ids::AgentToken>().ok())
         .is_some_and(|token| token.slug.as_str() == slug);
+    // A store that cannot be asked is not a token that failed: answering with
+    // a challenge would send the app through authorization again for nothing.
+    if named && matches!(ctx.authentication, Err(AuthenticationFailure::Unavailable)) {
+        let mut reply = write_json(
+            503,
+            &json!({"error": "authentication service temporarily unavailable"}),
+        );
+        set(&mut reply, "retry-after", "5");
+        set(&mut reply, "cache-control", "no-store");
+        return reply;
+    }
     if !named || ctx.authentication.is_err() {
         let mut reply = write_json(
             401,
@@ -92,7 +108,15 @@ async fn answer(
             "send one JSON-RPC message per request",
         );
     }
+    // Every message is JSON-RPC 2.0, and an id is a string or a number; an
+    // object or an array as an id would be echoed back into the answer.
     let id = message.get("id").cloned();
+    let id_ok = id
+        .as_ref()
+        .is_none_or(|id| id.is_null() || id.is_string() || id.is_number());
+    if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || !id_ok {
+        return rpc_error(400, Value::Null, -32600, "invalid request");
+    }
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         // A response from the client (to a request we never send), or junk.
         return if id.is_some()

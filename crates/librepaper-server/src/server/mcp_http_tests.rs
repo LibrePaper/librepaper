@@ -404,3 +404,70 @@ async fn a_token_still_works_nowhere_else() {
         assert_eq!(response.status().as_u16(), 401, "{path}");
     }
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_valid_token_is_not_found_on_the_documents_host() {
+    let Some(served) = serve("mcp-docs-host", true).await else {
+        return;
+    };
+    let token = served.mint_token("read").await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/mcp/{}", served.base, served.slug))
+        .header("host", "docs.paper.example")
+        .header("authorization", format!("Bearer {token}"))
+        .json(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 404);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_message_that_is_not_json_rpc_two_runs_nothing() {
+    let Some(served) = serve("mcp-envelope", true).await else {
+        return;
+    };
+    let token = served.mint_token("comment").await;
+
+    // No `jsonrpc` member: refused, and the comment is not made.
+    let (status, body) = served
+        .rpc(
+            &token,
+            json!({"id": 1, "method": "tools/call",
+                "params": {"name": "document_comment",
+                    "arguments": {"action": "create", "body": "Should not exist"}}}),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], -32600);
+    assert_eq!(body["id"], Value::Null);
+    let listed = served
+        .call(&token, "document_read", json!({"queries": [{"kind": "context"}]}))
+        .await;
+    assert!(
+        !listed.to_string().contains("Should not exist"),
+        "{listed}"
+    );
+
+    // An object as the id would be echoed into the answer.
+    let (status, body) = served
+        .rpc(
+            &token,
+            json!({"jsonrpc": "2.0", "id": {"a": 1}, "method": "ping"}),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], -32600);
+
+    // A notification with a wrong version is refused, not accepted.
+    let response = served
+        .send(
+            reqwest::Method::POST,
+            Some(&token),
+            Some(json!({"jsonrpc": "1.0", "method": "notifications/initialized"})),
+        )
+        .await;
+    assert_eq!(response.status().as_u16(), 400);
+}

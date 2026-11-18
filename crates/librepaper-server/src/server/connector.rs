@@ -41,6 +41,11 @@ const DEFAULT_CLIENT_NAME: &str = "Chat app";
 const MAX_REDIRECT_URIS: usize = 5;
 const MAX_REDIRECT_LENGTH: usize = 2048;
 
+/// The most all of a client's redirect URIs may total. The `client_id` is the
+/// registration itself, and it rides in forms and in the sign-in cookie, so
+/// five URIs of the longest length each would not fit.
+const MAX_REDIRECT_TOTAL: usize = 2048;
+
 /// Every body here is a few fields: a registration, a form, a decision.
 const MAX_BODY: usize = 1 << 14;
 
@@ -62,8 +67,10 @@ struct Client {
 }
 
 /// What an authorization code seals: everything `/oauth/token` needs to
-/// finish the grant without having stored anything. `k` is the secret the new
-/// token will be made of, which is why the code is sealed and not only signed.
+/// finish the grant without having stored anything. `c` is the digest of the
+/// client's `client_id`, not the id itself, which can be large. `k` is the
+/// secret the new token will be made of, which is why the code is sealed and
+/// not only signed.
 #[derive(Serialize, Deserialize)]
 struct Code {
     c: String,
@@ -77,7 +84,8 @@ struct Code {
     e: i64,
 }
 
-/// What a refresh token seals: the row it renews and who it was issued to.
+/// What a refresh token seals: the row it renews and who it was issued to
+/// (`c` is the digest of the client's `client_id`).
 /// The nonce only keeps two tokens for the same row from being identical.
 #[derive(Serialize, Deserialize)]
 struct Refresh {
@@ -228,6 +236,14 @@ fn same(left: &str, right: &str) -> bool {
         == 0
 }
 
+/// The hex SHA-256 of a `client_id`: what a code and a refresh token carry in
+/// its place.
+fn client_digest(client_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(client_id.as_bytes());
+    hex::encode(digest.finalize())
+}
+
 /// Whether a redirect URI is one a client may register: an absolute https URL
 /// with no fragment and no credentials, or an http one on a loopback host
 /// (what a desktop app listening on a local port uses), on any port.
@@ -340,7 +356,7 @@ impl Server {
     /// The ordinary not-found for every route here when connectors are off,
     /// or when the request arrived on the documents origin, which serves
     /// nothing of the app.
-    fn connector_gate(&self, ctx: &RequestContext, headers: &HeaderMap) -> Option<Reply> {
+    pub(super) fn connector_gate(&self, ctx: &RequestContext, headers: &HeaderMap) -> Option<Reply> {
         if !self.agent_connectors || ctx.arrival.is_docs_host() {
             return Some(self.not_found(headers));
         }
@@ -529,7 +545,7 @@ impl Server {
         origin: &str,
         slug: &str,
         key: &LinkKey,
-        client_id: &str,
+        client_digest: &str,
         owner: &str,
         role: &str,
     ) -> Reply {
@@ -542,7 +558,7 @@ impl Server {
             &Refresh {
                 s: slug.to_string(),
                 h: key.digest().to_hex(),
-                c: client_id.to_string(),
+                c: client_digest.to_string(),
                 o: owner.to_string(),
                 n: token::<8>(Encoding::Hex),
             },
@@ -584,9 +600,13 @@ impl Server {
             );
         }
         let mut redirect_uris = Vec::new();
+        let mut total = 0;
         for uri in uris {
             match uri.as_str() {
-                Some(uri) if valid_redirect(uri) => redirect_uris.push(uri.to_string()),
+                Some(uri) if valid_redirect(uri) => {
+                    total += uri.len();
+                    redirect_uris.push(uri.to_string());
+                }
                 _ => {
                     return refuse(
                         "invalid_redirect_uri",
@@ -594,6 +614,12 @@ impl Server {
                     )
                 }
             }
+        }
+        if total > MAX_REDIRECT_TOTAL {
+            return refuse(
+                "invalid_redirect_uri",
+                "redirect URIs may total at most 2048 characters",
+            );
         }
         let name = match asked.get("client_name") {
             None | Some(Value::Null) => DEFAULT_CLIENT_NAME.to_string(),
@@ -646,7 +672,7 @@ impl Server {
         };
         let verifier = field(form, "code_verifier");
         if code.e < now_unix()
-            || !same(&code.c, field(form, "client_id"))
+            || !same(&code.c, &client_digest(field(form, "client_id")))
             || !same(&code.r, field(form, "redirect_uri"))
             || !(43..=128).contains(&verifier.len())
             || !same(&librepaper_base::auth::pkce_challenge(verifier), &code.h)
@@ -753,7 +779,7 @@ impl Server {
         if self.read_client(field(form, "client_id")).is_none() {
             return token_error("invalid_client");
         }
-        if !same(&refresh.c, field(form, "client_id")) {
+        if !same(&refresh.c, &client_digest(field(form, "client_id"))) {
             return token_error("invalid_grant");
         }
         let entry = match self.connector_entry(&refresh.s).await {
@@ -826,20 +852,25 @@ impl Server {
 
     /// Drops the row an `lpt_` token or a refresh token names, if there is
     /// one. Holding the token is the proof; asking about a token that is not
-    /// there tells the asker nothing.
-    async fn revoke_token(&self, token: &str) {
+    /// there tells the asker nothing. A token that is malformed, unknown or
+    /// already gone is a success; a failure to look or to write is not, since
+    /// answering 200 would tell the app the token was dead when it may not be.
+    #[allow(clippy::result_large_err)] // the refusal is the HTTP reply itself
+    async fn revoke_token(&self, token: &str) -> Result<(), Reply> {
         let (slug, hash) = if token.starts_with("lpr1.") {
             let Some(refresh) = unseal::<Refresh>(&self.key, "lpr1", token) else {
-                return;
+                return Ok(());
             };
             (refresh.s, refresh.h)
         } else if let Ok(parsed) = token.parse::<ids::AgentToken>() {
             (parsed.slug.as_str().to_string(), parsed.digest().to_hex())
         } else {
-            return;
+            return Ok(());
         };
-        let Ok(Some(entry)) = self.connector_entry(&slug).await else {
-            return;
+        let entry = match self.connector_entry(&slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return Ok(()),
+            Err(()) => return Err(unavailable()),
         };
         let Some(id) = entry
             .links
@@ -847,13 +878,17 @@ impl Server {
             .find(|link| link.kind == LinkKind::Agent && link.hash == hash)
             .map(|link| link.id().to_string())
         else {
-            return;
+            return Ok(());
         };
-        let Ok(owner) = self.live_owner(&entry.publisher_id).await else {
-            return;
+        // An owner who is gone or closed leaves nothing that could act on the
+        // row, so only an unreadable account is a failure here.
+        let owner = match self.live_owner(&entry.publisher_id).await {
+            Ok(owner) => owner,
+            Err(reply) if reply.status().as_u16() == 503 => return Err(reply),
+            Err(_) => return Ok(()),
         };
         let Ok(authority) = self.owner_authority(&owner) else {
-            return;
+            return Ok(());
         };
         let written = self
             .store
@@ -863,8 +898,16 @@ impl Server {
             })
             .await;
         match written {
-            Ok(_) => self.reauthorize(&slug).await,
-            Err(error) => tracing::warn!("could not revoke a connector for {slug}: {error:?}"),
+            Ok(_) => {
+                self.reauthorize(&slug).await;
+                Ok(())
+            }
+            Err(ModifyError::Storage(message)) => {
+                tracing::warn!("could not revoke a connector for {slug}: {message}");
+                Err(unavailable())
+            }
+            // The row went before this got to it: the token is gone.
+            Err(_) => Ok(()),
         }
     }
 }
@@ -1006,18 +1049,10 @@ async fn authorize(
             ));
         }
     }
-    match server.connector_entry(&asked.slug).await {
-        Ok(Some(_)) => server.connect_page(headers),
-        Ok(None) => redirect(&back(
-            &asked.redirect_uri,
-            &[
-                ("error", "invalid_target"),
-                ("error_description", "that project does not exist"),
-                ("state", &asked.state),
-            ],
-        )),
-        Err(()) => plain(503, "project lookup temporarily unavailable"),
-    }
+    // Whether the project exists is deliberately not looked up: a signed-in
+    // person would learn which slugs are taken. A missing project and one the
+    // person cannot own look the same here and are refused at approval.
+    server.connect_page(headers)
 }
 
 /// `GET /api/oauth/authorize-info`: what the consent page shows. The title
@@ -1043,20 +1078,29 @@ async fn authorize_info(
         Ok(asked) => asked,
         Err(problem) => return Server::problem_json(problem),
     };
-    let entry = match server.connector_entry(&asked.slug).await {
-        Ok(Some(entry)) => entry,
-        Ok(None) => return write_json(400, &json!({"error": "that project does not exist"})),
-        Err(()) => {
-            return write_json(
-                503,
-                &json!({"error": "project lookup temporarily unavailable"}),
-            )
-        }
-    };
-    let owner = server
+    // A missing project, one the person cannot read and one they can read but
+    // do not own all answer alike, so the page tells nobody which slugs exist.
+    let owned = match server
         .authorize::<access::rung::Owner>(&ctx, headers, &asked.slug, None)
         .await
-        .is_ok();
+    {
+        Ok(_) => Some(()),
+        Err(refusal) if refusal.retryable() => return access::deny(&refusal),
+        Err(_) => None,
+    };
+    let entry = match &owned {
+        Some(()) => match server.connector_entry(&asked.slug).await {
+            Ok(entry) => entry,
+            Err(()) => {
+                return write_json(
+                    503,
+                    &json!({"error": "project lookup temporarily unavailable"}),
+                )
+            }
+        },
+        None => None,
+    };
+    let owner = owned.is_some();
     let redirect_host = url::Url::parse(&asked.redirect_uri)
         .ok()
         .and_then(|url| {
@@ -1066,10 +1110,9 @@ async fn authorize_info(
             })
         })
         .unwrap_or_default();
-    let title = if owner {
-        entry.title.as_str()
-    } else {
-        asked.slug.as_str()
+    let title = match &entry {
+        Some(entry) if owner => entry.title.as_str(),
+        _ => asked.slug.as_str(),
     };
     let mut response = write_json(
         200,
@@ -1170,7 +1213,7 @@ async fn approve(
         &server.key,
         "lpo1",
         &Code {
-            c: asked.client_id,
+            c: client_digest(&asked.client_id),
             r: asked.redirect_uri.clone(),
             h: asked.code_challenge,
             s: asked.slug,
@@ -1216,7 +1259,8 @@ async fn token_endpoint(
 }
 
 /// `POST /oauth/revoke`: RFC 7009. Always 200, so it does not say whether
-/// the token it was handed was one.
+/// the token it was handed was one, unless storage failed, which is 503 so the
+/// app tries again.
 async fn revoke(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
@@ -1232,7 +1276,11 @@ async fn revoke(
         return token_error("invalid_request");
     };
     let form = parse_form(&body);
-    server.revoke_token(field(&form, "token")).await;
+    if let Err(reply) = server.revoke_token(field(&form, "token")).await {
+        let mut reply = reply;
+        set(&mut reply, "cache-control", "no-store");
+        return reply;
+    }
     let mut response = write_json(200, &json!({}));
     set(&mut response, "cache-control", "no-store");
     response
