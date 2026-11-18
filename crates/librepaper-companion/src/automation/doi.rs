@@ -153,10 +153,28 @@ pub async fn fetch(doi: &str) -> Result<Value, String> {
     if !response.status().is_success() {
         return Err(UNREACHABLE.to_owned());
     }
-    response
+    let csl = response
         .json::<Value>()
         .await
-        .map_err(|_| UNREACHABLE.to_owned())
+        .map_err(|_| UNREACHABLE.to_owned())?;
+    if !usable(&csl) {
+        return Err("no record for this DOI".to_owned());
+    }
+    Ok(csl)
+}
+
+/// Whether a response is a usable CSL record: an object with a non-empty
+/// string `type` and a non-empty `title` (a string, or an array whose first
+/// element is a non-empty string).
+pub fn usable(csl: &Value) -> bool {
+    let non_empty = |value: Option<&Value>| value.and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    if !csl.is_object() || !non_empty(csl.get("type")) {
+        return false;
+    }
+    match csl.get("title") {
+        Some(Value::Array(items)) => non_empty(items.first()),
+        other => non_empty(other),
+    }
 }
 
 /// Text cleanup applied to every value; `None` when nothing is left.
@@ -209,7 +227,7 @@ fn clean(value: &Value) -> Option<String> {
 }
 
 /// TeX escaping for a value being written: backslashes are dropped, then
-/// `& % # _ $` get a backslash.
+/// `& % # _ $` get a backslash, and `^` becomes `\^{}`.
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -219,6 +237,7 @@ fn escape(text: &str) -> String {
                 out.push('\\');
                 out.push(c);
             }
+            '^' => out.push_str("\\^{}"),
             other => out.push(other),
         }
     }
@@ -232,7 +251,10 @@ fn field(csl: &Value, name: &str) -> Option<String> {
 fn year(csl: &Value) -> Option<String> {
     let first = csl.get("issued")?.get("date-parts")?.get(0)?.get(0)?;
     match first {
-        Value::Number(number) => number.as_u64().map(|year| year.to_string()),
+        Value::Number(number) => number
+            .as_f64()
+            .filter(|year| year.fract() == 0.0 && *year >= 0.0)
+            .map(|year| format!("{year:.0}")),
         Value::String(text) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) => {
             Some(text.clone())
         }
@@ -293,6 +315,7 @@ fn authors(csl: &Value) -> Vec<Author> {
             if let Some(family) = family {
                 let written = match field(author, "given") {
                     Some(given) => format!("{family}, {given}"),
+                    None if family.contains(char::is_whitespace) => format!("{{{family}}}"),
                     None => family.clone(),
                 };
                 Some(Author {
@@ -426,6 +449,17 @@ mod tests {
                 case["bibtex"].as_str().unwrap(),
                 "{name}: bibtex"
             );
+        }
+    }
+
+    #[test]
+    fn invalid_responses_are_not_usable() {
+        let fixtures: Value = serde_json::from_str(FIXTURES).unwrap();
+        let Some(cases) = fixtures.get("invalid").and_then(Value::as_array) else {
+            return;
+        };
+        for case in cases {
+            assert!(!usable(case), "{case}");
         }
     }
 
