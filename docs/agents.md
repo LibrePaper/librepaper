@@ -22,6 +22,7 @@ Only the project owner sees the URL and can approve connections.
 2. Add the URL to your app as a remote MCP server or custom connector:
    - **claude.ai and Claude Desktop:** go to Settings → Connectors → Add custom connector, and paste the URL.
    - **Claude Code:** run `claude mcp add --transport http librepaper https://<server>/mcp/<slug>`. Then run `/mcp` in a session, and choose to authenticate. The approval page opens in your browser.
+   - **ChatGPT:** open Plugins at chatgpt.com/plugins, select the plus button, then **Add custom MCP server**. Enter a name, enter the URL as the **Server URL** under **Connection**, and choose **OAuth**. Select **I understand and want to continue**, then **Create as a plugin**, and install it. In a chat, type `@` and choose it. The approval page opens when ChatGPT connects. OpenAI documents this for ChatGPT on the web. A workspace admin may need to allow custom MCP servers.
    - **Any other app:** add the URL as a remote MCP server. The app opens the approval page.
 3. A LibrePaper page opens. Sign in if asked.
 4. Choose a role for the app. Suggest is the default.
