@@ -1550,12 +1550,64 @@ impl Store {
             .map_err(|error| ModifyError::Storage(error.to_string()))
     }
 
+    /// Whether the document has ever had a sharing row with this token hash,
+    /// live or revoked. Revoked rows are kept, so a hash that was issued once
+    /// stays known after its token is refreshed or revoked.
+    pub async fn share_link_hash_known(
+        &self,
+        slug: &str,
+        hash: &[u8; 32],
+    ) -> Result<bool, ModifyError> {
+        let catalog = &self.catalog;
+        let document = catalog
+            .document_by_slug(slug)
+            .await
+            .map_err(|e| ModifyError::Storage(e.to_string()))?
+            .ok_or(ModifyError::NotFound)?;
+        catalog
+            .share_link_hash_known(document.id, hash)
+            .await
+            .map_err(|e| ModifyError::Storage(e.to_string()))
+    }
+
+    /// Read a document's sharing rows, let `change` edit them, and save the
+    /// whole set as its owner.
+    ///
+    /// The save writes every row, so one built from an old read would undo a
+    /// revocation made in between. The catalog therefore compares the rows it
+    /// finds under the document lock with the ones this call read and refuses
+    /// the save as stale if they differ. A stale save is retried: the rows are
+    /// read again and `change` runs again on the fresh set, which is why it is
+    /// an `Fn` that must tolerate several runs. After four attempts the call
+    /// gives up with a storage error.
     pub async fn modify_as_owner<F>(
         &self,
         slug: &str,
         actor: &Authority,
         change: F,
     ) -> Result<IndexEntry, ModifyError>
+    where
+        F: Fn(&mut IndexEntry) -> Result<(), String>,
+    {
+        const ATTEMPTS: usize = 4;
+        for _ in 0..ATTEMPTS {
+            if let Some(entry) = self.modify_as_owner_once(slug, actor, &change).await? {
+                return Ok(entry);
+            }
+        }
+        Err(ModifyError::Storage(
+            "the sharing rows kept changing; try again".into(),
+        ))
+    }
+
+    /// One read-change-save pass. `None` means the save was stale and the
+    /// caller should run the pass again.
+    async fn modify_as_owner_once<F>(
+        &self,
+        slug: &str,
+        actor: &Authority,
+        change: &F,
+    ) -> Result<Option<IndexEntry>, ModifyError>
     where
         F: Fn(&mut IndexEntry) -> Result<(), String>,
     {
@@ -1571,6 +1623,16 @@ impl Store {
         let mut entry = entry_from_document(catalog, &document)
             .await
             .map_err(|e| ModifyError::Storage(e.to_string()))?;
+        let expected = entry
+            .links
+            .iter()
+            .map(|link| {
+                link.hash
+                    .parse::<Digest>()
+                    .map(|digest| digest.as_bytes().to_vec())
+                    .map_err(|_| ModifyError::Refused("invalid link digest".into()))
+            })
+            .collect::<Result<Vec<_>, ModifyError>>()?;
         change(&mut entry).map_err(ModifyError::Refused)?;
         let links = entry
             .links
@@ -1611,18 +1673,21 @@ impl Store {
                     .map_err(|_| ModifyError::Refused("invalid link digest".into()))
             })
             .collect::<Result<Vec<_>, ModifyError>>()?;
-        catalog
-            .save_document_sharing(document.id, actor, &links, &live_hashes)
+        match catalog
+            .save_document_sharing(document.id, actor, &links, &live_hashes, &expected)
             .await
-            .map_err(|error| match error {
-                CatalogError::Conflict(_) => ModifyError::OwnershipChanged,
-                CatalogError::NotFound => ModifyError::NotFound,
-                other => ModifyError::Storage(other.to_string()),
-            })?;
+        {
+            Ok(()) => {}
+            Err(CatalogError::Stale) => return Ok(None),
+            Err(CatalogError::Conflict(_)) => return Err(ModifyError::OwnershipChanged),
+            Err(CatalogError::NotFound) => return Err(ModifyError::NotFound),
+            Err(other) => return Err(ModifyError::Storage(other.to_string())),
+        }
         self.get_result(slug)
             .await
             .map_err(|e| ModifyError::Storage(e.to_string()))?
             .ok_or(ModifyError::NotFound)
+            .map(Some)
     }
 }
 

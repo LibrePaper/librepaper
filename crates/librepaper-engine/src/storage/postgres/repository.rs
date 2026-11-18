@@ -346,6 +346,14 @@ impl PostgresCatalog {
     /// Save a document's link set and prune grants sourced from removed links
     /// in one transaction. Authorization and replacement share the same
     /// transaction so ownership and session changes cannot race the save.
+    ///
+    /// `expected` is the set of token hashes of the non-revoked rows the
+    /// caller read before building `links`. The replacement writes the whole
+    /// set, and a row missing from it is revoked while a row present in it is
+    /// brought back to life, so a set built from an old read would undo a
+    /// revocation or erase a new row. Once the document row is locked, the
+    /// live rows are compared with `expected`; any difference returns
+    /// `Error::Stale` and nothing is written.
     #[allow(clippy::type_complexity)]
     pub async fn save_document_sharing(
         &self,
@@ -363,14 +371,40 @@ impl PostgresCatalog {
             bool,
         )],
         live_hashes: &[Vec<u8>],
+        expected: &[Vec<u8>],
     ) -> Result<()> {
         let mut tx = self.begin_write(Fence::Required, &[]).await?;
         PostgresCatalog::authorize_mutation(&mut tx, document_id, actor, true).await?;
         Self::require_document_owner(&mut tx, document_id, actor).await?;
+        let mut current = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT token_hash FROM share_links WHERE document_id=$1 AND revoked_at IS NULL",
+        )
+        .bind(document_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        let mut expected = expected.to_vec();
+        current.sort();
+        expected.sort();
+        if current != expected {
+            return Err(Error::Stale);
+        }
         Self::replace_share_links_tx(&mut tx, document_id, links).await?;
         Self::prune_link_grants_tx(&mut tx, document_id, live_hashes).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Whether any row of the document, live or revoked, carries this token
+    /// hash. Revoked rows are never deleted, so this tells a hash that was
+    /// issued once from one that never was.
+    pub async fn share_link_hash_known(&self, document_id: Uuid, hash: &[u8; 32]) -> Result<bool> {
+        Ok(sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM share_links WHERE document_id=$1 AND token_hash=$2)",
+        )
+        .bind(document_id)
+        .bind(&hash[..])
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     async fn require_document_owner(

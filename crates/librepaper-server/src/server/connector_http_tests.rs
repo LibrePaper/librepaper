@@ -727,6 +727,163 @@ async fn replaying_a_code_kills_the_token_it_made() {
     assert_eq!(third.body["error"], "invalid_grant");
 }
 
+/// The ids of the project's agent-token rows as the owner would see them.
+async fn agent_row_ids(served: &Served) -> Vec<String> {
+    served
+        .server
+        .store
+        .get_result(&served.slug)
+        .await
+        .unwrap()
+        .unwrap()
+        .links
+        .iter()
+        .filter(|link| link.kind == librepaper_engine::storage::store::LinkKind::Agent)
+        .map(|link| link.id().to_string())
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_code_stays_spent_after_its_token_was_refreshed() {
+    let Some(served) = serve("connector-spent-refresh", true).await else {
+        return;
+    };
+    let (client_id, code) = served.approved().await;
+    let first = served.exchange(&client_id, &code, VERIFIER).await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let refresh = first.body["refresh_token"].as_str().unwrap().to_string();
+    let second = served.refresh(&client_id, &refresh).await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let renewed = second.body["access_token"].as_str().unwrap().to_string();
+    assert_eq!(served.tools(&renewed).await, 200);
+
+    let replay = served.exchange(&client_id, &code, VERIFIER).await;
+    assert_eq!(replay.status, 400, "{}", replay.body);
+    assert_eq!(replay.body["error"], "invalid_grant");
+    assert_eq!(
+        served.tools(&renewed).await,
+        200,
+        "the refreshed token is not the code's row and keeps working"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_code_stays_spent_after_its_token_was_revoked_at_the_connector() {
+    let Some(served) = serve("connector-spent-revoke", true).await else {
+        return;
+    };
+    let (client_id, code) = served.approved().await;
+    let first = served.exchange(&client_id, &code, VERIFIER).await;
+    let access = first.body["access_token"].as_str().unwrap().to_string();
+    let revoked = served
+        .post_form("/oauth/revoke", &[("token", &access)])
+        .await;
+    assert_eq!(revoked.status, 200);
+    assert_eq!(served.tools(&access).await, 401);
+
+    let replay = served.exchange(&client_id, &code, VERIFIER).await;
+    assert_eq!(replay.status, 400, "{}", replay.body);
+    assert_eq!(replay.body["error"], "invalid_grant");
+    assert_eq!(served.tools(&access).await, 401);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_code_stays_spent_after_the_owner_revoked_its_token() {
+    let Some(served) = serve("connector-spent-owner-revoke", true).await else {
+        return;
+    };
+    let (client_id, code) = served.approved().await;
+    let first = served.exchange(&client_id, &code, VERIFIER).await;
+    let access = first.body["access_token"].as_str().unwrap().to_string();
+    let ids = agent_row_ids(&served).await;
+    assert_eq!(ids.len(), 1);
+    let cookie = served.owner_cookie();
+    let revoked = served
+        .post_json(
+            &format!("/api/documents/{}/share", served.slug),
+            Some(&cookie),
+            &json!({"revoke": {"id": ids[0]}}),
+        )
+        .await;
+    assert_eq!(revoked.status, 200, "{}", revoked.body);
+    assert_eq!(served.tools(&access).await, 401);
+
+    let replay = served.exchange(&client_id, &code, VERIFIER).await;
+    assert_eq!(replay.status, 400, "{}", replay.body);
+    assert_eq!(replay.body["error"], "invalid_grant");
+    assert_eq!(served.tools(&access).await, 401);
+    assert!(agent_row_ids(&served).await.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn two_redemptions_of_one_code_at_once_leave_no_live_token() {
+    let Some(served) = serve("connector-spent-race", true).await else {
+        return;
+    };
+    let (client_id, code) = served.approved().await;
+    let (a, b) = tokio::join!(
+        served.exchange(&client_id, &code, VERIFIER),
+        served.exchange(&client_id, &code, VERIFIER)
+    );
+    let wins = [&a, &b].iter().filter(|answer| answer.status == 200).count();
+    assert!(wins <= 1, "{} / {}", a.body, b.body);
+    for answer in [&a, &b] {
+        if answer.status != 200 {
+            assert_eq!(answer.body["error"], "invalid_grant", "{}", answer.body);
+        }
+        if let Some(token) = answer.body["access_token"].as_str() {
+            assert_eq!(
+                served.tools(token).await,
+                401,
+                "the replay killed whatever the code made"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_revoke_racing_a_refresh_stays_revoked() {
+    let Some(served) = serve("connector-revoke-race", true).await else {
+        return;
+    };
+    let (client_id, code) = served.approved().await;
+    let first = served.exchange(&client_id, &code, VERIFIER).await;
+    let access = first.body["access_token"].as_str().unwrap().to_string();
+    let refresh = first.body["refresh_token"].as_str().unwrap().to_string();
+    let ids = agent_row_ids(&served).await;
+    let cookie = served.owner_cookie();
+    let path = format!("/api/documents/{}/share", served.slug);
+    let body = json!({"revoke": {"id": ids[0]}});
+    let (revoked, renewed) = tokio::join!(
+        served.post_json(&path, Some(&cookie), &body),
+        served.refresh(&client_id, &refresh)
+    );
+    // If the refresh swapped the row first, the owner's revoke names a row
+    // that is already gone and answers not found; either way the old access
+    // token is dead. Before the save compared its rows, a revoke landing
+    // between the refresh's read and write was undone and this was 200.
+    assert!(
+        revoked.status == 200 || revoked.status == 404,
+        "{}",
+        revoked.body
+    );
+    assert_eq!(served.tools(&access).await, 401);
+    if revoked.status == 200 {
+        // The revoke won, so the refresh found no live row to swap.
+        assert_eq!(renewed.status, 400, "{}", renewed.body);
+        assert!(agent_row_ids(&served).await.is_empty());
+    }
+    assert!(
+        agent_row_ids(&served).await.len() <= 1,
+        "no row was duplicated or resurrected"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn refreshing_rotates_both_tokens() {

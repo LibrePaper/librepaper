@@ -11,9 +11,11 @@
 //! `client_id` is a signed description of itself. An authorization code is
 //! not stored: it is sealed with the deployment's session key and carries the
 //! key the token row will be known by, so a code can be redeemed once without
-//! a ledger -- the second redemption finds the row already there, takes that
-//! as a replay and drops the row. A refresh token is sealed the same way and
-//! names the row it renews.
+//! a ledger -- the second redemption finds the row's hash already known to the
+//! document, takes that as a replay and kills the row if it is still live.
+//! Revoked rows are never deleted, so the hash stays known after the token is
+//! refreshed or revoked, and the code stays spent. A refresh token is sealed
+//! the same way and names the row it renews.
 //!
 //! These routes sit outside `api_guard`: the token, revoke and register
 //! routes have no cookie at all, and the two consent routes read the
@@ -666,7 +668,9 @@ impl Server {
 
     /// The `authorization_code` grant: checks the code against everything it
     /// was sealed with, then adds the token row, or, when the row is already
-    /// there, takes the code to have been replayed and removes it.
+    /// there, or its hash was a row once (live, refreshed or revoked), takes
+    /// the code to have been replayed, kills any token still live under it
+    /// and answers `invalid_grant`.
     async fn grant_code(&self, arrival: &Arrival, form: &HashMap<String, String>) -> Reply {
         let Some(code) = unseal::<Code>(&self.key, "lpo1", field(form, "code")) else {
             return token_error("invalid_grant");
@@ -720,10 +724,24 @@ impl Server {
             owner_generation: code.g.clone(),
             ..Default::default()
         };
+        // A code is spent once its hash has ever been a row of the document.
+        // The row itself may be long gone from the live set: a refresh swaps
+        // it for one under a new key and a revoke marks it revoked, and either
+        // would otherwise leave nothing for this redemption to find. Revoked
+        // rows are kept, so the lookup still sees them.
+        let digest = *key.digest().as_bytes();
+        let spent_before = match self.store.share_link_hash_known(&code.s, &digest).await {
+            Ok(known) => known,
+            Err(ModifyError::NotFound) => return token_error("invalid_grant"),
+            Err(_) => return unavailable(),
+        };
         let replayed = AtomicBool::new(false);
         let written = self
             .store
             .modify_as_owner(&code.s, &authority, |entry| {
+                // The closure may run again when a save finds the rows
+                // changed, so it starts from a clean answer each time.
+                replayed.store(false, Ordering::SeqCst);
                 let existing = entry
                     .links
                     .iter()
@@ -745,6 +763,13 @@ impl Server {
                         spent.until = librepaper_base::util::format_unix(now_unix() + 1);
                         entry.replace_link(&id, spent);
                     }
+                    replayed.store(true, Ordering::SeqCst);
+                    return Ok(());
+                }
+                if spent_before {
+                    // The row is no longer live, so there is nothing left to
+                    // kill: the token it made was refreshed or revoked. The
+                    // code still must not make another.
                     replayed.store(true, Ordering::SeqCst);
                     return Ok(());
                 }
