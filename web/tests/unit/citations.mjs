@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { BibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyRegistration, citationContext, entryLabel, insertCitation, planDoiImport, planZoteroImport, rankEntries, zoteroCitationKey } from "../../src/lib/bibliography.js";
+import { BibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyRegistration, citationContext, entryLabel, insertCitation, planDoiImport, planZoteroImport, rankEntries, selectedBibliographyFiles, zoteroCitationKey } from "../../src/lib/bibliography.js";
 import { Text } from "@codemirror/state";
 
 const entries = [
@@ -160,4 +160,27 @@ for (const refs of ["refs.json", "refs.yaml"]) {
 for (const bib of ["@article{A,\n  x-doi = {10.1038/nature12373}\n}\n", "@article{A,\n  title = {T}\n}\n  % doi = {10.1038/nature12373}\n"]) {
   const plan = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": bib }, entry: doiEntry });
   assert.equal(plan.already, false);
+}
+
+// The bibliography scanner keeps every item of a block list and reads Typst sources of any type (#115).
+{
+  const md = (body) => selectedBibliographyFiles(`---\n${body}\n---\n`, "markdown");
+  assert.deepEqual(md("bibliography:\n  - refs.json"), ["refs.json"]);
+  assert.deepEqual(md("bibliography:\n  - refs.json\n  - refs.bib"), ["refs.bib", "refs.json"]);
+  assert.deepEqual(md("bibliography:\n  - refs.json\n  - refs.bib\ntitle: T"), ["refs.bib", "refs.json"]);
+  assert.deepEqual(md("bibliography:\n  - \"a.bib\"\n  - 'b.json'\ncsl: x.csl"), ["a.bib", "b.json"]);
+  assert.deepEqual(md("bibliography: refs.json"), ["refs.json"]);
+  assert.deepEqual(md("bibliography: [a.bib, b.json]"), ["a.bib", "b.json"]);
+  assert.deepEqual(md("bibliography: refs.bib"), ["refs.bib"]);
+  const typ = (call) => selectedBibliographyFiles(call, "typst");
+  assert.deepEqual(typ('#bibliography("refs.yaml")'), ["refs.yaml"]);
+  assert.deepEqual(typ('#bibliography("refs.bib")'), ["refs.bib"]);
+  assert.deepEqual(typ('#bibliography("refs.yaml", style: "apa")'), ["refs.yaml"]);
+  assert.deepEqual(typ('#bibliography(("a.bib", "b.yml"), title: "Works", style: "my.csl")'), ["a.bib", "b.yml"]);
+  const item = { zotero_item: "Z1", citation_key: "Doe2020", bibtex: "@article{Doe2020,\n title={T}}\n" };
+  const listed = planZoteroImport({ source: "---\nbibliography:\n  - refs.json\n  - refs.bib\n---\n", targetPath: "main.qmd", texts: { "refs.bib": "" }, item });
+  assert.equal(listed.path, "refs.bib");
+  assert.equal(listed.registration, null);
+  assert.throws(() => planZoteroImport({ source: "---\nbibliography:\n  - refs.json\n---\n", targetPath: "main.qmd", texts: {}, item }), { code: "bibliography_not_bibtex" });
+  assert.throws(() => planDoiImport({ source: '#bibliography("refs.yaml")\n', targetPath: "main.typ", texts: {}, entry: doiEntry, format: "typst" }), { code: "bibliography_not_bibtex" });
 }
