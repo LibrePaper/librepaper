@@ -2979,6 +2979,8 @@
   "rundirectorycontrol_choose_a_folder": "フォルダーを選択",
   "rundirectorycontrol_share_results": "結果を公開",
   "rundirectorycontrol_share_hint": "共同編集者は、データがなくても最後の実行結果を確認できます。",
+  "rundirectorycontrol_agents_run": "エージェントにコードの実行を許可する",
+  "rundirectorycontrol_agents_run_hint": "このプロジェクトに接続されたエージェントは、このウィンドウが開いている間、実行フォルダーでコードチャンクを実行できます。",
   "rundirectorycontrol_shared": "結果を公開済み · {size}",
   "rundirectorycontrol_shared_figures": [
     {

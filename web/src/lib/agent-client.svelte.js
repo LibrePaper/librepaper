@@ -1,5 +1,6 @@
 import { SHELL_HEADERS, keyHeaders } from "./api.js";
-import { composeTaskMessage, checkContextSize, CONTEXT_LIMIT, TEXT_LIMIT } from "./assistant.js";
+import { composeTaskMessage, checkContextSize, TEXT_LIMIT } from "./assistant.js";
+import { boundedDiagnostics } from "./diagnostic-bounds.js";
 import { validPath } from "./assistant-preview.js";
 import { AGENT_SESSION_PREFIX } from "./storage.js";
 import { localDataForgotten } from "./signed-out.js";
@@ -67,32 +68,6 @@ function removeSession(storage, key) {
 function emptyView() {
   return { id: "", token: "", messages: [], tasks: {}, connected: false, runnerConnected: false,
     status: "idle", error: "", capabilities: null, assistantAgent: "", assistantAccess: "" };
-}
-
-function compactDiagnostic(item) {
-  if (!item || typeof item !== "object") return { severity: "error", message: String(item || "Candidate verification failed.") };
-  const compact = {};
-  for (const key of ["severity", "file", "line", "column", "message", "source"]) {
-    if (item[key] === undefined || item[key] === null) continue;
-    compact[key] = typeof item[key] === "string" ? item[key].slice(0, key === "source" ? 2048 : 1024) : item[key];
-  }
-  return compact;
-}
-
-function boundedDiagnostics(value) {
-  const all = Array.isArray(value) ? value.map(compactDiagnostic) : [];
-  const ordered = [...all.filter((item) => item.severity === "error"), ...all.filter((item) => item.severity !== "error")];
-  const selected = [];
-  let skipped = 0;
-  const encoded = (items) => new TextEncoder().encode(JSON.stringify(items)).byteLength;
-  for (const item of ordered) {
-    if (encoded([...selected, item]) <= CONTEXT_LIMIT) selected.push(item);
-    else skipped++;
-  }
-  if (!skipped) return selected;
-  const truncation = { severity: "warning", message: `${skipped} additional preview diagnostics were omitted.` };
-  while (selected.length && encoded([...selected, truncation]) > CONTEXT_LIMIT) selected.pop();
-  return [...selected, truncation];
 }
 
 /** Browser side of the persistent runner channel. The runner owns the model

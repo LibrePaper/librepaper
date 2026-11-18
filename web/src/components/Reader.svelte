@@ -17,6 +17,7 @@
   import { createWebGit } from "../lib/reader/web-git.svelte.js";
   import { createWebConnection } from "../lib/reader/web-connection.svelte.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
+  import { createCompileResponder, errorReply, compileReply, parseCompileRequest } from "../lib/agent-compile.js";
   import { passageContext, sourcePassage } from "../lib/assistant.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { orphanState } from "../lib/orphan.js";
@@ -98,7 +99,7 @@
     import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
   import { leaf } from "../lib/reader/run-directory.js";
   import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
-  import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, readAgentRun, writeAgentRun, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { locale } from "../lib/locale.js";
   import { createSharedResults, publishProblem } from "../lib/reader/shared-results.svelte.js";
   import { splitResults, staleCells, tagCells } from "../lib/quarto-results.js";
@@ -944,6 +945,60 @@
       title: headingOf, digest: renderers.snapshotDigest });
   }
 
+  // An agent asked this tab, the owner's, to compile a file. The reply is
+  // posted to the server, which holds the agent's call open. Only the current
+  // tree is compiled, with this browser's renderer unless the agent asks for a
+  // run, which needs the desktop app, a Run directory and the owner's opt-in.
+  async function compileForAgent(request) {
+    const live = liveTreeNow();
+    if (!(request.path in (live.texts || {}))) return errorReply("failed", "no such file");
+    const format = renderers.formatOf(request.path) || "";
+    if (!format) return errorReply("no_renderer", "This file type cannot be compiled.");
+    const wantsPdf = request.output
+      ? request.output === "pdf"
+      : format === "typst" ? typstOutput !== "html"
+        : format === "latex" ? latexOutput !== "html"
+          : markdownOutput === "pdf";
+    const output = wantsPdf ? "pdf" : "html";
+    if (request.run) {
+      if (!runCodeOffered || !runDir.usable || !["quarto", "typst"].includes(format)) {
+        return errorReply("run_unavailable", "Running code needs the desktop app with a Run directory and a Quarto or Typst file.");
+      }
+      if (!agentRunAllowed) return errorReply("run_disabled", "The owner has not enabled \"Let agents run code\" for this project.");
+      // A run is of the file the preview shows.
+      if (request.path !== previewPath) return errorReply("failed", "Open this file in the editor before running it.");
+      if (runPhase === "running") return errorReply("busy", "A run is already in progress.");
+      const tree = capturePreviewTree(treeNow());
+      const revision = await renderers.snapshotDigest({ ...tree, main: "" });
+      await runCode({ output });
+      const ran = compileReply({ diagnostics: runDiagnostics.map((item) => diagnosticContext(item, tree, revision)), log: runLog, provenance: { renderer: "local" } }, revision);
+      return { ...ran, ok: runPhase === "idle" };
+    }
+    const tree = capturePreviewTree({ ...live, main: request.path });
+    if (Object.keys(tree.digests || {}).length) {
+      const { held } = await gatherFigures(tree.digests);
+      tree.assets = held.assets;
+      tree.urls = { ...(tree.urls || {}), ...held.urls };
+    }
+    const revision = await renderers.snapshotDigest({ ...tree, main: "" });
+    const heading = await headingOf(tree);
+    const options = format === "markdown" || format === "quarto"
+      ? { buildPreferences: { ...buildPreferences, backend: "browser", output } }
+      : { buildPreferences: { ...buildPreferences, backend: "browser" }, format: output };
+    const rendered = await renderers.render(tree, heading, { ...options, project: SLUG });
+    const diagnostics = (rendered?.diagnostics || []).map((item) => diagnosticContext(item, tree, revision));
+    return compileReply({ ...rendered, diagnostics }, revision);
+  }
+  async function postCompileReply(id, body) {
+    try {
+      await fetch(`/api/documents/${SLUG}/compile/${id}`, {
+        method: "POST", credentials: "same-origin",
+        headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+    } catch (error) { console.warn("compile reply failed", error); }
+  }
+  const compileResponder = createCompileResponder({ compile: compileForAgent, post: postCompileReply });
+
   // A task's tracked changes are reviewed in the Changes panel, narrowed to
   // the ids the task returned. Separate runs of one task all stay on show.
   async function reviewAssistantResults({ changes: ids = [] }) {
@@ -1557,6 +1612,11 @@
     }
 
     if (lifecycle.receive(event)) return;
+    if (event.type === "compile_request") {
+      const request = parseCompileRequest(event);
+      if (request) void compileResponder.handle(request);
+      return;
+    }
     if (event.type === "results-changed") {
       if (runsExplicitly) void refreshResults();
       return;
@@ -2440,6 +2500,14 @@
     void buildUserId;
     untrack(() => { shareResults = readShareResults(buildScope(), SLUG); });
   });
+  let agentRunAllowed = $state(false);
+  $effect(() => {
+    void buildUserId;
+    untrack(() => { agentRunAllowed = readAgentRun(buildScope(), SLUG); });
+  });
+  function setAgentRun(on) {
+    agentRunAllowed = writeAgentRun(buildScope(), SLUG, on);
+  }
   function setShareResults(on) {
     shareResults = writeShareResults(buildScope(), SLUG, on);
   }
@@ -2544,7 +2612,7 @@
   // makes is not the preview: its cell outputs are split out and spliced under
   // the draft's cells. For Typst, Calepin's stored files are kept instead, and
   // the browser's draft reads them back, so the preview stays the draft.
-  async function runCode({ refreshCache = false } = {}) {
+  async function runCode({ refreshCache = false, output = "" } = {}) {
     if (runPhase === "running" || readerDisposed) return;
     if (!runDir.usable) {
       pendingRun = true;
@@ -2586,7 +2654,7 @@
       if (gone()) return;
       const typst = sourceFormat === "typst";
       // Typst keeps its own output choice; Markdown and Quarto share theirs.
-      const toPdf = typst ? typstOutput !== "html" : buildPreferences.output === "pdf";
+      const toPdf = output ? output === "pdf" : typst ? typstOutput !== "html" : buildPreferences.output === "pdf";
       // Quarto HTML runs carry cell tags, so each output finds its cell even
       // when Quarto wrote no div for it. The tags are not in the stored record.
       const runTree = sourceFormat === "quarto" && !toPdf ? tagCells(tree) : tree;
@@ -2789,6 +2857,8 @@
     share: shareResults,
     onshare: setShareResults,
     shareStatus: sharedResults.state.status,
+    agents: agentRunAllowed,
+    onagents: hasDesktop ? setAgentRun : undefined,
   });
   const stopLatex = () => buildSettings.stopLatex();
 
