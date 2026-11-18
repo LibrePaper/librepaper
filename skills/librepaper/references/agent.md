@@ -6,7 +6,7 @@ An **agent token** gives one agent access to one project on one server, at the r
 
 The project lives on the LibrePaper server, and the token names the server and the project. You do not need a local folder, a clone or a project path, so never ask for one. Do not open or control a browser unless the user explicitly asks you to. Do this now, before you reply:
 
-1. If LibrePaper tools are available, use them directly, following [The tools directly](#the-tools-directly). They may come from `librepaper mcp` (`mcp__librepaper__*`) or from a connector added in a chat app, where the names are such as `document_read`, possibly with a prefix. As with `librepaper mcp`, the operation identity is added for you on writes.
+1. If LibrePaper tools are available, use them directly, following [The tools directly](#the-tools-directly). They may come from `librepaper mcp` (`mcp__librepaper__*`) or from a connector, where the names are such as `document_read`, possibly with a prefix. As with `librepaper mcp`, the operation identity is added for you on writes.
 2. Otherwise set `H` to the helper and run `connect`, as [Step 1b](#step-1b-http-helper) shows. Then run the commands exactly as `connect` prints them.
 3. Tell the user which project you reached, and ask what they want done. If they already said, do it.
 
@@ -99,7 +99,7 @@ printf %s 'lpt_...' | python3 "$H" connect --model '<your model name>'
 - A request that fails with a network error is most likely the sandbox. A read can be retried once access is allowed. Treat a failed write as having an unknown outcome, even if you suspect the sandbox: do not resend it, and ask `document_result` as in Step 4.
 - Tell the user exactly what to allow. For Codex: approve running the command outside the sandbox when asked, or start Codex with `codex -c sandbox_workspace_write.network_access=true`. The alternative is the MCP route in [agent-setup.md](agent-setup.md), which needs a new session.
 - For Claude Code: approval prompts are normal for shell calls. The user can allow the helper command for the session.
-- In claude.ai and Claude Desktop chats, the code sandbox reaches only allowed domains. Either the user adds the server's domain under Settings → Capabilities (on Team or Enterprise, an admin does this under Organization settings; the Free plan cannot), or, better, the owner connects the project as a connector. See [agent-setup.md](agent-setup.md).
+- In claude.ai and Claude Desktop chats, the code sandbox reaches only allowed domains. Either the user adds the server's domain under Settings → Capabilities (on Team or Enterprise, an admin does this under Organization settings; the Free plan cannot), or, better, the owner connects the project as a connector (in Claude Code, `claude mcp add --transport http librepaper <URL>`). See [agent-setup.md](agent-setup.md).
 
 ## The tools directly
 

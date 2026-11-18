@@ -4,26 +4,30 @@ title: "Agents"
 
 LibrePaper works with the coding agent you already use: Claude Code, Codex, Pi or opencode. The agent reads your document, comments on it and suggests changes. You accept or reject each suggestion, as you would a coauthor's. Your model and your credentials stay with you. The LibrePaper server runs no AI model of its own.
 
-There are two ways to connect an agent:
+There are three ways to connect an agent:
 
+- **An app or coding agent, with a connector.** This is the main way. You add the project's URL to the app as a remote MCP server or custom connector, and approve the connection in LibrePaper. See [Connect an app or agent](#connect-an-app-or-agent).
 - **The built-in agent, in the desktop app.** It is an agent installed on your computer, and it chats with you next to the document. See [Built-in agent](#built-in-agent).
-- **An external agent, with a token.** You paste one block of instructions into the agent you already use, and it connects to one project. This works from the browser or the desktop app, and the agent can run anywhere. See [Connect your agent](#connect-your-agent).
+- **An external agent, with a token.** The fallback, for scripts, sync, and agents that cannot add a connector. You paste one block of instructions into the agent you already use, and it connects to one project. This works from the browser or the desktop app, and the agent can run anywhere. See [Use a token](#use-a-token).
 
 > **Warning:** A shared document holds text from everyone with suggest or edit access. An agent that reads it may follow instructions hidden in that text.
 
-## Connect a chat app
+## Connect an app or agent
 
-Use a connector to let a chat app work on one project: claude.ai, Claude Desktop, ChatGPT, or any app that supports remote MCP connectors with OAuth. The app's code sandbox often cannot reach a token's server, so a connector is the simpler route in a chat. Coding agents such as Claude Code and Codex are better served by a token, described in [Connect your agent](#connect-your-agent).
+Use the connector to let a chat app or a coding agent work on one project. It is the main way to connect. You add the project's URL to the app, and the app opens a LibrePaper page where you approve the connection. No token goes into the chat, and you configure nothing by hand.
 
-Only the project owner can connect an app. The LibrePaper server must be reachable from the internet, because the app's servers call it. A server that is only on a local network or a Tailscale network cannot be used this way.
+Only the project owner sees the URL and can approve connections.
 
-1. Open the project, then the Agent panel (the robot icon in the sidebar). Under **Connect a chat app**, click the copy icon next to the URL. It has the form `https://<server>/mcp/<slug>`, where `<slug>` is the project's slug in its address bar.
-2. In the app, add a custom connector with that URL. In claude.ai, go to Settings → Connectors → Add custom connector, paste the URL and connect.
+1. Open the project, then the Agent panel (the robot icon in the sidebar). In the Agent tab, under **Connect an app or agent**, click the copy icon next to the URL. It has the form `https://<server>/mcp/<slug>`, where `<slug>` is the project's slug in its address bar.
+2. Add the URL to your app as a remote MCP server or custom connector:
+   - **claude.ai and Claude Desktop:** go to Settings → Connectors → Add custom connector, and paste the URL.
+   - **Claude Code:** run `claude mcp add --transport http librepaper https://<server>/mcp/<slug>`. Then run `/mcp` in a session, and choose to authenticate. The approval page opens in your browser.
+   - **Any other app:** add the URL as a remote MCP server. The app opens the approval page.
 3. A LibrePaper page opens. Sign in if asked.
-4. Choose a role. Suggest is the default.
+4. Choose a role for the app. Suggest is the default.
 5. Click **Approve**.
 
-The app now has the LibrePaper tools for that project. The connection is an agent token named after the app, so its comments and suggestions appear under that name.
+The app now has the LibrePaper tools for that project. The connection is an agent token named after the app, so its comments and suggestions appear under that name. The roles are the same for every app.
 
 | Role | What the app can do |
 |---|---|
@@ -32,11 +36,15 @@ The app now has the LibrePaper tools for that project. The connection is an agen
 | Suggest | Everything Comment allows, plus tracked suggestions. |
 | Edit | Everything Suggest allows, plus direct edits, and creating, renaming or deleting text files. |
 
-The connection lasts 30 days and renews while the app keeps using it. It appears in the Agent tab's token list. To end it at any time, click the revoke button on its row. Revoking it stops the app at once.
+The connection lasts 30 days and renews while the app keeps using it. It is listed under **Connected apps and tokens** in the Agent tab. To end it at any time, click the revoke button on its row. Revoking it stops the app at once.
+
+Chat apps such as claude.ai and ChatGPT call the server from the app maker's servers. For them, the LibrePaper server must be reachable from the internet. A server that is only on a local network or a Tailscale network cannot be used by a chat app. Coding agents connect from your computer, so this does not apply to them.
 
 A host can turn connectors off with `agent_connectors = false` in `librepaper.toml`. The Agent panel then hides this section. See [Anonymous access](host/advanced.html#anonymous-access).
 
-## Connect your agent
+## Use a token
+
+Use a token for scripts, sync, or an agent that cannot add a connector. The one-paste flow below works in any session, with no setup, so it is the fallback when a connector is not possible. Tokens are listed under **Tokens** in the Agent tab.
 
 **Connecting takes one copy and one paste, all from the Agent panel.** You configure nothing by hand, and you need no local copy of the project: the token tells the agent which server and project to reach. Each project has its own token, so you repeat this for each project.
 
@@ -219,7 +227,7 @@ Every write needs an `operation` object, which `librepaper mcp` otherwise adds f
 
 The LibrePaper skill teaches your agent how to use LibrePaper. With it, the agent knows how to work through a token, sync a Git repository, run a server and work on the LibrePaper code. It works with Claude Code, Codex, Pi, opencode and any agent that reads `SKILL.md` folders.
 
-The paste in [Connect your agent](#connect-your-agent) installs it the first time. To install it yourself:
+The paste in [Use a token](#use-a-token) installs it the first time. To install it yourself:
 
 ```sh
 # Install the skill for every agent on this computer

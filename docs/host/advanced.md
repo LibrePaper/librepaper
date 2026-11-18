@@ -33,12 +33,12 @@ anonymous_reads    = false  # read links may be opened without signing in
 anonymous_comments = false  # comment links may be used without signing in
 anonymous_suggests = false  # suggest links may be opened without signing in, at comment or read level
 anonymous_edits    = false  # edit links may be opened without signing in, at comment or read level
-agent_connectors   = true   # owners may connect a chat app as a connector (on by default)
+agent_connectors   = true   # owners may connect apps and agents as connectors (on by default)
 ```
 
 Links the owner did not mark anonymous still require sign-in. Turning a switch off makes its links require sign-in again.
 
-`agent_connectors` is not an anonymous switch. It lets a project owner connect a chat app to the project, and each connection still needs the owner's approval. Set it to `false` to hide the connector in the Agent panel and stop new connections; see [Connect a chat app](../agents.html#connect-a-chat-app).
+`agent_connectors` is not an anonymous switch. It lets a project owner connect apps and agents to the project as connectors, and each connection still needs the owner's approval. Set it to `false` to hide the connector in the Agent panel and stop new connections; see [Connect an app or agent](../agents.html#connect-an-app-or-agent).
 
 Someone who is not signed in never edits or suggests. Under an anonymous comment link they can comment. Under an anonymous suggest or edit link they can comment only when `anonymous_comments` is also on, and otherwise they can only read.
 
