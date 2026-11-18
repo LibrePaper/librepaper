@@ -1420,6 +1420,10 @@ async fn a_thread_read_carries_the_anchor_of_each_comment() {
     assert_eq!(anchor["path"], "paper.md", "{thread}");
     assert_eq!(anchor["exact"], passage, "{thread}");
     assert_eq!(anchor["status"], "exact");
+    // The anchor stands in for the browser's own records of the passage.
+    for restated in ["original_anchor", "attachment", "presentation"] {
+        assert!(thread[restated].is_null(), "{restated} in {thread}");
+    }
     let handle = anchor["range_id"].as_str().expect("a range handle");
     let (status, again) = served
         .call(
@@ -1445,6 +1449,10 @@ async fn a_thread_read_carries_the_anchor_of_each_comment() {
     assert_eq!(
         one["result"]["results"][0]["thread"]["anchor"]["exact"],
         passage
+    );
+    assert!(
+        one["result"]["results"][0]["thread"]["original_anchor"].is_null(),
+        "{one}"
     );
 
     // Text added above the passage moves it; the anchor follows.

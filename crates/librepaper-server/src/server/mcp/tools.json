@@ -86,7 +86,8 @@
                 },
                 "id": {
                   "type": "string",
-                  "maxLength": 128
+                  "maxLength": 128,
+                  "description": "With a thread query: one comment's id, as a thread listing gave it, to read that thread with its replies. Leave it out to list the threads."
                 },
                 "key": {
                   "type": "string",
@@ -133,7 +134,8 @@
                 },
                 "comment_id": {
                   "type": "string",
-                  "maxLength": 128
+                  "maxLength": 128,
+                  "description": "With a source, context or section query: read the passage this comment is on, in place of path and a range. A thread query selects one thread with id, not with this."
                 },
                 "context": {
                   "type": "string",
@@ -147,7 +149,8 @@
                   "enum": [
                     "all",
                     "unresolved"
-                  ]
+                  ],
+                  "description": "With a thread query: all comments, the default, or only the unresolved ones."
                 },
                 "limit": {
                   "type": "integer",
