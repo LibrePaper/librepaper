@@ -723,7 +723,10 @@ async fn the_compile_reply_route_refuses_strangers_and_unknown_requests() {
         async move { request.send().await.unwrap().status().as_u16() }
     };
     let status = post(None).await;
-    assert!(matches!(status, 401 | 404), "an anonymous reply got {status}");
+    assert!(
+        matches!(status, 401 | 404),
+        "an anonymous reply got {status}"
+    );
     assert_eq!(
         post(Some(served.owner.clone())).await,
         404,

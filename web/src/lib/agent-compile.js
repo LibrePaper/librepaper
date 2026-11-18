@@ -10,8 +10,9 @@ const ID = /^compile_[0-9a-f]{32}$/;
 
 /** @param {unknown} frame @param {number} [now] seconds since the epoch */
 export function parseCompileRequest(frame, now = Date.now() / 1000) {
-  if (!frame || typeof frame !== "object" || frame.type !== "compile_request") return null;
-  const { id, path, output, run, expires_at: expires } = /** @type {Record<string, unknown>} */ (frame);
+  if (!frame || typeof frame !== "object") return null;
+  const { type, id, path, output, run, expires_at: expires } = /** @type {Record<string, unknown>} */ (frame);
+  if (type !== "compile_request") return null;
   if (typeof id !== "string" || !ID.test(id)) return null;
   if (typeof path !== "string" || !path || path.length > 1024) return null;
   if (output !== null && output !== undefined && output !== "pdf" && output !== "html") return null;

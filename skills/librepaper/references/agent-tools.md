@@ -52,7 +52,7 @@ Statuses:
 
 - `succeeded`: the file compiled. `output` says what was made.
 - `failed`: the compile ran and failed. Read `diagnostics` and `log`.
-- `unavailable`: nothing compiled. `error` gives the reason (`run_unavailable`, `run_disabled`, `busy`, `no_renderer`, `timeout`) and `message` says what to do.
+- `unavailable`: nothing compiled. `error` gives the reason (`run_unavailable`, `run_disabled`, `busy`, `no_renderer`, `failed`, `timeout`) and `message` says what to do.
 - `pending`: the inline wait ran out. Fetch the same object later with `document_result` `{"kind": "compile", "id": "<compile_id>", "wait_ms": N}`.
 
 If no eligible tab is connected, the call fails with the tool error `renderer_unavailable`, not with a result. Tell the user to open the project in a browser signed in as its owner, then try again.
@@ -106,7 +106,7 @@ Look up a retained result. No required fields.
 - `{"kind": "operation", "target_operation": {epoch, id}}`: did that write land?
 - `{"kind": "candidate", "id": "..."}`: a private candidate.
 - `{"kind": "render", "id": "...", "wait_ms": 0..10000}`: compile result for a candidate.
-- `{"kind": "compile", "id": "compile_...", "wait_ms": 0..25000}`: the result of a `document_compile` that returned `pending`. Results are kept for an hour.
+- `{"kind": "compile", "id": "compile_...", "wait_ms": 0..10000}`: the result of a `document_compile` that returned `pending`. Results are kept for an hour.
 
 ## Errors worth knowing
 

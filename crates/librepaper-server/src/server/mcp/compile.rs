@@ -350,7 +350,7 @@ impl Server {
             })
             .map(|(socket, connection)| (*socket, connection.tx.clone()))
             .collect();
-        tabs.sort_by(|a, b| b.0.cmp(&a.0));
+        tabs.sort_by_key(|tab| std::cmp::Reverse(tab.0));
         if tabs.is_empty() {
             return Err(no_tab());
         }
@@ -601,7 +601,11 @@ mod tests {
         }
         let now = NOW + 100;
         assert!(hub.lookup("doc", &first.unwrap(), "owner", now).is_none());
-        let kept = hub.lock().values().filter(|e| e.finished_at.is_some()).count();
+        let kept = hub
+            .lock()
+            .values()
+            .filter(|e| e.finished_at.is_some())
+            .count();
         assert_eq!(kept, MAX_FINISHED);
         let (id, _slot) = registered(&hub);
         hub.complete("doc", &id, "owner", &success(), now);

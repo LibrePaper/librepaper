@@ -1000,7 +1000,8 @@
       });
     } catch (error) { console.warn("compile reply failed", error); }
   }
-  const compileResponder = createCompileResponder({ compile: compileForAgent, post: postCompileReply });
+  // Made on the first request, one per tab, so it serializes that tab's compiles.
+  let compileResponder;
 
   // A task's tracked changes are reviewed in the Changes panel, narrowed to
   // the ids the task returned. Separate runs of one task all stay on show.
@@ -1617,7 +1618,10 @@
     if (lifecycle.receive(event)) return;
     if (event.type === "compile_request") {
       const request = parseCompileRequest(event);
-      if (request) void compileResponder.handle(request);
+      if (request) {
+        compileResponder ??= createCompileResponder({ compile: compileForAgent, post: postCompileReply });
+        void compileResponder.handle(request);
+      }
       return;
     }
     if (event.type === "results-changed") {
