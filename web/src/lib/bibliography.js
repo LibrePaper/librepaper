@@ -361,11 +361,41 @@ function projectBibliographyPath(filePath, reference) {
   return parts.join("/");
 }
 
+// Where a Markdown or Quarto document's bibliography is declared: its own front
+// matter, else the preview's entry file, else (Quarto) the nearest _quarto.yml.
+// files are project-relative paths, resolved against the declaring file.
+export function declaredBibliography({ format, chapterPath = "", chapterText = "", entryPath = "", entryText = "", texts = {} } = {}) {
+  const resolve = (from, source, kind) => selectedBibliographyFiles(source, kind).map((name) => projectBibliographyPath(from, name)).filter(Boolean);
+  const none = { files: [], owner: null, ownerPath: null };
+  const inChapter = resolve(chapterPath, chapterText, format);
+  if (inChapter.length) return { files: inChapter, owner: "chapter", ownerPath: chapterPath || null };
+  if (format !== "markdown" && format !== "quarto") return none;
+  if (entryPath && entryPath !== chapterPath && /\.(?:md|qmd|rmd|markdown)$/i.test(entryPath)) {
+    const inEntry = resolve(entryPath, entryText, format);
+    if (inEntry.length) return { files: inEntry, owner: "entry", ownerPath: entryPath };
+  }
+  if (format === "quarto") {
+    const dirs = String(chapterPath || "").split("/").slice(0, -1);
+    for (let depth = dirs.length; depth >= 0; depth--) {
+      const prefix = dirs.slice(0, depth).join("/");
+      for (const name of ["_quarto.yml", "_quarto.yaml"]) {
+        const path = prefix ? `${prefix}/${name}` : name;
+        if (!Object.hasOwn(texts, path)) continue;
+        const files = resolve(path, `---\n${string(texts[path])}\n---\n`, "quarto");
+        if (files.length) return { files, owner: "quarto", ownerPath: path };
+      }
+    }
+  }
+  return none;
+}
+
 // The part of an import plan the two sources share: which .bib the entry goes
 // into, its text so far, and the registration the citing file may need.
-function importTarget({ source, targetPath, texts, format }) {
-  const configured = selectedBibliographyFiles(format === "latex" || format === "tex" ? latexMasked(string(source)) : source, format);
-  const configuredPaths = configured.map((path) => projectBibliographyPath(targetPath, path)).filter(Boolean)
+function importTarget({ source, targetPath, texts, format, chapterPath, chapterText, entryPath, entryText }) {
+  const project = (format === "markdown" || format === "quarto") && chapterPath !== undefined;
+  const declared = project ? declaredBibliography({ format, chapterPath, chapterText, entryPath, entryText, texts }) : null;
+  const configured = declared ? declared.files : selectedBibliographyFiles(format === "latex" || format === "tex" ? latexMasked(string(source)) : source, format);
+  const configuredPaths = (declared ? configured : configured.map((path) => projectBibliographyPath(targetPath, path))).filter(Boolean)
     .map((path) => (format === "latex" || format === "tex") && !/\.bib$/i.test(path) ? `${path}.bib` : path);
   const existing = bibliographyFiles({ texts });
   // BibTeX is only ever appended to a .bib file, never to a CSL-JSON or YAML bibliography.
@@ -387,8 +417,8 @@ function importPlan({ texts, path, previous, registration }, key, entryText, alr
   return { key, path, bibtex, addition, create: !Object.hasOwn(texts, path), registration: registration(), already };
 }
 
-export function planZoteroImport({ source, targetPath, texts, item, format = "markdown" }) {
-  const target = importTarget({ source, targetPath, texts, format });
+export function planZoteroImport({ source, targetPath, texts, item, format = "markdown", ...where }) {
+  const target = importTarget({ source, targetPath, texts, format, ...where });
   const key = zoteroCitationKey(target.previous, item.zotero_item, item.citation_key);
   const already = new RegExp(`x-librepaper-zotero-item\\s*=\\s*[{"]${String(item.zotero_item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[}"]`, "i").test(target.previous);
   return importPlan({ ...target, texts }, key, item.bibtex, already);
@@ -411,8 +441,8 @@ function doiEntryKey(bibtex, doi) {
 
 // Plans adding a reference fetched by DOI. entry is { doi, key, bibtex }. A DOI a loaded .bib
 // already holds is reused under its own key; otherwise the key is de-duplicated like Zotero's.
-export function planDoiImport({ source, targetPath, texts, entry, format = "markdown" }) {
-  const target = importTarget({ source, targetPath, texts, format });
+export function planDoiImport({ source, targetPath, texts, entry, format = "markdown", ...where }) {
+  const target = importTarget({ source, targetPath, texts, format, ...where });
   const bibTexts = bibliographyFiles({ texts }).map((name) => string(texts[name]));
   // A DOI is reused only from a bibliography the document loads; every .bib still counts for collisions.
   const loaded = (target.bibPaths.length ? target.bibPaths : [target.path]).map((name) => string(texts[name]));

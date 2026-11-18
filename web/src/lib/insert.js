@@ -5,6 +5,7 @@
 import { buildLatex, latexRoot } from './insert-latex.js';
 import { buildTypst } from './insert-typst.js';
 import { m } from './paraglide/messages.js';
+import { declaredBibliography } from './bibliography.js';
 
 /**
  * @typedef InsertItem
@@ -438,7 +439,7 @@ function buildMarkdown(id,o,c) {
     if(!o.keys?.length)throw Error(m.insert_select_reference());
     const keys=o.keys.map(key=>{if(!/^[\p{L}\p{N}_:.+-]+$/u.test(key))throw Error(m.insert_citation_key_unsupported());return '@'+key;});
     text=o.style==='narrative'?keys.join('; ')+(o.locator?` [${markdown(o.locator)}]`:''):`[${keys.join('; ')}${o.locator?', '+markdown(o.locator):''}]`;
-    if(!/^bibliography\s*:/m.test(c.text)){
+    if(!/^bibliography\s*:/m.test(c.text) && !declaredBibliography({format:c.format,chapterPath:c.path,chapterText:c.text,entryPath:c.entryPath,entryText:c.entryText,texts:Object.fromEntries(c.files.map(f=>[f.path,f.text]))}).files.length){
       const files=c.files.filter(f=>/\.(bib|json|ya?ml)$/i.test(f.path));
       if(files.length===1)additionalEdits.push(...metadata(c,{bibliography:JSON.stringify(relativePath(files[0].path,c.path))}));
       else throw Error(m.insert_bib_first_for_citation());
