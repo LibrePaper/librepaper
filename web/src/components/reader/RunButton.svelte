@@ -3,11 +3,10 @@
   // runs the document, or stops a run that is going. The chevron opens the
   // rarer actions (Stop, Run without cache, Share results, the Run directory)
   // and the state of the last run, so the top bar keeps a single control
-  // whatever happened. Once a run has made its own page, the chevron also
-  // offers to view that page. Run without cache is a Quarto run that recomputes
-  // every cached cell once. The
-  // two halves share one border, with a divider between them, so they read as
-  // one button.
+  // whatever happened. Run without cache is a Quarto run that recomputes every
+  // cached cell once. Once a run has made its own page, the chevron also
+  // offers to view that page. The two halves share one border, with a divider
+  // between them, so they read as one button.
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import Icon from "../Icon.svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
