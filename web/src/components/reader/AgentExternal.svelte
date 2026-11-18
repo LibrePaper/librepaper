@@ -6,6 +6,7 @@
   // the Tasks tab's copy uses too.
   import { tick } from "svelte";
   import Icon from "../Icon.svelte";
+  import IconButton from "../IconButton.svelte";
   import Modal from "../Modal.svelte";
   import ShareRow from "./share/ShareRow.svelte";
   import ShareForm from "./share/ShareForm.svelte";
@@ -14,7 +15,7 @@
   import { allows, budgetOf } from "./share/shared.js";
   import { m } from "../../lib/paraglide/messages.js";
 
-  let { open = false, sharing } = $props();
+  let { open = false, sharing, slug = "" } = $props();
 
   let root = $state(null);
   // Whether the create form is open. While it is, the tab shows only the form.
@@ -30,6 +31,9 @@
   const allowed = (role) => allows(sharing.sharing, role);
   const tokens = $derived(sharing.sharing?.tokens ?? []);
   const copyable = $derived(tokens.filter((item) => item.token));
+  // The connector URL names the project; a chat app adds it as a custom
+  // connector. Shown only when the deployment offers connectors.
+  const connectorUrl = $derived(slug ? `${location.origin}/mcp/${slug}` : "");
   const REVOKE = [m.share_revoke_token_title(), m.share_revoke_token_body(), m.common_revoke_token()];
 
   // Sharing is read while the panel is open, and reset when it closes.
@@ -104,6 +108,17 @@
     {:else if sharing.loading}
       <p class="panel-muted" role="status">{m.share_loading()}</p>
     {:else if sharing.sharing}
+      {#if sharing.sharing.connectors === true && connectorUrl}
+        <section class="agent-connector" aria-labelledby="agent-connector-title">
+          <h3 class="agent-title" id="agent-connector-title">{m.agentexternal_connector_title()}</h3>
+          <p class="agent-help">{m.agentexternal_connector_help()}</p>
+          <div class="agent-connector-row">
+            <input class="input agent-connector-url" readonly value={connectorUrl} aria-label={m.agentexternal_connector_url_label()} onclick={(event) => event.currentTarget.select()} />
+            <IconButton icon={sharing.copied === connectorUrl ? "check" : "copy"} label={m.agentexternal_connector_copy()} title={m.agentexternal_connector_copy()} tone="plain" size="btn-icon-sm"
+                        colour={sharing.copyFallback === connectorUrl ? "lp-text-error" : null} onclick={() => sharing.copy(connectorUrl)} />
+          </div>
+        </section>
+      {/if}
       {#if tokens.length > 0}
         <ul class="share-list" aria-label={m.common_agent()}>
           {#each tokens as item (item.id)}
@@ -138,6 +153,9 @@
   .agent-external { display: flex; flex: 1 0 auto; flex-direction: column; gap: calc(var(--spacing) * 2); min-width: 0; }
   .agent-title { margin: 0; font-size: 16px; font-weight: 600; }
   .agent-help { margin: 0; font-size: 13px; color: var(--panel-muted); }
+  .agent-connector { display: grid; gap: calc(var(--spacing) * 2); min-width: 0; }
+  .agent-connector-row { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-width: 0; }
+  .agent-connector-url { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono, monospace); font-size: 12px; }
   .agent-new { display: flex; align-items: center; justify-content: center; gap: calc(var(--spacing) * 2); width: 100%; }
   .share-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--color-divider); }
   .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-secondary); font-size: var(--panel-meta-size); }
