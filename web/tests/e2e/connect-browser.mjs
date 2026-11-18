@@ -149,7 +149,7 @@ try {
   });
   const granted = await exchange.json();
   assert.equal(exchange.status, 200, JSON.stringify(granted));
-  assert.equal(granted.scope, "suggest", "the connection has the role the owner chose");
+  assert.equal(granted.scope, "suggest offline_access", "the connection has the role the owner chose");
   const mcp = await fetch(`${deployment.base}/mcp/${slug}`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${granted.access_token}` },

@@ -348,10 +348,10 @@ fn parse_json_fields(body: &[u8]) -> Option<HashMap<String, String>> {
 }
 
 /// A role as the consent page and the Agent panel name it: the `scope` a
-/// token answer reports. The `scope` an app asks for at authorize is ignored,
-/// `offline_access` included: the request would have to ride through sign-in
-/// and the consent page to reach the code. Refresh tokens are issued
-/// regardless, which is all `offline_access` asks for.
+/// token answer reports, followed by `offline_access`. The `scope` an app asks
+/// for at authorize is ignored, but every grant comes with a refresh token,
+/// which is what `offline_access` means, so the answer says so: an app that
+/// asked for it, as ChatGPT does, is told it was granted.
 fn scope_of(role: &str) -> &'static str {
     match role.parse::<Role>() {
         Ok(Role::Reader) => "read",
@@ -626,7 +626,7 @@ impl Server {
                     - now_unix())
                 .max(0),
                 "refresh_token": refresh,
-                "scope": scope_of(role),
+                "scope": format!("{} offline_access", scope_of(role)),
             }),
         );
         set(&mut response, "cache-control", "no-store");

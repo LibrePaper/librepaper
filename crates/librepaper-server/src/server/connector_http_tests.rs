@@ -658,7 +658,7 @@ async fn the_code_becomes_a_token_that_works_on_the_projects_tools() {
     assert_eq!(answer.status, 200, "{}", answer.body);
     assert_eq!(answer.body["token_type"], "Bearer");
     assert_within_thirty_days(&answer.body);
-    assert_eq!(answer.body["scope"], "suggest");
+    assert_eq!(answer.body["scope"], "suggest offline_access");
     let access = answer.body["access_token"].as_str().unwrap();
     assert!(access.starts_with("lpt_"), "{access}");
     assert!(answer.body["refresh_token"]
@@ -1053,7 +1053,7 @@ async fn refreshing_keeps_the_token_and_extends_it() {
         access,
         "the app keeps the token it already holds"
     );
-    assert_eq!(second.body["scope"], "suggest");
+    assert_eq!(second.body["scope"], "suggest offline_access");
     assert_within_thirty_days(&second.body);
     assert_eq!(served.tools(&access).await, 200);
     assert_eq!(
@@ -1468,5 +1468,5 @@ async fn the_roles_offered_follow_what_the_owner_may_do_here() {
     let (client_id, code) = served.approved().await;
     let issued = served.exchange(&client_id, &code, VERIFIER).await;
     assert_eq!(issued.status, 200, "{}", issued.body);
-    assert_eq!(issued.body["scope"], "suggest");
+    assert_eq!(issued.body["scope"], "suggest offline_access");
 }
