@@ -396,6 +396,99 @@
       },
       "key": "EcoRiv2001",
       "bibtex": "@book{EcoRiv2001,\n  title = {東京 大阪 京都 Economics of Rivers},\n  year = {2001},\n  doi = {10.1234/mixed}\n}\n"
+    },
+    {
+      "name": "synthetic-organisation-author",
+      "doi": "10.5281/ZENODO.3509134",
+      "csl": {
+        "type": "software",
+        "author": [
+          {
+            "family": "The pandas development team"
+          }
+        ],
+        "title": "pandas-dev/pandas: Pandas",
+        "issued": {
+          "date-parts": [
+            [
+              2026
+            ]
+          ]
+        },
+        "publisher": "Zenodo",
+        "DOI": "10.5281/ZENODO.3509134"
+      },
+      "key": "The2026",
+      "bibtex": "@misc{The2026,\n  author = {{The pandas development team}},\n  title = {pandas-dev/pandas: Pandas},\n  year = {2026},\n  publisher = {Zenodo},\n  doi = {10.5281/ZENODO.3509134}\n}\n"
+    },
+    {
+      "name": "synthetic-caret-title",
+      "doi": "10.1234/caret",
+      "csl": {
+        "type": "journal-article",
+        "author": [
+          {
+            "family": "Smith",
+            "given": "Jane"
+          }
+        ],
+        "title": "Solving x^2 = 4 with 50% less effort",
+        "issued": {
+          "date-parts": [
+            [
+              2020
+            ]
+          ]
+        }
+      },
+      "key": "Smi2020",
+      "bibtex": "@article{Smi2020,\n  author = {Smith, Jane},\n  title = {Solving x\\^{}2 = 4 with 50\\% less effort},\n  year = {2020},\n  doi = {10.1234/caret}\n}\n"
+    },
+    {
+      "name": "synthetic-decimal-year",
+      "doi": "10.1234/decimal",
+      "csl": {
+        "type": "journal-article",
+        "author": [
+          {
+            "family": "Lee",
+            "given": "Kim"
+          }
+        ],
+        "title": "Whole Decimal Year",
+        "issued": {
+          "date-parts": [
+            [
+              2020.0
+            ]
+          ]
+        }
+      },
+      "key": "Lee2020",
+      "bibtex": "@article{Lee2020,\n  author = {Lee, Kim},\n  title = {Whole Decimal Year},\n  year = {2020},\n  doi = {10.1234/decimal}\n}\n"
+    },
+    {
+      "name": "synthetic-negative-year",
+      "doi": "10.1234/negative",
+      "csl": {
+        "type": "book",
+        "author": [
+          {
+            "family": "Caesar",
+            "given": "Julius"
+          }
+        ],
+        "title": "Commentarii de Bello Gallico",
+        "issued": {
+          "date-parts": [
+            [
+              -44
+            ]
+          ]
+        }
+      },
+      "key": "CaeND",
+      "bibtex": "@book{CaeND,\n  author = {Caesar, Julius},\n  title = {Commentarii de Bello Gallico},\n  doi = {10.1234/negative}\n}\n"
     }
   ],
   "normalise": [
@@ -450,6 +543,18 @@
     {
       "input": "https://doi.org/10.1000/a%3Fb",
       "doi": "10.1000/a?b"
+    }
+  ],
+  "invalid": [
+    {},
+    {
+      "type": "article-journal"
+    },
+    {
+      "title": "No type"
+    },
+    {
+      "message": "Resource not found."
     }
   ]
 }
