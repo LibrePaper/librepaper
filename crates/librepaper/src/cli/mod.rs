@@ -497,6 +497,7 @@ fn serve_options(
         publishers: resolved.publishers,
         commenters: resolved.commenters,
         anonymous: resolved.anonymous,
+        agent_connectors: resolved.agent_connectors,
         simulate_activity: resolved.simulate_activity,
         app_origin: resolved.app_origin,
         docs_origin: resolved.docs_origin,

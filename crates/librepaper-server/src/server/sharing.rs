@@ -655,6 +655,8 @@ impl Server {
                 "suggests": self.anonymous.suggests,
                 "edits": self.anonymous.edits,
             },
+            // Whether the Agent panel offers the chat-app connector block.
+            "connectors": self.agent_connectors,
         })
     }
 }
