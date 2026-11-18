@@ -486,7 +486,7 @@
   <strong class="insert-key">{entry.key}</strong><span class="insert-who">{part.author}</span><span class="insert-year">{part.year}</span><span class="insert-title">{part.title}</span>
 {/snippet}
 
-<Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : m.common_insert()} description={captured?.format ? m.insertmenu_generated_for({ format: captured.format }) : null} onclose={closeDialog} wide
+<Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : m.common_insert()} description={captured?.format ? m.insertmenu_generated_for({ format: captured.format }) : null} onclose={closeDialog} wide resizable={dialog === "citation"}
   confirm={{
     form: "insert-dialog",
     label: m.common_insert(),
@@ -496,7 +496,7 @@
   }}>
   <!-- A form, so Enter in any of these fields inserts, the way Enter in the
        name field of the rename dialog renames. -->
-  <form id="insert-dialog" class="flex min-h-0 flex-col gap-3" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
+  <form id="insert-dialog" class="flex min-h-0 flex-col gap-3" class:flex-1={dialog === "citation"} onsubmit={(event) => { event.preventDefault(); void submit(); }}>
   {#if dialog === "citation"}
     <label class="label">{m.insertmenu_source()}
       <select class="select" value={source} onchange={(event) => chooseSource(event.currentTarget.value)}>
@@ -575,11 +575,11 @@
   .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
   .menu-separator { height: 1px; margin: .2rem .4rem; background: var(--color-divider); }
   .insert-reason { flex: 0 0 auto; margin-left: auto; max-width: 9rem; overflow: hidden; color: var(--color-text-secondary); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
-  .insert-results { flex: none; height: 16rem; min-height: 6rem; max-height: 70vh; resize: vertical; overflow: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }
+  .insert-results { flex: 1 1 16rem; min-height: 6rem; overflow: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }
   .insert-result { display: flex; align-items: baseline; gap: .6rem; padding: .3rem .7rem; font-size: .85rem; cursor: pointer; white-space: nowrap; }
   .insert-result input { flex: none; align-self: center; }
   .insert-key { flex: none; max-width: 10rem; overflow: hidden; text-overflow: ellipsis; }
-  .insert-who { flex: none; max-width: 7rem; overflow: hidden; text-overflow: ellipsis; color: var(--color-text-secondary); }
+  .insert-who { flex: none; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; color: var(--color-text-secondary); }
   .insert-year { flex: none; color: var(--color-text-secondary); }
   .insert-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .insert-error-text { padding: .5rem .7rem; color: var(--color-error-text); font-size: .85rem; }

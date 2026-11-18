@@ -43,6 +43,7 @@
     page = false,
     compact = false,
     sheet = false,
+    resizable = false,
     initialFocus = undefined,
     onEscapeKeyDown = undefined,
   } = $props();
@@ -55,12 +56,15 @@
   // so the picker decides what scrolls. `sheet` turns the card into a bottom
   // sheet below 480px wide, with a handle that expands it. A drag down on the
   // handle or the header closes it, or shrinks it when it is expanded.
+  // `resizable` starts the card wide and tall at 480px and wider, with a drag
+  // handle at its bottom right corner; the body fills whatever size it gets.
+  // Below 480px it has no effect.
   let expanded = $state(false);
   const width = $derived(compact ? "max-w-2xl" : wider ? "max-w-3xl" : wide ? "max-w-xl" : "max-w-lg");
   const cardClass = $derived(compact
     ? `card bg-[var(--color-raised)] modal-compact flex max-h-full w-full flex-col gap-3 p-4 shadow-xl ${width}`
     : `card bg-[var(--color-raised)] flex max-h-full w-full flex-col gap-4 p-6 shadow-xl ${width}`);
-  const contentClass = $derived(`${cardClass}${sheet ? " modal-sheet" : ""}${sheet && expanded ? " modal-sheet-expanded" : ""}`);
+  const contentClass = $derived(`${cardClass}${sheet ? " modal-sheet" : ""}${sheet && expanded ? " modal-sheet-expanded" : ""}${resizable ? " modal-resizable" : ""}`);
 
   // The cross closes the same way Escape does: the dialog's own change
   // handler runs `onclose`, so closing from here says so too.
@@ -250,7 +254,7 @@
               <IconButton icon="x" label={m.common_close()} tone="plain" size="btn-icon-sm" onclick={close} />
             </header>
           </div>
-          <div bind:this={bodyEl} class={compact ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "flex min-h-0 flex-col gap-3 overflow-y-auto"}>
+          <div bind:this={bodyEl} class={compact ? "flex min-h-0 flex-1 flex-col overflow-hidden" : `flex min-h-0 flex-col gap-3 overflow-y-auto${resizable ? " flex-1" : ""}`}>
             {@render children?.()}
           </div>
         {/if}
@@ -285,6 +289,19 @@
   .sheet-handle { display: none; }
   /* A picker card stops at three quarters of the screen. */
   :global(.modal-compact) { max-height: min(75vh, 100%); }
+
+  @media (min-width: 480px) {
+    :global(.card.modal-resizable) {
+      width: min(64rem, 95vw);
+      height: min(44rem, 90vh);
+      min-width: min(36rem, 95vw);
+      min-height: 24rem;
+      max-width: 95vw;
+      max-height: 95vh;
+      resize: both;
+      overflow: hidden;
+    }
+  }
 
   @media (max-width: 479px) {
     .sheet-handle {
