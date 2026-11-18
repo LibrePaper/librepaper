@@ -31,7 +31,7 @@ export function tailBytes(text, limit = LOG_LIMIT) {
   return new TextDecoder().decode(bytes.subarray(start));
 }
 
-/** @param {{ok?: boolean, html?: unknown, pdf?: {byteLength?: number}|null, diagnostics?: unknown[], log?: string, provenance?: unknown, failure?: {message?: string}}} result @param {string} revision @param {"pdf"|"html"|null} [requested] */
+/** @param {{ok?: boolean, html?: unknown, pdf?: {byteLength?: number}|null, diagnostics?: Array<{severity?: string, message?: string, hints?: unknown, [key: string]: unknown}>, log?: string, provenance?: unknown, failure?: {message?: string}}} result @param {string} revision @param {"pdf"|"html"|null} [requested] */
 export function compileReply(result, revision, requested = null) {
   const rendered = result || {};
   const output = rendered.pdf?.byteLength ? "pdf" : typeof rendered.html === "string" ? "html" : "none";
