@@ -150,7 +150,7 @@ pub(super) fn provider_of(id: &str) -> String {
 }
 
 /// The bearer string for an agent token on the deployment at `origin`.
-fn agent_token_text(origin: &str, slug: &str, key: &LinkKey) -> Result<String, String> {
+pub(super) fn agent_token_text(origin: &str, slug: &str, key: &LinkKey) -> Result<String, String> {
     let slug = slug.parse().map_err(|_| "not a project slug".to_string())?;
     Ok(ids::AgentToken {
         origin: origin.to_string(),
