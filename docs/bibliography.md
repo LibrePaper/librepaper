@@ -6,15 +6,15 @@ Every format reads its references from a BibTeX file, usually `references.bib`. 
 
 ## Add references
 
-- **Your own file:** upload a `.bib` exported from a reference manager, or type entries in the editor.
-- **DOI:** in **Insert > Citation**, choose **DOI** and paste a DOI or a `doi.org` link. The entry is fetched from doi.org and added to your `.bib`.
-- **Zotero:** in the [desktop app](desktop-app.html), choose **Zotero** to search your library. Zotero must be running, with **Allow other applications on this computer to communicate with Zotero** turned on in its Advanced settings.
+- Your own file: upload a `.bib` exported from a reference manager, or type entries in the editor.
+- DOI: in **Insert > Citation**, choose DOI and paste a DOI or a `doi.org` link. The entry is fetched from doi.org and added to your `.bib`.
+- Zotero: in the [desktop app](desktop-app.html), choose Zotero to search your library. Zotero must be running, with "Allow other applications on this computer to communicate with Zotero" turned on in its Advanced settings.
 
 A DOI or a Zotero item already in the `.bib` is reused, not added twice.
 
 ## Cite
 
-**Insert > Citation** lists your references, one per line. Tick one or more and choose **Insert**. The dialog can be resized and remembers the last source you used.
+**Insert > Citation** lists your references, one per line. Tick one or more and choose Insert. The dialog can be resized and remembers the last source you used.
 
 You can also type the citation: `\cite{` in LaTeX, or `@` in the other formats, then pick a key from the completion list. A key that is missing from the bibliography is underlined. Hover over a key to see its entry.
 
