@@ -361,15 +361,22 @@
     source = value === "zotero" ? "zotero" : value === "doi" && ondoilookup ? "doi" : "bibtex";
     rememberSource(source);
     error = "";
+    if (source !== "doi") {
+      doiLookupCount += 1;
+      clearTimeout(doiTimer);
+      doiLooking = false;
+    }
     if (source === "zotero") scheduleZotero();
   }
   // A DOI is looked up on Enter or after a pause in typing. A newer lookup
   // or a closed dialog makes an older answer stale.
   function scheduleDoi() {
     clearTimeout(doiTimer);
+    doiLookupCount += 1;
+    doiLooking = false;
     const generation = dialogGeneration;
     const text = query;
-    if (!text.trim()) { doiLookupCount += 1; doiLooking = false; doiError = ""; return; }
+    if (!text.trim()) { doiError = ""; return; }
     doiTimer = setTimeout(() => { if (generation === dialogGeneration) void lookupDoi(text); }, 400);
   }
   /** @param {string} text */
@@ -383,18 +390,18 @@
     let found;
     try { found = await ondoilookup(text.trim()); }
     catch (cause) {
-      if (generation === dialogGeneration && lookup === doiLookupCount) {
+      if (generation === dialogGeneration && lookup === doiLookupCount && source === "doi") {
         doiLooking = false;
         doiError = errorMessage(cause, m.insertmenu_doi_lookup_failed());
       }
       return;
     }
-    if (generation !== dialogGeneration || lookup !== doiLookupCount) return;
+    if (generation !== dialogGeneration || lookup !== doiLookupCount || source !== "doi") return;
     doiLooking = false;
     const same = (/** @type {DoiEntry} */ item) => item.doi.toLowerCase() === found.doi.toLowerCase();
     if (!doiEntries.some(same)) doiEntries = [...doiEntries, found];
     if (!doiSelected.some(same)) doiSelected = [...doiSelected, found];
-    query = "";
+    if (query === text) query = "";
   }
   /** @param {KeyboardEvent} event */
   function queryKeydown(event) {
