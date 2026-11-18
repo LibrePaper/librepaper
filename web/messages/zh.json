@@ -173,7 +173,7 @@
   "agent_your_agent": "你的智能体",
   "agentexternal_connect_docs": "连接方法",
   "agentexternal_connect_title": "连接应用",
-  "agentexternal_connect_lede": "适用于 Claude（网页版和桌面应用），以及 ChatGPT 网页版。每个项目需要几个步骤。",
+  "agentexternal_connect_lede": "适用于支持连接器的应用，例如 Claude 或 ChatGPT。每个项目需要几个步骤。",
   "agentexternal_connector_copy": "复制连接器 URL",
   "agentexternal_connector_url_label": "连接器 URL",
   "agentexternal_rows_title": "已连接",
