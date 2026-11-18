@@ -150,7 +150,7 @@
       </DesktopOnly>
     </Tabs.Content>
     {#if canShare}
-      <Tabs.Content value="external"><AgentExternal {open} {sharing} /></Tabs.Content>
+      <Tabs.Content value="external"><AgentExternal {open} {sharing} {slug} /></Tabs.Content>
     {/if}
     <Tabs.Content value="tasks">{#if current === "tasks"}{@render tasksPane()}{/if}</Tabs.Content>
   </PanelTabs>
