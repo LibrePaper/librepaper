@@ -8,7 +8,7 @@
   // on this computer has no usable folder. It reads and acts through the same
   // state as that button. The dialog supplies the heading, Escape and focus.
   // The share section shows only when `onshare` is given.
-  let { directory: rd, title = "", onclose = () => {}, share = true, onshare = undefined, shareStatus = { kind: "idle" } } = $props();
+  let { directory: rd, title = "", onclose = () => {}, share = true, onshare = undefined, shareStatus = { kind: "idle" }, agents = false, onagents = undefined } = $props();
 
   const status = $derived(rd.status);
   const busy = $derived(rd.busy);
@@ -64,6 +64,15 @@
     {/if}
   </div>
   {#if rd.error}<p class="rd-page-error" role="alert">{rd.error}</p>{/if}
+  {#if onagents}
+    <div class="rd-share-section">
+      <label class="rd-share">
+        <input type="checkbox" checked={agents} onchange={(event) => onagents(event.currentTarget.checked)} />
+        <span>{m.rundirectorycontrol_agents_run()}</span>
+      </label>
+      <p class="rd-share-hint">{m.rundirectorycontrol_agents_run_hint()}</p>
+    </div>
+  {/if}
   {#if onshare}
     <div class="rd-share-section">
       <label class="rd-share">

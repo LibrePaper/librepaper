@@ -98,6 +98,23 @@ export function writeShareResults(scope, slug, value) {
   return on;
 }
 
+// Let agents run code: whether an agent connected to this project may start
+// a run in this person's Run directory. Off unless this person turns it on,
+// per project.
+const agentRun = (slug) => `agent-run:${slug}`;
+
+export function readAgentRun(scope, slug = "") {
+  try {
+    return JSON.parse(storage()?.getItem(key(scope, agentRun(slug))) || "null") === true;
+  } catch { return false; }
+}
+
+export function writeAgentRun(scope, slug, value) {
+  const on = value === true;
+  try { storage()?.setItem(key(scope, agentRun(slug)), JSON.stringify(on)); } catch { /* private mode/quota */ }
+  return on;
+}
+
 export function read(scope, format = "") {
   const output = readDefaultPreview(scope, format);
   const fallback = { ...defaults(format), output };
