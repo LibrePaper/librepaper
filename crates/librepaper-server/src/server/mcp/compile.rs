@@ -65,9 +65,19 @@ pub(crate) struct CompileHub {
 }
 
 fn prune(entries: &mut HashMap<String, Entry>, now: i64) {
+    // A request nobody answered by its deadline finishes as a timeout, so
+    // waiters wake and a later lookup still finds the result.
+    for (id, entry) in entries.iter_mut() {
+        if entry.finished_at.is_none() && entry.expires_at <= now {
+            entry.finished_at = Some(now);
+            entry
+                .result
+                .send_replace(Some(expired_result(id, &entry.path)));
+        }
+    }
     entries.retain(|_, entry| match entry.finished_at {
         Some(at) => now - at < KEEP_FINISHED_SECONDS,
-        None => entry.expires_at > now,
+        None => true,
     });
     let mut finished: Vec<(i64, String)> = entries
         .iter()
@@ -199,7 +209,7 @@ impl CompileHub {
         principal: &str,
         path: &str,
         now: i64,
-    ) -> Result<(String, Slot), Failure> {
+    ) -> Result<(String, Slot, i64), Failure> {
         let mut entries = self.lock();
         prune(&mut entries, now);
         let pending = entries
@@ -217,18 +227,19 @@ impl CompileHub {
             hex::encode(librepaper_base::util::random_bytes(16))
         );
         let (result, receiver) = watch::channel(None);
+        let expires_at = now + REQUEST_TTL_SECONDS;
         entries.insert(
             id.clone(),
             Entry {
                 slug: slug.to_owned(),
                 principal: principal.to_owned(),
                 path: path.to_owned(),
-                expires_at: now + REQUEST_TTL_SECONDS,
+                expires_at,
                 finished_at: None,
                 result,
             },
         );
-        Ok((id, receiver))
+        Ok((id, receiver, expires_at))
     }
 
     /// Forget a request that could not be delivered.
@@ -236,20 +247,20 @@ impl CompileHub {
         self.lock().remove(id);
     }
 
-    /// The path and result slot of a request this caller made.
+    /// The path, result slot and deadline of a request this caller made.
     pub(super) fn lookup(
         &self,
         slug: &str,
         id: &str,
         principal: &str,
         now: i64,
-    ) -> Option<(String, Slot)> {
+    ) -> Option<(String, Slot, i64)> {
         let mut entries = self.lock();
         prune(&mut entries, now);
         let entry = entries
             .get(id)
             .filter(|entry| entry.slug == slug && entry.principal == principal)?;
-        Some((entry.path.clone(), entry.result.subscribe()))
+        Some((entry.path.clone(), entry.result.subscribe(), entry.expires_at))
     }
 
     /// Take a tab's reply. Only a pending, unexpired request for this
@@ -281,16 +292,19 @@ impl CompileHub {
     }
 }
 
-/// Wait up to `wait` for a result. A request nobody answered by its expiry
-/// reports `timeout`; one still running reports `pending`.
-async fn wait_for(id: &str, path: &str, mut slot: Slot, wait: Duration) -> Value {
+/// Wait up to `wait` for a result, never past the request's deadline
+/// `expires_at`. A request nobody answered by then reports `timeout`; one
+/// still running reports `pending`.
+async fn wait_for(id: &str, path: &str, mut slot: Slot, wait: Duration, expires_at: i64) -> Value {
+    let remaining = Duration::from_secs(u64::try_from(expires_at - now_unix()).unwrap_or(0));
+    let wait = wait.min(remaining);
     let outcome = tokio::time::timeout(wait, slot.wait_for(|value| value.is_some()))
         .await
         .map(|received| received.map(|value| value.clone()));
     match outcome {
         Ok(Ok(Some(result))) => result,
-        Ok(Ok(None)) | Err(_) => pending_result(id, path),
-        Ok(Err(_)) => expired_result(id, path),
+        Ok(Ok(None)) | Err(_) if now_unix() < expires_at => pending_result(id, path),
+        Ok(Ok(None)) | Err(_) | Ok(Err(_)) => expired_result(id, path),
     }
 }
 
@@ -347,6 +361,7 @@ impl Server {
                 connection.slug == slug
                     && connection.principal == who.id.id
                     && connection.chat.is_none()
+                    && !connection.agent
             })
             .map(|(socket, connection)| (*socket, connection.tx.clone()))
             .collect();
@@ -355,14 +370,14 @@ impl Server {
             return Err(no_tab());
         }
         let now = now_unix();
-        let (id, slot) = self.compile.register(slug, &who.id.id, path, now)?;
+        let (id, slot, expires_at) = self.compile.register(slug, &who.id.id, path, now)?;
         let frame = json!({
             "type": "compile_request",
             "id": id,
             "path": path,
             "output": args.get("output").filter(|output| output.is_string()),
             "run": run,
-            "expires_at": now + REQUEST_TTL_SECONDS,
+            "expires_at": expires_at,
         })
         .to_string();
         if !tabs
@@ -372,7 +387,7 @@ impl Server {
             self.compile.forget(&id);
             return Err(no_tab());
         }
-        let result = wait_for(&id, path, slot, Duration::from_millis(wait)).await;
+        let result = wait_for(&id, path, slot, Duration::from_millis(wait), expires_at).await;
         Ok(self.compile_current(slug, result).await)
     }
 
@@ -391,11 +406,11 @@ impl Server {
             .as_u64()
             .unwrap_or(0)
             .min(MAX_RESULT_WAIT_MS);
-        let (path, slot) = self
+        let (path, slot, expires_at) = self
             .compile
             .lookup(slug, id, &who.id.id, now_unix())
             .ok_or_else(|| Failure::new("not_found", "no such compile result"))?;
-        let result = wait_for(id, &path, slot, Duration::from_millis(wait)).await;
+        let result = wait_for(id, &path, slot, Duration::from_millis(wait), expires_at).await;
         Ok(self.compile_current(slug, result).await)
     }
 
@@ -477,9 +492,11 @@ mod tests {
     }
 
     fn registered(hub: &CompileHub) -> (String, Slot) {
-        hub.register("doc", "owner", "paper.tex", NOW)
+        let (id, slot, _) = hub
+            .register("doc", "owner", "paper.tex", NOW)
             .map_err(|failure| failure.message)
-            .unwrap()
+            .unwrap();
+        (id, slot)
     }
 
     #[test]
@@ -531,7 +548,14 @@ mod tests {
             hub.complete("doc", &id, "owner", &success(), late),
             Completion::NotFound
         );
-        assert!(hub.lookup("doc", &id, "owner", late).is_none());
+        let (_, slot, _) = hub.lookup("doc", &id, "owner", late).unwrap();
+        let result = slot.borrow().clone().unwrap();
+        assert_eq!(result["status"], "unavailable");
+        assert_eq!(result["error"], "timeout");
+        assert_eq!(
+            hub.complete("doc", &id, "owner", &success(), late + 1),
+            Completion::NotFound
+        );
     }
 
     #[test]
@@ -609,7 +633,7 @@ mod tests {
         assert_eq!(kept, MAX_FINISHED);
         let (id, _slot) = registered(&hub);
         hub.complete("doc", &id, "owner", &success(), now);
-        let (_, slot) = hub.lookup("doc", &id, "owner", now).unwrap();
+        let (_, slot, _) = hub.lookup("doc", &id, "owner", now).unwrap();
         assert!(slot.borrow().is_some());
         // An hour later it is gone.
         assert!(hub
@@ -632,11 +656,11 @@ mod tests {
     async fn an_unanswered_wait_is_pending_and_an_answer_ends_it() {
         let hub = CompileHub::default();
         let (id, slot) = registered(&hub);
-        let pending = wait_for(&id, "paper.tex", slot.clone(), Duration::from_millis(10)).await;
+        let pending = wait_for(&id, "paper.tex", slot.clone(), Duration::from_millis(10), NOW + REQUEST_TTL_SECONDS).await;
         assert_eq!(pending["status"], "pending");
         assert_eq!(pending["compile_id"], json!(id));
         hub.complete("doc", &id, "owner", &success(), NOW);
-        let done = wait_for(&id, "paper.tex", slot, Duration::from_millis(10)).await;
+        let done = wait_for(&id, "paper.tex", slot, Duration::from_millis(10), NOW + REQUEST_TTL_SECONDS).await;
         assert_eq!(done["status"], "succeeded");
     }
 
@@ -645,7 +669,7 @@ mod tests {
         let hub = CompileHub::default();
         let (id, slot) = registered(&hub);
         hub.forget(&id);
-        let result = wait_for(&id, "paper.tex", slot, Duration::from_millis(10)).await;
+        let result = wait_for(&id, "paper.tex", slot, Duration::from_millis(10), NOW + REQUEST_TTL_SECONDS).await;
         assert_eq!(result["status"], "unavailable");
         assert_eq!(result["error"], "timeout");
     }
