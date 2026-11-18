@@ -260,7 +260,11 @@ impl CompileHub {
         let entry = entries
             .get(id)
             .filter(|entry| entry.slug == slug && entry.principal == principal)?;
-        Some((entry.path.clone(), entry.result.subscribe(), entry.expires_at))
+        Some((
+            entry.path.clone(),
+            entry.result.subscribe(),
+            entry.expires_at,
+        ))
     }
 
     /// Take a tab's reply. Only a pending, unexpired request for this
@@ -656,11 +660,25 @@ mod tests {
     async fn an_unanswered_wait_is_pending_and_an_answer_ends_it() {
         let hub = CompileHub::default();
         let (id, slot) = registered(&hub);
-        let pending = wait_for(&id, "paper.tex", slot.clone(), Duration::from_millis(10), NOW + REQUEST_TTL_SECONDS).await;
+        let pending = wait_for(
+            &id,
+            "paper.tex",
+            slot.clone(),
+            Duration::from_millis(10),
+            NOW + REQUEST_TTL_SECONDS,
+        )
+        .await;
         assert_eq!(pending["status"], "pending");
         assert_eq!(pending["compile_id"], json!(id));
         hub.complete("doc", &id, "owner", &success(), NOW);
-        let done = wait_for(&id, "paper.tex", slot, Duration::from_millis(10), NOW + REQUEST_TTL_SECONDS).await;
+        let done = wait_for(
+            &id,
+            "paper.tex",
+            slot,
+            Duration::from_millis(10),
+            NOW + REQUEST_TTL_SECONDS,
+        )
+        .await;
         assert_eq!(done["status"], "succeeded");
     }
 
@@ -669,7 +687,14 @@ mod tests {
         let hub = CompileHub::default();
         let (id, slot) = registered(&hub);
         hub.forget(&id);
-        let result = wait_for(&id, "paper.tex", slot, Duration::from_millis(10), NOW + REQUEST_TTL_SECONDS).await;
+        let result = wait_for(
+            &id,
+            "paper.tex",
+            slot,
+            Duration::from_millis(10),
+            NOW + REQUEST_TTL_SECONDS,
+        )
+        .await;
         assert_eq!(result["status"], "unavailable");
         assert_eq!(result["error"], "timeout");
     }

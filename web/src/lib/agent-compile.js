@@ -42,7 +42,7 @@ export function compileReply(result, revision, requested = null) {
   const log = tailBytes(rendered.log || rendered.failure?.message || "");
   const provenance = rendered.provenance && typeof rendered.provenance === "object" ? rendered.provenance : {};
   // The same rule as the assistant preview: any severity but warning, info or hint fails it.
-  const clean = !items.some((item) => !["warning", "info", "hint"].includes(item?.severity));
+  const clean = !items.some((item) => !["warning", "info", "hint"].includes(/** @type {{severity?: string}} */ (item)?.severity));
   return { revision, ok: rendered.ok !== false && output !== "none" && clean && !mismatch, output, diagnostics, log, provenance };
 }
 
