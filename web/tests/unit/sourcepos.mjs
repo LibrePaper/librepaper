@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseSourcepos } from "../../src/lib/sourcepos.js";
+import { parseSourcepos, withoutSourcepos } from "../../src/lib/sourcepos.js";
 
 // Tagged: tag, line and column at both ends. The tag names the source.
 assert.deepEqual(parseSourcepos("2:14:3-2:16:9"), { tag: 2, from: 14, to: 16 });
@@ -30,3 +30,9 @@ for (const value of [null, undefined, 0, {}, []]) {
   assert.equal(parseSourcepos(value), null, String(value));
 }
 assert.equal(parseSourcepos("1:1-1:1".repeat(20)), null, "over-long values are refused");
+
+// Paper mode drops the positions and keeps everything else.
+assert.equal(
+  withoutSourcepos('<p data-sourcepos="1:1-1:5">A <em class="x" data-sourcepos="1:3-1:4">b</em></p>'),
+  '<p>A <em class="x">b</em></p>',
+);
