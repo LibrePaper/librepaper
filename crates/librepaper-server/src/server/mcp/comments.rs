@@ -297,6 +297,7 @@ impl Server {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;
                 let operation = key.clone();

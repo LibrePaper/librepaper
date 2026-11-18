@@ -2,11 +2,17 @@
 //!
 //! A comment is about a passage of a document's source at a checkpoint, and
 //! the page a reader selects on is only the surface. Something has to cross
-//! that gap. The renderers cannot: they are pinned WebAssembly modules
-//! released by their own repositories, whose ABI returns a page and a list of
-//! diagnostics and says nothing about where either came from. So the crossing
-//! is done here, once, at the moment a comment is made -- never again
-//! afterwards, which is the whole difference between this and re-anchoring.
+//! that gap. The renderers are pinned WebAssembly modules released by their
+//! own repositories, and what they return is a page and a list of
+//! diagnostics. Some now also say where in the source an element came from:
+//! the LaTeX preview (LaTeXML) stamps elements with `data-sourcepos` line
+//! positions, and the other renderers are gaining them. Those positions are
+//! line-accurate, not character-accurate, so they only narrow the search to a
+//! few lines ([`locate_in`] with a [`Region`], made by [`line_region`]). The
+//! words still decide the exact range, and that range is verified here
+//! against the source like any other. So the crossing is done here, once, at
+//! the moment a comment is made -- never again afterwards, which is the whole
+//! difference between this and re-anchoring.
 //! What it produces is verified against the checkpoint and then frozen; where
 //! that passage has since moved to is a separate question, answered in
 //! [`super::derive`] from the comment's anchor record.
@@ -50,6 +56,18 @@ const WINDOW: usize = 48;
 /// How much of the source is kept beside a range as recovery evidence. The
 /// same as the configured context cap, which is what a client may send.
 const CONTEXT: usize = 64;
+
+/// Where the page says a selection came from: a file and a range of its UTF-16
+/// offsets. The range is somewhere to look, not the answer; the words are
+/// still searched for inside it and verified there, and the range a comment
+/// gets is the one they find.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Region {
+    /// Index into the candidate files.
+    pub file: usize,
+    pub start: usize,
+    pub end: usize,
+}
 
 /// One file a passage might have come from.
 pub struct Candidate<'a> {
@@ -439,15 +457,44 @@ fn score_of(flat: &Flat, at: usize, length: usize, prefix: &[char], suffix: &[ch
 /// more of what was selected; an exact tie keeps the head, which is where a
 /// selection usually starts on purpose.
 pub fn locate(files: &[Candidate<'_>], quote: &Quote<'_>) -> Result<SourceTextTarget, Failure> {
+    locate_in(files, quote, None)
+}
+
+/// [`locate`], with an optional region the page says the selection is in.
+///
+/// With a region, the same search runs but only occurrences that start and
+/// end inside it count. If that finds nothing it has either missed or
+/// refused, and the whole document is searched as if no region had been
+/// given: a wrong region costs a wider search, never a missed passage.
+pub fn locate_in(
+    files: &[Candidate<'_>],
+    quote: &Quote<'_>,
+    region: Option<Region>,
+) -> Result<SourceTextTarget, Failure> {
     let wanted = trimmed(&flatten(quote.exact, false).chars);
     if wanted.is_empty() {
         return Err(Failure::Empty);
     }
-    let search = Search::over(files, quote);
-    let keeping_the_head = first_hit(&search, shortening_from_the_end(&wanted));
+    if region.is_some() {
+        let inside = Search::over(files, quote, region);
+        if let Ok(found) = search_for(files, &inside, &wanted) {
+            return Ok(found);
+        }
+    }
+    let everywhere = Search::over(files, quote, None);
+    search_for(files, &everywhere, &wanted)
+}
+
+/// Both directions of shortening, against one search.
+fn search_for(
+    files: &[Candidate<'_>],
+    search: &Search,
+    wanted: &[char],
+) -> Result<SourceTextTarget, Failure> {
+    let keeping_the_head = first_hit(search, shortening_from_the_end(wanted));
     // The whole phrase is what the pass above began with, so this one starts a
     // word in.
-    let keeping_the_tail = first_hit(&search, shortening_from_the_start(&wanted).skip(1));
+    let keeping_the_tail = first_hit(search, shortening_from_the_start(wanted).skip(1));
     let hit = match (keeping_the_head, keeping_the_tail) {
         (Some(head), Some(tail)) => Some(if tail.length > head.length {
             tail
@@ -542,11 +589,13 @@ struct Search {
     flattened: Vec<(bool, Flat)>,
     prefix: Vec<char>,
     suffix: Vec<char>,
+    /// Only occurrences inside this count, when there is one.
+    region: Option<Region>,
     ambiguous: std::cell::Cell<bool>,
 }
 
 impl Search {
-    fn over(files: &[Candidate<'_>], quote: &Quote<'_>) -> Search {
+    fn over(files: &[Candidate<'_>], quote: &Quote<'_>, region: Option<Region>) -> Search {
         // The page's context as letters: the end of what came before the
         // selection and the start of what came after it, each one window long.
         let before = letters(&flatten(quote.prefix, false).chars);
@@ -558,8 +607,23 @@ impl Search {
                 .collect(),
             prefix: before[before.len().saturating_sub(WINDOW)..].to_vec(),
             suffix: after[..after.len().min(WINDOW)].to_vec(),
+            region,
             ambiguous: std::cell::Cell::new(false),
         }
+    }
+
+    /// Whether an occurrence counts: always, without a region; otherwise it
+    /// must be in the region's file, start inside its range and end within it.
+    fn within(&self, file: usize, flat: &Flat, at: usize, length: usize) -> bool {
+        let Some(region) = self.region else {
+            return true;
+        };
+        if region.file != file {
+            return false;
+        }
+        let start = flat.from[at] as usize;
+        let end = flat.from[at + length] as usize;
+        start >= region.start && start < region.end && end <= region.end
     }
 
     /// The one place this phrase is, or nothing.
@@ -575,6 +639,9 @@ impl Search {
         let mut hits = Vec::new();
         for (index, (_, flat)) in self.flattened.iter().enumerate() {
             for at in occurrences(&flat.chars, needle) {
+                if !self.within(index, flat, at, needle.len()) {
+                    continue;
+                }
                 let score = score_of(flat, at, needle.len(), &self.prefix, &self.suffix);
                 hits.push(Hit {
                     file: index,
@@ -709,6 +776,34 @@ pub fn at_range(file: &Candidate<'_>, start: usize, end: usize) -> Option<Source
     })
 }
 
+/// The UTF-16 range of lines `from_line..=to_line` (1-based) of `text`,
+/// widened by `pad` lines either side and clamped to the file.
+///
+/// The end is the end of the last included line, newline included, so the
+/// range covers whole lines. A `from_line` of zero is taken as one, and a
+/// `to_line` before `from_line` as `from_line`. Lines past the end of the
+/// file clamp to its length.
+pub fn line_region(text: &str, from_line: u32, to_line: u32, pad: u32) -> (usize, usize) {
+    let from = from_line.max(1);
+    let to = to_line.max(from);
+    let first = from.saturating_sub(pad).max(1);
+    let last = to.saturating_add(pad);
+    // `starts[n - 1]` is where line `n` begins. A newline begins the next line,
+    // so a file ending in one has an empty last line starting at its end.
+    let mut starts = vec![0usize];
+    let mut at = 0usize;
+    for character in text.chars() {
+        at += character.len_utf16();
+        if character == '\n' {
+            starts.push(at);
+        }
+    }
+    let total = at;
+    let start = starts.get(first as usize - 1).copied().unwrap_or(total);
+    let end = starts.get(last as usize).copied().unwrap_or(total);
+    (start, end)
+}
+
 /// The text of a UTF-16 range for the evidence that goes with a target. A
 /// bound inside a surrogate pair keeps the lone half as U+FFFD.
 fn lossy(index: &TextIndex<'_>, start: usize, end: usize) -> String {
@@ -809,6 +904,57 @@ mod tests {
             locate(&one(text), &quote("It is true.", "", "")).unwrap_err(),
             Failure::Ambiguous
         );
+    }
+
+    #[test]
+    fn a_region_tells_identical_sentences_apart_that_nothing_else_does() {
+        // Both sentences are refused without a region, as above. Told the
+        // selection came from the third line, the second one is the answer.
+        let text = "It is true.\n\nIt is true.\n";
+        let (start, end) = line_region(text, 3, 3, 0);
+        let region = Region {
+            file: 0,
+            start,
+            end,
+        };
+        let found = locate_in(&one(text), &quote("It is true.", "", ""), Some(region)).unwrap();
+        assert_eq!(found.start_utf16, 13);
+        assert_eq!(found.end_utf16, 24);
+    }
+
+    #[test]
+    fn a_region_that_misses_the_words_falls_back_to_the_whole_document() {
+        // The words are on line three; the region names line one. Searched
+        // there they are not found, so the whole document is searched, and
+        // the passage occurs only once in it.
+        let text = "Alpha beta gamma.\n\nThe interval covers the mean.\n";
+        let (start, end) = line_region(text, 1, 1, 0);
+        let region = Region {
+            file: 0,
+            start,
+            end,
+        };
+        let found = locate_in(
+            &one(text),
+            &quote("The interval covers the mean.", "", ""),
+            Some(region),
+        )
+        .unwrap();
+        assert_eq!(found.start_utf16, 19);
+        assert_eq!(found.exact, "The interval covers the mean.");
+    }
+
+    #[test]
+    fn line_region_covers_whole_lines_and_clamps_to_the_file() {
+        let text = "a\nbb\nccc\n";
+        assert_eq!(line_region(text, 2, 2, 0), (2, 5));
+        assert_eq!(line_region(text, 2, 2, 1), (0, 9));
+        // Zero is line one, and a range that ends before it starts is its
+        // first line.
+        assert_eq!(line_region(text, 0, 0, 0), (0, 2));
+        assert_eq!(line_region(text, 3, 2, 0), (5, 9));
+        // Past the end of the file is the end of the file.
+        assert_eq!(line_region(text, 9, 9, 0), (9, 9));
     }
 
     #[test]

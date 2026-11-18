@@ -1893,6 +1893,7 @@ impl Server {
                 document,
                 color,
                 source,
+                hint,
                 request_id,
                 ..
             } => {
@@ -1918,6 +1919,7 @@ impl Server {
                     color.as_deref(),
                     expected_render_digest,
                     source,
+                    hint,
                 )
                 .map_err(|error| {
                     comment_frame(

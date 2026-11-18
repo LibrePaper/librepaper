@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{Message, SourceSelection};
+use super::{Message, SourceHint, SourceSelection};
 
 /// Validated comment protocol commands. The serde-facing [`Message`] remains
 /// compatible with existing clients; these variants carry only fields used by
@@ -25,6 +25,9 @@ pub enum Command {
         /// An editor's exact range in the source. When set, `exact` is the
         /// text at that range, and the server anchors to it directly.
         source: Option<SourceSelection>,
+        /// Where the rendered selection came from, if the page said. It only
+        /// narrows the search for `exact`; it is never the range.
+        hint: Option<SourceHint>,
         temp_id: String,
         request_id: String,
     },
@@ -183,6 +186,7 @@ impl Message {
                 document: self.document(),
                 color: self.color().map(str::to_owned),
                 source: self.source().cloned(),
+                hint: self.hint().cloned(),
                 temp_id,
                 request_id,
             }),
@@ -263,6 +267,7 @@ mod tests {
             document: true,
             color: Some("amber".into()),
             source: None,
+            hint: None,
             temp_id: "t".into(),
             request_id: "r".into(),
         }
@@ -284,6 +289,7 @@ mod tests {
             document,
             color,
             source,
+            hint,
             temp_id,
             request_id,
         } = comment().with_creator("server".into())
@@ -301,6 +307,7 @@ mod tests {
         assert!(document);
         assert_eq!(color.as_deref(), Some("amber"));
         assert_eq!(source, None);
+        assert_eq!(hint, None);
         assert_eq!(temp_id, "t");
         assert_eq!(request_id, "r");
 
@@ -351,6 +358,27 @@ mod tests {
         );
         assert_eq!(exact, "interval");
         assert_eq!(position, None);
+    }
+
+    #[test]
+    fn a_comment_may_carry_a_line_hint() {
+        let frame = r#"{"type":"comment","body":"b","exact":"x","hint":{"path":"chapters/intro.tex","from_line":12,"to_line":14}}"#;
+        let Ok(Command::Comment { hint, .. }) = parsed(frame) else {
+            panic!("a comment parses");
+        };
+        assert_eq!(
+            hint,
+            Some(SourceHint {
+                path: "chapters/intro.tex".into(),
+                from_line: 12,
+                to_line: 14,
+            })
+        );
+        let frame = r#"{"type":"comment","body":"b","exact":"x","hint":null}"#;
+        assert!(matches!(
+            parsed(frame),
+            Ok(Command::Comment { hint: None, .. })
+        ));
     }
 
     #[test]

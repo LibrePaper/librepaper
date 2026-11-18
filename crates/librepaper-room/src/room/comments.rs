@@ -52,7 +52,7 @@ use librepaper_engine::storage::postgres::{
 
 use super::locate::{self, Quote};
 use super::source_change::client_seq_of;
-use super::{Room, SourceSelection, WriteError};
+use super::{Room, SourceHint, SourceSelection, WriteError};
 use librepaper_engine::storage::annotation::{
     CommentTarget, DerivedAttachment, OriginalAnchor, PresentationContext, SourceTextTarget,
 };
@@ -498,18 +498,27 @@ fn source_files(doc: &LoroDoc) -> Vec<(String, String, String)> {
     files
 }
 
+/// How many lines either side of a hinted range the search may still look in.
+/// LaTeXML line positions are line-accurate, but a section's range covers only
+/// its heading line, and an inline construct can report a later line than the
+/// words it holds. A couple of lines either side absorbs that.
+const PAD: u32 = 2;
+
 /// Works out what a selection is about, in the document at `doc`.
 ///
 /// This is the one place a rendered selection becomes a source range, and it
 /// happens against the sequencer's own head because that is the one copy of
 /// the document whose text the server can vouch for. A browser sends words,
 /// never an offset: an offset from a client is a claim about a file the
-/// client may not even be allowed to read.
+/// client may not even be allowed to read. It may send a line hint with them,
+/// which narrows where the words are looked for; the words still decide the
+/// range, and the hint never does.
 fn locate_anchor(
     doc: &LoroDoc,
     quote: &Quote<'_>,
     whole_document: bool,
     cap_exact: usize,
+    hint: Option<&SourceHint>,
 ) -> Result<CommentTarget, String> {
     if whole_document || quote.exact.trim().is_empty() {
         return Ok(CommentTarget::Document);
@@ -526,7 +535,25 @@ fn locate_anchor(
             text,
         })
         .collect();
-    locate::locate(&candidates, quote)
+    // A hint naming a file that is not in the document narrows nothing, and
+    // the whole document is searched as it would be without one.
+    let region = hint.and_then(|hint| {
+        let file = candidates
+            .iter()
+            .position(|candidate| candidate.path == hint.path.as_str())?;
+        let (start, end) = locate::line_region(
+            candidates[file].text,
+            hint.from_line,
+            hint.to_line,
+            PAD,
+        );
+        Some(locate::Region { file, start, end })
+    });
+    let found = match region {
+        Some(region) => locate::locate_in(&candidates, quote, Some(region)),
+        None => locate::locate(&candidates, quote),
+    };
+    found
         .map(CommentTarget::SourceText)
         .map_err(|failure| failure.message().to_string())
 }
@@ -1170,6 +1197,9 @@ pub struct AddComment {
     /// Set only for an editor's selection in the source. The range is taken
     /// from here, not searched for in the rendered words.
     source: Option<SourceSelection>,
+    /// Where the rendered page says the selection came from. It narrows the
+    /// search in `evaluate` and is never stored, so `replay` does not compare it.
+    hint: Option<SourceHint>,
     // filled in by evaluate, consumed by transact.
     resolved_target: Option<CommentTarget>,
 }
@@ -1192,6 +1222,7 @@ impl AddComment {
         color: Option<&str>,
         expected_render_digest: Option<[u8; 32]>,
         source: Option<SourceSelection>,
+        hint: Option<SourceHint>,
     ) -> Result<Self, String> {
         let body = clean(body, config.caps.body).trim().to_string();
         let motivation = config.allowed_motivation(motivation);
@@ -1233,6 +1264,7 @@ impl AddComment {
             expected_render_digest,
             cap_exact: config.caps.exact,
             source,
+            hint,
             resolved_target: None,
         })
     }
@@ -1279,6 +1311,7 @@ impl SequencerCommand for AddComment {
             } else {
                 "source_text"
             };
+            // A hint is not stored, so a retry is not compared against it.
             let same = row.document_id == self.document_id
                 && row.kind == kind_of(&self.motivation)
                 && row.target_kind == target_kind
@@ -1335,7 +1368,13 @@ impl SequencerCommand for AddComment {
                 prefix: &self.prefix,
                 suffix: &self.suffix,
             };
-            locate_anchor(head.doc(), &quote, self.whole_document, self.cap_exact)
+            locate_anchor(
+                head.doc(),
+                &quote,
+                self.whole_document,
+                self.cap_exact,
+                self.hint.as_ref(),
+            )
         };
         let target = resolved.map_err(CommandError::Conflict)?;
         let source = target.source().cloned();

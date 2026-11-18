@@ -65,6 +65,13 @@ that fit are loaded, except for the one-row oversize case.
   - Event: `{"type":"edit","comment_id":...,"reply_id":...|null,"body":...,`
     `"edited":...,"state":{...}}`. It carries no comment row.
   - Comments and replies gain `edited` once edited. Replies carry `mine`.
+- A rendered `comment` frame may carry `hint`:
+  `{"path":"chapters/intro.tex","from_line":12,"to_line":14}`, the file and
+  the lines the selection came from, as the preview's source positions give
+  them. Absent or `null` means no hint. The server searches only that file's
+  lines, padded by two either side, and falls back to the whole document when
+  the words are not found there. The hint is never the range and is not stored,
+  so a retry is not compared against it.
 - `comments-changed` carries updated state counts but no comment rows. Clients
   re-read pages when an event describes a batch or other change that cannot
   be represented by a single row event.
