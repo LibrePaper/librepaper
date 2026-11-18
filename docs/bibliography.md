@@ -10,7 +10,7 @@ Every format reads its references from a BibTeX file, usually `references.bib`. 
 - DOI: in **Insert > Citation**, choose DOI and paste a DOI or a `doi.org` link. The entry is fetched from doi.org and added to your `.bib`.
 - Zotero: in the [desktop app](desktop-app.html), choose Zotero to search your library. Zotero must be running, with "Allow other applications on this computer to communicate with Zotero" turned on in its Advanced settings.
 
-A DOI or a Zotero item already in the `.bib` is reused, not added twice.
+A DOI or a Zotero item already in the `.bib` is reused, not added twice. When the project has several `.bib` files, an "Add to" list picks the one that receives the entry.
 
 ## Cite
 
