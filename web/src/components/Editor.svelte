@@ -913,7 +913,7 @@
     const regPath = sameFamily ? entry : activePath;
     const regId = sameFamily ? textIdForPath(doc, entry) : activeFile;
     const reg = getTextFromDoc(regId);
-    const plan = makePlan({ source: reg?.toString() || "", targetPath: regPath, texts: tree.texts, format: formatOf(regPath) });
+    const plan = makePlan({ source: reg?.toString() || "", targetPath: regPath, texts: tree.texts, format: formatOf(regPath), chapterPath: activePath, chapterText: getTextFromDoc(activeFile)?.toString() || "", entryPath: entry || "", entryText: (entry && tree.texts[entry]) || "" });
     const bibId = textIdForPath(doc, plan.path);
     const bib = bibId ? getTextFromDoc(bibId) : null;
     if (bib) {

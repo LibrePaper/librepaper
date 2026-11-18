@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { BibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyRegistration, citationContext, entryLabel, insertCitation, planDoiImport, planZoteroImport, rankEntries, selectedBibliographyFiles, zoteroCitationKey } from "../../src/lib/bibliography.js";
+import { BibliographyCache, bibliographyCacheKey, declaredBibliography, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyRegistration, citationContext, entryLabel, insertCitation, planDoiImport, planZoteroImport, rankEntries, selectedBibliographyFiles, zoteroCitationKey } from "../../src/lib/bibliography.js";
 import { Text } from "@codemirror/state";
 
 const entries = [
@@ -190,3 +190,34 @@ for (const bib of ["@article{A,\n  x-doi = {10.1038/nature12373}\n}\n", "@articl
 assert.deepEqual(selectedBibliographyFiles("---\ntitle: Notes\n---\n\nBibliography:\n\n- Smith 2020, Rivers\n- Jones 2021\n", "markdown"), []);
 assert.deepEqual(selectedBibliographyFiles("No front matter\nbibliography: refs.bib\n", "markdown"), []);
 assert.deepEqual(selectedBibliographyFiles("---\nbibliography: refs.bib\n...\nBody\n", "quarto"), ["refs.bib"]);
+
+// One resolver finds the declared bibliography: chapter, then entry file, then _quarto.yml (Quarto only).
+{
+  const fm = (files) => `---\nbibliography: ${files}\n---\n\nBody\n`;
+  const own = declaredBibliography({ format: "quarto", chapterPath: "ch.qmd", chapterText: fm("mine.bib"), entryPath: "index.qmd", entryText: fm("entry.bib"), texts: { "_quarto.yml": "bibliography: q.bib\n" } });
+  assert.deepEqual(own, { files: ["mine.bib"], owner: "chapter", ownerPath: "ch.qmd" });
+  const viaEntry = declaredBibliography({ format: "quarto", chapterPath: "ch/one.qmd", chapterText: "# One\n", entryPath: "book/index.qmd", entryText: fm("refs.bib"), texts: {} });
+  assert.deepEqual(viaEntry, { files: ["book/refs.bib"], owner: "entry", ownerPath: "book/index.qmd" });
+  const viaQuarto = declaredBibliography({ format: "quarto", chapterPath: "ch.qmd", chapterText: "# One\n", entryPath: "index.qmd", entryText: "# Home\n", texts: { "_quarto.yml": "project:\n  type: book\nbibliography: refs.bib\n" } });
+  assert.deepEqual(viaQuarto, { files: ["refs.bib"], owner: "quarto", ownerPath: "_quarto.yml" });
+  const markdownIgnores = declaredBibliography({ format: "markdown", chapterPath: "ch.md", chapterText: "# One\n", entryPath: "index.md", entryText: "# Home\n", texts: { "_quarto.yml": "bibliography: refs.bib\n" } });
+  assert.deepEqual(markdownIgnores, { files: [], owner: null, ownerPath: null });
+  assert.equal(declaredBibliography({ format: "quarto", chapterPath: "ch.qmd", chapterText: "# One\n", texts: {} }).owner, null);
+  const nested = declaredBibliography({ format: "quarto", chapterPath: "sub/deep/ch.qmd", chapterText: "# One\n", texts: { "_quarto.yml": "bibliography: root.bib\n", "sub/_quarto.yml": "bibliography: sub.bib\n" } });
+  assert.deepEqual(nested, { files: ["sub/sub.bib"], owner: "quarto", ownerPath: "sub/_quarto.yml" });
+}
+
+// A DOI import into a chapter without its own bibliography follows the entry file or _quarto.yml.
+{
+  const fm = "---\nbibliography: refs.bib\n---\n";
+  const texts = { "refs.bib": "@book{Old2020,\n  title = {Old}\n}\n", "other.bib": "" };
+  const viaEntry = planDoiImport({ source: fm, targetPath: "index.qmd", texts, entry: doiEntry, format: "quarto", chapterPath: "ch.qmd", chapterText: "# One\n", entryPath: "index.qmd", entryText: fm });
+  assert.equal(viaEntry.path, "refs.bib");
+  assert.equal(viaEntry.registration, null);
+  const viaQuarto = planDoiImport({ source: "# Home\n", targetPath: "index.qmd", texts: { ...texts, "_quarto.yml": "bibliography: refs.bib\n" }, entry: doiEntry, format: "quarto", chapterPath: "ch.qmd", chapterText: "# One\n", entryPath: "index.qmd", entryText: "# Home\n" });
+  assert.equal(viaQuarto.path, "refs.bib");
+  assert.equal(viaQuarto.registration, null);
+  const nothing = planDoiImport({ source: "# Home\n", targetPath: "index.qmd", texts: {}, entry: doiEntry, format: "quarto", chapterPath: "ch.qmd", chapterText: "# One\n", entryPath: "index.qmd", entryText: "# Home\n" });
+  assert.equal(nothing.path, "references.bib");
+  assert.notEqual(nothing.registration, null);
+}
