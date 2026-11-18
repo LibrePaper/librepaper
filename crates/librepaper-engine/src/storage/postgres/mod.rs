@@ -28,10 +28,10 @@ pub use persistence::PersistenceConnection;
 mod peers;
 pub use peers::PeerAuthor;
 mod repository;
+mod results;
 #[cfg(test)]
 #[path = "sharing_save_tests.rs"]
 mod sharing_save_tests;
-mod results;
 mod tags;
 mod usage;
 mod write_tx;

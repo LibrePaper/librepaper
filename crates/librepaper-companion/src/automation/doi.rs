@@ -171,7 +171,8 @@ pub async fn fetch(doi: &str) -> Result<Value, String> {
 /// string `type` and a non-empty `title` (a string, or an array whose first
 /// element is a non-empty string).
 pub fn usable(csl: &Value) -> bool {
-    let non_empty = |value: Option<&Value>| value.and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    let non_empty =
+        |value: Option<&Value>| value.and_then(Value::as_str).is_some_and(|s| !s.is_empty());
     if !csl.is_object() || !non_empty(csl.get("type")) {
         return false;
     }

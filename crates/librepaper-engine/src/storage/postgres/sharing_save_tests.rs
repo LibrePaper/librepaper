@@ -120,13 +120,7 @@ async fn a_save_cannot_bring_back_a_revoked_token() {
         .unwrap();
     // A save that names it again is refused and writes nothing.
     let error = catalog
-        .save_document_sharing(
-            id,
-            &actor,
-            &both,
-            &hashes(&both),
-            &[state(&second)],
-        )
+        .save_document_sharing(id, &actor, &both, &hashes(&both), &[state(&second)])
         .await
         .unwrap_err();
     assert!(matches!(error, Error::Revoked), "{error:?}");
@@ -139,11 +133,18 @@ async fn a_save_cannot_bring_back_a_revoked_token() {
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_change_to_one_field_of_a_row_makes_an_older_read_stale() {
     let (catalog, id, actor) = setup().await;
-    let soon = OffsetDateTime::from_unix_timestamp(OffsetDateTime::now_utc().unix_timestamp() + 3600)
-        .unwrap();
+    let soon =
+        OffsetDateTime::from_unix_timestamp(OffsetDateTime::now_utc().unix_timestamp() + 3600)
+            .unwrap();
     let before = link(3, Some(soon));
     catalog
-        .save_document_sharing(id, &actor, &[before.clone()], &hashes(&[before.clone()]), &[])
+        .save_document_sharing(
+            id,
+            &actor,
+            std::slice::from_ref(&before),
+            &hashes(std::slice::from_ref(&before)),
+            &[],
+        )
         .await
         .unwrap();
     // A second writer shortens the expiry; the hash set is unchanged.
@@ -153,8 +154,8 @@ async fn a_change_to_one_field_of_a_row_makes_an_older_read_stale() {
         .save_document_sharing(
             id,
             &actor,
-            &[after.clone()],
-            &hashes(&[after.clone()]),
+            std::slice::from_ref(&after),
+            &hashes(std::slice::from_ref(&after)),
             &[state(&before)],
         )
         .await
@@ -164,8 +165,8 @@ async fn a_change_to_one_field_of_a_row_makes_an_older_read_stale() {
         .save_document_sharing(
             id,
             &actor,
-            &[before.clone()],
-            &hashes(&[before.clone()]),
+            std::slice::from_ref(&before),
+            &hashes(std::slice::from_ref(&before)),
             &[state(&before)],
         )
         .await
