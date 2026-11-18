@@ -62,7 +62,7 @@
         ]
       },
       "key": "KucMauYaoKubNoh2013",
-      "bibtex": "@misc{KucMauYaoKubNoh2013,\n  author = {Kucsko, G. and Maurer, P. C. and Yao, N. Y. and Kubo, M. and Noh, H. J. and Lo, P. K. and Park, H. and Lukin, M. D.},\n  title = {Nanometre-scale thermometry in a living cell},\n  year = {2013},\n  volume = {500},\n  number = {7460},\n  pages = {54--58},\n  publisher = {Springer Science and Business Media LLC},\n  doi = {10.1038/nature12373},\n  issn = {0028-0836}\n}\n"
+      "bibtex": "@article{KucMauYaoKubNoh2013,\n  author = {Kucsko, G. and Maurer, P. C. and Yao, N. Y. and Kubo, M. and Noh, H. J. and Lo, P. K. and Park, H. and Lukin, M. D.},\n  title = {Nanometre-scale thermometry in a living cell},\n  year = {2013},\n  journal = {Nature},\n  volume = {500},\n  number = {7460},\n  pages = {54--58},\n  publisher = {Springer Science and Business Media LLC},\n  doi = {10.1038/nature12373},\n  issn = {0028-0836}\n}\n"
     },
     {
       "name": "datacite-arxiv-preprint",
@@ -172,7 +172,7 @@
         ]
       },
       "key": "CarMasSynUsuKir2020",
-      "bibtex": "@misc{CarMasSynUsuKir2020,\n  author = {Carion, Nicolas and Massa, Francisco and Synnaeve, Gabriel and Usunier, Nicolas and Kirillov, Alexander and Zagoruyko, Sergey},\n  title = {End-to-End Object Detection with Transformers},\n  year = {2020},\n  pages = {213--229},\n  publisher = {Springer International Publishing},\n  doi = {10.1007/978-3-030-58452-8_13},\n  isbn = {9783030584511},\n  issn = {0302-9743}\n}\n"
+      "bibtex": "@incollection{CarMasSynUsuKir2020,\n  author = {Carion, Nicolas and Massa, Francisco and Synnaeve, Gabriel and Usunier, Nicolas and Kirillov, Alexander and Zagoruyko, Sergey},\n  title = {End-to-End Object Detection with Transformers},\n  year = {2020},\n  booktitle = {Lecture Notes in Computer Science},\n  pages = {213--229},\n  publisher = {Springer International Publishing},\n  doi = {10.1007/978-3-030-58452-8_13},\n  isbn = {9783030584511},\n  issn = {0302-9743}\n}\n"
     },
     {
       "name": "crossref-book",
@@ -210,7 +210,7 @@
         ]
       },
       "key": "GelHil2006",
-      "bibtex": "@misc{GelHil2006,\n  author = {Gelman, Andrew and Hill, Jennifer},\n  title = {Data Analysis Using Regression and Multilevel/Hierarchical Models},\n  year = {2006},\n  publisher = {Cambridge University Press},\n  doi = {10.1017/cbo9780511790942},\n  isbn = {9780521867061}\n}\n"
+      "bibtex": "@book{GelHil2006,\n  author = {Gelman, Andrew and Hill, Jennifer},\n  title = {Data Analysis Using Regression and Multilevel/Hierarchical Models},\n  year = {2006},\n  publisher = {Cambridge University Press},\n  doi = {10.1017/cbo9780511790942},\n  isbn = {9780521867061}\n}\n"
     },
     {
       "name": "crossref-proceedings-article",
@@ -256,7 +256,7 @@
         "URL": "http://dx.doi.org/10.1145/3292500.3330701"
       },
       "key": "AkiSanYanOhtKoy2019",
-      "bibtex": "@misc{AkiSanYanOhtKoy2019,\n  author = {Akiba, Takuya and Sano, Shotaro and Yanase, Toshihiko and Ohta, Takeru and Koyama, Masanori},\n  title = {Optuna},\n  year = {2019},\n  pages = {2623--2631},\n  publisher = {ACM},\n  doi = {10.1145/3292500.3330701}\n}\n"
+      "bibtex": "@inproceedings{AkiSanYanOhtKoy2019,\n  author = {Akiba, Takuya and Sano, Shotaro and Yanase, Toshihiko and Ohta, Takeru and Koyama, Masanori},\n  title = {Optuna},\n  year = {2019},\n  booktitle = {Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining},\n  pages = {2623--2631},\n  publisher = {ACM},\n  doi = {10.1145/3292500.3330701}\n}\n"
     },
     {
       "name": "crossref-html-title",
@@ -298,7 +298,7 @@
         ]
       },
       "key": "HemWeaSto2020",
-      "bibtex": "@misc{HemWeaSto2020,\n  author = {Hemm, Matthew R. and Weaver, Jeremy and Storz, Gisela},\n  title = {Escherichia coli Small Proteome},\n  year = {2020},\n  volume = {9},\n  number = {1},\n  publisher = {American Society for Microbiology},\n  doi = {10.1128/ecosalplus.esp-0031-2019},\n  issn = {2324-6200}\n}\n"
+      "bibtex": "@article{HemWeaSto2020,\n  author = {Hemm, Matthew R. and Weaver, Jeremy and Storz, Gisela},\n  title = {Escherichia coli Small Proteome},\n  year = {2020},\n  journal = {EcoSal Plus},\n  volume = {9},\n  number = {1},\n  publisher = {American Society for Microbiology},\n  doi = {10.1128/ecosalplus.esp-0031-2019},\n  issn = {2324-6200}\n}\n"
     },
     {
       "name": "synthetic-accents-literal-no-year",
@@ -356,6 +356,29 @@
       },
       "key": "EcoCom1990",
       "bibtex": "@book{EcoCom1990,\n  title = {The Economics of the Commons},\n  year = {1990},\n  publisher = {Cambridge University Press},\n  doi = {10.1234/commons}\n}\n"
+    },
+    {
+      "name": "synthetic-undated-null-date-part",
+      "doi": "10.1234/undated",
+      "csl": {
+        "type": "journal-article",
+        "author": [
+          {
+            "family": "Smith",
+            "given": "Jane"
+          }
+        ],
+        "title": "Undated Work",
+        "issued": {
+          "date-parts": [
+            [
+              null
+            ]
+          ]
+        }
+      },
+      "key": "SmiND",
+      "bibtex": "@article{SmiND,\n  author = {Smith, Jane},\n  title = {Undated Work},\n  doi = {10.1234/undated}\n}\n"
     }
   ],
   "normalise": [
