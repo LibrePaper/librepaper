@@ -9,7 +9,7 @@ const REQUIRED_EXPORTS = [
 ];
 
 /** @typedef {(...args: number[]) => number} RendererFunction */
-/** @typedef {WebAssembly.Exports & {memory: WebAssembly.Memory, alloc: RendererFunction, dealloc: RendererFunction, compile: RendererFunction, compile_html?: RendererFunction, output_ptr: RendererFunction, ok: RendererFunction, output_kind: RendererFunction, diagnostics: RendererFunction, diagnostics_ptr: RendererFunction, failure_page: RendererFunction, title_of: RendererFunction, add_file: RendererFunction, clear_files: RendererFunction, set_main: RendererFunction, set_asset_url: RendererFunction, set_today: RendererFunction, word_diff: RendererFunction, bibliography?: RendererFunction, complete?: RendererFunction, draft?: RendererFunction, needs?: RendererFunction, needs_ptr?: RendererFunction}} RendererWasm */
+/** @typedef {WebAssembly.Exports & {memory: WebAssembly.Memory, alloc: RendererFunction, dealloc: RendererFunction, compile: RendererFunction, compile_html?: RendererFunction, output_ptr: RendererFunction, ok: RendererFunction, output_kind: RendererFunction, diagnostics: RendererFunction, diagnostics_ptr: RendererFunction, failure_page: RendererFunction, title_of: RendererFunction, add_file: RendererFunction, clear_files: RendererFunction, set_main: RendererFunction, set_asset_url: RendererFunction, set_today: RendererFunction, word_diff: RendererFunction, bibliography?: RendererFunction, complete?: RendererFunction, draft?: RendererFunction, needs?: RendererFunction, needs_ptr?: RendererFunction, sources?: RendererFunction, sources_ptr?: RendererFunction}} RendererWasm */
 
 /** @param {RendererWasm} wasm @param {string} name @returns {RendererFunction} */
 function functionExport(wasm, name) {
@@ -241,6 +241,25 @@ export function applyTree(mirror, delta) {
     mirror: next,
     tree: { main: delta.main, settings: delta.settings, texts: next.texts, assets: next.assets, urls: next.urls },
   };
+}
+
+/// Which project file each `data-sourcepos` tag of the last HTML compile
+/// names, from a module that says so (typst), or `null` from one that has no
+/// such export or gave no table. Entry `T` is a project path, or null for a
+/// file that is not the author's.
+/** @param {RendererWasm} wasm @returns {Array<string | null> | null} */
+export function sourcesOf(wasm) {
+  if (typeof wasm.sources !== "function" || typeof wasm.sources_ptr !== "function") return null;
+  const size = wasm.sources();
+  if (!(size > 0)) return null;
+  const raw = new Uint8Array(wasm.memory.buffer, wasm.sources_ptr(), size).slice();
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(raw));
+    if (!Array.isArray(parsed) || !parsed.length) return null;
+    return parsed.map((entry) => (typeof entry === "string" && entry ? entry : null));
+  } catch {
+    return null;
+  }
 }
 
 /// What the last compile went looking for and did not find -- packages and

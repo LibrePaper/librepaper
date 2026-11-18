@@ -1224,6 +1224,7 @@ async fn add_anchored_comment(deployment: &Deployment, room: &Room) {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
     room.command(&deployment.authority(), &mut cmd)

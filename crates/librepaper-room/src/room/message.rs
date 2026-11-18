@@ -1,8 +1,12 @@
-use serde::{de::Error as _, Deserialize, Deserializer};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
 /// One tagged client frame. Fields belonging to a different operation are
 /// discarded during deserialization instead of accumulating in a universal
 /// optional-field bag.
+///
+/// A frame lives only while it is parsed and dispatched, so the size of its
+/// largest variant costs nothing worth a box, as with [`super::command::Command`].
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum Message {
     Known(KnownMessage),
@@ -52,6 +56,20 @@ pub struct SourceSelection {
     pub end: u32,
 }
 
+/// Where a selection on the rendered page says it came from: a project file
+/// and an inclusive range of its 1-based lines, as the renderer's source
+/// positions put them. It narrows where the selected words are looked for and
+/// is never the range itself: the words still decide, and the server verifies
+/// them against that file, so a wrong hint costs a wider search, not a wrong
+/// anchor.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SourceHint {
+    pub path: String,
+    pub from_line: u32,
+    pub to_line: u32,
+}
+
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum KnownMessage {
@@ -159,6 +177,11 @@ pub enum KnownMessage {
         /// Absent for a selection made on the rendered page.
         #[serde(default)]
         source: Option<SourceSelection>,
+        /// Where a rendered selection came from, when the page knows. Any
+        /// role that may comment may send it, since it only narrows a search
+        /// whose result is still verified against the source.
+        #[serde(default)]
+        hint: Option<SourceHint>,
         #[serde(default)]
         temp_id: String,
         #[serde(default)]
@@ -307,6 +330,12 @@ impl KnownMessage {
             _ => None,
         }
     }
+    fn hint(&self) -> Option<&SourceHint> {
+        match self {
+            Self::Comment { hint, .. } => hint.as_ref(),
+            _ => None,
+        }
+    }
     value_field!(resolved, resolved, bool, Resolve);
     value_field!(
         seq,
@@ -417,6 +446,12 @@ impl Message {
     pub fn source(&self) -> Option<&SourceSelection> {
         match self {
             Self::Known(v) => v.source(),
+            Self::Unknown(_) => None,
+        }
+    }
+    pub fn hint(&self) -> Option<&SourceHint> {
+        match self {
+            Self::Known(v) => v.hint(),
             Self::Unknown(_) => None,
         }
     }

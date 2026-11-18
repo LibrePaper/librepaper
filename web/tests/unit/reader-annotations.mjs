@@ -534,5 +534,17 @@ assert.equal(whole.body, "About the whole document");
 assert.equal(whole.presentation.rendered_exact, "");
 assert.equal(sent[0].document, false, "a passage comment is sent as one");
 
+// A preview selection's source hint travels with the comment; a selection
+// without one sends no `hint` key at all.
+annotations.comment({ exact: "hinted words", position: 2, render_digest: "", hint: { path: "paper/main.tex", from_line: 3, to_line: 7 } },
+  { motivation: "commenting", body: "Where is this from" }, "Name");
+const hinted = sent.at(-1);
+assert.deepEqual(hinted.hint, { path: "paper/main.tex", from_line: 3, to_line: 7 });
+assert.equal(hinted.exact, "hinted words");
+assert.equal("whole" in hinted, false);
+annotations.comment({ exact: "unhinted words", position: 2, render_digest: "" },
+  { motivation: "commenting", body: "No hint here" }, "Name");
+assert.equal("hint" in sent.at(-1), false, "a selection without a hint sends no hint key");
+
 assert.ok(paints > 0);
 console.log("reader-annotations: optimistic writes, authoritative reconciliation, bounded paging, retries and decisions passed");
