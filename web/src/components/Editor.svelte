@@ -239,7 +239,8 @@
   import { pastesPlainAt } from "../lib/paste-context.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
-  import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
+  import { cslToBibtex, fetchDoi, normaliseDoi } from "../lib/doi.js";
+  import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planDoiImport, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, completionWake, formatOfPath } from "../lib/completion/index.js";
   import { createLiveIndex } from "../lib/document-index/live.js";
@@ -900,20 +901,18 @@
     return zoteroEntries(await searchZotero(query));
   }
 
-  // Writes an imported item's BibTeX and its bibliography registration. The
-  // registration is written here only when it belongs to another file.
-  // importZoteroItems dispatches it through the view when it belongs to the file on screen.
-  function writeZoteroImport(doc, activeFile, activePath, fetched, zoteroItemKey) {
+  // Writes an imported entry's BibTeX and its bibliography registration. makePlan
+  // receives { source, targetPath, texts, format } and returns the import plan.
+  // The registration is written here only when it belongs to another file.
+  // The import functions dispatch it through the view when it belongs to the file on screen.
+  function writeBibliographyImport(doc, activeFile, activePath, makePlan) {
     const tree = treeForDoc(doc);
     // The bibliography is registered in the preview's file when it shares the citing file's format family, else in the citing file.
     const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath) && Boolean(textIdForPath(doc, entry));
     const regPath = sameFamily ? entry : activePath;
     const regId = sameFamily ? textIdForPath(doc, entry) : activeFile;
     const reg = getTextFromDoc(regId);
-    const plan = planZoteroImport({
-      source: reg?.toString() || "", targetPath: regPath, texts: tree.texts,
-      item: { ...fetched, zotero_item: zoteroItemKey }, format: formatOf(regPath),
-    });
+    const plan = makePlan({ source: reg?.toString() || "", targetPath: regPath, texts: tree.texts, format: formatOf(regPath) });
     const bibId = textIdForPath(doc, plan.path);
     const bib = bibId ? getTextFromDoc(bibId) : null;
     if (bib) {
@@ -938,15 +937,52 @@
     }
     const keys = [];
     for (let index = 0; index < items.length; index++) {
-      const { plan, regId } = writeZoteroImport(doc, activeFile, activePath, fetchedItems[index], items[index].zotero_item);
+      const { plan, regId } = writeBibliographyImport(doc, activeFile, activePath, (target) => planZoteroImport({
+        ...target, item: { ...fetchedItems[index], zotero_item: items[index].zotero_item },
+      }));
       keys.push(plan.key);
-      // The file on screen goes through the view, because writeText would bypass the editor for it.
-      // A caret where frontmatter is inserted at the top moves past it, so the citation lands in the body.
-      // A caret where a bibliography is inserted lower down stays before it.
-      if (plan.registration && regId === activeFile) {
-        const changes = view.state.changes(plan.registration);
-        view.dispatch({ changes, selection: view.state.selection.map(changes, plan.registration.from === 0 ? 1 : -1) });
-      }
+      registerImport(plan, regId, activeFile);
+    }
+    if (tracked) prune(doc);
+    doc.commit();
+    scheduleBibliography();
+    return keys;
+  }
+
+  // The file on screen goes through the view, because writeText would bypass the editor for it.
+  // A caret where frontmatter is inserted at the top moves past it, so the citation lands in the body.
+  // A caret where a bibliography is inserted lower down stays before it.
+  function registerImport(plan, regId, activeFile) {
+    if (plan.registration && regId === activeFile) {
+      const changes = view.state.changes(plan.registration);
+      view.dispatch({ changes, selection: view.state.selection.map(changes, plan.registration.from === 0 ? 1 : -1) });
+    }
+  }
+
+  const cslText = (value) => String(Array.isArray(value) ? value[0] ?? "" : value ?? "");
+
+  /// Looks a DOI up on doi.org for the Insert > Citation dialog. It throws an Error with a message for the person.
+  export async function lookupDoi(text) {
+    const doi = normaliseDoi(text);
+    if (!doi) throw new Error(m.editor_doi_invalid());
+    let csl;
+    try { csl = await fetchDoi(doi); }
+    catch (error) { throw new Error(error?.code === "not_found" ? m.editor_doi_not_found() : m.editor_doi_unreachable()); }
+    const { key, bibtex } = cslToBibtex(csl, doi);
+    const authors = (Array.isArray(csl?.author) ? csl.author : []).map((author) => cslText(author?.family || author?.literal)).filter(Boolean);
+    const year = Number(csl?.issued?.["date-parts"]?.[0]?.[0]);
+    return { doi, key, bibtex, title: cslText(csl?.title), authors, year: Number.isFinite(year) ? year : "", type: cslText(csl?.type) };
+  }
+
+  /// Adds looked-up DOI entries ({ doi, key, bibtex }) to the project's .bib for the Insert > Citation dialog. It returns the citation key of each entry, in order.
+  export async function importDoiEntries(entries) {
+    if (!editable || !session || !showing || !view) throw new Error(m.editor_doi_needs_file());
+    const doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
+    const keys = [];
+    for (const doiEntry of entries) {
+      const { plan, regId } = writeBibliographyImport(doc, activeFile, activePath, (target) => planDoiImport({ ...target, entry: doiEntry }));
+      keys.push(plan.key);
+      registerImport(plan, regId, activeFile);
     }
     if (tracked) prune(doc);
     doc.commit();
