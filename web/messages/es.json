@@ -178,7 +178,7 @@
   "agentexternal_connector_url_label": "URL del conector",
   "agentexternal_rows_title": "Conectados",
   "agentexternal_step_add": "Añádalo a su aplicación como conector.",
-  "agentexternal_step_approve": "Apruebe en la página que se abre y elija lo que la aplicación puede hacer.",
+  "agentexternal_step_approve": "En la página que se abre, elija lo que la aplicación puede hacer y luego apruebe.",
   "agentexternal_step_copy": "Copie este enlace",
   "agentexternal_tokens_help": "Un solo copiar y pegar para agentes en su computadora, como Claude Code, Codex o Pi. También para la sincronización y los scripts. Un token funciona como una contraseña para este proyecto.",
   "agentexternal_tokens_title": "Tokens",

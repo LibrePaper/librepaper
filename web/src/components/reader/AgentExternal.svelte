@@ -119,7 +119,7 @@
   {:else if sharing.sharing}
     {#if tokens.length > 0}
       <section class="agent-section" aria-labelledby="agent-rows-title">
-        <h4 class="agent-subtitle" id="agent-rows-title">{m.agentexternal_rows_title()}</h4>
+        <h3 class="agent-subtitle" id="agent-rows-title">{m.agentexternal_rows_title()}</h3>
         <ul class="share-list" aria-label={m.common_agent()}>
           {#each tokens as item (item.id)}
             <ShareRow kind="token" {item} busy={sharing.busy} copied={sharing.copied} oncopy={sharing.copy} onrevoke={() => (confirming = { item })} />

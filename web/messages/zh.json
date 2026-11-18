@@ -178,7 +178,7 @@
   "agentexternal_connector_url_label": "连接器 URL",
   "agentexternal_rows_title": "已连接",
   "agentexternal_step_add": "将其添加为应用中的连接器。",
-  "agentexternal_step_approve": "在打开的页面中批准，并选择应用可以执行的操作。",
+  "agentexternal_step_approve": "在打开的页面中选择应用可以执行的操作，然后批准。",
   "agentexternal_step_copy": "复制此链接",
   "agentexternal_tokens_help": "只需复制粘贴，适用于你电脑上的智能体，例如 Claude Code、Codex 或 Pi。也可用于同步和脚本。令牌相当于此项目的密码。",
   "agentexternal_tokens_title": "令牌",
