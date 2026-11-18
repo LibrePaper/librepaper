@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { BibliographyCache, bibliographyCacheKey, declaredBibliography, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyRegistration, citationContext, entryLabel, insertCitation, planDoiImport, planZoteroImport, rankEntries, selectedBibliographyFiles, zoteroCitationKey } from "../../src/lib/bibliography.js";
+import { BibliographyCache, bibliographyCacheKey, declaredBibliography, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyTargets, bibliographyRegistration, citationContext, entryLabel, insertCitation, planDoiImport, planZoteroImport, rankEntries, selectedBibliographyFiles, zoteroCitationKey } from "../../src/lib/bibliography.js";
 import { Text } from "@codemirror/state";
 
 const entries = [
@@ -220,4 +220,24 @@ assert.deepEqual(selectedBibliographyFiles("---\nbibliography: refs.bib\n...\nBo
   const nothing = planDoiImport({ source: "# Home\n", targetPath: "index.qmd", texts: {}, entry: doiEntry, format: "quarto", chapterPath: "ch.qmd", chapterText: "# One\n", entryPath: "index.qmd", entryText: "# Home\n" });
   assert.equal(nothing.path, "references.bib");
   assert.notEqual(nothing.registration, null);
+}
+
+// The target .bib of an import can be chosen from bibliographyTargets.
+{
+  const two = "---\nbibliography: [b.bib, a.bib]\n---\n";
+  const bibs = { "a.bib": "@book{A1,\n  title = {A}\n}\n", "b.bib": "@book{B1,\n  title = {B}\n}\n", "c.bib": "" };
+  assert.deepEqual(bibliographyTargets({ source: two, targetPath: "main.qmd", texts: bibs, format: "markdown" }), { files: ["a.bib", "b.bib"], declared: true });
+  assert.deepEqual(bibliographyTargets({ source: "# Notes\n", targetPath: "notes.md", texts: bibs, format: "markdown" }), { files: ["a.bib", "b.bib", "c.bib"], declared: false });
+  assert.deepEqual(bibliographyTargets({ source: "---\nbibliography: refs.json\n---\n", targetPath: "main.qmd", texts: bibs, format: "markdown" }), { files: [], declared: true });
+  const chosen = planDoiImport({ source: two, targetPath: "main.qmd", texts: bibs, entry: doiEntry, bibPath: "b.bib" });
+  assert.equal(chosen.path, "b.bib");
+  assert.match(chosen.bibtex, /B1[\s\S]*Kuc2013/);
+  const open = planDoiImport({ source: "# Notes\n", targetPath: "notes.md", texts: bibs, entry: doiEntry, bibPath: "b.bib" });
+  assert.equal(open.path, "b.bib");
+  assert.match(open.registration.insert, /b\.bib/);
+  assert.equal(planDoiImport({ source: "# Notes\n", targetPath: "notes.md", texts: bibs, entry: doiEntry, bibPath: "nope.bib" }).path, "a.bib");
+  assert.equal(planDoiImport({ source: two, targetPath: "main.qmd", texts: bibs, entry: doiEntry, bibPath: "c.bib" }).path, "a.bib");
+  const zotero = planZoteroImport({ source: two, targetPath: "main.qmd", texts: { ...bibs, "other.bib": "@book{Smi2023,\n  title = {X}\n}\n" }, item: { zotero_item: "ZZ", citation_key: "Smi2023", bibtex: "@article{Smi2023,\n title={T}}\n" }, bibPath: "a.bib" });
+  assert.equal(zotero.path, "a.bib");
+  assert.equal(zotero.key, "Smi2023a");
 }

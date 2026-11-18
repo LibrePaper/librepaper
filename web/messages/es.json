@@ -1578,6 +1578,7 @@
   "insertmenu_reference_choose": "Elegir un encabezado, figura, tabla o ecuación…",
   "insertmenu_search_label": "Buscar en la bibliografía",
   "insertmenu_search_placeholder": "Buscar autor, título, año o clave",
+  "insertmenu_bib_target": "Añadir a",
   "insertmenu_source": "Código fuente",
   "insertmenu_style_narrative": "Narrativo / textual",
   "insertmenu_style_parenthetical": "Entre paréntesis",

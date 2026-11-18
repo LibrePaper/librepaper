@@ -220,6 +220,23 @@ try {
   await evaluate("selectInsert(insertState().text.indexOf('Before') + 7)");await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
   assert.equal(await sourceValue(),"doi","the remembered source is restored when the dialog opens");
   await cancel();
+  // With two candidate .bib files a labelled select picks the target, and the choice is remembered.
+  await evaluate("window.extraMenuProps={...window.extraMenuProps,ontargets:()=>({files:['a.bib','b.bib'],declared:false}),ondoiimport:async(e,b)=>{window.__bibArgs=b;return e.map(x=>x.key)}};localStorage.removeItem('librepaper.insert.bibTarget');window.__bibArgs='unset';0");
+  await evaluate("setupInsert('markdown','Before AFTER')");
+  await evaluate("selectInsert(insertState().text.indexOf('Before') + 7)");await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  const targetSelect=`[...document.querySelectorAll('[role="dialog"][data-state="open"] select.select')].find(s=>[...s.options].some(o=>o.value==='a.bib'))`;
+  await until("target select",()=>evaluate(`Boolean(${targetSelect})`),5000);
+  assert.equal(await evaluate(`${targetSelect}.value`),"a.bib","the first file is selected by default");
+  await evaluate(`(()=>{const s=${targetSelect};s.value='b.bib';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await evaluate(`(()=>{const i=document.querySelector('[role="dialog"][data-state="open"] input[type="search"]');i.value='10.1000/abc';i.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await until("DOI row",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"] input[type="checkbox"][value="10.1000/abc"]:checked'))`),5000);
+  await confirm();
+  assert.equal(await evaluate("window.__bibArgs"),"b.bib","ondoiimport receives the chosen file");
+  await evaluate("selectInsert(insertState().text.indexOf('Before') + 7)");await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  await until("target select",()=>evaluate(`Boolean(${targetSelect})`),5000);
+  assert.equal(await evaluate(`${targetSelect}.value`),"b.bib","the chosen file is pre-selected on reopening");
+  await cancel();
+  await evaluate("window.extraMenuProps={ondoilookup:window.extraMenuProps.ondoilookup,ondoiimport:window.extraMenuProps.ondoiimport};0");
   await evaluate("Object.defineProperty(window,'localStorage',{get(){throw new Error('blocked')},configurable:true});0");
   await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
   assert.equal(await sourceValue(),"bibtex","a storage failure falls back to BibTeX");

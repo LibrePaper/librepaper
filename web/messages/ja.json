@@ -1563,6 +1563,7 @@
   "insertmenu_reference_choose": "見出し、図、表、数式を選択…",
   "insertmenu_search_label": "参考文献を検索",
   "insertmenu_search_placeholder": "著者、タイトル、年、キーで検索",
+  "insertmenu_bib_target": "追加先",
   "insertmenu_source": "ソース",
   "insertmenu_style_narrative": "文中形式",
   "insertmenu_style_parenthetical": "括弧形式",

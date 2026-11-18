@@ -1,6 +1,6 @@
 <script>
   import { Menu } from "@skeletonlabs/skeleton-svelte";
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import MenubarMenu from "./MenubarMenu.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import Icon from "./Icon.svelte";
@@ -28,15 +28,16 @@
    * onfocus?: () => void;
    * oncancel?: (context: InsertMenuContext | null) => void;
    * onzoterosearch?: ((query: string) => Promise<ZoteroEntry[]>) | null;
-   * onzoteroimport?: (items: ZoteroEntry[]) => Promise<string[]>;
+   * onzoteroimport?: (items: ZoteroEntry[], bibPath?: string) => Promise<string[]>;
    * ondoilookup?: ((text: string) => Promise<DoiEntry>) | null;
-   * ondoiimport?: (entries: DoiEntry[]) => Promise<string[]>;
+   * ondoiimport?: (entries: DoiEntry[], bibPath?: string) => Promise<string[]>;
+   * ontargets?: () => { files: string[], declared: boolean };
    * keys?: Record<string, string>;
    * disabled?: boolean;
    * demo?: boolean;
    * }} InsertMenuProps */
   /** @type {InsertMenuProps} */
-  let { getContext, oninsert, onupload, onpreview, onpalette, onfocus, oncancel, onzoterosearch = null, onzoteroimport, ondoilookup = null, ondoiimport, keys = {}, disabled = false, demo = false } = $props();
+  let { getContext, oninsert, onupload, onpreview, onpalette, onfocus, oncancel, onzoterosearch = null, onzoteroimport, ondoilookup = null, ondoiimport, ontargets, keys = {}, disabled = false, demo = false } = $props();
 
   /** @type {string | null} */
   let dialog = $state(null);
@@ -68,6 +69,19 @@
   /** @param {string} value */
   function rememberSource(value) {
     try { localStorage.setItem(SOURCE_KEY, value); } catch { /* storage is a convenience */ }
+  }
+  const TARGET_KEY = "librepaper.insert.bibTarget";
+  /** @returns {string} */
+  function rememberedTarget() {
+    try { return localStorage.getItem(TARGET_KEY) || ""; } catch { return ""; }
+  }
+  /** @type {string[]} */
+  let bibFiles = $state([]);
+  let bibTarget = $state("");
+  /** @param {string} value */
+  function chooseTarget(value) {
+    bibTarget = value;
+    try { localStorage.setItem(TARGET_KEY, value); } catch { /* storage is a convenience */ }
   }
   /** @type {DoiEntry[]} */
   let doiEntries = $state([]);
@@ -249,8 +263,8 @@
   }
   async function submit() {
     if (!dialog || !captured || busy) return;
-    if (dialog === "citation" && source === "zotero") return submitImport(() => onzoteroimport?.(zoteroSelected), m.insertmenu_zotero_import_failed());
-    if (dialog === "citation" && source === "doi") return submitImport(() => ondoiimport?.(doiSelected), m.insertmenu_doi_import_failed());
+    if (dialog === "citation" && source === "zotero") return submitImport(() => onzoteroimport?.(zoteroSelected, targetChoice), m.insertmenu_zotero_import_failed());
+    if (dialog === "citation" && source === "doi") return submitImport(() => ondoiimport?.(doiSelected, targetChoice), m.insertmenu_doi_import_failed());
     busy = true;
     try { await insert(dialog, insertionOptions(), captured); }
     catch (cause) { error = errorMessage(cause, m.insertmenu_generate_failed()); }
@@ -304,6 +318,18 @@
   /** @param {string | null} id */
   const needsText = (id) => ["heading", "link"].includes(id || "");
   const zoteroMode = $derived(dialog === "citation" && (source === "zotero" || source === "doi"));
+  // The .bib the import goes into: only offered when the project has a choice.
+  const targetChoice = $derived(zoteroMode && bibFiles.length >= 2 ? (bibFiles.includes(bibTarget) ? bibTarget : bibFiles[0]) : undefined);
+  $effect(() => {
+    if (!zoteroMode) return;
+    untrack(() => {
+      let files = [];
+      try { files = ontargets?.()?.files ?? []; } catch { files = []; }
+      bibFiles = files;
+      const remembered = rememberedTarget();
+      bibTarget = files.includes(remembered) ? remembered : files[0] ?? "";
+    });
+  });
   const importSelected = $derived(source === "doi" ? doiSelected : zoteroSelected);
   // Zotero and DOI modes need a selection. The preview may be empty until the import.
   const insertReady = $derived(zoteroMode ? importSelected.length > 0 : Boolean(preview?.text || preview?.additionalEdits?.length));
@@ -505,6 +531,13 @@
         {#if ondoilookup}<option value="doi">{m.insertmenu_doi()}</option>{/if}
       </select>
     </label>
+    {#if targetChoice}
+      <label class="label">{m.insertmenu_bib_target()}
+        <select class="select" value={targetChoice} onchange={(event) => chooseTarget(event.currentTarget.value)}>
+          {#each bibFiles as file (file)}<option value={file}>{file}</option>{/each}
+        </select>
+      </label>
+    {/if}
     <input class="input" type="search" placeholder={source === "doi" ? m.insertmenu_doi_placeholder() : m.insertmenu_search_placeholder()} aria-label={source === "doi" ? m.insertmenu_doi() : m.insertmenu_search_label()} value={query}
            onkeydown={queryKeydown}
            oninput={(event) => { query = event.currentTarget.value; scheduleZotero(); }} />
