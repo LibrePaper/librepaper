@@ -167,8 +167,10 @@ fn field(csl: &Value, name: &str) -> Option<String> {
 fn year(csl: &Value) -> Option<String> {
     let first = csl.get("issued")?.get("date-parts")?.get(0)?.get(0)?;
     match first {
-        Value::Number(number) => Some(number.to_string()),
-        Value::String(text) => text.trim().parse::<u32>().ok().map(|n| n.to_string()),
+        Value::Number(number) => number.as_u64().map(|year| year.to_string()),
+        Value::String(text) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) => {
+            Some(text.clone())
+        }
         _ => None,
     }
 }
@@ -274,11 +276,11 @@ fn key_for(authors: &[Author], title: Option<&str>, year: Option<&str>) -> Strin
 /// BibTeX for a CSL-JSON record, keyed provisionally.
 pub fn convert(csl: &Value, doi: &str) -> Converted {
     let kind = match csl.get("type").and_then(Value::as_str).unwrap_or("") {
-        "article-journal" => "article",
-        "book" => "book",
-        "chapter" => "incollection",
-        "paper-conference" => "inproceedings",
-        "thesis" => "phdthesis",
+        "article-journal" | "journal-article" => "article",
+        "book" | "monograph" | "edited-book" | "reference-book" => "book",
+        "chapter" | "book-chapter" => "incollection",
+        "paper-conference" | "proceedings-article" => "inproceedings",
+        "thesis" | "dissertation" => "phdthesis",
         "report" => "techreport",
         "webpage" => "online",
         _ => "misc",
