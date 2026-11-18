@@ -368,6 +368,11 @@ pub enum Error {
     /// human context and nothing may match on it.
     #[error("{0}")]
     Conflict(String),
+    /// The document's sharing rows changed between the caller's read and its
+    /// save, so the set it meant to write is out of date. Nothing was
+    /// written; reload the rows and apply the change again.
+    #[error("the sharing rows changed under the save")]
+    Stale,
     #[error("{0}")]
     Quota(QuotaScope),
     /// A write gave up waiting for a row lock another transaction held
