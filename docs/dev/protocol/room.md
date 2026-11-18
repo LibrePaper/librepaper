@@ -165,7 +165,9 @@ the most recently connected one. Tabs that do not know the frame ignore it:
 
 `output` is `"pdf"`, `"html"`, or `null` for the tab's own setting. `run` asks
 the tab to run code chunks. `expires_at` is 600 seconds after the request, as
-Unix seconds.
+Unix seconds. When a tab answers `run_unavailable`, `run_disabled` or `busy`,
+the server sends the same frame to the owner's next open tab, newest first,
+before reporting that error.
 
 The tab answers with `POST /api/documents/{slug}/compile/{id}`, sent with its
 cookie session and `content-type: application/json`. The body is at most

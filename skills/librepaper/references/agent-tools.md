@@ -41,6 +41,8 @@ The response carries `view_id`, `operation_epoch`, range handles and, for long r
 
 Ask the project owner's open browser tab to compile a file with the app's own engines, then return the status, diagnostics and log. Nothing compiles on the server. The tab must be open, because the owner's session does the work. Every role can call it. It takes no `operation`.
 
+When a tab answers `run_unavailable`, `run_disabled` or `busy`, the server tries the owner's next open tab, newest first, before reporting.
+
 - `path` (required): the file to compile, for example `paper.tex`, `index.qmd` or `main.typ`.
 - `output`: `"pdf"` or `"html"`. Omitted, the tab uses its own setting for that format.
 - `run`: default `false`. `true` runs the code chunks (Quarto and Typst). It needs an Editor token, the desktop app, a Run directory, and the owner's "Let agents run code" setting for the project. Otherwise the result is `run_unavailable`. A token without the Editor role is refused with `forbidden` before anything is sent.

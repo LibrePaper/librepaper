@@ -2,7 +2,10 @@
 //!
 //! The server never compiles. It sends a `compile_request` frame on the
 //! owner's room socket and waits for the tab to answer on
-//! `POST /api/documents/{slug}/compile/{id}`. Pending requests and finished
+//! `POST /api/documents/{slug}/compile/{id}`. If that tab declines
+//! (`run_unavailable`, `run_disabled` or `busy`), the server sends the same
+//! frame to the owner's next open tab, newest first, and reports the decline
+//! only when no tab is left. One deadline covers the whole chain. Pending requests and finished
 //! results live in memory only: a restart forgets them, and a caller whose
 //! request was forgotten simply asks again.
 //!
@@ -18,7 +21,7 @@ use std::time::Duration;
 use super::*;
 use axum::body::{to_bytes, Body};
 use axum::http::Request;
-use librepaper_engine::storage::outgoing::Outgoing;
+use librepaper_engine::storage::outgoing::{Outgoing, Sender};
 use tokio::sync::watch;
 
 /// How long a tab has to answer a request.
@@ -47,6 +50,9 @@ struct Entry {
     expires_at: i64,
     finished_at: Option<i64>,
     result: watch::Sender<Option<Value>>,
+    /// The request frame and the senders of the tabs not yet asked, in the
+    /// order to try them.
+    fallback: Option<(String, Vec<Sender>)>,
 }
 
 /// What became of a tab's reply.
@@ -237,9 +243,17 @@ impl CompileHub {
                 expires_at,
                 finished_at: None,
                 result,
+                fallback: None,
             },
         );
         Ok((id, receiver, expires_at))
+    }
+
+    /// Remember the frame and the tabs to try if the tab it went to declines.
+    pub(super) fn set_fallbacks(&self, id: &str, frame: String, senders: Vec<Sender>) {
+        if let Some(entry) = self.lock().get_mut(id) {
+            entry.fallback = Some((frame, senders));
+        }
     }
 
     /// Forget a request that could not be delivered.
@@ -286,6 +300,21 @@ impl CompileHub {
         };
         match build_result(id, &entry.path, body) {
             Ok(result) => {
+                let declined = matches!(
+                    result["error"].as_str(),
+                    Some("run_unavailable" | "run_disabled" | "busy")
+                );
+                if declined {
+                    if let Some((frame, senders)) = entry.fallback.as_mut() {
+                        while !senders.is_empty() {
+                            let next = senders.remove(0);
+                            if next.try_send(Outgoing::Text(frame.clone())).is_ok() {
+                                return Completion::Accepted;
+                            }
+                        }
+                    }
+                }
+                entry.fallback = None;
                 entry.finished_at = Some(now);
                 entry.result.send_replace(Some(result));
                 prune(&mut entries, now);
@@ -355,7 +384,8 @@ impl Server {
             return Err(no_tab());
         }
         // The most recently connected socket is the tab the owner just
-        // used. Socket ids only grow.
+        // used, so it is asked first. Socket ids only grow. If it declines
+        // the request, the hub passes the frame down the rest of this list.
         let mut tabs: Vec<_> = self
             .connections
             .lock()
@@ -384,13 +414,15 @@ impl Server {
             "expires_at": expires_at,
         })
         .to_string();
-        if !tabs
+        let Some(delivered) = tabs
             .iter()
-            .any(|(_, tx)| tx.try_send(Outgoing::Text(frame.clone())).is_ok())
-        {
+            .position(|(_, tx)| tx.try_send(Outgoing::Text(frame.clone())).is_ok())
+        else {
             self.compile.forget(&id);
             return Err(no_tab());
-        }
+        };
+        let rest: Vec<_> = tabs.drain(delivered + 1..).map(|(_, tx)| tx).collect();
+        self.compile.set_fallbacks(&id, frame, rest);
         let result = wait_for(&id, path, slot, Duration::from_millis(wait), expires_at).await;
         Ok(self.compile_current(slug, result).await)
     }
@@ -612,6 +644,59 @@ mod tests {
             hub.complete("doc", &id, "owner", &json!({"error": "bogus"}), NOW),
             Completion::NotFound
         );
+    }
+
+    fn tab() -> (Sender, librepaper_engine::storage::outgoing::Receiver) {
+        Sender::channel(4, 64 * 1024, None, None)
+    }
+
+    #[tokio::test]
+    async fn a_declined_request_goes_to_the_next_tab_and_stays_pending() {
+        let hub = CompileHub::default();
+        let (id, slot) = registered(&hub);
+        let (tx, mut rx) = tab();
+        hub.set_fallbacks(&id, "frame".to_owned(), vec![tx]);
+        let reply = json!({"error": "run_unavailable", "message": "no"});
+        assert_eq!(
+            hub.complete("doc", &id, "owner", &reply, NOW),
+            Completion::Accepted
+        );
+        let (body, _) = rx.recv().await.unwrap().into_parts();
+        assert!(matches!(body, Outgoing::Text(text) if text == "frame"));
+        assert!(slot.borrow().is_none());
+        assert_eq!(
+            hub.complete("doc", &id, "owner", &success(), NOW + 1),
+            Completion::Accepted
+        );
+        assert_eq!(slot.borrow().clone().unwrap()["status"], "succeeded");
+    }
+
+    #[test]
+    fn a_decline_with_no_tab_left_finishes_with_that_error() {
+        let hub = CompileHub::default();
+        let (id, slot) = registered(&hub);
+        hub.set_fallbacks(&id, "frame".to_owned(), Vec::new());
+        let reply = json!({"error": "run_unavailable", "message": "no"});
+        assert_eq!(
+            hub.complete("doc", &id, "owner", &reply, NOW),
+            Completion::Accepted
+        );
+        assert_eq!(slot.borrow().clone().unwrap()["error"], "run_unavailable");
+    }
+
+    #[test]
+    fn a_failed_reply_does_not_fall_back() {
+        let hub = CompileHub::default();
+        let (id, slot) = registered(&hub);
+        let (tx, mut rx) = tab();
+        hub.set_fallbacks(&id, "frame".to_owned(), vec![tx]);
+        let reply = json!({"error": "failed", "message": "no"});
+        assert_eq!(
+            hub.complete("doc", &id, "owner", &reply, NOW),
+            Completion::Accepted
+        );
+        assert_eq!(slot.borrow().clone().unwrap()["error"], "failed");
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
