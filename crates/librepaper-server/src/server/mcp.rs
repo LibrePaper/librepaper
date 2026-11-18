@@ -7,6 +7,7 @@ use librepaper_room::room::refusal::{Committed, Refusal};
 use serde::Serialize;
 
 pub(crate) mod comments;
+mod compile;
 mod operations;
 #[cfg(test)]
 mod recovery_tests;
@@ -30,6 +31,7 @@ pub(super) fn runner_execution_epoch(headers: &HeaderMap) -> String {
 }
 mod capacity;
 pub(super) use capacity::Capacity;
+pub(super) use compile::CompileHub;
 
 /// The agent's own display label from the bridge's header: trimmed, control
 /// characters dropped, at most 64 characters, `None` when nothing is left.
@@ -515,6 +517,7 @@ impl Server {
                 self.mcp_read(slug, &actor, who, headers, arrival, &args)
                     .await
             }
+            "document_compile" => self.mcp_compile(who, slug, &args).await,
             _ => {
                 self.mcp_operation(&auth, slug, &actor, who, headers, arrival, name, &args)
                     .await

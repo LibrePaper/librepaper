@@ -3007,6 +3007,8 @@
   "rundirectorycontrol_choose_a_folder": "选择文件夹",
   "rundirectorycontrol_share_results": "发布结果",
   "rundirectorycontrol_share_hint": "协作者即使没有您的数据，也能看到您上次运行的输出。",
+  "rundirectorycontrol_agents_run": "允许智能体运行代码",
+  "rundirectorycontrol_agents_run_hint": "连接到此项目的智能体可以在此窗口打开期间，在您的运行文件夹中运行其代码块。",
   "rundirectorycontrol_shared": "结果已发布 · {size}",
   "rundirectorycontrol_shared_figures": [
     {

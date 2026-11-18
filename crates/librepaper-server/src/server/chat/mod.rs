@@ -66,6 +66,7 @@ impl Server {
             arrival: arrival.clone(),
             query,
             role: who.rung(),
+            agent: false,
             link: who.link,
             comment_budget: who.comment_budget,
             authorized_at: tokio::time::Instant::now(),

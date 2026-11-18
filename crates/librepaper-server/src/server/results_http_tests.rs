@@ -696,3 +696,40 @@ async fn there_are_no_count_caps_on_cells() {
     let (status, put) = served.call("PUT", &owner, Some(body.to_string())).await;
     assert_eq!(status, 200, "{put}");
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_compile_reply_route_refuses_strangers_and_unknown_requests() {
+    let Some(deployment) = deployment("compile-reply").await else {
+        return;
+    };
+    let served = serve(deployment).await;
+    let url = format!(
+        "{}/api/documents/{}/compile/compile_{}",
+        served.base,
+        served.deployment_slug,
+        "0".repeat(32)
+    );
+    let post = |authorization: Option<String>| {
+        let mut request = reqwest::Client::new()
+            .post(&url)
+            .header("host", "paper.example")
+            .header("x-librepaper-client", "test")
+            .header("content-type", "application/json")
+            .body(json!({"error": "failed"}).to_string());
+        if let Some(authorization) = authorization {
+            request = request.header("authorization", authorization);
+        }
+        async move { request.send().await.unwrap().status().as_u16() }
+    };
+    let status = post(None).await;
+    assert!(
+        matches!(status, 401 | 404),
+        "an anonymous reply got {status}"
+    );
+    assert_eq!(
+        post(Some(served.owner.clone())).await,
+        404,
+        "no request is pending under that id"
+    );
+}

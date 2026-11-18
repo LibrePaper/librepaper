@@ -372,6 +372,8 @@ mod tests {
                 path: "chapters/intro.tex".into(),
                 from_line: 12,
                 to_line: 14,
+                occurrence: None,
+                count: None,
             })
         );
         let frame = r#"{"type":"comment","body":"b","exact":"x","hint":null}"#;
@@ -379,6 +381,24 @@ mod tests {
             parsed(frame),
             Ok(Command::Comment { hint: None, .. })
         ));
+    }
+
+    #[test]
+    fn a_hint_may_name_which_copy_of_the_words_was_selected() {
+        let frame = r#"{"type":"comment","body":"b","exact":"x","hint":{"path":"a.md","from_line":3,"to_line":4,"occurrence":1,"count":2}}"#;
+        let Ok(Command::Comment { hint, .. }) = parsed(frame) else {
+            panic!("a comment parses");
+        };
+        assert_eq!(
+            hint,
+            Some(SourceHint {
+                path: "a.md".into(),
+                from_line: 3,
+                to_line: 4,
+                occurrence: Some(1),
+                count: Some(2),
+            })
+        );
     }
 
     #[test]

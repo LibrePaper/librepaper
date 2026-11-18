@@ -1057,7 +1057,8 @@ function pump() {
           progress: null,
         });
       }
-      for (const resolve of waiting) resolve(result);
+      const answer = { ...result, compiledTree: tree };
+      for (const resolve of waiting) resolve(answer);
     })
     .catch((error) => {
       if (token.cancelled) return;

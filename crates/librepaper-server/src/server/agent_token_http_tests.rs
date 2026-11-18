@@ -779,7 +779,10 @@ async fn a_read_token_only_reads_and_a_comment_token_cannot_propose() {
 
     let (status, tools) = served.tools(&read_token).await;
     assert_eq!(status, 200);
-    assert_eq!(tools, ["document_read", "document_result"]);
+    assert_eq!(
+        tools,
+        ["document_read", "document_compile", "document_result"]
+    );
     let (_, tools) = served.tools(&comment).await;
     assert!(!tools.contains(&"document_propose".to_string()));
     assert!(!tools.contains(&"document_apply".to_string()));
