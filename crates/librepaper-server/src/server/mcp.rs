@@ -13,7 +13,7 @@ mod recovery_tests;
 mod render;
 mod schema;
 
-const MCP_MESSAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MCP_MESSAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_AGENT_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 /// How many comments or replies one `thread` query is handed. The same 24
 /// an agent query page has always been capped at, read from the catalogue
@@ -186,7 +186,7 @@ fn tool_result(result: Result<Value, Failure>) -> Reply {
 /// Edit identity (what used to be `operation_epoch` plus a minted id) is
 /// entirely the bridge's concern now: nothing here asks a model to copy or
 /// mint one.
-const INSTRUCTIONS: &str = "Read bounded source, then reuse view and range handles. Edits are identified automatically; nothing about an edit's identity needs to be copied, minted, or retried under a new value. Published proposals are tracked changes: they land in the document at once, marked pending, and an editor accepts or rejects each one. Apply directly only when authorized. Several patches published together land as one pass, all or none; batch: independent applies to private staging only. These tools are the only way to reach this document. A refused read may be repeated after a bounded reread that preserves the selected occurrence; follow supplied render recovery instructions when appropriate. An unknown mutation outcome must not be replayed or retried. If access is revoked or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.";
+pub(super) const INSTRUCTIONS: &str = "Read bounded source, then reuse view and range handles. Edits are identified automatically; nothing about an edit's identity needs to be copied, minted, or retried under a new value. Published proposals are tracked changes: they land in the document at once, marked pending, and an editor accepts or rejects each one. Apply directly only when authorized. Several patches published together land as one pass, all or none; batch: independent applies to private staging only. These tools are the only way to reach this document. A refused read may be repeated after a bounded reread that preserves the selected occurrence; follow supplied render recovery instructions when appropriate. An unknown mutation outcome must not be replayed or retried. If access is revoked or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.";
 
 /// For a direct HTTP caller (`GET .../tools?schema=full`), which supplies each
 /// write's `operation` itself. Identical to `INSTRUCTIONS` except for the two
@@ -196,6 +196,16 @@ const DIRECT_INSTRUCTIONS: &str = "Read bounded source, then reuse view and rang
 /// The oldest skill version (`SKILL_VERSION` in `skills/librepaper/scripts/lp`)
 /// that still works with this server. Raise it only when a change would make an
 /// older copy misbehave; the helper then tells its user to update.
+/// The tools whose arguments carry an operation identity (the same list the
+/// stdio bridge injects for).
+const MUTATING_TOOLS: [&str; 5] = [
+    "document_propose",
+    "document_apply",
+    "document_files",
+    "document_comment",
+    "document_withdraw",
+];
+
 const MIN_SKILL_VERSION: &str = "1";
 
 /// Names the oldest skill version this server works with on a tool route's reply.
@@ -302,6 +312,21 @@ impl Server {
             author
         }
     }
+    /// A signed operation epoch for `actor`, good for an hour. The epoch is
+    /// only a signature over its expiry and the actor, so one minted here is
+    /// accepted by a write on its own, with no captured view behind it.
+    pub(super) fn mint_operation_epoch(&self, actor: &str) -> String {
+        self.mint_operation_epoch_until(actor, now_unix() + 3600)
+    }
+
+    fn mint_operation_epoch_until(&self, actor: &str, expiry: i64) -> String {
+        let payload = format!(
+            "{expiry}.{}",
+            hex::encode(librepaper_base::util::random_bytes(8))
+        );
+        format!("{payload}.{}", sign(&self.key, actor, &payload))
+    }
+
     /// `GET /api/documents/{slug}/tools`: the served tool schemas and the
     /// operating instructions, fetched once by the bridge at startup.
     pub(super) async fn handle_tools_list(
@@ -360,6 +385,22 @@ impl Server {
         reply
     }
 
+    /// The tools a caller's role may call, in the bridge view (no `operation`
+    /// fields): what `GET .../tools` serves without `?schema=full`. For the
+    /// connector endpoint, which injects each write's operation itself.
+    pub(super) async fn bridge_tools(
+        &self,
+        context: &RequestContext,
+        headers: &HeaderMap,
+        slug: &str,
+    ) -> Result<Vec<Value>, Reply> {
+        let auth = self
+            .authorize::<access::rung::Read>(context, headers, slug, None)
+            .await
+            .map_err(|refusal| access::deny(&refusal))?;
+        Ok(schema::served_tools(auth.viewer.role))
+    }
+
     /// `POST /api/documents/{slug}/tools/{name}` with the tool's arguments as
     /// the JSON body.
     pub(super) async fn handle_tool_call(
@@ -394,7 +435,7 @@ impl Server {
             Ok(raw) => raw,
             Err(_) => return plain(413, "request exceeds 16 MiB"),
         };
-        let mut args: Value = if raw.is_empty() {
+        let args: Value = if raw.is_empty() {
             json!({})
         } else {
             match serde_json::from_slice(&raw) {
@@ -405,8 +446,31 @@ impl Server {
         if !args.is_object() {
             return plain(400, "expected a JSON object body");
         }
+        self.run_tool(context, &headers, slug, name, args, false)
+            .await
+    }
+
+    /// Runs one tool call whose HTTP framing is already checked: the caller
+    /// has validated the slug, the content type and the origin, and holds the
+    /// arguments as a JSON object. The tool route and the connector's
+    /// JSON-RPC endpoint (`mcp_http`) both come through here, so a tool
+    /// answers the same whichever door it was called by. `headers` are the
+    /// ones the call runs under, with the automation marker already set.
+    /// `inject_operation` is for a caller that holds no state between calls
+    /// (the connector endpoint): a write that carries no `operation` is given
+    /// a fresh one for its actor, as the stdio bridge does for a model.
+    pub(super) async fn run_tool(
+        &self,
+        context: &RequestContext,
+        headers: &HeaderMap,
+        slug: &str,
+        name: &str,
+        mut args: Value,
+        inject_operation: bool,
+    ) -> Reply {
+        let arrival = &context.arrival;
         let auth = match self
-            .authorize_mcp::<access::rung::Read>(context, &headers, slug)
+            .authorize_mcp::<access::rung::Read>(context, headers, slug)
             .await
         {
             Ok(auth) => auth,
@@ -415,6 +479,13 @@ impl Server {
         let who = &auth.viewer;
         if !schema::tools().iter().any(|tool| tool["name"] == name) {
             return tool_result(Err(Failure::new("invalid_params", "unknown document tool")));
+        }
+        if inject_operation && MUTATING_TOOLS.contains(&name) && args.get("operation").is_none() {
+            let actor = auth.caller.actor().unwrap_or_default();
+            args["operation"] = json!({
+                "epoch": self.mint_operation_epoch(actor),
+                "id": librepaper_base::util::new_request_key(),
+            });
         }
         if let Err(error) = schema::validate_tool(name, &args) {
             return tool_result(Err(Failure::new("invalid_params", error)));
@@ -440,11 +511,11 @@ impl Server {
         let actor = auth.caller.actor().unwrap_or_default().to_owned();
         let result = match name {
             "document_read" => {
-                self.mcp_read(slug, &actor, who, &headers, arrival, &args)
+                self.mcp_read(slug, &actor, who, headers, arrival, &args)
                     .await
             }
             _ => {
-                self.mcp_operation(&auth, slug, &actor, who, &headers, arrival, name, &args)
+                self.mcp_operation(&auth, slug, &actor, who, headers, arrival, name, &args)
                     .await
             }
         };
@@ -609,11 +680,7 @@ impl Server {
                 Ok(existing) => existing,
                 Err(error) if error.code == "view_expired" => {
                     let expiry = now_unix() + 3600;
-                    let payload = format!(
-                        "{expiry}.{}",
-                        hex::encode(librepaper_base::util::random_bytes(8))
-                    );
-                    let operation_epoch = format!("{payload}.{}", sign(&self.key, actor, &payload));
+                    let operation_epoch = self.mint_operation_epoch_until(actor, expiry);
                     let candidate = View {
                         snapshot: snapshot.clone(),
                         expires_at: expiry,

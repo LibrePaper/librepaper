@@ -507,10 +507,10 @@ async fn middleware_inner(
         return super::graphs::routes::admin(&server, request).await;
     }
     // An owner-issued agent token is refused everywhere by default. The two
-    // document tool routes for the token's own document are open to every
-    // token and the routes a project sync uses to a token with the Edit
-    // role, so a new route or the socket answers 401 without anyone having
-    // to remember to list it.
+    // document tool routes and the connector's `/mcp/<slug>` endpoint for the
+    // token's own document are open to every token, and the routes a project
+    // sync uses to a token with the Edit role, so a new route or the socket
+    // answers 401 without anyone having to remember to list it.
     if let Some(token) = agent_token_bearer(request.headers()) {
         let admitted = match agent_token_route(&token, &path, &method) {
             Some(TokenRoute::Tools) => true,
@@ -528,7 +528,7 @@ async fn middleware_inner(
         if !admitted {
             return write_json(
                 401,
-                &json!({"error": "an agent token works only on its document's tools, and an Edit token also on its history, project, assets and source-change routes"}),
+                &json!({"error": "an agent token works only on its document's tools (and its /mcp endpoint), and an Edit token also on its history, project, assets and source-change routes"}),
             );
         }
     }
@@ -633,8 +633,8 @@ fn default_cache_control(response: &mut Reply) {
 /// the role the route needs.
 #[derive(Debug, PartialEq, Eq)]
 enum TokenRoute {
-    /// `GET /tools` and `POST /tools/{name}`: any token. The tools hold a
-    /// token to its own role.
+    /// `GET /tools`, `POST /tools/{name}` and the connector's `/mcp/<slug>`:
+    /// any token. The tools hold a token to its own role.
     Tools,
     /// What a project sync uses: the history list and versions, the project,
     /// the assets and source changes. Only a token with the Edit role.
@@ -645,6 +645,12 @@ enum TokenRoute {
 /// with the slug the token names, or nothing for a route it may not use.
 fn agent_token_route(token: &str, path: &str, method: &Method) -> Option<TokenRoute> {
     let parsed = token.parse::<librepaper_base::ids::AgentToken>().ok()?;
+    // The connector's JSON-RPC endpoint for the token's own project, any
+    // method: the handler answers a wrong method itself, with the 405 the
+    // streamable-HTTP transport asks for.
+    if path.strip_prefix("/mcp/") == Some(parsed.slug.as_str()) {
+        return Some(TokenRoute::Tools);
+    }
     let rest = path
         .strip_prefix("/api/documents/")?
         .strip_prefix(parsed.slug.as_str())?;
@@ -677,6 +683,7 @@ fn agent_document_slug(path: &str) -> Option<&str> {
     let slug = path
         .strip_prefix("/api/documents/")
         .or_else(|| path.strip_prefix("/ws/"))
+        .or_else(|| path.strip_prefix("/mcp/"))
         .and_then(|rest| rest.split('/').next())?;
     (!slug.is_empty()).then_some(slug)
 }
@@ -878,6 +885,11 @@ mod agent_scope_tests {
             route(Method::POST, "/api/documents/paper/tools/document_read"),
             tools
         );
+        assert_eq!(route(Method::POST, "/mcp/paper"), tools);
+        assert_eq!(route(Method::GET, "/mcp/paper"), tools);
+        assert_eq!(route(Method::POST, "/mcp/other"), None);
+        assert_eq!(route(Method::POST, "/mcp/paper/extra"), None);
+        assert_eq!(agent_document_slug("/mcp/paper"), Some("paper"));
         assert_eq!(route(Method::GET, "/api/documents/paper/history"), sync);
         assert_eq!(
             route(Method::GET, &format!("/api/documents/paper/history/{SHA}")),

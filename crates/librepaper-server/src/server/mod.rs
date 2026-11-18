@@ -81,6 +81,9 @@ mod http_test_support;
 #[cfg(test)]
 mod isolation_http_tests;
 pub(crate) mod mcp;
+mod mcp_http;
+#[cfg(test)]
+mod mcp_http_tests;
 mod metrics;
 #[cfg(test)]
 mod moderation_http_tests;
@@ -1006,6 +1009,8 @@ impl Server {
             .with_state(self.clone());
         Router::new()
             .merge(routes::api_router(self.clone()))
+            // Moves into `connector_router` when the connector lands.
+            .merge(mcp_http::mcp_router(self.clone()))
             .merge(fallback)
             .layer(DefaultBodyLimit::disable())
             .layer(axum::middleware::from_fn_with_state(
