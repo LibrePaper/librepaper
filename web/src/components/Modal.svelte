@@ -1,3 +1,9 @@
+<script module>
+  // The size the user dragged a resizable card to, kept for the session so the
+  // next resizable dialog opens at it.
+  let savedSize = null;
+</script>
+
 <script>
   import { Dialog, Portal } from "@skeletonlabs/skeleton-svelte";
   import IconButton from "./IconButton.svelte";
@@ -147,6 +153,29 @@
     };
   });
 
+  // The browser writes an inline width and height when the user drags the
+  // resize handle. One card is reused by every Insert dialog, so a card that
+  // is not resizable drops them, and a resizable one gets the saved size back.
+  $effect(() => {
+    const card = bodyEl?.closest('[data-part="content"]');
+    if (!card || !open) return;
+    if (!resizable) {
+      card.style.removeProperty("width");
+      card.style.removeProperty("height");
+      return;
+    }
+    const wideEnough = matchMedia("(min-width: 480px)").matches;
+    if (wideEnough && savedSize) {
+      card.style.width = savedSize.width;
+      card.style.height = savedSize.height;
+    }
+    return () => {
+      if (wideEnough && card.style.width && card.style.height) {
+        savedSize = { width: card.style.width, height: card.style.height };
+      }
+    };
+  });
+
   let confirmButton = $state(null);
   let bodyEl = $state(null);
   const FIELD = "input:not([disabled]):not([type=hidden]), textarea:not([disabled]), select:not([disabled])";
@@ -293,7 +322,7 @@
   @media (min-width: 480px) {
     :global(.card.modal-resizable) {
       width: min(64rem, 95vw);
-      height: min(44rem, 90vh);
+      height: min(48rem, 90vh);
       min-width: min(36rem, 95vw);
       min-height: 24rem;
       max-width: 95vw;
