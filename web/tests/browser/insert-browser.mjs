@@ -226,6 +226,27 @@ try {
   await cancel();
   await evaluate("delete window.localStorage;delete window.extraMenuProps");
 
+  // The citation dialog is resizable; other dialogs are not, and a dragged size
+  // is remembered for the next citation dialog only. This harness loads no
+  // stylesheet, so computed `resize` and width cannot be asserted: only the
+  // inline-style behaviour is checked.
+  await page.resize(1280,900);
+  const card=`(()=>{const d=document.querySelector('[role="dialog"][data-state="open"]');return d.classList.contains('card')?d:d.querySelector('.card')})()`;
+  const cardStyle=()=>evaluate(`(()=>{const c=${card};return {width:c.style.width,height:c.style.height,resizable:c.classList.contains('modal-resizable')}})()`);
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");
+  await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  assert.equal((await cardStyle()).resizable,true,"the citation card is resizable");
+  await evaluate(`(()=>{const c=${card};c.style.width='1100px';c.style.height='700px';})()`);
+  await cancel();
+  await choose("table");await until("table dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Table'`),5000);
+  const table=await cardStyle();
+  assert.equal(table.resizable,false,"the table card is not resizable");
+  assert.deepEqual([table.width,table.height],["",""],"a dragged citation size does not leak into the table dialog");
+  await cancel();
+  await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  await until("dragged width restored",async()=>(await cardStyle()).width==="1100px",5000);
+  await cancel();
+
   // Cross-reference and label dialogs use actual gathered target ids.
   await evaluate(`setupInsert('markdown',${JSON.stringify("# Intro\n\nBefore AFTER")})`);await evaluate("selectInsert(15)");
   await choose("cross-reference");await until("cross-reference dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Cross-reference'`),5000);

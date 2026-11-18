@@ -578,8 +578,9 @@
   .insert-results { flex: 1 1 16rem; min-height: 6rem; overflow: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }
   .insert-result { display: flex; align-items: baseline; gap: .6rem; padding: .3rem .7rem; font-size: .85rem; cursor: pointer; white-space: nowrap; }
   .insert-result input { flex: none; align-self: center; }
-  .insert-key { flex: none; max-width: 10rem; overflow: hidden; text-overflow: ellipsis; }
-  .insert-who { flex: none; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; color: var(--color-text-secondary); }
+  .insert-key { flex: 0 1 auto; min-width: 0; max-width: 10rem; overflow: hidden; text-overflow: ellipsis; }
+  .insert-who { flex: 0 1 auto; min-width: 0; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; color: var(--color-text-secondary); }
+  @media (max-width: 479px) { .insert-key, .insert-who { max-width: 7rem; } }
   .insert-year { flex: none; color: var(--color-text-secondary); }
   .insert-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .insert-error-text { padding: .5rem .7rem; color: var(--color-error-text); font-size: .85rem; }
