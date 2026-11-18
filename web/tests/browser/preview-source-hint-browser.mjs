@@ -92,13 +92,13 @@ try {
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("agent loaded", () => page.evaluate("window.published.length > 0"), 10000);
 
-  // Posts a preview. `withSources` is false for the case that has none, so the
-  // key is absent rather than null.
-  const preview = (html, withSources = true) => page.evaluate(`postMessage(${JSON.stringify({
+  // Posts a preview with the sources table its tags name. Without one the key
+  // is absent rather than null, as a render that names no sources sends it.
+  const preview = (html, table) => page.evaluate(`postMessage(${JSON.stringify({
     librepaper: true,
     type: "preview",
     html,
-    ...(withSources ? { sources } : {}),
+    ...(table ? { sources: table } : {}),
   })},"*")`);
   const showing = (marker) => until(
     `the page shows ${marker}`,
@@ -108,7 +108,7 @@ try {
 
   // 1. Tagged positions: the second paragraph's words come from line 30 to 31
   // of the file the tag names, not the first paragraph's line 12.
-  await preview(repeated);
+  await preview(repeated, sources);
   await showing('[data-sourcepos="1:30:1-1:31:20"]');
   const repeatedSelection = await page.evaluate(selectText(
     ['p[data-sourcepos="1:30:1-1:31:20"]', 4],
@@ -122,7 +122,7 @@ try {
   );
 
   // 2. Untagged positions: the source is the one file, tag 0.
-  await preview(untagged);
+  await preview(untagged, ["paper.md"]);
   await showing('[data-sourcepos="3:16-3:22"]');
   const inEmphasis = await page.evaluate(selectText(
     ['em[data-sourcepos="3:16-3:22"]', 0],
@@ -149,7 +149,7 @@ try {
 
   // 3. A bundled source: tag 0 maps to null in sources, so the selection has
   // no hint, but it is still a selection with its quote.
-  await preview(bundled);
+  await preview(bundled, sources);
   await showing('[data-sourcepos="0:1:1-0:1:40"]');
   const bundledSelection = await page.evaluate(selectText(
     ['p[data-sourcepos="0:1:1-0:1:40"]', 8],
@@ -160,7 +160,7 @@ try {
 
   // 4. No sources in the preview: the same untagged page gives no hint, and
   // the quote is still there.
-  await preview(untagged, false);
+  await preview(untagged);
   await showing('[data-sourcepos="3:16-3:22"]');
   const withoutSources = await page.evaluate(selectText(
     ['em[data-sourcepos="3:16-3:22"]', 0],
@@ -169,9 +169,9 @@ try {
   assert.equal(withoutSources.selector.exact, "second", "no sources: the quote is still taken");
   assert.equal("hint" in withoutSources.selector, false, "no sources: no hint");
 
-  // 5. Mismatched tags: one end is the bundled tag 0 and the other tag 1, both
-  // mapped in sources. The two ends do not name one source, so no hint.
-  await preview(mismatched);
+  // 5. Mismatched tags: one end is tag 0 and the other tag 1, both of them
+  // project files. The two ends do not name one source, so no hint.
+  await preview(mismatched, ["main.tex", "chapters/intro.tex"]);
   await showing('[data-sourcepos="1:5:1-1:5:20"]');
   const mixed = await page.evaluate(selectText(
     ['p[data-sourcepos="0:1:1-0:1:20"]', 0],
