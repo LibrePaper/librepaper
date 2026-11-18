@@ -173,7 +173,7 @@
   "agent_your_agent": "お使いのエージェント",
   "agentexternal_connect_docs": "接続方法",
   "agentexternal_connect_title": "アプリを接続",
-  "agentexternal_connect_lede": "Claude や ChatGPT など、コネクタに対応したアプリ向けです。プロジェクトごとに数ステップの設定が必要です。",
+  "agentexternal_connect_lede": "Claude や ChatGPT など、コネクタに対応したアシスタントで、ブラウザ、デスクトップ、スマートフォンから使えます。プロジェクトごとに数ステップの設定が必要です。",
   "agentexternal_connector_copy": "コネクタのURLをコピー",
   "agentexternal_connector_url_label": "コネクタのURL",
   "agentexternal_rows_title": "接続済み",
