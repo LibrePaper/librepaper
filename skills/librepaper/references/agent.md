@@ -32,11 +32,13 @@ lp withdraw 3f9c… 7a1e…
 |---|---|---|
 | Explain, summarize, outline, answer a question | `read`, then answer in chat | Read |
 | Review | `comment` | Comment |
+| See the comments already there | `call document_read` with a `thread` query, shown below | Read |
 | Proofread, tighten, rewrite | `suggest` (tracked change) | Suggest |
 | Add text | `insert` (tracked insertion) | Suggest |
 | New file, when the user asks for it | `create` (untracked) | Edit |
 
 - Use `lp read <path> [--lines A-B]` to get exact source. Then do the write.
+- To see existing comments, run `lp call document_read '{"queries":[{"kind":"thread","include":"unresolved"}]}'`. Each comment comes back with its `anchor`: the file, the passage as it reads now, and a `range_id` for it. Use `"include":"all"` to see resolved comments too, and `{"kind":"thread","id":"<comment id>"}` for one thread with its replies. Answering or resolving a comment goes through [The tools directly](#the-tools-directly).
 - The text given to `--on`, `--find`, `--after` or `--before` must match the source exactly and appear once. If it does not, the helper says so, lists the lines and changes nothing. Retry with a longer excerpt.
 - `insert` uses the text verbatim, so include any blank lines the text needs.
 - For long text, pass `--text-file -`, `--replace-file -` or `--body-file -` to read it from stdin, or give a path.
@@ -110,6 +112,7 @@ You need this only for replies, resolving threads, direct edits, compile validat
 Start with one `document_read` that combines queries: `{"kind":"manifest"}` to list files, then `context`, `source` or `outline` for the file in scope. Every read returns a `view_id`, `range_id` handles, effective permissions, limits and `operation_epoch`.
 
 - `context`, `source` and `section` need `path`. There is no main file, so read the manifest when unsure.
+- To see the comments already on the project, add `{"kind":"thread","include":"unresolved"}` to the same read. Each one carries its `anchor`, with a `range_id` you can reply or propose on.
 - Follow `next_cursor` against the same `view_id` until done. Never call a partial read a review of the whole document.
 - Reuse handles. Never rebuild source text or compute hashes yourself.
 - Query kinds and fields are in [agent-tools.md](agent-tools.md).
