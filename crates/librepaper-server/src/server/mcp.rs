@@ -388,6 +388,7 @@ impl Server {
     /// The tools a caller's role may call, in the bridge view (no `operation`
     /// fields): what `GET .../tools` serves without `?schema=full`. For the
     /// connector endpoint, which injects each write's operation itself.
+    #[allow(clippy::result_large_err)] // the refusal is the HTTP reply itself
     pub(super) async fn bridge_tools(
         &self,
         context: &RequestContext,
