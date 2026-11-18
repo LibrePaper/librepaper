@@ -345,7 +345,10 @@ async fn the_discovery_documents_name_this_server() {
         server.body["revocation_endpoint"],
         format!("{READER}/oauth/revoke")
     );
-    assert_eq!(server.body["code_challenge_methods_supported"], json!(["S256"]));
+    assert_eq!(
+        server.body["code_challenge_methods_supported"],
+        json!(["S256"])
+    );
     assert_eq!(
         server.body["token_endpoint_auth_methods_supported"],
         json!(["none"])
@@ -454,9 +457,7 @@ async fn authorize_never_redirects_to_an_address_it_cannot_vouch_for() {
     let query = served
         .authorize_query(&client_id, CALLBACK)
         .replace("response_type=code", "response_type=token");
-    let wrong = served
-        .get(&format!("/oauth/authorize?{query}"), None)
-        .await;
+    let wrong = served.get(&format!("/oauth/authorize?{query}"), None).await;
     assert_eq!(wrong.status, 302);
     let location = wrong.location.unwrap();
     assert!(location.starts_with(CALLBACK), "{location}");
@@ -471,9 +472,7 @@ async fn authorize_never_redirects_to_an_address_it_cannot_vouch_for() {
         ("code_challenge_method", "S256"),
         ("resource", "https://elsewhere.example/mcp/x"),
     ]);
-    let target = served
-        .get(&format!("/oauth/authorize?{query}"), None)
-        .await;
+    let target = served.get(&format!("/oauth/authorize?{query}"), None).await;
     assert_eq!(target.status, 302);
     assert!(
         target.location.unwrap().contains("error=invalid_target"),
@@ -489,9 +488,7 @@ async fn a_signed_out_person_is_sent_through_the_door_and_back() {
     };
     let client_id = served.client_id().await;
     let query = served.authorize_query(&client_id, CALLBACK);
-    let answer = served
-        .get(&format!("/oauth/authorize?{query}"), None)
-        .await;
+    let answer = served.get(&format!("/oauth/authorize?{query}"), None).await;
     assert_eq!(answer.status, 302);
     let location = answer.location.unwrap();
     let next = location
@@ -543,7 +540,10 @@ async fn the_owner_is_shown_the_consent_and_a_stranger_is_not_the_owner() {
 
     let stranger = served.stranger_cookie().await;
     let info = served
-        .get(&format!("/api/oauth/authorize-info?{query}"), Some(&stranger))
+        .get(
+            &format!("/api/oauth/authorize-info?{query}"),
+            Some(&stranger),
+        )
         .await;
     assert_eq!(info.status, 200, "{}", info.body);
     assert_eq!(info.body["owner"], false);
@@ -756,7 +756,11 @@ async fn refreshing_rotates_both_tokens() {
     assert_ne!(new_refresh, refresh);
     assert_eq!(second.body["scope"], "suggest");
     assert_eq!(served.tools(&new_access).await, 200);
-    assert_eq!(served.tools(&access).await, 401, "the old access token died");
+    assert_eq!(
+        served.tools(&access).await,
+        401,
+        "the old access token died"
+    );
 
     let again = served.refresh(&client_id, &refresh).await;
     assert_eq!(again.status, 400, "{}", again.body);
@@ -794,11 +798,16 @@ async fn revoking_ends_the_connection() {
     let refresh = issued.body["refresh_token"].as_str().unwrap().to_string();
     assert_eq!(served.tools(&access).await, 200);
 
-    let revoked = served.post_form("/oauth/revoke", &[("token", &access)]).await;
+    let revoked = served
+        .post_form("/oauth/revoke", &[("token", &access)])
+        .await;
     assert_eq!(revoked.status, 200);
     assert_eq!(served.tools(&access).await, 401);
     let dead = served.refresh(&client_id, &refresh).await;
-    assert_eq!(dead.body["error"], "invalid_grant", "its refresh token went with it");
+    assert_eq!(
+        dead.body["error"], "invalid_grant",
+        "its refresh token went with it"
+    );
 
     let nothing = served
         .post_form("/oauth/revoke", &[("token", "not-a-token")])

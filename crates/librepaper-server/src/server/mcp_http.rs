@@ -95,7 +95,8 @@ async fn answer(
     let id = message.get("id").cloned();
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         // A response from the client (to a request we never send), or junk.
-        return if id.is_some() && (message.get("result").is_some() || message.get("error").is_some())
+        return if id.is_some()
+            && (message.get("result").is_some() || message.get("error").is_some())
         {
             accepted()
         } else {

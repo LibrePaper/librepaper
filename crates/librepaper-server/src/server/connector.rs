@@ -188,7 +188,10 @@ fn seal<T: Serialize>(session_key: &[u8], kind: &str, value: &T) -> String {
             },
         )
         .unwrap_or_default();
-    format!("{kind}.{}", URL_SAFE_NO_PAD.encode([nonce, sealed].concat()))
+    format!(
+        "{kind}.{}",
+        URL_SAFE_NO_PAD.encode([nonce, sealed].concat())
+    )
 }
 
 /// The value inside a sealed token of this kind, or nothing for anything that
@@ -610,8 +613,7 @@ impl Server {
             n: name.clone(),
             t: issued_at,
         };
-        let payload =
-            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&client).unwrap_or_default());
+        let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&client).unwrap_or_default());
         let client_id = format!(
             "lpc1.{payload}.{}",
             sign(&self.key, "oauth-client", &payload)
@@ -1045,7 +1047,10 @@ async fn authorize_info(
         Ok(Some(entry)) => entry,
         Ok(None) => return write_json(400, &json!({"error": "that project does not exist"})),
         Err(()) => {
-            return write_json(503, &json!({"error": "project lookup temporarily unavailable"}))
+            return write_json(
+                503,
+                &json!({"error": "project lookup temporarily unavailable"}),
+            )
         }
     };
     let owner = server
@@ -1061,7 +1066,11 @@ async fn authorize_info(
             })
         })
         .unwrap_or_default();
-    let title = if owner { entry.title.as_str() } else { asked.slug.as_str() };
+    let title = if owner {
+        entry.title.as_str()
+    } else {
+        asked.slug.as_str()
+    };
     let mut response = write_json(
         200,
         &json!({
@@ -1102,7 +1111,10 @@ async fn approve(
         Err(reply) => return reply,
     };
     let Ok(body) = to_bytes(request.into_body(), MAX_BODY).await else {
-        return write_json(413, &json!({"error": "that is too much body for a decision"}));
+        return write_json(
+            413,
+            &json!({"error": "that is too much body for a decision"}),
+        );
     };
     let Some(params) = parse_json_fields(&body) else {
         return write_json(400, &json!({"error": "bad request"}));
@@ -1136,7 +1148,10 @@ async fn approve(
         .then(|| role.parse::<Role>().ok())
         .flatten()
     else {
-        return write_json(400, &json!({"error": "role is read, comment, suggest or edit"}));
+        return write_json(
+            400,
+            &json!({"error": "role is read, comment, suggest or edit"}),
+        );
     };
     match server
         .authorize::<access::rung::Owner>(&ctx, &headers, &asked.slug, None)
@@ -1254,7 +1269,8 @@ mod tests {
 
     #[test]
     fn a_challenge_is_43_base64url_characters() {
-        let challenge = librepaper_base::auth::pkce_challenge("a-verifier-of-reasonable-length-0123456789");
+        let challenge =
+            librepaper_base::auth::pkce_challenge("a-verifier-of-reasonable-length-0123456789");
         assert!(valid_challenge(&challenge));
         assert!(!valid_challenge("short"));
         assert!(!valid_challenge(&"=".repeat(43)));

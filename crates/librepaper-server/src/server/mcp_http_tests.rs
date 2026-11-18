@@ -120,7 +120,9 @@ impl Served {
 
     /// One JSON-RPC request under a token: the HTTP status and the body.
     async fn rpc(&self, token: &str, body: Value) -> (u16, Value) {
-        let response = self.send(reqwest::Method::POST, Some(token), Some(body)).await;
+        let response = self
+            .send(reqwest::Method::POST, Some(token), Some(body))
+            .await;
         let status = response.status().as_u16();
         (status, response.json().await.unwrap_or(Value::Null))
     }
@@ -170,7 +172,10 @@ async fn a_missing_or_foreign_token_is_sent_to_the_authorization_server() {
     }
     .to_string();
     let (status, _) = served
-        .rpc(&foreign, json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
+        .rpc(
+            &foreign,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+        )
         .await;
     assert_eq!(status, 401);
 
@@ -243,7 +248,10 @@ async fn the_handshake_and_the_tool_list_follow_the_protocol() {
     assert_eq!(body["result"], json!({}));
 
     let (status, body) = served
-        .rpc(&token, json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list"}))
+        .rpc(
+            &token,
+            json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list"}),
+        )
         .await;
     assert_eq!(status, 200);
     let names: Vec<String> = body["result"]["tools"]
@@ -253,7 +261,10 @@ async fn the_handshake_and_the_tool_list_follow_the_protocol() {
         .map(|tool| tool["name"].as_str().unwrap().to_owned())
         .collect();
     let served_by_route: Value = reqwest::Client::new()
-        .get(format!("{}/api/documents/{}/tools", served.base, served.slug))
+        .get(format!(
+            "{}/api/documents/{}/tools",
+            served.base, served.slug
+        ))
         .header("host", "paper.example")
         .header("authorization", format!("Bearer {token}"))
         .send()
@@ -338,7 +349,10 @@ async fn malformed_methods_and_verbs_are_answered_as_the_protocol_asks() {
     assert_eq!(body["error"]["code"], -32600);
 
     let (_, body) = served
-        .rpc(&token, json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list"}))
+        .rpc(
+            &token,
+            json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list"}),
+        )
         .await;
     assert_eq!(body["error"]["code"], -32601);
     assert_eq!(body["id"], 2);
@@ -374,7 +388,12 @@ async fn a_token_still_works_nowhere_else() {
         return;
     };
     let token = served.mint_token("comment").await;
-    for path in ["/api/list", "/api/account/storage", "/mcp", "/mcp/other-paper"] {
+    for path in [
+        "/api/list",
+        "/api/account/storage",
+        "/mcp",
+        "/mcp/other-paper",
+    ] {
         let response = reqwest::Client::new()
             .get(format!("{}{path}", served.base))
             .header("host", "paper.example")
