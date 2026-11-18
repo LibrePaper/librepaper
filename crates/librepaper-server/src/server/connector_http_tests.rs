@@ -361,6 +361,9 @@ async fn the_discovery_documents_name_this_server() {
         server.body["revocation_endpoint"],
         format!("{READER}/oauth/revoke")
     );
+    assert!(server.body["scopes_supported"]
+        .as_array()
+        .is_some_and(|scopes| scopes.contains(&json!("offline_access"))));
     assert_eq!(
         server.body["code_challenge_methods_supported"],
         json!(["S256"])

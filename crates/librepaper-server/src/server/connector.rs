@@ -348,7 +348,10 @@ fn parse_json_fields(body: &[u8]) -> Option<HashMap<String, String>> {
 }
 
 /// A role as the consent page and the Agent panel name it: the `scope` a
-/// token answer reports.
+/// token answer reports. The `scope` an app asks for at authorize is ignored,
+/// `offline_access` included: the request would have to ride through sign-in
+/// and the consent page to reach the code. Refresh tokens are issued
+/// regardless, which is all `offline_access` asks for.
 fn scope_of(role: &str) -> &'static str {
     match role.parse::<Role>() {
         Ok(Role::Reader) => "read",
@@ -1101,6 +1104,8 @@ async fn authorization_server(
         "revocation_endpoint": format!("{origin}/oauth/revoke"),
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
+        // Some apps keep a connection only when this is advertised.
+        "scopes_supported": ["offline_access"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
     }))
