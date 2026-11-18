@@ -560,6 +560,55 @@ export async function quartoSidecar(source, { path = "main.qmd", results = null,
   };
 }
 
+// The untagged form of `data-sourcepos`: " data-sourcepos=\"L:C-L:C\"", with the
+// leading space so a removed attribute leaves no gap behind.
+const UNTAGGED_SOURCEPOS = / data-sourcepos="(\d+):(\d+)-(\d+):(\d+)"/g;
+
+/// A page rendered from a draft carries positions that count the draft's
+/// lines, because citations.wasm renders the draft and not the .qmd. Each
+/// untagged position is put back on the .qmd lines through the draft's line
+/// map. A generated line has no source line of its own, so it borrows the
+/// nearest mapped line (the preceding one first) at column 1. A position with
+/// no mapped line at all is dropped rather than pointed at the wrong place.
+export function mapDraftSourcepos(html, lineMap) {
+  const map = Array.isArray(lineMap) ? lineMap : [];
+  return String(html).replace(UNTAGGED_SOURCEPOS, (whole, startLine, startColumn, endLine, endColumn) => {
+    const start = placeDraftLine(map, Number(startLine) - 1);
+    if (!start) return "";
+    const end = placeDraftLine(map, Number(endLine) - 1);
+    let startOut = start.line;
+    let startColumnOut = start.direct ? startColumn : "1";
+    let endOut = end.line;
+    let endColumnOut = end.direct ? endColumn : "1";
+    // A block that ends before it starts after the mapping is collapsed to
+    // its start, as the mapping cannot keep the two in order.
+    if (endOut < startOut) {
+      endOut = startOut;
+      endColumnOut = startColumnOut;
+    }
+    return ` data-sourcepos="${startOut}:${startColumnOut}-${endOut}:${endColumnOut}"`;
+  });
+}
+
+// The .qmd line of a draft line: its own mapping when it has one, otherwise
+// the nearest preceding mapped line, otherwise the nearest following one.
+// `direct` tells the caller to keep the original column.
+function placeDraftLine(lineMap, index) {
+  if (lineMap[index] != null) return { line: lineMap[index], direct: true };
+  const line = nearestMappedLine(lineMap, index - 1, -1) ?? nearestMappedLine(lineMap, index + 1, 1);
+  return line == null ? null : { line, direct: false };
+}
+
+// Walks the map from `index` in `step` direction and returns the first
+// mapped line, or null when the map has none that way. The walk is bounded
+// by the map's own length, so an out-of-range line never loops far.
+function nearestMappedLine(lineMap, index, step) {
+  for (let i = step < 0 ? Math.min(index, lineMap.length - 1) : Math.max(index, 0); i >= 0 && i < lineMap.length; i += step) {
+    if (lineMap[i] != null) return lineMap[i];
+  }
+  return null;
+}
+
 /// Diagnostics whose message is a catalogue key (`quarto_*`) are translated
 /// with the arguments the module put in `hints` as `name=value`.
 export function translateQuartoDiagnostics(diagnostics) {

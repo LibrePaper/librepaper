@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { BibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyRegistration, citationContext, entryLabel, insertCitation, planDoiImport, planZoteroImport, rankEntries, zoteroCitationKey } from "../../src/lib/bibliography.js";
+import { BibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyRegistration, citationContext, entryLabel, insertCitation, planDoiImport, planZoteroImport, rankEntries, selectedBibliographyFiles, zoteroCitationKey } from "../../src/lib/bibliography.js";
 import { Text } from "@codemirror/state";
 
 const entries = [
@@ -35,14 +35,14 @@ assert.equal(citationContext("see @smith2020 for details", 26, "markdown"), null
 assert.deepEqual(citationContext("see @smi", 8, "markdown"), { kind: "markdown", from: 5, to: 8, query: "smi", trigger: "@" });
 assert.deepEqual(citationContext("[@smith2020; @jo", 16, "markdown"), { kind: "markdown", from: 14, to: 16, query: "jo", trigger: "@" });
 
-const base = { main: "paper.md", format: "markdown", source: "bibliography: refs.bib\n[@smith2020]", texts: { "refs.bib": "a", "other.bib": "b" } };
-assert.equal(bibliographyCacheKey({ ...base, source: "bibliography: refs.bib\nchanged" }), bibliographyCacheKey(base));
-assert.equal(bibliographyNeedsAnalysis({ source: "bibliography: missing.bib", format: "markdown", texts: {} }), true);
+const base = { main: "paper.md", format: "markdown", source: "---\nbibliography: refs.bib\n---\n[@smith2020]", texts: { "refs.bib": "a", "other.bib": "b" } };
+assert.equal(bibliographyCacheKey({ ...base, source: "---\nbibliography: refs.bib\n---\nchanged" }), bibliographyCacheKey(base));
+assert.equal(bibliographyNeedsAnalysis({ source: "---\nbibliography: missing.bib\n---\n", format: "markdown", texts: {} }), true);
 const cache = new BibliographyCache(4);
 let calls = 0;
 const analyze = async () => { calls++; return { entries }; };
 await cache.get(base, analyze);
-await cache.get({ ...base, source: "bibliography: refs.bib\nnew prose" }, analyze);
+await cache.get({ ...base, source: "---\nbibliography: refs.bib\n---\nnew prose" }, analyze);
 assert.equal(calls, 1);
 for (let i = 0; i < 5; i += 1) {
   await cache.get({ ...base, texts: { ...base.texts, "refs.bib": String(i) } }, analyze);
@@ -66,7 +66,7 @@ const planned = planZoteroImport({
 assert.equal(planned.key, "Smi2023a");
 assert.match(planned.bibtex, /@article\{Smi2023a,/);
 assert.equal(planned.registration.insert, "---\nbibliography: references.bib\n---\n\n");
-const repeated = planZoteroImport({ source: "bibliography: references.bib\n", targetPath: "main.qmd", texts: { "references.bib": planned.bibtex }, item: { zotero_item: "NEW123", citation_key: "Smi2023", bibtex: "ignored" } });
+const repeated = planZoteroImport({ source: "---\nbibliography: references.bib\n---\n", targetPath: "main.qmd", texts: { "references.bib": planned.bibtex }, item: { zotero_item: "NEW123", citation_key: "Smi2023", bibtex: "ignored" } });
 assert.equal(repeated.already, true);
 assert.equal(repeated.key, "Smi2023a");
 assert.equal(repeated.bibtex, planned.bibtex);
@@ -114,17 +114,17 @@ assert.notEqual(planZoteroImport({ source: "% \\bibliography{old}\n\\begin{docum
 
 // A DOI import appends a new entry, reuses an entry with the same DOI, and suffixes a key collision.
 const doiEntry = { doi: "10.1038/nature12373", key: "Kuc2013", bibtex: "@article{Kuc2013,\n  title = {T},\n  doi = {10.1038/nature12373}\n}\n" };
-const doiAdded = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "@book{Old2020,\n  title = {Old}\n}\n" }, entry: doiEntry });
+const doiAdded = planDoiImport({ source: "---\nbibliography: refs.bib\n---\n", targetPath: "main.qmd", texts: { "refs.bib": "@book{Old2020,\n  title = {Old}\n}\n" }, entry: doiEntry });
 assert.equal(doiAdded.key, "Kuc2013");
 assert.equal(doiAdded.already, false);
 assert.equal(doiAdded.path, "refs.bib");
 assert.equal(doiAdded.addition, "\n" + doiEntry.bibtex);
 assert.equal(doiAdded.registration, null);
-const doiAgain = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "@article{Mine,\n  doi = {10.1038/NATURE12373}\n}\n" }, entry: doiEntry });
+const doiAgain = planDoiImport({ source: "---\nbibliography: refs.bib\n---\n", targetPath: "main.qmd", texts: { "refs.bib": "@article{Mine,\n  doi = {10.1038/NATURE12373}\n}\n" }, entry: doiEntry });
 assert.equal(doiAgain.already, true);
 assert.equal(doiAgain.key, "Mine");
 assert.equal(doiAgain.addition, "");
-const doiClash = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "@book{kuc2013,\n  doi = {10.1/other}\n}\n" }, entry: doiEntry });
+const doiClash = planDoiImport({ source: "---\nbibliography: refs.bib\n---\n", targetPath: "main.qmd", texts: { "refs.bib": "@book{kuc2013,\n  doi = {10.1/other}\n}\n" }, entry: doiEntry });
 assert.equal(doiClash.key, "Kuc2013a");
 assert.match(doiClash.addition, /^\n@article\{Kuc2013a,/);
 const doiRegistered = planDoiImport({ source: "# Notes\n", targetPath: "notes.md", texts: {}, entry: doiEntry });
@@ -132,13 +132,13 @@ assert.equal(doiRegistered.create, true);
 assert.equal(doiRegistered.path, "references.bib");
 assert.equal(doiRegistered.registration.insert, "---\nbibliography: references.bib\n---\n\n");
 
-const doiLinked = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "@article{Linked,\n  doi = {https://doi.org/10.1038/Nature12373}\n}\n" }, entry: doiEntry });
+const doiLinked = planDoiImport({ source: "---\nbibliography: refs.bib\n---\n", targetPath: "main.qmd", texts: { "refs.bib": "@article{Linked,\n  doi = {https://doi.org/10.1038/Nature12373}\n}\n" }, entry: doiEntry });
 assert.equal(doiLinked.already, true);
 assert.equal(doiLinked.key, "Linked");
 
 // A CSL-JSON or YAML bibliography is never appended to.
 for (const refs of ["refs.json", "refs.yaml"]) {
-  const source = `bibliography: ${refs}\n`, texts = { [refs]: "[]" };
+  const source = `---\nbibliography: ${refs}\n---\n`, texts = { [refs]: "[]" };
   assert.throws(() => planZoteroImport({ source, targetPath: "main.qmd", texts, item: { zotero_item: "Z1", citation_key: "Doe2020", bibtex: "@article{Doe2020,\n title={T}}\n" } }), { code: "bibliography_not_bibtex" });
   assert.throws(() => planDoiImport({ source, targetPath: "main.qmd", texts, entry: doiEntry }), { code: "bibliography_not_bibtex" });
 }
@@ -146,18 +146,47 @@ for (const refs of ["refs.json", "refs.yaml"]) {
 // A DOI is reused only from a .bib the document loads; every project .bib counts for collisions.
 {
   const texts = { "refs.bib": "@book{Old2020,\n  title = {Old}\n}\n", "other.bib": "@article{Elsewhere,\n  doi = {10.1038/nature12373}\n}\n@book{Kuc2013,\n  title = {X}\n}\n" };
-  const skipped = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts, entry: doiEntry });
+  const skipped = planDoiImport({ source: "---\nbibliography: refs.bib\n---\n", targetPath: "main.qmd", texts, entry: doiEntry });
   assert.equal(skipped.already, false);
   assert.equal(skipped.key, "Kuc2013a");
-  const both = planDoiImport({ source: "bibliography: [refs.bib, other.bib]\n", targetPath: "main.qmd", texts, entry: doiEntry });
+  const both = planDoiImport({ source: "---\nbibliography: [refs.bib, other.bib]\n---\n", targetPath: "main.qmd", texts, entry: doiEntry });
   assert.equal(both.already, true);
   assert.equal(both.key, "Elsewhere");
-  const clash = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "", "other.bib": "@book{Kuc2013,\n  doi = {10.1/z}\n}\n" }, entry: doiEntry });
+  const clash = planDoiImport({ source: "---\nbibliography: refs.bib\n---\n", targetPath: "main.qmd", texts: { "refs.bib": "", "other.bib": "@book{Kuc2013,\n  doi = {10.1/z}\n}\n" }, entry: doiEntry });
   assert.equal(clash.key, "Kuc2013a");
 }
 
 // x-doi and a commented doi are not duplicates.
 for (const bib of ["@article{A,\n  x-doi = {10.1038/nature12373}\n}\n", "@article{A,\n  title = {T}\n}\n  % doi = {10.1038/nature12373}\n"]) {
-  const plan = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": bib }, entry: doiEntry });
+  const plan = planDoiImport({ source: "---\nbibliography: refs.bib\n---\n", targetPath: "main.qmd", texts: { "refs.bib": bib }, entry: doiEntry });
   assert.equal(plan.already, false);
 }
+
+// The bibliography scanner keeps every item of a block list and reads Typst sources of any type (#115).
+{
+  const md = (body) => selectedBibliographyFiles(`---\n${body}\n---\n`, "markdown");
+  assert.deepEqual(md("bibliography:\n  - refs.json"), ["refs.json"]);
+  assert.deepEqual(md("bibliography:\n  - refs.json\n  - refs.bib"), ["refs.bib", "refs.json"]);
+  assert.deepEqual(md("bibliography:\n  - refs.json\n  - refs.bib\ntitle: T"), ["refs.bib", "refs.json"]);
+  assert.deepEqual(md("bibliography:\n  - \"a.bib\"\n  - 'b.json'\ncsl: x.csl"), ["a.bib", "b.json"]);
+  assert.deepEqual(md("bibliography: refs.json"), ["refs.json"]);
+  assert.deepEqual(md("bibliography: [a.bib, b.json]"), ["a.bib", "b.json"]);
+  assert.deepEqual(md("bibliography: refs.bib"), ["refs.bib"]);
+  const typ = (call) => selectedBibliographyFiles(call, "typst");
+  assert.deepEqual(typ('#bibliography("refs.yaml")'), ["refs.yaml"]);
+  assert.deepEqual(typ('#bibliography("refs.bib")'), ["refs.bib"]);
+  assert.deepEqual(typ('#bibliography("refs.yaml", style: "apa")'), ["refs.yaml"]);
+  assert.deepEqual(typ('#bibliography(("a.bib", "b.yml"), title: "Works", style: "my.csl")'), ["a.bib", "b.yml"]);
+  const item = { zotero_item: "Z1", citation_key: "Doe2020", bibtex: "@article{Doe2020,\n title={T}}\n" };
+  const listed = planZoteroImport({ source: "---\nbibliography:\n  - refs.json\n  - refs.bib\n---\n", targetPath: "main.qmd", texts: { "refs.bib": "" }, item });
+  assert.equal(listed.path, "refs.bib");
+  assert.equal(listed.registration, null);
+  assert.throws(() => planZoteroImport({ source: "---\nbibliography:\n  - refs.json\n---\n", targetPath: "main.qmd", texts: {}, item }), { code: "bibliography_not_bibtex" });
+  assert.throws(() => planDoiImport({ source: '#bibliography("refs.yaml")\n', targetPath: "main.typ", texts: {}, entry: doiEntry, format: "typst" }), { code: "bibliography_not_bibtex" });
+}
+
+// Only the leading front matter declares a bibliography: a "Bibliography:" line
+// and bullet list in the body are prose, not files.
+assert.deepEqual(selectedBibliographyFiles("---\ntitle: Notes\n---\n\nBibliography:\n\n- Smith 2020, Rivers\n- Jones 2021\n", "markdown"), []);
+assert.deepEqual(selectedBibliographyFiles("No front matter\nbibliography: refs.bib\n", "markdown"), []);
+assert.deepEqual(selectedBibliographyFiles("---\nbibliography: refs.bib\n...\nBody\n", "quarto"), ["refs.bib"]);

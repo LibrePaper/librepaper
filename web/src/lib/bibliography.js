@@ -202,18 +202,26 @@ export function bibliographyTrigger(format) {
 export function selectedBibliographyFiles(source, format) {
   const names = [];
   if (format === "markdown" || format === "quarto") {
-    const lines = string(source).split(/\r?\n/);
+    // Only the leading front matter declares a bibliography; a "Bibliography:"
+    // line and bullet list in the body are prose.
+    const all = string(source).replace(/^\uFEFF/, "").split(/\r?\n/);
+    const close = all[0]?.trim() === "---" ? all.findIndex((line, index) => index > 0 && /^(?:---|\.\.\.)\s*$/.test(line)) : -1;
+    const lines = close > 0 ? all.slice(1, close) : [];
     for (let i = 0; i < lines.length; i++) {
       const match = lines[i].match(/^\s*bibliography\s*:\s*(.*?)\s*$/i);
       if (!match) continue;
       names.push(...match[1].replace(/[\[\]"']/g, "").split(",").map((name) => name.trim()).filter(Boolean));
       for (let j = i + 1; j < lines.length; j++) {
-        const item = lines[j].match(/^\s*-\s*["']?([^"']+\.bib)["']?\s*$/i);
-        if (item) names.push(item[1].trim()); else if (lines[j].trim()) break;
+        const item = lines[j].match(/^\s*-\s+["']?(.*?)["']?\s*$/);
+        if (item) { if (item[1].trim()) names.push(item[1].trim()); } else if (lines[j].trim()) break;
       }
     }
   } else if (format === "typst") {
-    for (const match of string(source).matchAll(/#bibliography\s*\(([^)]*)\)/g)) names.push(...[...match[1].matchAll(/["']([^"']+\.bib)["']/gi)].map((item) => item[1]));
+    // The call's sources are its positional argument: a string or an array of strings. Named arguments (style, title) are dropped first.
+    for (const match of string(source).matchAll(/#bibliography\s*\(((?:[^()]|\([^()]*\))*)\)/g)) {
+      const positional = match[1].replace(/[A-Za-z][\w-]*\s*:\s*(?:"[^"]*"|[^,)]*)/g, "");
+      names.push(...[...positional.matchAll(/"([^"]+)"/g)].map((item) => item[1].trim()).filter(Boolean));
+    }
   } else if (format === "latex" || format === "tex") {
     for (const match of string(source).matchAll(/\\(?:addbibresource|bibliography)\s*(?:\[[^]]*\])?\{([^}]+)\}/g)) names.push(...match[1].split(",").map((name) => name.trim()).filter(Boolean));
   } else if (format === "org") {
