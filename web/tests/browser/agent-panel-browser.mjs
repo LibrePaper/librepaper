@@ -420,6 +420,9 @@ window.agentPanelCheck = async () => {
   const steps = connector.querySelectorAll(":scope > ol > li");
   check(steps.length === 3, "the connector has three steps: " + steps.length);
   check(getComputedStyle(connector.querySelector("ol")).listStyleType === "decimal", "the connector steps are numbered");
+  for (const [index, step] of [...steps].entries()) {
+    check(getComputedStyle(step).display === "list-item", "connector step " + (index + 1) + " is a list item so its number shows");
+  }
   const connectorUrl = location.origin + "/mcp/paper";
   check(connector.querySelector(".agent-connector-url").value === connectorUrl, "the connector URL names the project: " + connector.querySelector(".agent-connector-url").value);
   await press(connector.querySelector(".agent-connector-row button"));

@@ -96,7 +96,7 @@
   {#if sharing.error}
     <p class="lp-text-error" role="alert">{sharing.error}</p>
   {/if}
-  {#if sharing.copyFallback}
+  {#if sharing.copyFallback && sharing.copyFallback !== connectorUrl}
     <textarea class="share-copy-fallback w-full" readonly rows="3" aria-label={m.share_copy_manual_label()} value={sharing.copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>
   {/if}
 {/snippet}
@@ -140,6 +140,9 @@
                 <IconButton icon={sharing.copied === connectorUrl ? "check" : "copy"} label={m.agentexternal_connector_copy()} title={m.agentexternal_connector_copy()} tone="plain" size="btn-icon-sm"
                             colour={sharing.copyFallback === connectorUrl ? "lp-text-error" : null} onclick={() => sharing.copy(connectorUrl)} />
               </div>
+              {#if sharing.copyFallback === connectorUrl}
+                <p class="agent-help">{m.share_error_copy_blocked()}</p>
+              {/if}
             </div>
           </li>
           <li>
