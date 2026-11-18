@@ -283,7 +283,7 @@
               <IconButton icon="x" label={m.common_close()} tone="plain" size="btn-icon-sm" onclick={close} />
             </header>
           </div>
-          <div bind:this={bodyEl} class={compact ? "flex min-h-0 flex-1 flex-col overflow-hidden" : `flex min-h-0 flex-col gap-3 overflow-y-auto${resizable ? " flex-1" : ""}`}>
+          <div bind:this={bodyEl} class={compact ? "flex min-h-0 flex-1 flex-col overflow-hidden" : resizable ? "flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto" : "flex min-h-0 flex-col gap-3 overflow-y-auto"}>
             {@render children?.()}
           </div>
         {/if}
@@ -319,12 +319,16 @@
   /* A picker card stops at three quarters of the screen. */
   :global(.modal-compact) { max-height: min(75vh, 100%); }
 
+  /* A dragged size is written inline and applies at any width, so it must
+     never outgrow the positioner, even after the window shrinks. */
+  :global(.card.modal-resizable) { max-width: 100%; max-height: 100%; }
+
   @media (min-width: 480px) {
     :global(.card.modal-resizable) {
       width: min(64rem, 95vw);
       height: min(48rem, 90vh);
       min-width: min(36rem, 95vw);
-      min-height: 24rem;
+      min-height: min(24rem, calc(100dvh - 2rem));
       max-width: 95vw;
       max-height: 95vh;
       resize: both;
