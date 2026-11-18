@@ -11,6 +11,31 @@ There are two ways to connect an agent:
 
 > **Warning:** A shared document holds text from everyone with suggest or edit access. An agent that reads it may follow instructions hidden in that text.
 
+## Connect a chat app
+
+Use a connector to let a chat app work on one project: claude.ai, Claude Desktop, ChatGPT, or any app that supports remote MCP connectors with OAuth. The app's code sandbox often cannot reach a token's server, so a connector is the simpler route in a chat. Coding agents such as Claude Code and Codex are better served by a token, described in [Connect your agent](#connect-your-agent).
+
+Only the project owner can connect an app. The LibrePaper server must be reachable from the internet, because the app's servers call it. A server that is only on a local network or a Tailscale network cannot be used this way.
+
+1. Open the project, then the Agent panel (the robot icon in the sidebar). Under **Connect a chat app**, click the copy icon next to the URL. It has the form `https://<server>/mcp/<slug>`, where `<slug>` is the project's slug in its address bar.
+2. In the app, add a custom connector with that URL. In claude.ai, go to Settings → Connectors → Add custom connector, paste the URL and connect.
+3. A LibrePaper page opens. Sign in if asked.
+4. Choose a role. Suggest is the default.
+5. Click **Approve**.
+
+The app now has the LibrePaper tools for that project. The connection is an agent token named after the app, so its comments and suggestions appear under that name.
+
+| Role | What the app can do |
+|---|---|
+| Read | Read the project. |
+| Comment | Read and comment. |
+| Suggest | Everything Comment allows, plus tracked suggestions. |
+| Edit | Everything Suggest allows, plus direct edits, and creating, renaming or deleting text files. |
+
+The connection lasts 30 days and renews while the app keeps using it. It appears in the Agent tab's token list. To end it at any time, click the revoke button on its row. Revoking it stops the app at once.
+
+A host can turn connectors off with `agent_connectors = false` in `librepaper.toml`. The Agent panel then hides this section. See [Anonymous access](host/advanced.html#anonymous-access).
+
 ## Connect your agent
 
 **Connecting takes one copy and one paste, all from the Agent panel.** You configure nothing by hand, and you need no local copy of the project: the token tells the agent which server and project to reach. Each project has its own token, so you repeat this for each project.

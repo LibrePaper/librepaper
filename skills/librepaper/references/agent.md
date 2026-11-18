@@ -6,7 +6,7 @@ An **agent token** gives one agent access to one project on one server, at the r
 
 The project lives on the LibrePaper server, and the token names the server and the project. You do not need a local folder, a clone or a project path, so never ask for one. Do not open or control a browser unless the user explicitly asks you to. Do this now, before you reply:
 
-1. If `mcp__librepaper__*` tools are available, use them, following [The tools directly](#the-tools-directly).
+1. If LibrePaper tools are available, use them directly, following [The tools directly](#the-tools-directly). They may come from `librepaper mcp` (`mcp__librepaper__*`) or from a connector added in a chat app, where the names are such as `document_read`, possibly with a prefix. As with `librepaper mcp`, the operation identity is added for you on writes.
 2. Otherwise set `H` to the helper and run `connect`, as [Step 1b](#step-1b-http-helper) shows. Then run the commands exactly as `connect` prints them.
 3. Tell the user which project you reached, and ask what they want done. If they already said, do it.
 
@@ -48,6 +48,13 @@ lp withdraw 3f9c… 7a1e…
 - If several projects are connected, a command without `--project` is refused and the helper lists them. Pick the project the user means and add `--project <slug>`. The helper never guesses.
 - A write that fails with a network error makes the helper print the `lp result` command to check it. Run that. Never resend the write.
 - For replies, resolving threads, direct edits and compile validation, use [The tools directly](#the-tools-directly).
+
+## Builds, compile errors and running code
+
+- Compile results come from a browser renderer, and only the in-app Agent panel has one. An agent connected by token or connector gets `renderer_unavailable` for `validation: "compile"` and for render queries. Do not create no-op candidates to probe for errors. Ask the user to paste the error from the editor's build log, or read the source and reason about the error. Say which of the two you did.
+- In Quarto and Calepin projects, code runs on the user's computer, in their Run directory, not on the server. The project holds the `.qmd`, `.bib`, images and `_quarto.yml`. Code cannot read project files, so data and scripts stay in the Run directory. Never upload data, scripts, prompts or other files that code reads to fix a "file not found" or "cannot open the connection" error; it will not help. Ask the user for their Run directory path.
+- A token cannot run code or trigger a Run. If you have a shell, Quarto and the user's Run directory, you can render a local copy yourself: read the files with the helper, write them to a scratch folder, and run `quarto render <file>.qmd --execute-dir <run directory>`. Report the results. Never write into the Run directory without asking.
+- For the full model, see `docs/notebooks/quarto.md`.
 
 ## The token
 
@@ -92,6 +99,7 @@ printf %s 'lpt_...' | python3 "$H" connect --model '<your model name>'
 - A request that fails with a network error is most likely the sandbox. A read can be retried once access is allowed. Treat a failed write as having an unknown outcome, even if you suspect the sandbox: do not resend it, and ask `document_result` as in Step 4.
 - Tell the user exactly what to allow. For Codex: approve running the command outside the sandbox when asked, or start Codex with `codex -c sandbox_workspace_write.network_access=true`. The alternative is the MCP route in [agent-setup.md](agent-setup.md), which needs a new session.
 - For Claude Code: approval prompts are normal for shell calls. The user can allow the helper command for the session.
+- In claude.ai and Claude Desktop chats, the code sandbox reaches only allowed domains. Either the user adds the server's domain under Settings → Capabilities (on Team or Enterprise, an admin does this under Organization settings; the Free plan cannot), or, better, the owner connects the project as a connector. See [agent-setup.md](agent-setup.md).
 
 ## The tools directly
 
