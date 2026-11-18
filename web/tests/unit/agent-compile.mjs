@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { compactDiagnostic } from "../../src/lib/diagnostic-bounds.js";
 import { compileReply, createCompileResponder, errorReply, parseCompileRequest } from "../../src/lib/agent-compile.js";
 
 const id = `compile_${"a".repeat(32)}`;
@@ -71,4 +72,33 @@ test("a compile that throws is answered failed", async () => {
   });
   await responder.handle({ id });
   assert.deepEqual(posted, [errorReply("failed", "nope")]);
+});
+
+test("an error diagnostic makes the reply not ok even with output", () => {
+  const reply = compileReply({ pdf: new Uint8Array(3), diagnostics: [{ severity: "error", message: "fallback page" }] }, "rev");
+  assert.equal(reply.ok, false);
+  assert.equal(compileReply({ pdf: new Uint8Array(3), diagnostics: [{ severity: "warning", message: "w" }] }, "rev").ok, true);
+});
+
+test("a requested output the renderer did not produce fails with a diagnostic", () => {
+  const reply = compileReply({ html: "<p>", diagnostics: [] }, "rev", "pdf");
+  assert.equal(reply.ok, false);
+  assert.equal(reply.output, "html");
+  assert.ok(reply.diagnostics.some((item) => item.severity === "error" && item.message.includes("Requested pdf")));
+  assert.equal(compileReply({ html: "<p>" }, "rev", "html").ok, true);
+});
+
+test("an error reply message is cut to 1000 bytes without splitting a character", () => {
+  const reply = errorReply("failed", "é".repeat(2000));
+  const bytes = new TextEncoder().encode(reply.message).byteLength;
+  assert.ok(bytes <= 1000);
+  assert.ok(bytes >= 998);
+  assert.equal(reply.message.includes("�"), false);
+  assert.equal(errorReply("busy", "short").message, "short");
+});
+
+test("a diagnostic message is cut by code points, never inside a surrogate pair", () => {
+  const compact = compactDiagnostic({ severity: "error", message: "😀".repeat(2000) });
+  assert.equal(compact.message, "😀".repeat(1024));
+  assert.equal(/[\ud800-\udbff](?![\udc00-\udfff])/.test(compact.message), false);
 });

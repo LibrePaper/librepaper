@@ -967,15 +967,24 @@
       if (!runCodeOffered || !runDir.usable || !["quarto", "typst"].includes(format)) {
         return errorReply("run_unavailable", "Running code needs the desktop app with a Run directory and a Quarto or Typst file.");
       }
-      if (!agentRunAllowed) return errorReply("run_disabled", "The owner has not enabled \"Let agents run code\" for this project.");
+      // Read the opt-in now: another tab may have turned it off since this one loaded.
+      if (!readAgentRun(buildScope(), SLUG)) return errorReply("run_disabled", "The owner has not enabled \"Let agents run code\" for this project.");
       // A run is of the file the preview shows.
       if (request.path !== previewPath) return errorReply("failed", "Open this file in the editor before running it.");
       if (runPhase === "running") return errorReply("busy", "A run is already in progress.");
+      // No await between the check, the capture and the start, so the run and
+      // the reply describe the same file.
       const tree = capturePreviewTree(treeNow());
-      const revision = await renderers.snapshotDigest({ ...tree, main: "" });
-      await runCode({ output });
-      const ran = compileReply({ diagnostics: runDiagnostics.map((item) => diagnosticContext(item, tree, revision)), log: runLog, provenance: { renderer: "local" } }, revision);
-      return { ...ran, ok: runPhase === "idle" };
+      const started = runCode({ output, tree });
+      const digest = renderers.snapshotDigest({ ...tree, main: "" });
+      const outcome = await started;
+      const revision = await digest;
+      if (outcome.cancelled) return errorReply("failed", "The run was stopped.");
+      const diagnostics = outcome.diagnostics.map((item) => diagnosticContext(item, tree, revision));
+      return compileReply({
+        ok: outcome.ok, diagnostics, log: outcome.log, provenance: { renderer: "local" },
+        ...(outcome.output === "pdf" ? { pdf: { byteLength: 1 } } : outcome.output === "html" ? { html: "" } : {}),
+      }, revision, request.output);
     }
     const tree = capturePreviewTree({ ...live, main: request.path });
     if (Object.keys(tree.digests || {}).length) {
@@ -983,21 +992,31 @@
       tree.assets = held.assets;
       tree.urls = { ...(tree.urls || {}), ...held.urls };
     }
-    const revision = await renderers.snapshotDigest({ ...tree, main: "" });
     const heading = await headingOf(tree);
     const options = format === "markdown" || format === "quarto"
       ? { buildPreferences: { ...buildPreferences, backend: "browser", output } }
       : { buildPreferences: { ...buildPreferences, backend: "browser" }, format: output };
     const rendered = await renderers.render(tree, heading, { ...options, project: SLUG });
-    const diagnostics = (rendered?.diagnostics || []).map((item) => diagnosticContext(item, tree, revision));
-    return compileReply({ ...rendered, diagnostics }, revision);
+    // The preview queue may have merged this job with a newer one, so the
+    // result can describe another tree than the one asked for.
+    const compiled = rendered?.compiledTree || tree;
+    if (compiled.main !== request.path) return errorReply("busy", "A newer preview replaced this compile. Try again.");
+    const revision = await renderers.snapshotDigest({ ...compiled, main: "" });
+    const diagnostics = (rendered?.diagnostics || []).map((item) => diagnosticContext(item, compiled, revision));
+    return compileReply({ ...rendered, diagnostics }, revision, request.output);
   }
   async function postCompileReply(id, body) {
     try {
-      await fetch(`/api/documents/${SLUG}/compile/${id}`, {
+      const send = (payload) => fetch(`/api/documents/${SLUG}/compile/${id}`, {
         method: "POST", credentials: "same-origin",
-        headers: authHeaders(KEY, "application/json"), body: JSON.stringify(body),
+        headers: authHeaders(KEY, "application/json"), body: JSON.stringify(payload),
       });
+      const response = await send(body);
+      // The server refused the reply (too large, say): tell the agent so
+      // rather than leave its call to time out. 404 means it gave up already.
+      if (!response.ok && response.status !== 404) {
+        await send(errorReply("failed", `The server refused the compile reply (HTTP ${response.status}).`));
+      }
     } catch (error) { console.warn("compile reply failed", error); }
   }
   // Made on the first request, one per tab, so it serializes that tab's compiles.
@@ -2512,6 +2531,12 @@
     void buildUserId;
     untrack(() => { agentRunAllowed = readAgentRun(buildScope(), SLUG); });
   });
+  // Another tab may change the opt-in; keep the checkbox honest.
+  $effect(() => {
+    const refresh = () => { agentRunAllowed = readAgentRun(buildScope(), SLUG); };
+    window.addEventListener("storage", refresh);
+    return () => window.removeEventListener("storage", refresh);
+  });
   function setAgentRun(on) {
     agentRunAllowed = writeAgentRun(buildScope(), SLUG, on);
   }
@@ -2619,12 +2644,13 @@
   // makes is not the preview: its cell outputs are split out and spliced under
   // the draft's cells. For Typst, Calepin's stored files are kept instead, and
   // the browser's draft reads them back, so the preview stays the draft.
-  async function runCode({ refreshCache = false, output = "" } = {}) {
-    if (runPhase === "running" || readerDisposed) return;
+  async function runCode({ refreshCache = false, output = "", tree: given = null } = {}) {
+    const none = (reason, cancelled = false, log = "") => ({ ok: false, cancelled, output: "none", diagnostics: [], log, reason });
+    if (runPhase === "running" || readerDisposed) return none("busy");
     if (!runDir.usable) {
       pendingRun = { refreshCache };
       runDirPageOpen = true;
-      return;
+      return none("no_run_directory");
     }
     runPhase = "running";
     runStartedAt = Date.now();
@@ -2637,6 +2663,7 @@
     const navigation = target.navigation;
     const source = schedule.generation;
     const gone = () => mine !== runGeneration || readerDisposed;
+    let done = (ok) => none(ok ? "" : "failed");
     const controller = new AbortController();
     runAbort = controller;
     // The run's own page replaces the draft, unless the reader moved to
@@ -2653,15 +2680,15 @@
       }
     };
     try {
-      const tree = capturePreviewTree(treeNow());
+      const tree = given || capturePreviewTree(treeNow());
       if (Object.keys(tree.digests || {}).length) {
         const { held } = await gatherFigures(tree.digests);
-        if (gone()) return;
+        if (gone()) return none("stopped", true);
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
       }
       const heading = await headingOf(tree);
-      if (gone()) return;
+      if (gone()) return none("stopped", true);
       const typst = format === "typst";
       // Typst keeps its own output choice; Markdown and Quarto share theirs.
       const toPdf = output ? output === "pdf" : typst ? typstOutput !== "html" : buildPreferences.output === "pdf";
@@ -2680,7 +2707,15 @@
         ...(format === "quarto" && refreshCache ? { refreshCache: true } : {}),
         signal: controller.signal,
       });
-      if (gone()) return;
+      if (gone()) return none("stopped", true);
+      done = (ok) => ({
+        ok,
+        cancelled: false,
+        output: toPdf ? (rendered?.pdf?.byteLength ? "pdf" : "none") : (typeof rendered?.html === "string" ? "html" : "none"),
+        diagnostics: rendered?.diagnostics || [],
+        log: rendered?.log || rendered?.failure?.message || "",
+        reason: ok ? "" : "failed",
+      });
       // The run's log is what Diagnostics shows, whether it worked or not.
       runLog = rendered?.log || rendered?.failure?.message || "";
       runDiagnostics = rendered?.diagnostics || [];
@@ -2688,13 +2723,13 @@
         const page = toPdf ? rendered?.pdf : rendered?.html;
         if (rendered?.ok === false || !page) {
           runPhase = "failed";
-          return;
+          return done(false);
         }
         const record = calepinRecordOf(rendered.results, tree.main);
         if (record) {
           // The run's own page is kept whether or not the draft shows it.
           const recordDigest = toPdf ? await renderers.snapshotDigest(tree) : "";
-          if (gone()) return;
+          if (gone()) return none("stopped", true);
           lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: recordDigest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
           // The files Calepin stored go into the browser's own draft, PDF or
           // HTML, so the preview stays the draft between runs.
@@ -2705,30 +2740,30 @@
           if (shareResults && mayEdit) {
             void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
           }
-          return;
+          return done(true);
         }
         // The command stored no results (an edited command, say), so there
         // is nothing for the draft to read: show the run's own page until the
         // next edit.
         sharedResults.skip("none");
         const digest = toPdf ? await renderers.snapshotDigest(tree) : "";
-        if (gone()) return;
+        if (gone()) return none("stopped", true);
         lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
         runPhase = "idle";
         lastPdfRunAt = new Date().toISOString();
         showRunPage(tree, toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html });
-        return;
+        return done(true);
       }
       if (toPdf) {
         if (rendered?.ok === false || !rendered?.pdf) {
           runPhase = "failed";
-          return;
+          return done(false);
         }
         // The PDF is the run's page as it came, with the code's output in it;
         // there is nothing to split. The next edit repaints the browser PDF
         // draft as usual, which is intended: the draft cannot show outputs.
         const digest = await renderers.snapshotDigest(tree);
-        if (gone()) return;
+        if (gone()) return none("stopped", true);
         lastRunPage = { path: tree.main, page: { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } };
         // The run's figures are published with the cell outputs of the last
         // HTML run of this file, which a PDF run cannot split out.
@@ -2740,11 +2775,11 @@
         if (shareResults && mayEdit) {
           void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
         }
-        return;
+        return done(true);
       }
       if (rendered?.ok === false || typeof rendered?.html !== "string") {
         runPhase = "failed";
-        return;
+        return done(false);
       }
       // Inline values sit in the prose, which the draft can only show when
       // every one of them came back from the run. Otherwise the run's own page
@@ -2753,7 +2788,7 @@
       // Split Quarto's page as it came: the preview copy carries the house
       // caption labels, which the draft would then add a second time.
       const split = await splitResults(rendered.exportHtml ?? rendered.html, tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts });
-      if (gone()) return;
+      if (gone()) return none("stopped", true);
       lastRunPage = { path: tree.main, page: { kind: "html", html: rendered.html } };
       if (split.ok) {
         const held = split.record.inlines ?? [];
@@ -2773,7 +2808,7 @@
         if (shareResults && mayEdit) {
           void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
         }
-        return;
+        return done(true);
       }
       runPhase = "idle";
       if (split.reason === "no-cells") {
@@ -2803,20 +2838,22 @@
           } else sharedResults.skip("none");
         }
         showRunPage(tree, { kind: "html", html: rendered.html });
-        return;
+        return done(true);
       }
       // The output could not be matched to the cells, so it cannot be spliced
       // into the draft: show the run's own page instead.
       sharedResults.skip("unmatched");
       showRunPage(tree, { kind: "html", html: rendered.html });
       say(m.readerb_run_unmatched());
+      return done(true);
     } catch (error) {
       // A run that threw (the desktop app went away, say) leaves its reason
       // where the failure message sends the reader, in place of an older log.
-      if (gone()) return;
+      if (gone()) return none("stopped", true);
       runPhase = "failed";
       runLog = error?.message || String(error);
       runDiagnostics = [];
+      return none("failed", false, runLog);
     } finally {
       if (runAbort === controller) runAbort = null;
     }
