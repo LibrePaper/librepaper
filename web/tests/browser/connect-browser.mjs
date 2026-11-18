@@ -8,18 +8,16 @@
 //   4. the owner's Agent panel shows the connector URL, and the new connection
 //      is listed under the app's name.
 //
-// The redirect is not loaded: the consent page sends the browser there with
-// location.assign, which nothing in this driver can intercept, so the check
-// reads the reply the page received from /api/oauth/approve (wrapped in the
-// page before Approve is pressed) and then waits for the page to leave the
-// consent screen. Nothing listens on port 9, so the navigation fails once the
-// reply is read.
+// The app's redirect URI is a small HTTP server in this process, standing in
+// for the chat app: it records the code and state the browser brings back, and
+// the test then redeems the code at /oauth/token the way the app would.
 //
 // Needs: LIBREPAPER_BIN (or LIBREPAPER_TEST_BINARY, or target/debug/librepaper),
 // a Postgres (LIBREPAPER_TEST_POSTGRES_URL) and Chromium. Skips politely when the
 // binary or Postgres is missing.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
+import { createServer } from "node:http";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -29,7 +27,6 @@ import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
 const name = "connect-browser";
 const log = (line) => console.log(`${name}: ${line}`);
 const CLIENT_NAME = "Test app";
-const REDIRECT = "http://127.0.0.1:9/cb";
 const STATE = "xyz";
 
 const binary = process.env.LIBREPAPER_BIN ? resolve(process.env.LIBREPAPER_BIN) : deploymentBinary();
@@ -60,6 +57,16 @@ async function createProject(deployment, title) {
   if (response.status !== 201) throw new Error(`project upload failed: ${response.status} ${JSON.stringify(payload)}`);
   return payload.slug;
 }
+
+// The chat app's callback: the first request the browser makes to it.
+const callbacks = [];
+const app = createServer((request, response) => {
+  callbacks.push(new URL(request.url, "http://127.0.0.1"));
+  response.writeHead(200, { "content-type": "text/plain" });
+  response.end("connected");
+});
+await new Promise((done) => app.listen(0, "127.0.0.1", done));
+const REDIRECT = `http://127.0.0.1:${app.address().port}/cb`;
 
 // A chat app registers itself. Registration is stateless, so it needs no sign-in.
 async function register(deployment) {
@@ -125,24 +132,29 @@ try {
   assert.equal(roleLabels, "read|comment|suggest|edit", "the four roles, in order");
   assert.ok(await tab.evaluate(`document.body.innerText.includes("Access lasts 30 days")`), "the expiry note is shown");
 
-  // Keep the answer to Approve, without changing what the page does with it.
-  await tab.evaluate(`(() => {
-    const original = window.fetch;
-    window.approveReply = null;
-    window.fetch = async (...args) => {
-      const response = await original(...args);
-      if (String(args[0]) === "/api/oauth/approve") window.approveReply = await response.clone().json();
-      return response;
-    };
-  })()`);
-
   await tab.evaluate(`[...document.querySelectorAll("button")].find((node) => node.textContent.trim() === "Approve").click()`);
-  const reply = await until("the approve reply", () => tab.evaluate(`window.approveReply`), 30000);
-  const target = new URL(reply.redirect);
-  assert.equal(`${target.origin}${target.pathname}`, REDIRECT, "the reply sends the person back to the app's redirect URI");
-  assert.ok(target.searchParams.get("code"), "the redirect carries a code");
+  const target = await until("the app's callback", () => callbacks[0], 30000);
+  assert.equal(target.pathname, "/cb", "the browser is sent back to the app's redirect URI");
+  const code = target.searchParams.get("code");
+  assert.ok(code, "the redirect carries a code");
   assert.equal(target.searchParams.get("state"), STATE, "the redirect echoes state");
-  await until("the page to leave the consent screen", async () => (await tab.evaluate("location.href")) !== consent, 15000);
+
+  // The app redeems the code; the connection exists from here on.
+  const exchange = await fetch(`${deployment.base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: clientId, code_verifier: verifier }),
+  });
+  const granted = await exchange.json();
+  assert.equal(exchange.status, 200, JSON.stringify(granted));
+  assert.equal(granted.scope, "suggest", "the connection has the role the owner chose");
+  const mcp = await fetch(`${deployment.base}/mcp/${slug}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${granted.access_token}` },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+  const listed = await mcp.json();
+  assert.ok(listed.result?.tools?.some((tool) => tool.name === "document_read"), `the token reaches the MCP endpoint: ${JSON.stringify(listed)}`);
 
   /* ------------------------------------------------------- the Agent panel */
 
@@ -156,9 +168,10 @@ try {
   assert.equal(await tab.evaluate(`document.querySelector(".agent-panel .agent-connector-url").readOnly`), true, "the URL is read-only");
   await until("the new connection in the list", () => tab.evaluate(`document.querySelector(".agent-panel")?.textContent.includes(${JSON.stringify(CLIENT_NAME)})`), 30000);
 
-  log(`consent page: heading, Suggest preselected, Approve sends code and state to the app; the Agent panel shows ${connectorUrl} and lists "${CLIENT_NAME}"`);
+  log(`consent page: heading, Suggest preselected, Approve sends code and state to the app, the code redeems for a token that lists the MCP tools; the Agent panel shows ${connectorUrl} and lists "${CLIENT_NAME}"`);
 } finally {
   await tab?.close();
   await deployment.stop();
+  app.close();
   removeTemporary(scratch);
 }
