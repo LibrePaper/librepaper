@@ -13,8 +13,8 @@
 //!
 //! The bridge is the prose. A heading is `# Title` in markdown and `Title` in
 //! the page, and a formula is neither, but the words between the markup are
-//! the same words. So both sides are flattened -- syntax blanked, runs of
-//! whitespace collapsed -- and the passage is looked for in the flattened
+//! the same words. So both sides are flattened -- syntax and list markers
+//! blanked, runs of whitespace collapsed -- and the passage is looked for in the flattened
 //! source. Blanking preserves length and the collapse carries a map, so a
 //! place found in the flattened copy is a place in the file itself.
 //!
@@ -34,11 +34,18 @@ use librepaper_engine::storage::annotation::{AnchorSide, FileId, SourceTextTarge
 /// already failed.
 const ENOUGH: usize = 16;
 
-/// How much of the surrounding text has to agree, and by how much it has to
-/// out-agree the runner-up, before that counts as telling two identical
-/// passages apart. A word's worth. Two candidates that both merely follow a
-/// space are not distinguished by it.
+/// How many letters of the surrounding text have to agree, and by how many it
+/// has to out-agree the runner-up, before that counts as telling two identical
+/// passages apart. A word's worth, counted in letters with spacing and
+/// punctuation set aside. Two candidates that both merely follow a space are
+/// not distinguished by it.
 const DECISIVE: usize = 4;
+
+/// How many letters of the page's text on each side of the selection are
+/// compared with the source. About eight words either side is enough to tell
+/// two passages apart; more would let differences far from the selection count
+/// against a match.
+const WINDOW: usize = 48;
 
 /// How much of the source is kept beside a range as recovery evidence. The
 /// same as the configured context cap, which is what a client may send.
@@ -165,8 +172,33 @@ pub fn is_html(path: &str) -> bool {
     lower.ends_with(".html") || lower.ends_with(".htm")
 }
 
+/// How many characters of a list marker `text` begins with, or zero if it
+/// begins with none. A marker is a `-` or `+`, or digits closed by `.` or `)`,
+/// and either must be followed by a space or a tab: `-1` and `well-known` have
+/// no marker. Whether the text starts a line is for the caller to say.
+fn list_marker_len(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let gap_at = |at: usize| matches!(bytes.get(at).copied(), Some(b' ' | b'\t'));
+    let marker = match bytes.first().copied() {
+        Some(b'-' | b'+') => 1,
+        _ => {
+            let digits = bytes.iter().take_while(|byte| byte.is_ascii_digit()).count();
+            if digits == 0 || !matches!(bytes.get(digits).copied(), Some(b'.' | b')')) {
+                return 0;
+            }
+            digits + 1
+        }
+    };
+    if gap_at(marker) {
+        marker
+    } else {
+        0
+    }
+}
+
 /// Flattens a source file to the prose a reader would see, keeping for every
-/// character the offset it came from.
+/// character the offset it came from. Outside HTML, a list marker at the start
+/// of a line is syntax like any other and is blanked the same way.
 ///
 /// Blanking keeps the length, so blanked syntax costs nothing; the whitespace
 /// collapse does not, which is why the map exists. Without it a match found
@@ -176,6 +208,11 @@ pub fn flatten(text: &str, html: bool) -> Flat {
     let mut from = Vec::new();
     let mut at16: u32 = 0;
     let mut was_space = false;
+    // Whether the next character begins a line, once the spaces and tabs before
+    // it are passed over; and how many characters of a list marker are still to
+    // be blanked.
+    let mut line_start = true;
+    let mut marker_left = 0;
     let mut rest = text;
     while let Some(character) = rest.chars().next() {
         let width = character.len_utf16() as u32;
@@ -183,7 +220,14 @@ pub fn flatten(text: &str, html: bool) -> Flat {
         let mut emit = character;
         let mut skip = bytes;
         let mut skipped16 = width;
-        if html && character == '<' {
+        if !html && line_start && marker_left == 0 {
+            marker_left = list_marker_len(rest);
+        }
+        if marker_left > 0 {
+            // Markup, blanked the way a `*` is.
+            marker_left -= 1;
+            emit = ' ';
+        } else if html && character == '<' {
             // A tag is markup the way a `*` is, only longer. The whole of it
             // is whitespace as far as the prose is concerned.
             let end = rest.find('>').map(|at| at + 1).unwrap_or(rest.len());
@@ -242,6 +286,11 @@ pub fn flatten(text: &str, html: bool) -> Flat {
             chars.push(emit);
             from.push(at16);
         }
+        line_start = match character {
+            '\n' => true,
+            ' ' | '\t' => line_start,
+            _ => false,
+        };
         at16 += skipped16;
         rest = &rest[skip..];
     }
@@ -268,16 +317,77 @@ fn occurrences(haystack: &[char], needle: &[char]) -> Vec<usize> {
     found
 }
 
-fn common_prefix(a: &[char], b: &[char]) -> usize {
-    a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+/// The letters and digits of some characters, lowercased. Everything else --
+/// spaces, punctuation, list markers, markup -- is how the renderer laid the
+/// words out rather than what they are, so context is compared without it.
+fn letters(chars: &[char]) -> Vec<char> {
+    chars
+        .iter()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(|character| character.to_lowercase())
+        .collect()
 }
 
-fn common_suffix(a: &[char], b: &[char]) -> usize {
-    a.iter()
-        .rev()
-        .zip(b.iter().rev())
-        .take_while(|(x, y)| x == y)
-        .count()
+/// The last `count` letters before `end`, in reading order. It walks back from
+/// `end` and stops once it has enough, so a long file is not normalized whole
+/// for every candidate that is scored.
+fn letters_before(chars: &[char], end: usize, count: usize) -> Vec<char> {
+    let mut taken = Vec::new();
+    for character in chars[..end].iter().rev() {
+        if taken.len() >= count {
+            break;
+        }
+        if character.is_alphanumeric() {
+            // Collected nearest first, so the reversal below puts them in order.
+            taken.extend(character.to_lowercase().rev());
+        }
+    }
+    taken.truncate(count);
+    taken.reverse();
+    taken
+}
+
+/// The first `count` letters from `start` on, in reading order.
+fn letters_after(chars: &[char], start: usize, count: usize) -> Vec<char> {
+    let mut taken = Vec::new();
+    for character in chars.iter().skip(start) {
+        if taken.len() >= count {
+            break;
+        }
+        if character.is_alphanumeric() {
+            taken.extend(character.to_lowercase());
+        }
+    }
+    taken.truncate(count);
+    taken
+}
+
+/// How many characters of `page` agree with `source`, where the two are
+/// aligned at their ends: the last character of `page` lines up with the last
+/// of `source`. What comes before that in `source` may be skipped for nothing,
+/// since the source may simply have more before the context than the page
+/// kept; every character of `page` still has to be accounted for. Each
+/// substitution, insertion or deletion costs one, so a stray character costs
+/// one rather than everything after it.
+///
+/// This is a semi-global edit distance. The first row is all zeros, which is
+/// the free skip, and the distance is read from the last row.
+fn anchored_agreement(page: &[char], source: &[char]) -> usize {
+    let m = page.len();
+    let n = source.len();
+    let mut previous = vec![0usize; n + 1];
+    let mut current = vec![0usize; n + 1];
+    for i in 1..=m {
+        current[0] = i;
+        for j in 1..=n {
+            let substitution = previous[j - 1] + usize::from(page[i - 1] != source[j - 1]);
+            let deletion = previous[j] + 1;
+            let insertion = current[j - 1] + 1;
+            current[j] = substitution.min(deletion).min(insertion);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    m.saturating_sub(previous[n])
 }
 
 #[derive(Clone)]
@@ -289,12 +399,20 @@ struct Hit {
 }
 
 /// How well the text around a candidate agrees with the text that surrounded
-/// the selection on the page. This is what tells two identical sentences
+/// the selection on the page: the letters before the candidate against the
+/// page's prefix, and the letters after it against the page's suffix. Each side
+/// is compared as letters only, so a stray character or a list marker the
+/// renderer dropped costs one, not the whole comparison. The source window is
+/// twice as long as the page's, so the source may hold more than the page did
+/// beyond the shared context. This is what tells two identical sentences
 /// apart, and it is the only thing allowed to.
 fn score_of(flat: &Flat, at: usize, length: usize, prefix: &[char], suffix: &[char]) -> usize {
-    let before = &flat.chars[..at];
-    let after = &flat.chars[(at + length).min(flat.chars.len())..];
-    common_suffix(prefix, before) + common_prefix(suffix, after)
+    let before = letters_before(&flat.chars, at, 2 * prefix.len());
+    let after = letters_after(&flat.chars, at + length, 2 * suffix.len());
+    // Reversed, so the suffix is anchored at the selection's end like the prefix.
+    let suffix_backward: Vec<char> = suffix.iter().rev().copied().collect();
+    let after_backward: Vec<char> = after.iter().rev().copied().collect();
+    anchored_agreement(prefix, &before) + anchored_agreement(&suffix_backward, &after_backward)
 }
 
 /// Finds the source range a rendered selection came from.
@@ -426,13 +544,17 @@ struct Search {
 
 impl Search {
     fn over(files: &[Candidate<'_>], quote: &Quote<'_>) -> Search {
+        // The page's context as letters: the end of what came before the
+        // selection and the start of what came after it, each one window long.
+        let before = letters(&flatten(quote.prefix, false).chars);
+        let after = letters(&flatten(quote.suffix, false).chars);
         Search {
             flattened: files
                 .iter()
                 .map(|file| (is_html(file.path), flatten(file.text, is_html(file.path))))
                 .collect(),
-            prefix: flatten(quote.prefix, false).chars,
-            suffix: flatten(quote.suffix, false).chars,
+            prefix: before[before.len().saturating_sub(WINDOW)..].to_vec(),
+            suffix: after[..after.len().min(WINDOW)].to_vec(),
             ambiguous: std::cell::Cell::new(false),
         }
     }
@@ -442,7 +564,10 @@ impl Search {
     /// Nothing covers two different situations, and the difference is
     /// remembered rather than returned: a phrase that is nowhere may be worth
     /// trying again a word shorter, while a phrase that is in several places
-    /// that the context cannot separate is a refusal in the making.
+    /// that the context cannot separate is a refusal in the making. Where it is
+    /// in several places, the context picks one only if that place's score
+    /// (see `score_of`) is at least DECISIVE and beats the runner-up's by at
+    /// least DECISIVE.
     fn find(&self, needle: &[char]) -> Option<Hit> {
         let mut hits = Vec::new();
         for (index, (_, flat)) in self.flattened.iter().enumerate() {
@@ -461,8 +586,8 @@ impl Search {
         }
         // Several places, so the words alone do not say which. What the page
         // had on either side of the selection does, if it agrees with one of
-        // them and not the others -- and by enough to be an agreement rather
-        // than a coincidence of spacing.
+        // them and not the others -- and by enough letters to be an agreement
+        // rather than a coincidence of a letter or two.
         hits.sort_by_key(|hit| std::cmp::Reverse(hit.score));
         let best = hits[0].score;
         let runner_up = hits[1].score;
@@ -905,6 +1030,59 @@ mod tests {
         assert_eq!((found.start_utf16, found.end_utf16), (6, 9));
         assert_eq!(found.prefix, "na\u{ef}ve ");
         assert_eq!(found.suffix, " done");
+    }
+
+    // The page has no bullets, so its context has no `- ` where the source has
+    // one. The two lists differ only in their letters around the word, which is
+    // what has to tell them apart.
+    #[test]
+    fn repeated_list_items_are_told_apart_past_the_bullets() {
+        let text = "- `source` (object)\n    - `category_fit` (one of `fits`, `miscategorized`, `uncertain`)\n    - `rationale` (string)\n- `target` (object)\n    - `category_fit` (one of `fits`, `miscategorized`, `uncertain`)\n    - `rationale` (string)\n- `target_kind` (one of `fixed_attribute`, `other`)\n";
+        let found = locate(
+            &one(text),
+            &quote(
+                "rationale",
+                "source (object)\ncategory_fit (one of fits, miscategorized, uncertain)\nrationale (string)\ntarget (object)\ncategory_fit (one of fits, miscategorized, uncertain)\n",
+                " (string)\ntarget_kind (one of fixed_attribute, other)",
+            ),
+        )
+        .unwrap();
+        let index = TextIndex::new(text);
+        let before = lossy(&index, 0, found.start_utf16 as usize);
+        assert!(before.contains("`target` (object)"), "{:?}", before);
+    }
+
+    // The marker that starts the second item is markup, so the selection's
+    // words meet across it and the range runs from one item into the next.
+    #[test]
+    fn a_selection_across_two_list_items_matches_over_the_dropped_marker() {
+        let text = "- alpha beta\n- gamma delta\n";
+        let found = locate(&one(text), &quote("beta\ngamma", "", "")).unwrap();
+        assert_eq!(found.exact, "beta\n- gamma");
+    }
+
+    // A marker is a bullet or a number at the start of a line followed by a
+    // space. A hyphen inside a word is part of the word.
+    #[test]
+    fn list_markers_are_blanked_but_a_hyphen_in_a_word_is_not() {
+        assert!(flatten("well-known", false).chars.contains(&'-'));
+        let numbered: String = flatten("1. one\n", false).chars.iter().collect();
+        assert_eq!(numbered.trim(), "one");
+    }
+
+    // The page says "[3]" where the source says nothing: a number the renderer
+    // invented. It costs the context one letter, and does not stop the match.
+    #[test]
+    fn an_invented_number_in_the_context_costs_a_letter_not_the_match() {
+        let text = "See Smith for this. It is true.\n\nSee Jones for this. It is true.\n";
+        let found = locate(
+            &one(text),
+            &quote("It is true.", "See Jones [3] for this. ", ""),
+        )
+        .unwrap();
+        let index = TextIndex::new(text);
+        let before = lossy(&index, 0, found.start_utf16 as usize);
+        assert!(before.contains("See Jones"), "{:?}", before);
     }
 }
 
