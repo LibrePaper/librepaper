@@ -7,6 +7,7 @@ const MAX_READY_TEXT = 16_000_000;
 const MAX_SELECTION_TEXT = 1_000_000;
 const MAX_CONTEXT_TEXT = 4096;
 const MAX_ID = 256;
+const MAX_HINT_PATH = 1024;
 const MAX_COORDINATE = 10_000_000;
 const MAX_SCROLL = 100_000_000;
 
@@ -28,6 +29,15 @@ function rectangle(value) {
   return { top: value.top, left: value.left, right: value.right, bottom: value.bottom };
 }
 
+// The source lines a selection came from, as the preview reported them. A
+// malformed hint is dropped rather than failing the selection it came with.
+function sourceHint(value) {
+  if (!plainObject(value) || !boundedString(value.path, MAX_HINT_PATH) || !value.path.length
+      || !Number.isSafeInteger(value.from_line) || value.from_line < 1
+      || !Number.isSafeInteger(value.to_line) || value.to_line < value.from_line) return null;
+  return { path: value.path, from_line: value.from_line, to_line: value.to_line };
+}
+
 function selector(value) {
   if (value === null) return null;
   if (!plainObject(value) || !boundedString(value.exact, MAX_SELECTION_TEXT)
@@ -37,6 +47,10 @@ function selector(value) {
   if (value.position !== undefined) {
     if (!Number.isSafeInteger(value.position) || value.position < 0 || value.position > MAX_READY_TEXT) return undefined;
     result.position = value.position;
+  }
+  if (value.hint !== undefined) {
+    const hint = sourceHint(value.hint);
+    if (hint) result.hint = hint;
   }
   return result;
 }
