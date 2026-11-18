@@ -949,6 +949,7 @@
   "downloads_selection_incomplete": "No se pudieron descargar todos los archivos seleccionados.",
   "editor_aria_label_of": "Editor de {path}",
   "editor_bibliography_unavailable": "Bibliografía no disponible: {reason}",
+  "editor_bibliography_not_bibtex": "La bibliografía de este documento no es un archivo BibTeX. Añada un archivo .bib a su bibliografía para importar referencias.",
   "editor_cut_changed": "El código fuente cambió antes de terminar «Cortar». Seleccione el texto de nuevo.",
   "editor_parser_not_loaded": "no se pudo cargar el analizador",
   "editor_paste_blocked": "El navegador no permite que LibrePaper lea el portapapeles aquí.",

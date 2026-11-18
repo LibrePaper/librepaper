@@ -32,4 +32,19 @@ assert.match(cslToBibtex({ type: "book-chapter", title: "T" }, "10.1/x").bibtex,
 assert.equal(cslYear({ issued: { "date-parts": [[null]] } }), "");
 assert.equal(cslYear({ issued: { "date-parts": [["2013"]] } }), "2013");
 assert.equal(cslYear({ issued: { "date-parts": [[2013.5]] } }), "");
-assert.match(cslToBibtex({ type: "misc", title: "A &amp;lt; B" }, "10.1/x").bibtex, /title = \{A &lt; B\}/);
+assert.match(cslToBibtex({ type: "misc", title: "A &amp;lt; B" }, "10.1/x").bibtex, /title = \{A \\&lt; B\}/);
+
+// TeX specials are escaped in values (not doi or url); the key uses the unescaped text.
+{
+  const { key, bibtex } = cslToBibtex({ type: "misc", title: "R&D_x 50% #1 $5 \\o", author: [{ literal: "A&B_C" }], DOI: "10.1/a_b", URL: "https://x.org/a_b?c=1&d=2" }, "10.1/x");
+  assert.match(bibtex, /author = \{\{A\\&B\\_C\}\}/);
+  assert.match(bibtex, /title = \{R\\&D\\_x 50\\% \\#1 \\\$5 o\}/);
+  assert.match(bibtex, /doi = \{10\.1\/a_b\}/);
+  assert.match(bibtex, /url = \{https:\/\/x\.org\/a_b\?c=1&d=2\}/);
+  assert.equal(key, "AbcND");
+}
+// Title words: empty fragments do not use up the three slots.
+assert.equal(cslToBibtex({ title: "日本語 Alpha Beta Gamma Delta" }, "10.1/x").key, "AlpBetGamND");
+// Query strings and fragments are cut before percent-decoding.
+assert.equal(normaliseDoi("https://doi.org/10.1038/nature12373?utm=1#top"), "10.1038/nature12373");
+assert.equal(normaliseDoi("https://doi.org/10.1000/a%3Fb%23c?x=1"), "10.1000/a?b#c");

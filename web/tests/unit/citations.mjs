@@ -135,3 +135,26 @@ assert.equal(doiRegistered.registration.insert, "---\nbibliography: references.b
 const doiLinked = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "@article{Linked,\n  doi = {https://doi.org/10.1038/Nature12373}\n}\n" }, entry: doiEntry });
 assert.equal(doiLinked.already, true);
 assert.equal(doiLinked.key, "Linked");
+
+// A CSL-JSON or YAML bibliography is never appended to.
+for (const refs of ["refs.json", "refs.yaml"]) {
+  const source = `bibliography: ${refs}\n`, texts = { [refs]: "[]" };
+  assert.throws(() => planZoteroImport({ source, targetPath: "main.qmd", texts, item: { zotero_item: "Z1", citation_key: "Doe2020", bibtex: "@article{Doe2020,\n title={T}}\n" } }), { code: "bibliography_not_bibtex" });
+  assert.throws(() => planDoiImport({ source, targetPath: "main.qmd", texts, entry: doiEntry }), { code: "bibliography_not_bibtex" });
+}
+
+// A DOI in any .bib of the project is reused, and its keys count for collisions.
+{
+  const texts = { "refs.bib": "@book{Old2020,\n  title = {Old}\n}\n", "other.bib": "@article{Elsewhere,\n  doi = {10.1038/nature12373}\n}\n" };
+  const found = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts, entry: doiEntry });
+  assert.equal(found.already, true);
+  assert.equal(found.key, "Elsewhere");
+  const clash = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "", "other.bib": "@book{Kuc2013,\n  doi = {10.1/z}\n}\n" }, entry: doiEntry });
+  assert.equal(clash.key, "Kuc2013a");
+}
+
+// x-doi and a commented doi are not duplicates.
+for (const bib of ["@article{A,\n  x-doi = {10.1038/nature12373}\n}\n", "@article{A,\n  title = {T}\n}\n  % doi = {10.1038/nature12373}\n"]) {
+  const plan = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": bib }, entry: doiEntry });
+  assert.equal(plan.already, false);
+}

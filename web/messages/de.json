@@ -949,6 +949,7 @@
   "downloads_selection_incomplete": "Nicht alle ausgewählten Dateien konnten heruntergeladen werden.",
   "editor_aria_label_of": "Editor für {path}",
   "editor_bibliography_unavailable": "Literaturverzeichnis nicht verfügbar: {reason}",
+  "editor_bibliography_not_bibtex": "Das Literaturverzeichnis dieses Dokuments ist keine BibTeX-Datei. Fügen Sie ihm eine .bib-Datei hinzu, um Referenzen zu importieren.",
   "editor_cut_changed": "Der Quelltext hat sich geändert, bevor das Ausschneiden abgeschlossen war. Wählen Sie den Text erneut aus.",
   "editor_parser_not_loaded": "der Parser konnte nicht geladen werden",
   "editor_paste_blocked": "Der Browser erlaubt LibrePaper hier nicht, die Zwischenablage zu lesen.",

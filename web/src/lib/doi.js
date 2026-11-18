@@ -9,7 +9,7 @@ export function normaliseDoi(text) {
   let value = String(text ?? "").trim();
   const url = /^https?:\/\/(?:dx\.)?doi\.org\//i.exec(value);
   if (url) {
-    value = value.slice(url[0].length);
+    value = value.slice(url[0].length).split(/[?#]/)[0];
     try { value = decodeURIComponent(value); } catch { return null; }
   } else {
     value = value.replace(/^doi:\s*/i, "");
@@ -84,6 +84,11 @@ function fragment(text) {
   return letters.charAt(0).toUpperCase() + letters.slice(1);
 }
 
+// Escapes TeX specials for a written field value; the key uses the unescaped text.
+function tex(text) {
+  return text.replace(/\\/g, "").replace(/[&%#_$]/g, (char) => `\\${char}`);
+}
+
 function pagesOf(value) {
   return value.replace(/–/g, "--").replace(/(?<!-)-(?!-)/g, "--");
 }
@@ -108,8 +113,8 @@ export function cslToBibtex(csl, doi) {
     return { family, given, literal };
   }).filter((author) => author.family || author.literal);
   const authorText = authors.map((author) => author.family
-    ? (author.given ? `${author.family}, ${author.given}` : author.family)
-    : `{${author.literal}}`).join(" and ");
+    ? (author.given ? `${tex(author.family)}, ${tex(author.given)}` : tex(author.family))
+    : `{${tex(author.literal)}}`).join(" and ");
   const year = cslYear(csl);
   const title = clean(csl.title);
   const container = clean(csl["container-title"]);
@@ -134,9 +139,9 @@ export function cslToBibtex(csl, doi) {
 
   let stem = authors.slice(0, 5).map((author) => fragment(author.family || author.literal)).filter(Boolean).join("");
   if (!stem) {
-    stem = title.split(/[^\p{L}]+/u).filter((word) => word && !STOP_WORDS.has(word.toLowerCase())).slice(0, 3).map(fragment).join("");
+    stem = title.split(/[^\p{L}]+/u).filter((word) => word && !STOP_WORDS.has(word.toLowerCase())).map(fragment).filter(Boolean).slice(0, 3).join("");
   }
   const key = (stem || "Ref") + (year || "ND");
-  const body = fields.map(([name, value]) => `  ${name} = {${value}}`).join(",\n");
+  const body = fields.map(([name, value]) => `  ${name} = {${name === "doi" || name === "url" ? value : tex(value)}}`).join(",\n");
   return { key, bibtex: `@${type}{${key},\n${body}${body ? "\n" : ""}}\n` };
 }

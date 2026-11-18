@@ -360,7 +360,10 @@ function importTarget({ source, targetPath, texts, format }) {
   const configuredPaths = configured.map((path) => projectBibliographyPath(targetPath, path)).filter(Boolean)
     .map((path) => (format === "latex" || format === "tex") && !/\.bib$/i.test(path) ? `${path}.bib` : path);
   const existing = bibliographyFiles({ texts });
-  const path = configuredPaths.find((name) => Object.hasOwn(texts, name)) || configuredPaths[0] || existing[0] || "references.bib";
+  // BibTeX is only ever appended to a .bib file, never to a CSL-JSON or YAML bibliography.
+  const bibPaths = configuredPaths.filter((name) => /\.bib$/i.test(name));
+  if (configuredPaths.length && !bibPaths.length) throw Object.assign(new Error("bibliography_not_bibtex"), { code: "bibliography_not_bibtex" });
+  const path = bibPaths.find((name) => Object.hasOwn(texts, name)) || bibPaths[0] || existing[0] || "references.bib";
   const previous = string(texts[path]);
   const registration = () => {
     if (configured.length) return null;
@@ -387,8 +390,10 @@ export function planZoteroImport({ source, targetPath, texts, item, format = "ma
 function doiEntryKey(bibtex, doi) {
   const same = (text) => (normaliseDoi(text) ?? String(text).trim()).toLocaleLowerCase();
   const wanted = same(doi);
-  const field = /\bdoi\s*=\s*(?:\{([^}]*)\}|"([^"]*)")/gi;
+  const field = /(?<=^|[\s,{])doi\s*=\s*(?:\{([^}]*)\}|"([^"]*)")/gim;
   for (const found of string(bibtex).matchAll(field)) {
+    const lineStart = string(bibtex).lastIndexOf("\n", found.index - 1) + 1;
+    if (string(bibtex).slice(lineStart, found.index).trimStart().startsWith("%")) continue;
     if (same(found[1] ?? found[2]) !== wanted) continue;
     const headers = [...string(bibtex).slice(0, found.index).matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)];
     if (headers.length) return headers.at(-1)[1];
@@ -400,9 +405,12 @@ function doiEntryKey(bibtex, doi) {
 // already holds is reused under its own key; otherwise the key is de-duplicated like Zotero's.
 export function planDoiImport({ source, targetPath, texts, entry, format = "markdown" }) {
   const target = importTarget({ source, targetPath, texts, format });
-  const existingKey = doiEntryKey(target.previous, entry.doi);
-  if (existingKey) return importPlan({ ...target, texts }, existingKey, entry.bibtex, true);
-  const used = new Set([...target.previous.matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)].map((match) => match[1].toLocaleLowerCase()));
+  const bibTexts = bibliographyFiles({ texts }).map((name) => string(texts[name]));
+  for (const text of [target.previous, ...bibTexts]) {
+    const existingKey = doiEntryKey(text, entry.doi);
+    if (existingKey) return importPlan({ ...target, texts }, existingKey, entry.bibtex, true);
+  }
+  const used = new Set([target.previous, ...bibTexts].flatMap((text) => [...text.matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)]).map((match) => match[1].toLocaleLowerCase()));
   let key = entry.key;
   for (let index = 1; used.has(key.toLocaleLowerCase()); index++) key = entry.key + collisionSuffix(index);
   return importPlan({ ...target, texts }, key, entry.bibtex, false);
