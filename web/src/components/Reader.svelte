@@ -1220,7 +1220,10 @@
   }
 
   // A press or a focus inside a pane makes it the one a tight split keeps.
+  // A phone has no split: its face is the one the person chose, and Back
+  // returns to it, so a press or a focus there changes nothing.
   function keepPane(event) {
+    if (compact) return;
     if (event.target.closest?.("#reader-source")) arrangement.focusPane("source");
     else if (event.target.closest?.("#reader-document")) arrangement.focusPane("document");
   }
@@ -3701,6 +3704,14 @@
     return () => { overlays?.dispose(); overlays = null; };
   });
   $effect(() => { overlays?.sync(overlayDepth); });
+  // A resize to a phone makes the face it shows the one Back returns to. On a
+  // wider window a press in either pane moves the preferred pane without
+  // moving the phone's face, and the two must agree once there is only one.
+  $effect(() => {
+    if (!compact) return;
+    const face = untrack(() => arrangement.state.mobileView);
+    if (face !== "sidebar") arrangement.state.preferredPane = face;
+  });
   // A resize to desktop must not leave a hidden overlay behind it.
   $effect(() => {
     if (compact) return;
