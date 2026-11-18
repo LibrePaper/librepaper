@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { BibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyRegistration, citationContext, entryLabel, insertCitation, planZoteroImport, rankEntries, zoteroCitationKey } from "../../src/lib/bibliography.js";
+import { BibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, bibliographyRegistration, citationContext, entryLabel, insertCitation, planDoiImport, planZoteroImport, rankEntries, zoteroCitationKey } from "../../src/lib/bibliography.js";
 import { Text } from "@codemirror/state";
 
 const entries = [
@@ -111,3 +111,27 @@ assert.equal(bibliographyRegistration('#bibliography("refs.bib")\n', "refs.bib",
   assert.equal(crlf.slice(0, at.from) + at.insert + crlf.slice(at.to), "\\usepackage{biblatex}\r\n\\addbibresource{refs.bib}\r\n\\begin{document}\r\n");
 }
 assert.notEqual(planZoteroImport({ source: "% \\bibliography{old}\n\\begin{document}\n\\end{document}\n", targetPath: "paper.tex", texts: {}, item: { zotero_item: "Z1", citation_key: "Doe2020", bibtex: "@article{Doe2020,\n title={T}}\n" }, format: "latex" }).registration, null);
+
+// A DOI import appends a new entry, reuses an entry with the same DOI, and suffixes a key collision.
+const doiEntry = { doi: "10.1038/nature12373", key: "Kuc2013", bibtex: "@article{Kuc2013,\n  title = {T},\n  doi = {10.1038/nature12373}\n}\n" };
+const doiAdded = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "@book{Old2020,\n  title = {Old}\n}\n" }, entry: doiEntry });
+assert.equal(doiAdded.key, "Kuc2013");
+assert.equal(doiAdded.already, false);
+assert.equal(doiAdded.path, "refs.bib");
+assert.equal(doiAdded.addition, "\n" + doiEntry.bibtex);
+assert.equal(doiAdded.registration, null);
+const doiAgain = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "@article{Mine,\n  doi = {10.1038/NATURE12373}\n}\n" }, entry: doiEntry });
+assert.equal(doiAgain.already, true);
+assert.equal(doiAgain.key, "Mine");
+assert.equal(doiAgain.addition, "");
+const doiClash = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "@book{kuc2013,\n  doi = {10.1/other}\n}\n" }, entry: doiEntry });
+assert.equal(doiClash.key, "Kuc2013a");
+assert.match(doiClash.addition, /^\n@article\{Kuc2013a,/);
+const doiRegistered = planDoiImport({ source: "# Notes\n", targetPath: "notes.md", texts: {}, entry: doiEntry });
+assert.equal(doiRegistered.create, true);
+assert.equal(doiRegistered.path, "references.bib");
+assert.equal(doiRegistered.registration.insert, "---\nbibliography: references.bib\n---\n\n");
+
+const doiLinked = planDoiImport({ source: "bibliography: refs.bib\n", targetPath: "main.qmd", texts: { "refs.bib": "@article{Linked,\n  doi = {https://doi.org/10.1038/Nature12373}\n}\n" }, entry: doiEntry });
+assert.equal(doiLinked.already, true);
+assert.equal(doiLinked.key, "Linked");

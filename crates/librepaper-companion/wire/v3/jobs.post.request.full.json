@@ -19,6 +19,7 @@
     "figures/plot.png"
   ],
   "options": {
-    "deadline_seconds": 600
+    "deadline_seconds": 600,
+    "refresh_cache": true
   }
 }

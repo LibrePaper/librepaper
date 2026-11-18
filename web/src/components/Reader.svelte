@@ -481,15 +481,18 @@
   // never runs on this computer until Run is pressed and a folder is set.
   let runDirectory = $state("");
   const runDirectoryReady = $derived(runDirectory !== "");
-  // Run was pressed before a folder was set: choosing one carries on with it.
-  let pendingRun = false;
+  // Run was pressed before a folder was set: choosing one carries on with it,
+  // as the same kind of run (Run without cache stays one).
+  /** @type {{ refreshCache: boolean } | null} */
+  let pendingRun = null;
   function setRunDirectory(path) {
     const next = path || "";
     if (next === runDirectory) return;
     runDirectory = next;
     if (next && pendingRun && !readerDisposed) {
-      pendingRun = false;
-      void runCode();
+      const options = pendingRun;
+      pendingRun = null;
+      void runCode(options);
     }
   }
   // The Run button's menu and the Run directory dialog share this state.
@@ -2409,7 +2412,7 @@
   }
   // Dismissing the dialog gives up a Run that was waiting for a folder.
   function dismissRunDir() {
-    pendingRun = false;
+    pendingRun = null;
     runDirPageOpen = false;
   }
   const latexOutput = $derived(buildSettings.state.latexOutput);
@@ -2547,12 +2550,15 @@
   async function runCode({ refreshCache = false } = {}) {
     if (runPhase === "running" || readerDisposed) return;
     if (!runDir.usable) {
-      pendingRun = true;
+      pendingRun = { refreshCache };
       runDirPageOpen = true;
       return;
     }
     runPhase = "running";
     runStartedAt = Date.now();
+    // The document's format as the run starts: the reader may move to another
+    // file while figures are gathered, and the run is still this one's.
+    const format = sourceFormat;
     const mine = ++runGeneration;
     // What the run was started against: the unmatched fallback page is only
     // shown if the reader is still looking at the same document.
@@ -2584,12 +2590,12 @@
       }
       const heading = await headingOf(tree);
       if (gone()) return;
-      const typst = sourceFormat === "typst";
+      const typst = format === "typst";
       // Typst keeps its own output choice; Markdown and Quarto share theirs.
       const toPdf = typst ? typstOutput !== "html" : buildPreferences.output === "pdf";
       // Quarto HTML runs carry cell tags, so each output finds its cell even
       // when Quarto wrote no div for it. The tags are not in the stored record.
-      const runTree = sourceFormat === "quarto" && !toPdf ? tagCells(tree) : tree;
+      const runTree = format === "quarto" && !toPdf ? tagCells(tree) : tree;
       // Figures the document shows that are not project files: the app reads
       // them from the Run directory after the run.
       await figureSyntaxReady(tree);
@@ -2599,7 +2605,7 @@
         project: SLUG,
         wanted,
         ...(typst ? { format: toPdf ? "pdf" : "html" } : {}),
-        ...(sourceFormat === "quarto" && refreshCache ? { refreshCache: true } : {}),
+        ...(format === "quarto" && refreshCache ? { refreshCache: true } : {}),
         signal: controller.signal,
       });
       if (gone()) return;
@@ -4780,7 +4786,7 @@
       onview={chooseViewCommand}
       onhelp={(id) => void runCommand(id)}>
       {#snippet insert()}
-        <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() && !suggestOnly ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={suggestOnly ? undefined : (items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} demo={DEMO} />
+        <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() && !suggestOnly ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={suggestOnly ? undefined : (items) => editor?.importZoteroItems?.(items)} ondoilookup={suggestOnly ? null : (text) => editor?.lookupDoi?.(text)} ondoiimport={suggestOnly ? undefined : (entries) => editor?.importDoiEntries?.(entries)} disabled={!mayEdit || !editor} demo={DEMO} />
       {/snippet}
     </Menus>
   {/snippet}

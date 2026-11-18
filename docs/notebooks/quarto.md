@@ -101,7 +101,7 @@ Published results count against the document owner's storage. To delete them, go
 
 **A file is not found.** Paths in code are relative to the top of the Run directory, not to the `.qmd`. Markdown paths are relative to the `.qmd`, as usual. Hidden files and folders, `_quarto.yml`, and folders Quarto generates (`*_files`, `*_cache`, `_freeze`, `_site`) are not linked into the project copy, so Markdown cannot use them.
 
-**Output is stale after data changed.** With `cache: true`, Quarto reuses a cell's output until its code changes, and does not notice a data file that changed. Choose **Run without cache** in the menu beside **Run code** to recompute every cached cell once. To make the cache follow the file, add `#| cache.extra: tools::md5sum("data/survey.csv")` to the cell.
+**Output is stale after data changed.** With `cache: true`, Quarto reuses a cell's output until its code changes, and does not notice a data file that changed. Choose **Run without cache** in the menu beside **Run code** to recompute every cached cell once. With R (knitr), make the cache follow the file by adding `#| cache.extra: !expr tools::md5sum("data/survey.csv")` to the cell.
 
 **Including a file your code writes.** Quarto reads `{{< include >}}` before code runs, so the included file is picked up from the next run.
 

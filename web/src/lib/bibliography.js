@@ -1,6 +1,7 @@
 // Matching and cache policy for bibliography completion. Parsing itself lives
 // in the engine WASM module; these helpers are also usable by check scripts.
 import { m } from "./paraglide/messages.js";
+import { normaliseDoi } from "./doi.js";
 
 const WORD = /[-\p{L}\p{N}_:.+]/u;
 const KEY = /^[-\p{L}\p{N}_:.+]*$/u;
@@ -352,23 +353,59 @@ function projectBibliographyPath(filePath, reference) {
   return parts.join("/");
 }
 
-export function planZoteroImport({ source, targetPath, texts, item, format = "markdown" }) {
+// The part of an import plan the two sources share: which .bib the entry goes
+// into, its text so far, and the registration the citing file may need.
+function importTarget({ source, targetPath, texts, format }) {
   const configured = selectedBibliographyFiles(format === "latex" || format === "tex" ? latexMasked(string(source)) : source, format);
   const configuredPaths = configured.map((path) => projectBibliographyPath(targetPath, path)).filter(Boolean)
     .map((path) => (format === "latex" || format === "tex") && !/\.bib$/i.test(path) ? `${path}.bib` : path);
   const existing = bibliographyFiles({ texts });
   const path = configuredPaths.find((name) => Object.hasOwn(texts, name)) || configuredPaths[0] || existing[0] || "references.bib";
   const previous = string(texts[path]);
-  const key = zoteroCitationKey(previous, item.zotero_item, item.citation_key);
-  const already = new RegExp(`x-librepaper-zotero-item\\s*=\\s*[{"]${String(item.zotero_item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[}"]`, "i").test(previous);
-  const addition = already ? "" : (previous.trim() ? "\n" : "") + replaceBibtexKey(item.bibtex, key);
-  const bibtex = already ? previous : previous.replace(/\s*$/, "") + addition;
-  let registration = null;
-  if (!configured.length) {
+  const registration = () => {
+    if (configured.length) return null;
     const depth = String(targetPath || "").split("/").slice(0, -1).length;
-    registration = bibliographyRegistration(source, "../".repeat(depth) + path, format);
+    return bibliographyRegistration(source, "../".repeat(depth) + path, format);
+  };
+  return { path, previous, registration };
+}
+
+function importPlan({ texts, path, previous, registration }, key, entryText, already) {
+  const addition = already ? "" : (previous.trim() ? "\n" : "") + replaceBibtexKey(entryText, key);
+  const bibtex = already ? previous : previous.replace(/\s*$/, "") + addition;
+  return { key, path, bibtex, addition, create: !Object.hasOwn(texts, path), registration: registration(), already };
+}
+
+export function planZoteroImport({ source, targetPath, texts, item, format = "markdown" }) {
+  const target = importTarget({ source, targetPath, texts, format });
+  const key = zoteroCitationKey(target.previous, item.zotero_item, item.citation_key);
+  const already = new RegExp(`x-librepaper-zotero-item\\s*=\\s*[{"]${String(item.zotero_item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[}"]`, "i").test(target.previous);
+  return importPlan({ ...target, texts }, key, item.bibtex, already);
+}
+
+// The key of the entry in a .bib whose doi field equals `doi`, or null.
+function doiEntryKey(bibtex, doi) {
+  const same = (text) => (normaliseDoi(text) ?? String(text).trim()).toLocaleLowerCase();
+  const wanted = same(doi);
+  const field = /\bdoi\s*=\s*(?:\{([^}]*)\}|"([^"]*)")/gi;
+  for (const found of string(bibtex).matchAll(field)) {
+    if (same(found[1] ?? found[2]) !== wanted) continue;
+    const headers = [...string(bibtex).slice(0, found.index).matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)];
+    if (headers.length) return headers.at(-1)[1];
   }
-  return { key, path, bibtex, addition, create: !Object.hasOwn(texts, path), registration, already };
+  return null;
+}
+
+// Plans adding a reference fetched by DOI. entry is { doi, key, bibtex }. A DOI the .bib
+// already holds is reused under its own key; otherwise the key is de-duplicated like Zotero's.
+export function planDoiImport({ source, targetPath, texts, entry, format = "markdown" }) {
+  const target = importTarget({ source, targetPath, texts, format });
+  const existingKey = doiEntryKey(target.previous, entry.doi);
+  if (existingKey) return importPlan({ ...target, texts }, existingKey, entry.bibtex, true);
+  const used = new Set([...target.previous.matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)].map((match) => match[1].toLocaleLowerCase()));
+  let key = entry.key;
+  for (let index = 1; used.has(key.toLocaleLowerCase()); index++) key = entry.key + collisionSuffix(index);
+  return importPlan({ ...target, texts }, key, entry.bibtex, false);
 }
 export class BibliographyCache {
   constructor(limit = 4) { this.limit = limit; this.values = new Map(); }

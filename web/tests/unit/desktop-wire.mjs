@@ -166,6 +166,8 @@ test("Run without cache sends refresh_cache, needs a 3.3.0 app, and a plain job 
   await client.runRender({ job: {}, tree: TREE, format: "quarto", output: "html" });
   assert.equal(jobs.length, 2);
   assert.equal(jobs[0].options.refresh_cache, true);
+  // The refresh job stays inside the shared full fixture.
+  assert.deepEqual(extraKeys(jobs[0], await fixture("jobs.post.request.full.json")), []);
   assert.equal("refresh_cache" in jobs[1].options, false);
   // A 3.2.0 app predates the cache refresh: the job is refused before anything is sent.
   const older = { base: BASE, version: "3.2.0", protocol: { oldest: 3, current: "3.2.0" } };
