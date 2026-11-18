@@ -31,19 +31,33 @@ export function tailBytes(text, limit = LOG_LIMIT) {
   return new TextDecoder().decode(bytes.subarray(start));
 }
 
-/** @param {{ok?: boolean, html?: unknown, pdf?: {byteLength?: number}|null, diagnostics?: unknown[], log?: string, provenance?: unknown, failure?: {message?: string}}} result @param {string} revision */
-export function compileReply(result, revision) {
+/** @param {{ok?: boolean, html?: unknown, pdf?: {byteLength?: number}|null, diagnostics?: unknown[], log?: string, provenance?: unknown, failure?: {message?: string}}} result @param {string} revision @param {"pdf"|"html"|null} [requested] */
+export function compileReply(result, revision, requested = null) {
   const rendered = result || {};
   const output = rendered.pdf?.byteLength ? "pdf" : typeof rendered.html === "string" ? "html" : "none";
-  const diagnostics = boundedDiagnostics(rendered.diagnostics);
+  const items = Array.isArray(rendered.diagnostics) ? [...rendered.diagnostics] : [];
+  const mismatch = (requested === "pdf" || requested === "html") && output !== "none" && output !== requested;
+  if (mismatch) items.push({ severity: "error", message: `Requested ${requested}, but this file's renderer produced ${output}.` });
+  const diagnostics = boundedDiagnostics(items);
   const log = tailBytes(rendered.log || rendered.failure?.message || "");
   const provenance = rendered.provenance && typeof rendered.provenance === "object" ? rendered.provenance : {};
-  return { revision, ok: rendered.ok !== false && output !== "none", output, diagnostics, log, provenance };
+  // The same rule as the assistant preview: any severity but warning, info or hint fails it.
+  const clean = !items.some((item) => !["warning", "info", "hint"].includes(item?.severity));
+  return { revision, ok: rendered.ok !== false && output !== "none" && clean && !mismatch, output, diagnostics, log, provenance };
+}
+
+/** The first `limit` bytes of `text`, never ending inside a character. */
+function headBytes(text, limit) {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.byteLength <= limit) return text;
+  let end = limit;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return new TextDecoder().decode(bytes.subarray(0, end));
 }
 
 /** @param {"run_unavailable"|"run_disabled"|"busy"|"no_renderer"|"failed"} code @param {string} message */
 export function errorReply(code, message) {
-  return { error: code, message };
+  return { error: code, message: headBytes(String(message ?? ""), 1000) };
 }
 
 /** One request at a time. `compile(request)` resolves to a reply body;

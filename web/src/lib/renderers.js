@@ -295,7 +295,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
       return result?.html ? { ...result, html: latexmlWithHouseStyle(result.html, css) } : result;
     }
     latex.ensureProject(project);
-    const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok } = await latex.compile(tree, { manual });
+    const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok, compiledTree } = await latex.compile(tree, { manual });
     // Keep the output channels explicit. In particular, a failed LaTeX
     // compile has no HTML page; `undefined` would look like a page to callers
     // that use a null check and could replace a previously good preview.
@@ -314,6 +314,8 @@ export async function render(tree, title, { manual = false, format: requestedFor
       failure,
       job,
       ok,
+      // The tree that actually compiled; a queued job may merge with a newer one.
+      compiledTree,
     };
   }
   const capturedSettings = configuration && Object.prototype.hasOwnProperty.call(configuration, "settings")
