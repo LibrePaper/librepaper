@@ -21,6 +21,12 @@ use axum::extract::{Extension, Path, State};
 /// for one of them gets it back; any other client is offered the first.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
+/// The `WWW-Authenticate` value that points an app at the metadata of the
+/// project's authorization server.
+pub(super) fn mcp_challenge(origin: &str, slug: &str) -> String {
+    format!("Bearer resource_metadata=\"{origin}/.well-known/oauth-protected-resource/mcp/{slug}\"")
+}
+
 pub(super) async fn mcp_http(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
@@ -58,13 +64,7 @@ pub(super) async fn mcp_http(
             401,
             &json!({"error": "a bearer token for this project is required"}),
         );
-        set(
-            &mut reply,
-            "www-authenticate",
-            &format!(
-                "Bearer resource_metadata=\"{origin}/.well-known/oauth-protected-resource/mcp/{slug}\""
-            ),
-        );
+        set(&mut reply, "www-authenticate", &mcp_challenge(&origin, &slug));
         set(&mut reply, "cache-control", "no-store");
         return reply;
     }
@@ -77,6 +77,13 @@ pub(super) async fn mcp_http(
     // browser page driving a token it should not hold.
     if header_of(request.headers(), "origin").is_some_and(|o| o != origin) {
         return plain(403, "origin refused");
+    }
+    // A client that names a revision this endpoint does not speak is told so
+    // before anything is read or run. One that names none is an older client.
+    if header_of(request.headers(), "mcp-protocol-version")
+        .is_some_and(|version| !PROTOCOL_VERSIONS.iter().any(|supported| *supported == version))
+    {
+        return rpc_error(400, Value::Null, -32600, "unsupported MCP-Protocol-Version");
     }
     let mut headers = request.headers().clone();
     headers.insert(AUTOMATION_HEADER, HeaderValue::from_static("1"));
