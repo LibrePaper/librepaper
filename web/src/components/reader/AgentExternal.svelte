@@ -126,6 +126,7 @@
     {#if sharing.sharing.connectors === true && connectorUrl}
       <section class="agent-section agent-connector" aria-labelledby="agent-connector-title">
         <h3 class="agent-title" id="agent-connector-title">{m.agentexternal_connect_title()}</h3>
+        <p class="agent-help">{m.agentexternal_connect_lede()}</p>
         <ol class="agent-help agent-steps">
           <li>
             {m.agentexternal_step_copy()}
