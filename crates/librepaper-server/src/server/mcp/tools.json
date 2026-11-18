@@ -25,7 +25,7 @@
   "tools": [
     {
       "name": "document_read",
-      "description": "Read bounded exact source or search, outline, bibliography, comments and context. Reuse returned view and range handles.",
+      "description": "Read bounded exact source or search, outline, bibliography, comments and context. Reuse returned view and range handles. A thread query returns each comment with its anchor: the path, the exact quoted text with a little before and after, a status, and a range_id for that passage in this view.",
       "inputSchema": {
         "type": "object",
         "properties": {

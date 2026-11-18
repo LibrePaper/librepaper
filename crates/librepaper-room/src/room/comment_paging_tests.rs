@@ -1092,7 +1092,7 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
     let mut after = None;
     loop {
         let window = room
-            .thread_query_page(&deployment.author_key(), true, true, after, 24)
+            .thread_query_page(&deployment.author_key(), true, true, after, 24, &|_| None)
             .await
             .unwrap();
         let last = window
@@ -1134,7 +1134,15 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
         .find(|comment| comment.id == deep)
         .expect("on the first page");
     let window = room
-        .thread_reply_window(ids[0], &deployment.author_key(), true, true, None, 24)
+        .thread_reply_window(
+            ids[0],
+            &deployment.author_key(),
+            true,
+            true,
+            None,
+            24,
+            &|_| None,
+        )
         .await
         .unwrap();
     let from_window = window.thread.expect("the thread itself");
