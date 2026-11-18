@@ -201,6 +201,20 @@ fn build_result(id: &str, path: &str, body: &Value) -> Result<Value, Completion>
     }))
 }
 
+/// Pop tabs from the front of the list until one takes the frame.
+fn send_to_next_tab(fallback: &mut Option<(String, Vec<Sender>)>) -> bool {
+    let Some((frame, senders)) = fallback.as_mut() else {
+        return false;
+    };
+    while !senders.is_empty() {
+        let next = senders.remove(0);
+        if next.try_send(Outgoing::Text(frame.clone())).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
 impl CompileHub {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
         self.entries
@@ -249,11 +263,19 @@ impl CompileHub {
         Ok((id, receiver, expires_at))
     }
 
-    /// Remember the frame and the tabs to try if the tab it went to declines.
+    /// Hand the hub the frame and every tab to try, newest first. Nothing is
+    /// sent until `dispatch`, so a fast decline always finds the whole list.
     pub(super) fn set_fallbacks(&self, id: &str, frame: String, senders: Vec<Sender>) {
         if let Some(entry) = self.lock().get_mut(id) {
             entry.fallback = Some((frame, senders));
         }
+    }
+
+    /// Send the frame to the first tab that takes it. False when none does.
+    pub(super) fn dispatch(&self, id: &str) -> bool {
+        self.lock()
+            .get_mut(id)
+            .is_some_and(|entry| send_to_next_tab(&mut entry.fallback))
     }
 
     /// Forget a request that could not be delivered.
@@ -305,13 +327,8 @@ impl CompileHub {
                     Some("run_unavailable" | "run_disabled" | "busy")
                 );
                 if declined {
-                    if let Some((frame, senders)) = entry.fallback.as_mut() {
-                        while !senders.is_empty() {
-                            let next = senders.remove(0);
-                            if next.try_send(Outgoing::Text(frame.clone())).is_ok() {
-                                return Completion::Accepted;
-                            }
-                        }
+                    if send_to_next_tab(&mut entry.fallback) {
+                        return Completion::Accepted;
                     }
                 }
                 entry.fallback = None;
@@ -414,15 +431,12 @@ impl Server {
             "expires_at": expires_at,
         })
         .to_string();
-        let Some(delivered) = tabs
-            .iter()
-            .position(|(_, tx)| tx.try_send(Outgoing::Text(frame.clone())).is_ok())
-        else {
+        let senders: Vec<_> = tabs.into_iter().map(|(_, tx)| tx).collect();
+        self.compile.set_fallbacks(&id, frame, senders);
+        if !self.compile.dispatch(&id) {
             self.compile.forget(&id);
             return Err(no_tab());
-        };
-        let rest: Vec<_> = tabs.drain(delivered + 1..).map(|(_, tx)| tx).collect();
-        self.compile.set_fallbacks(&id, frame, rest);
+        }
         let result = wait_for(&id, path, slot, Duration::from_millis(wait), expires_at).await;
         Ok(self.compile_current(slug, result).await)
     }
@@ -514,7 +528,11 @@ impl Server {
 mod tests {
     use super::*;
 
-    const NOW: i64 = 1_800_000_000;
+    /// The real clock, read once, so deadlines compared by `wait_for` hold.
+    fn now() -> i64 {
+        static START: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+        *START.get_or_init(now_unix)
+    }
 
     fn success() -> Value {
         json!({
@@ -529,7 +547,7 @@ mod tests {
 
     fn registered(hub: &CompileHub) -> (String, Slot) {
         let (id, slot, _) = hub
-            .register("doc", "owner", "paper.tex", NOW)
+            .register("doc", "owner", "paper.tex", now())
             .map_err(|failure| failure.message)
             .unwrap();
         (id, slot)
@@ -540,7 +558,7 @@ mod tests {
         let hub = CompileHub::default();
         let (id, slot) = registered(&hub);
         assert_eq!(
-            hub.complete("doc", &id, "owner", &success(), NOW + 1),
+            hub.complete("doc", &id, "owner", &success(), now() + 1),
             Completion::Accepted
         );
         let result = slot.borrow().clone().unwrap();
@@ -550,7 +568,7 @@ mod tests {
         assert_eq!(result["revision"], "abc");
         // It cannot be answered twice.
         assert_eq!(
-            hub.complete("doc", &id, "owner", &success(), NOW + 2),
+            hub.complete("doc", &id, "owner", &success(), now() + 2),
             Completion::NotFound
         );
     }
@@ -560,26 +578,26 @@ mod tests {
         let hub = CompileHub::default();
         let (id, _slot) = registered(&hub);
         assert_eq!(
-            hub.complete("doc", &id, "someone-else", &success(), NOW),
+            hub.complete("doc", &id, "someone-else", &success(), now()),
             Completion::NotFound
         );
         assert_eq!(
-            hub.complete("other-doc", &id, "owner", &success(), NOW),
+            hub.complete("other-doc", &id, "owner", &success(), now()),
             Completion::NotFound
         );
         assert_eq!(
-            hub.complete("doc", "compile_unknown", "owner", &success(), NOW),
+            hub.complete("doc", "compile_unknown", "owner", &success(), now()),
             Completion::NotFound
         );
-        assert!(hub.lookup("doc", &id, "someone-else", NOW).is_none());
-        assert!(hub.lookup("other-doc", &id, "owner", NOW).is_none());
+        assert!(hub.lookup("doc", &id, "someone-else", now()).is_none());
+        assert!(hub.lookup("other-doc", &id, "owner", now()).is_none());
     }
 
     #[test]
     fn an_expired_request_takes_no_reply() {
         let hub = CompileHub::default();
         let (id, _slot) = registered(&hub);
-        let late = NOW + REQUEST_TTL_SECONDS;
+        let late = now() + REQUEST_TTL_SECONDS;
         assert_eq!(
             hub.complete("doc", &id, "owner", &success(), late),
             Completion::NotFound
@@ -601,29 +619,29 @@ mod tests {
         let mut big_log = success();
         big_log["log"] = json!("x".repeat(MAX_LOG + 1));
         assert_eq!(
-            hub.complete("doc", &id, "owner", &big_log, NOW),
+            hub.complete("doc", &id, "owner", &big_log, now()),
             Completion::TooLarge
         );
         let mut big_diagnostics = success();
         big_diagnostics["diagnostics"] = json!(vec!["x".repeat(1024); 17]);
         assert_eq!(
-            hub.complete("doc", &id, "owner", &big_diagnostics, NOW),
+            hub.complete("doc", &id, "owner", &big_diagnostics, now()),
             Completion::TooLarge
         );
         let mut big_provenance = success();
         big_provenance["provenance"] = json!({"k": "x".repeat(MAX_PROVENANCE)});
         assert_eq!(
-            hub.complete("doc", &id, "owner", &big_provenance, NOW),
+            hub.complete("doc", &id, "owner", &big_provenance, now()),
             Completion::TooLarge
         );
         let mut bad_output = success();
         bad_output["output"] = json!("exe");
         assert_eq!(
-            hub.complete("doc", &id, "owner", &bad_output, NOW),
+            hub.complete("doc", &id, "owner", &bad_output, now()),
             Completion::Invalid
         );
         assert_eq!(
-            hub.complete("doc", &id, "owner", &success(), NOW),
+            hub.complete("doc", &id, "owner", &success(), now()),
             Completion::Accepted
         );
     }
@@ -634,14 +652,14 @@ mod tests {
         let (id, slot) = registered(&hub);
         let reply = json!({"error": "run_disabled", "message": "The owner has not allowed it."});
         assert_eq!(
-            hub.complete("doc", &id, "owner", &reply, NOW),
+            hub.complete("doc", &id, "owner", &reply, now()),
             Completion::Accepted
         );
         let result = slot.borrow().clone().unwrap();
         assert_eq!(result["status"], "unavailable");
         assert_eq!(result["error"], "run_disabled");
         assert_eq!(
-            hub.complete("doc", &id, "owner", &json!({"error": "bogus"}), NOW),
+            hub.complete("doc", &id, "owner", &json!({"error": "bogus"}), now()),
             Completion::NotFound
         );
     }
@@ -658,17 +676,39 @@ mod tests {
         hub.set_fallbacks(&id, "frame".to_owned(), vec![tx]);
         let reply = json!({"error": "run_unavailable", "message": "no"});
         assert_eq!(
-            hub.complete("doc", &id, "owner", &reply, NOW),
+            hub.complete("doc", &id, "owner", &reply, now()),
             Completion::Accepted
         );
         let (body, _) = rx.recv().await.unwrap().into_parts();
         assert!(matches!(body, Outgoing::Text(text) if text == "frame"));
         assert!(slot.borrow().is_none());
         assert_eq!(
-            hub.complete("doc", &id, "owner", &success(), NOW + 1),
+            hub.complete("doc", &id, "owner", &success(), now() + 1),
             Completion::Accepted
         );
         assert_eq!(slot.borrow().clone().unwrap()["status"], "succeeded");
+    }
+
+    #[test]
+    fn dispatch_with_no_tab_fails() {
+        let hub = CompileHub::default();
+        let (id, _slot) = registered(&hub);
+        assert!(!hub.dispatch(&id));
+        hub.set_fallbacks(&id, "frame".to_owned(), Vec::new());
+        assert!(!hub.dispatch(&id));
+    }
+
+    #[tokio::test]
+    async fn dispatch_skips_a_full_tab_and_uses_the_next() {
+        let hub = CompileHub::default();
+        let (id, _slot) = registered(&hub);
+        let (full, _full_rx) = Sender::channel(1, 64 * 1024, None, None);
+        full.try_send(Outgoing::Text("filler".to_owned())).unwrap();
+        let (tx, mut rx) = tab();
+        hub.set_fallbacks(&id, "frame".to_owned(), vec![full, tx]);
+        assert!(hub.dispatch(&id));
+        let (body, _) = rx.recv().await.unwrap().into_parts();
+        assert!(matches!(body, Outgoing::Text(text) if text == "frame"));
     }
 
     #[test]
@@ -678,7 +718,7 @@ mod tests {
         hub.set_fallbacks(&id, "frame".to_owned(), Vec::new());
         let reply = json!({"error": "run_unavailable", "message": "no"});
         assert_eq!(
-            hub.complete("doc", &id, "owner", &reply, NOW),
+            hub.complete("doc", &id, "owner", &reply, now()),
             Completion::Accepted
         );
         assert_eq!(slot.borrow().clone().unwrap()["error"], "run_unavailable");
@@ -692,7 +732,7 @@ mod tests {
         hub.set_fallbacks(&id, "frame".to_owned(), vec![tx]);
         let reply = json!({"error": "failed", "message": "no"});
         assert_eq!(
-            hub.complete("doc", &id, "owner", &reply, NOW),
+            hub.complete("doc", &id, "owner", &reply, now()),
             Completion::Accepted
         );
         assert_eq!(slot.borrow().clone().unwrap()["error"], "failed");
@@ -705,14 +745,14 @@ mod tests {
         let mut first = None;
         for index in 0..(MAX_FINISHED + 3) {
             let (id, _slot) = registered(&hub);
-            let at = NOW + index as i64;
+            let at = now() + index as i64;
             assert_eq!(
                 hub.complete("doc", &id, "owner", &success(), at),
                 Completion::Accepted
             );
             first.get_or_insert(id);
         }
-        let now = NOW + 100;
+        let now = now() + 100;
         assert!(hub.lookup("doc", &first.unwrap(), "owner", now).is_none());
         let kept = hub
             .lock()
@@ -736,8 +776,8 @@ mod tests {
         let slots: Vec<_> = (0..MAX_PENDING_PER_PRINCIPAL)
             .map(|_| registered(&hub))
             .collect();
-        assert!(hub.register("doc", "owner", "paper.tex", NOW).is_err());
-        assert!(hub.register("doc", "another", "paper.tex", NOW).is_ok());
+        assert!(hub.register("doc", "owner", "paper.tex", now()).is_err());
+        assert!(hub.register("doc", "another", "paper.tex", now()).is_ok());
         drop(slots);
     }
 
@@ -750,18 +790,18 @@ mod tests {
             "paper.tex",
             slot.clone(),
             Duration::from_millis(10),
-            NOW + REQUEST_TTL_SECONDS,
+            now() + REQUEST_TTL_SECONDS,
         )
         .await;
         assert_eq!(pending["status"], "pending");
         assert_eq!(pending["compile_id"], json!(id));
-        hub.complete("doc", &id, "owner", &success(), NOW);
+        hub.complete("doc", &id, "owner", &success(), now());
         let done = wait_for(
             &id,
             "paper.tex",
             slot,
             Duration::from_millis(10),
-            NOW + REQUEST_TTL_SECONDS,
+            now() + REQUEST_TTL_SECONDS,
         )
         .await;
         assert_eq!(done["status"], "succeeded");
@@ -777,7 +817,7 @@ mod tests {
             "paper.tex",
             slot,
             Duration::from_millis(10),
-            NOW + REQUEST_TTL_SECONDS,
+            now() + REQUEST_TTL_SECONDS,
         )
         .await;
         assert_eq!(result["status"], "unavailable");
