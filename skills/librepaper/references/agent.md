@@ -121,6 +121,7 @@ Start with one `document_read` that combines queries: `{"kind":"manifest"}` to l
 - You cannot accept tracked changes or reject anyone else's; that is the editor's act. You can withdraw your own pending changes with `document_withdraw` (or `lp withdraw`).
 - Keep replacements minimal and inside the asked scope. Preserve math, references, code and markup.
 - When updating an existing document, propose targeted patches over the passages that change. Never replace a whole file or section to change part of it; keep the rest of the author's text.
+- To add a reference by DOI, call `reference_from_doi` (served only by `librepaper mcp`, answered on the user's machine) and append its `bibtex` to the `.bib` with `document_propose`. Never write reference metadata yourself.
 - Keep the change ids that `document_propose` returns in `effects`. If a pass went wrong, withdraw it with those ids before proposing again. Do not try to "restore" text by proposing the old text over your own pending change.
 - Use `validation: "compile"` when the change must still build, and only claim it compiles from a matching render result.
 
