@@ -257,7 +257,8 @@ try {
     body: JSON.stringify({ revision: "x", ok: true, output: "html", diagnostics: [], log: "", provenance: {} }),
   });
   console.log(`agent-compile-browser: forged reply with the agent token: HTTP ${forged.status}`);
-  assert.equal(forged.status, 404);
+  // Refused either before the route (401: agent tokens are not accepted here) or by it (404).
+  assert.ok([401, 404].includes(forged.status), `a forged reply got ${forged.status}`);
 
   console.log(`agent-compile-browser: document_compile verified end to end through the owner's tab (${outputs.join(" and ")}; success, failure at line 3, missing file, run forbidden, forged reply refused)`);
 } catch (error) {
