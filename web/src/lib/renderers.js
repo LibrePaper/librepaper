@@ -384,12 +384,17 @@ async function renderQuarto(tree, title, moduleUrls, settings, source) {
       tree: renderTree(draftTree(tree, drafted.markdown), settings),
       title,
     }, moduleUrls);
+    // citations.wasm rendered the draft, so its positions count draft lines;
+    // they are put back on the .qmd lines before the page is housed.
+    const positioned = typeof result?.html === "string"
+      ? { ...result, html: quarto.mapDraftSourcepos(result.html, drafted.line_map) }
+      : result;
     const mapped = quarto.mapDraftDiagnostics(result?.diagnostics || [], drafted.line_map, tree.main);
-    return housed({ ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] });
+    return withMainSource(housed({ ...positioned, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] }), tree.main);
   }
   const result = await request("markdown", "render", { tree: renderTree(withSidecar, settings), title }, moduleUrls);
   // Rendered from the .qmd itself, so its positions are that file's lines.
-  // The citations path above drafts the document first, and gets none.
+  // The citations path above maps its draft positions back onto those lines.
   return result ? withMainSource(housed({ ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) }), tree.main) : result;
 }
 
