@@ -14,6 +14,7 @@ import { createKatexCache, createKatexLoader, createMathTypesetter, typesetDetac
 import { createDiagramCache, createDiagramRenderer, createMermaidLoader } from "../lib/mermaid.js";
 import { perfEnd, perfStart } from "../lib/perf-marks.js";
 import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
+import { parseSourcepos } from "../lib/sourcepos.js";
 import { watchPinch } from "../lib/pinch.js";
 import { morphChildren } from "./morph.js";
 
@@ -67,6 +68,9 @@ import { morphChildren } from "./morph.js";
   // The reader's own surface colours ({ paper, ink }), or null for the house
   // defaults. They override the house variables on both :root and .lp-dark.
   let surface = null;
+  // The `sources` the current preview's data-sourcepos tags name (project
+  // paths, or null for a bundled package), or null when the render gave none.
+  let previewSources = null;
   function setSurface(next) {
     const ok = (value) => typeof value === "string" && value.length > 0 && value.length < 200;
     const wanted = next && ok(next.paper) && ok(next.ink) ? { paper: next.paper, ink: next.ink } : null;
@@ -602,6 +606,29 @@ import { morphChildren } from "./morph.js";
     return table.starts[index] + point.offset;
   }
 
+  // Which source lines a selection came from, when the preview says: the
+  // data-sourcepos attributes on the elements at either end of the range. It
+  // is only a hint that narrows the server's search, so anything unclear, or
+  // too broad to help, gives none.
+  const SOURCE_HINT_MAX_LINES = 200;
+  function sourceHint(range) {
+    const sources = previewSources;
+    if (!sources) return null;
+    const sourceAt = (node) => {
+      const element = node?.nodeType === 3 ? node.parentElement : node;
+      return parseSourcepos(element?.closest?.("[data-sourcepos]")?.getAttribute("data-sourcepos"));
+    };
+    const start = sourceAt(range.startContainer);
+    const end = sourceAt(range.endContainer);
+    if (!start || !end || start.tag !== end.tag) return null;
+    const path = sources[start.tag];
+    if (typeof path !== "string" || !path) return null;
+    const from_line = Math.min(start.from, end.from);
+    const to_line = Math.max(start.to, end.to);
+    if (to_line - from_line > SOURCE_HINT_MAX_LINES) return null;
+    return { path, from_line, to_line };
+  }
+
   function captureSelection() {
     const selection = document.getSelection();
     if (!selection || selection.isCollapsed) {
@@ -645,6 +672,7 @@ import { morphChildren } from "./morph.js";
     if (!exact) return;
 
     const box = range.getBoundingClientRect();
+    const hint = sourceHint(range);
     post({
       type: "selection",
       selector: {
@@ -655,6 +683,7 @@ import { morphChildren } from "./morph.js";
         // authority; this only says which copy was meant when a document
         // repeats itself and the context cannot tell them apart.
         position: start,
+        ...(hint ? { hint } : {}),
       },
       // Viewport coordinates inside the frame; the sidebar adds the frame's
       // own offset to place its button.
@@ -748,6 +777,9 @@ import { morphChildren } from "./morph.js";
     //
     // innerHTML does not run scripts, so a preview never executes anything.
     if (message.type === "preview") {
+      // The sources the page's data-sourcepos tags name. Kept for the next
+      // selection; a page without them clears the ones from the last page.
+      previewSources = Array.isArray(message.sources) ? message.sources : null;
       // A LaTeX document arrives as PDF bytes rather than as HTML, and the
       // page it arrives on -- the PDF viewer -- draws
       // it itself into a text layer of ordinary spans. Nothing below applies

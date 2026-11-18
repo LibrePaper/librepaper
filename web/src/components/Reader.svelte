@@ -873,6 +873,7 @@
       prefix: String(selector.prefix || ""),
       suffix: String(selector.suffix || ""),
       position: Number.isInteger(selector.position) && selector.position >= 0 ? selector.position : null,
+      ...(selector.hint ? { hint: selector.hint } : {}),
     };
     pending.render_digest = mayEdit ? "" : renderedProjectDigest;
     placeBar(rect);

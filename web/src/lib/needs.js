@@ -11,7 +11,7 @@
 // URL (see `cache.js`); the second document that imports cetz costs nothing.
 
 import { cached } from "./cache.js";
-import { call, handOverChanged, needsOf } from "./renderer-wasm.js";
+import { call, handOverChanged, needsOf, sourcesOf } from "./renderer-wasm.js";
 
 /// How many fetch-and-compile rounds one render may take. Dependencies nest a
 /// few levels deep at most; a document that still needs something after this
@@ -93,7 +93,15 @@ export async function renderResolving(wasm, tree, title, fetched, options = {}) 
     const result = call(wasm, compileExport, source, title);
     const needs = needsOf(wasm);
     const wanting = needs && needs.packages.length;
-    if (!wanting || round >= ROUNDS) return result;
-    if (!(await fetchNeeds(needs, fetched))) return result;
+    if (!wanting || round >= ROUNDS) return withSources(wasm, result, compileExport);
+    if (!(await fetchNeeds(needs, fetched))) return withSources(wasm, result, compileExport);
   }
+}
+
+// An HTML page carries `data-sourcepos` tags; the table that names their files
+// travels beside it, for the preview to say which lines a selection came from.
+function withSources(wasm, result, compileExport) {
+  if (compileExport !== "compile_html" || !result || typeof result !== "object") return result;
+  const sources = sourcesOf(wasm);
+  return sources ? { ...result, sources } : result;
 }

@@ -14,6 +14,25 @@ assert.deepEqual(accepted({ type: "selection", selector: { exact: "selected text
   type: "selection", selector: { exact: "selected text", prefix: "before", suffix: "after", position: 12 }, rect: { top: 0, left: 2, right: 4, bottom: 6 },
 });
 assert.deepEqual(accepted({ type: "selection", selector: null }), { type: "selection", selector: null });
+// A source hint is kept when well formed, and dropped alone when it is not:
+// the selection it came with is still delivered.
+const hinted = { exact: "selected text", prefix: "", suffix: "", position: 3 };
+assert.deepEqual(accepted({ type: "selection", selector: { ...hinted, hint: { path: "paper/main.tex", from_line: 4, to_line: 9, extra: 1 } } }), {
+  type: "selection", selector: { ...hinted, hint: { path: "paper/main.tex", from_line: 4, to_line: 9 } },
+});
+assert.deepEqual(accepted({ type: "selection", selector: { ...hinted, hint: { path: "a.md", from_line: 1, to_line: 1 } } }), {
+  type: "selection", selector: { ...hinted, hint: { path: "a.md", from_line: 1, to_line: 1 } },
+});
+for (const hint of [
+  null, "a.md", { path: "", from_line: 1, to_line: 2 }, { path: 7, from_line: 1, to_line: 2 },
+  { path: "a.md", from_line: 0, to_line: 2 }, { path: "a.md", from_line: 1.5, to_line: 2 },
+  { path: "a.md", from_line: 3, to_line: 2 }, { path: "a.md", from_line: 1 },
+  { path: "x".repeat(1025), from_line: 1, to_line: 2 },
+]) {
+  assert.deepEqual(accepted({ type: "selection", selector: { ...hinted, hint } }), {
+    type: "selection", selector: hinted,
+  }, JSON.stringify(hint).slice(0, 80));
+}
 assert.deepEqual(accepted({ type: "caret", offset: 9, pdf: { page: 2, x: 0, y: 12 } }), { type: "caret", offset: 9, pdf: { page: 2, x: 0, y: 12 } });
 assert.deepEqual(accepted({ type: "pdf-caret", pdf: { page: 1, x: 10, y: 20 } }), { type: "pdf-caret", pdf: { page: 1, x: 10, y: 20 } });
 // A plain click carries the text offset under it, the PDF point, or both; a
