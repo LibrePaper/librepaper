@@ -83,7 +83,30 @@
     if (filter === "comments") return comment.motivation !== "highlighting" || comment.body || comment.replies?.length;
     return true;
   }));
-  const shown = $derived([...filtered].sort((a, b) => place(a) - place(b) || a.seq - b.seq));
+  // Which of them the list shows, by whether they are settled: "open",
+  // "resolved" or "all". The panel starts on what is unresolved, because what
+  // is settled stays out of the way until it is asked for. This is the
+  // reader's own view of the list and is kept nowhere else: the counts in the
+  // bar and the bulk verbs go on speaking for the whole tab.
+  let status = $state("open");
+  const STATUSES = $derived([
+    { value: "open", label: m.comments_filter_unresolved() },
+    { value: "resolved", label: m.commentcard_resolved() },
+    { value: "all", label: m.history_all_short() },
+  ]);
+  const statusLabel = $derived(STATUSES.find((one) => one.value === status)?.label ?? "");
+  // The card the page has singled out is listed whatever the filter says: a
+  // click on a resolved comment's passage has to be able to open its card.
+  const visible = $derived(filtered.filter((comment) =>
+    status === "all"
+      || (status === "resolved" ? Boolean(comment.resolved) : !comment.resolved)
+      || String(comment.id) === String(selected)));
+  const shown = $derived([...visible].sort((a, b) => place(a) - place(b) || a.seq - b.seq));
+  // A new comment is unresolved, so a draft begun while only the resolved
+  // ones are listed would vanish the moment it was sent.
+  $effect(() => {
+    if (composing && status === "resolved") status = "open";
+  });
 
   const open = $derived(filtered.filter((comment) => !comment.resolved).length);
 
@@ -122,11 +145,9 @@
 
   // Whether there is any bulk verb to offer this caller. A reader who may not
   // comment has none, and gets no menu.
-  const bulkOffered = $derived(
-    canComment && Boolean(resolvable.length || clearable.length || (canModerate && deletable.length)),
-  );
+  const bulkOffered = $derived(canComment && Boolean(resolvable.length || clearable.length));
   // Whether the bar over the list has anything in it.
-  const headed = $derived(Boolean(meta) || Boolean(onhistory) || bulkOffered);
+  const headed = $derived(Boolean(meta) || Boolean(onhistory) || bulkOffered || filtered.length > 0);
 
   // Commenting and highlighting are not offered here: they act on a passage,
   // and the bar over the selection is where they belong. See
@@ -147,12 +168,12 @@
     for (const comment of resolvable) onresolve?.(comment);
   }
 
-  // The bulk verbs, by the value of the menu item that asks for them. The two
-  // deletions hand the page one list, so it can confirm once.
+  // The bulk verbs, by the value of the menu item that asks for them. The
+  // deletion hands the page one list, so it can confirm once. There is no
+  // "Delete all": a document's whole discussion is not one click from gone.
   function bulk(verb) {
     if (verb === "resolve") resolveAll();
     else if (verb === "clear") ondeletemany?.(clearable);
-    else if (verb === "delete") ondeletemany?.(deletable);
   }
 </script>
 
@@ -163,9 +184,9 @@
        is for assistive technology only. -->
   <h2 class="sr-only">{title}</h2>
 
-  <!-- One bar over the list, as in the Changes panel: what is here, and the
-       verbs that act on all of it behind one menu. Three buttons, "Delete
-       all" among them, used to stand over every comment; a menu is for
+  <!-- One bar over the list, as in the Changes panel: what is here, which of
+       it is listed, and the verbs that act on all of it behind one menu.
+       Three buttons used to stand over every comment; a menu is for
        choosing, and here there is something to choose. -->
   {#if headed}
     <header class="comments-header">
@@ -173,6 +194,19 @@
       <div class="header-end">
         {#if onhistory}
           <button type="button" class="text-action" onclick={onhistory}>{m.comments_show_changes()}</button>
+        {/if}
+        {#if filtered.length}
+          <Menu onSelect={(chosen) => (status = chosen.value)}
+                positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
+            <MenuIconButton icon="filter" size="1rem" class="filter-trigger"
+                            pressed={status !== "all"}
+                            label={m.comments_filter_label({ name: statusLabel })} />
+            <ExplorerMenu>
+              {#each STATUSES as option (option.value)}
+                <Menu.Item value={option.value} class="menuitem"><span class="menuitem-check">{status === option.value ? "✓" : ""}</span>{option.label}</Menu.Item>
+              {/each}
+            </ExplorerMenu>
+          </Menu>
         {/if}
         {#if bulkOffered}
           <Menu onSelect={(chosen) => bulk(chosen.value)}
@@ -185,17 +219,12 @@
                   <span class="menuitem-label">{partial ? m.comments_resolve_loaded() : m.comments_resolve_all()}</span>
                 </Menu.Item>
               {/if}
-              {#if resolvable.length && (clearable.length || (canModerate && deletable.length))}
+              {#if resolvable.length && clearable.length}
                 <hr class="hr my-1" />
               {/if}
               {#if clearable.length}
                 <Menu.Item value="clear" class="menuitem" disabled={!ondeletemany}>
                   <span class="menuitem-label">{m.comments_clear()}</span>
-                </Menu.Item>
-              {/if}
-              {#if canModerate && deletable.length}
-                <Menu.Item value="delete" class="menuitem" disabled={!ondeletemany}>
-                  <span class="menuitem-label">{partial ? m.comments_delete_loaded() : m.comments_delete_all()}</span>
                 </Menu.Item>
               {/if}
             </ExplorerMenu>
@@ -246,6 +275,11 @@
       />
     {/each}
     {#if composerKey === ""}{@render composer()}{/if}
+
+    <!-- There are comments here, and the filter is hiding every one. -->
+    {#if filtered.length && !shown.length && !composing}
+      <p class="panel-muted" role="status">{m.comments_filter_empty()}</p>
+    {/if}
 
     <!-- What lies past the cards. Four states, and they are not the same
          thing: still arriving, arrived and empty, holding a prefix, and
@@ -298,9 +332,13 @@
   .comments-panel > :global(*) { flex-shrink: 0; }
   .comments-header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-width: 0; min-height: 2rem; margin-inline: calc(var(--panel-padding) * -1); padding: 0 var(--panel-padding) .4rem; border-bottom: 1px solid var(--color-divider); }
   .comments-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .header-end { display: inline-flex; flex: none; align-items: center; gap: .5rem; margin-inline-start: auto; }
-  /* The trigger's dots, not its hover box, share the right edge with the cards. */
-  .comments-header :global(.bulk-trigger) { width: 2rem; height: 2rem; margin-inline-end: -.5rem; }
+  .header-end { display: inline-flex; flex: none; align-items: center; gap: .125rem; margin-inline-start: auto; }
+  .comments-header :global(:is(.filter-trigger, .bulk-trigger)) { width: 2rem; height: 2rem; }
+  /* The last trigger's icon, not its hover box, shares the right edge with the cards. */
+  .header-end > :global(:is(.filter-trigger, .bulk-trigger):last-child) { margin-inline-end: -.5rem; }
+  /* A filter that is hiding something wears the ground of a state that is on. */
+  .comments-header :global(.filter-trigger[aria-pressed="true"]) { background: var(--color-row-selected); }
+  .header-end > .text-action { margin-inline-end: .375rem; }
   .comments-list { flex: 1 1 auto; min-height: 0; margin-inline: calc(var(--panel-padding) * -1); padding: calc(var(--spacing) * 3) var(--panel-padding); overflow-y: auto; overscroll-behavior: contain; }
   .load-more { align-self: center; margin: calc(var(--spacing) * 2) 0; }
   .page-error { padding: calc(var(--spacing) * 2); display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); align-items: flex-start; }
@@ -315,6 +353,6 @@
     .comments-panel .btn,
     .load-more,
     .text-action { min-height: 2.75rem; }
-    .comments-header :global(.bulk-trigger) { width: 2.75rem; height: 2.75rem; }
+    .comments-header :global(:is(.filter-trigger, .bulk-trigger)) { width: 2.75rem; height: 2.75rem; }
   }
 </style>
