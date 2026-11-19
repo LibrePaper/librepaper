@@ -85,8 +85,9 @@
   let error = $state("");
   let busy = $state(false);
   let blankFormat = $state(untrack(() => (FORMATS.some((f) => f.id === initialFormat) ? initialFormat : rememberedFormat() || "latex")));
-  // Blank opens with the name selected, so typing replaces the suggestion.
-  let focusedOnce = false;
+  // A page that opens on Blank has the name selected, so typing replaces the
+  // suggestion. Moving to Blank later leaves focus on the tab strip.
+  let focusedOnce = untrack(() => tab !== "blank");
   $effect(() => {
     if (tab !== "blank" || focusedOnce) return;
     focusedOnce = true;
