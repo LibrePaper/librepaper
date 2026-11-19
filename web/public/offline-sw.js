@@ -43,7 +43,20 @@ async function cacheResponse(request, event) {
   return response;
 }
 
+// Hosts whose requests the worker makes itself, though it keeps nothing from
+// them. WebKit loses a request's own headers on a cross-site redirect when a
+// worker controls the page and lets the request go by: the second hop arrives
+// with `Accept: */*`. A DOI lookup depends on that header surviving doi.org's
+// redirect to the registry, so in the desktop app on Linux, whose pages run
+// in WebKit, the registry answered 406 and every lookup failed. A request the
+// worker makes itself keeps its headers across the redirect.
+const RELAYED_HOSTS = new Set(["doi.org"]);
+
 self.addEventListener("fetch", (event) => {
+  if (event.request.method === "GET" && RELAYED_HOSTS.has(new URL(event.request.url).host)) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
   if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
   // The API and the room socket are never the worker's business. Nothing here
   // caches them and nothing here can serve them offline, so passing them
