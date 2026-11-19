@@ -1914,6 +1914,8 @@
   // found the project by one of its files. Honoured once the directory has
   // arrived, and once only.
   const ARRIVED_FILE = new URLSearchParams(location.search).get("file") || "";
+  // The New project page asks for the editor, so a project just made opens on its source.
+  const ARRIVED_TO_EDIT = new URLSearchParams(location.search).get("edit") === "1";
 
   const loadHistory = () => timeline.load();
 
@@ -2053,6 +2055,19 @@
         if (readerDisposed) return;
         editor?.restorePlace(saved.openFile, saved);
       })();
+    });
+  });
+  // The flag is set once the arrival is honoured; the parameter is then removed
+  // so a reload or a shared link does not open the source again.
+  let arrivedToEdit = false;
+  $effect(() => {
+    if (arrivedToEdit || !ARRIVED_TO_EDIT || !editing || !editor || !ws.files.length) return;
+    untrack(() => {
+      arrivedToEdit = true;
+      if (compact) arrangement.showMobileView("source");
+      const url = new URL(location.href);
+      url.searchParams.delete("edit");
+      window.history.replaceState(window.history.state, "", url);
     });
   });
 
