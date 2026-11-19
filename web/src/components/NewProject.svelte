@@ -1,11 +1,12 @@
 <script>
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import { m } from "../lib/paraglide/messages.js";
   // The New project page: three ways to begin, one name. Blank starts from an
   // empty document in the chosen format, From Template starts from a catalog,
-  // Upload Files from what the person already has. The desktop app adds a fourth, From a Link, which opens a
-  // project someone shared rather than creating one. Nothing here creates a
+  // Upload Files from what the person already has. The desktop app adds a
+  // fourth, From a Link, which opens a project someone shared rather than
+  // creating one. Nothing here creates a
   // project until Create project is pressed; switching tabs and picking a
   // template only change what the button would make.
   //
@@ -89,9 +90,12 @@
   $effect(() => {
     if (tab !== "blank" || focusedOnce) return;
     focusedOnce = true;
-    const input = document.getElementById("new-project-name");
-    input?.focus();
-    input?.select();
+    // After a tick, once the suggested name is in the field to be selected.
+    void tick().then(() => {
+      const input = /** @type {HTMLInputElement | null} */ (document.getElementById("new-project-name"));
+      input?.focus();
+      input?.select();
+    });
   });
 
   function changeTab(id) {
