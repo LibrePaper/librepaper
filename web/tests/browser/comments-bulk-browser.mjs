@@ -12,7 +12,7 @@ import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 // The panel's bulk verbs act only on what the cards would let this caller do
 // one at a time: "Resolve all" skips what is already resolved; "Delete resolved" and "Delete all" hand
 // the page one list, so it can confirm once, and only ever name comments the
-// caller may delete.
+// caller may delete. The three verbs are the items of one menu in the panel's bar.
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-comments-bulk-"));
 const entry = join(temporary, "entry.js");
@@ -30,8 +30,28 @@ const comments=[
 const handlers={onresolve:c=>window.resolved.push(c.id),ondeletemany:list=>window.deleted.push(list.map(c=>c.id))};
 let component=mount(Comments,{target:document.body,props:{comments,canModerate:false,...handlers}});
 window.asModerator=async()=>{await unmount(component);window.deleted=[];component=mount(Comments,{target:document.body,props:{comments,canModerate:true,...handlers}});};
-window.click=label=>{const b=Array.from(document.querySelectorAll(".bulk button")).find(b=>b.textContent===label);if(!b)return false;b.click();return true;};
-window.labels=()=>Array.from(document.querySelectorAll(".bulk button")).map(b=>b.textContent);
+// The bulk verbs are the items of one menu. Only the menu actually on show
+// counts: a closed menu keeps its items in the page.
+const press=node=>{for(const type of ['pointerdown','pointerup','click'])node.dispatchEvent(new PointerEvent(type,{bubbles:true,composed:true,button:0,isPrimary:true,pointerType:'mouse'}));};
+const settle=()=>new Promise(resolve=>setTimeout(resolve,120));
+const openItems=()=>Array.from(document.querySelectorAll('[data-part="content"][data-state="open"] [data-part="item"]'));
+window.labels=async()=>{
+  const trigger=document.querySelector(".bulk-trigger");
+  if(!trigger)return [];
+  press(trigger);await settle();
+  const labels=openItems().map(node=>node.textContent.trim());
+  press(trigger);await settle();
+  return labels;
+};
+window.click=async label=>{
+  const trigger=document.querySelector(".bulk-trigger");
+  if(!trigger)return false;
+  press(trigger);await settle();
+  const item=openItems().find(node=>node.textContent.trim()===label);
+  if(!item){press(trigger);await settle();return false;}
+  press(item);await settle();
+  return true;
+};
 window.verbs=id=>Array.from(document.querySelectorAll("#comment-"+id+" .actions button"))
   .map(b=>(b.getAttribute("aria-label")||b.textContent).trim());
 `);
@@ -69,7 +89,7 @@ try {
 
   // An owner clears everything in one list.
   await page.evaluate("window.asModerator()");
-  await until("moderator panel", () => page.evaluate('window.labels().includes("Delete all")'), 2000);
+  await until("moderator panel", () => page.evaluate('window.labels().then((labels) => labels.includes("Delete all"))'), 5000);
   assert.ok(await page.evaluate('window.click("Delete resolved")'));
   assert.ok(await page.evaluate('window.click("Delete all")'));
   assert.deepEqual(await page.evaluate("window.deleted"), [
