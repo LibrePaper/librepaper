@@ -419,6 +419,11 @@ impl Server {
         candidate_id: &str,
         source: bool,
     ) -> Reply {
+        // A candidate is an agent's work. With agents off these routes are
+        // closed like the tool routes, whatever capability a caller still holds.
+        if !self.agents {
+            return plain(404, "not found");
+        }
         if request.method() != Method::GET || !self.valid_slug(slug) || !valid_id(candidate_id) {
             return plain(404, "not found");
         }
