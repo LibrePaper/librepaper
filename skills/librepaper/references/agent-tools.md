@@ -27,11 +27,11 @@ Read bounded exact source, search, outline, bibliography, comments and context. 
   - `outline`: headings of a file, for large files.
   - `search`: `query` text across the project.
   - `bibliography`: entries; `key` for one.
-  - `thread`: comments; `comment_id` for one thread, `include: "all" | "unresolved"`. Each comment on a passage carries an `anchor`: `path`, `exact` (the passage as it reads now), `prefix` and `suffix` (up to 32 characters either side), `status` (`exact`, `modified`, `pending_deletion`, `deleted`, `unresolved` or `stale`) and a `range_id` for that passage in this read's view, usable in `document_comment` and `document_propose`. When the passage cannot be placed, `path`, `exact` and `range_id` are absent and `original_exact` holds the words the comment was made on.
+  - `thread`: comments; `id` for one thread with its replies, `include: "all" | "unresolved"` (default `all`). Each comment on a passage carries an `anchor`: `path`, `exact` (the passage as it reads now), `prefix` and `suffix` (up to 32 characters either side), `status` (`exact`, `modified`, `pending_deletion`, `deleted`, `unresolved` or `stale`) and a `range_id` for that passage in this read's view, usable in `document_comment` and `document_propose`. When the passage cannot be placed, `path`, `exact` and `range_id` are absent and `original_exact` holds the words the comment was made on. The anchor is the whole account of where a comment sits; the browser's own records of the passage are not sent with it.
   - `diagnostics`: build errors and warnings.
   - `changes`: pending tracked changes.
   - `rendered`: rendered output.
-- Other query fields: `path`, `selection` (string handle or `{path, exact, prefix, suffix, position}`), `context: "none" | "paragraph"`, `limit` (1 to 100), `cursor` (from `next_cursor`), `revision`, `range_id`.
+- Other query fields: `path`, `selection` (string handle or `{path, exact, prefix, suffix, position}`), `comment_id` (with `source`, `context` or `section`: the passage that comment is on, in place of `path` and a range), `context: "none" | "paragraph"`, `limit` (1 to 100), `cursor` (from `next_cursor`), `revision`, `range_id`.
 - `snapshot`: `"latest"` or `{"view_id": "..."}` to keep reading the same view (use it with cursors).
 - `budget`: `{max_bytes: 1024..49152, max_tokens: 256..12288}`.
 
