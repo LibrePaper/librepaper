@@ -536,6 +536,9 @@
   .actions:not(:has(:global(*))) { display: none; }
   :is(.actions, .collapsed-row) :global(.icon-control) { box-sizing: border-box; flex: none; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
   :is(.actions, .collapsed-row) :global(.icon-control svg) { width: 16px; height: 16px; }
+  /* The selected card's ground is the ground a pressed check wears, so on
+     that card the check goes one step darker to still read as pressed. */
+  .lp-selected :is(.actions, .collapsed-row) :global(.icon-control[aria-pressed="true"]) { background: var(--color-tonal-pressed); }
 
   /* Phones: the comment actions wrap rather than squeeze, each is a finger's
      size with its icon unchanged, and the reply box keeps 16px. */
