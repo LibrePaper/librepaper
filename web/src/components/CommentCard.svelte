@@ -130,6 +130,7 @@
     if (!hadFocus || card?.contains(document.activeElement)) return;
     card?.querySelector("button[aria-pressed]")?.focus({ preventScroll: true });
   });
+
   $effect(() => {
     if (!comment.resolved) expanded = false;
   });

@@ -154,7 +154,8 @@
     const from = leaving;
     leaving = null;
     const neighbour = (from.next && document.getElementById(from.next))
-      || (from.previous && document.getElementById(from.previous));
+      || (from.previous && document.getElementById(from.previous))
+      || null;
     const target = neighbour?.querySelector("button, textarea, a[href]")
       ?? list?.closest(".comments-panel")?.querySelector(".filter-trigger");
     target?.focus({ preventScroll: true });
