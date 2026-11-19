@@ -494,6 +494,9 @@ impl Server {
                 json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{}", key.expose())})
             }
             "token" => {
+                if !self.agents {
+                    return Err(AGENTS_OFF.to_string());
+                }
                 let role = wanted
                     .role
                     .parse::<Role>()
@@ -527,6 +530,9 @@ impl Server {
         wanted: &ReplaceRequest,
         owner: &Viewer,
     ) -> Result<(LinkGrant, Value), String> {
+        if existing.kind == LinkKind::Agent && !self.agents {
+            return Err(AGENTS_OFF.to_string());
+        }
         let key = LinkKey::mint();
         let mut grant = existing.clone();
         grant.hash = key.digest().to_hex();
@@ -667,8 +673,10 @@ impl Server {
                 "suggests": self.anonymous.suggests,
                 "edits": self.anonymous.edits,
             },
+            // Whether this deployment allows agents at all.
+            "agents": self.agents,
             // Whether the Agent panel offers the chat-app connector block.
-            "connectors": self.agent_connectors,
+            "connectors": self.connectors_open(),
         })
     }
 }

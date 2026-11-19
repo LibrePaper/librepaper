@@ -385,6 +385,11 @@ impl Server {
             return Err(Failure::new("invalid_params", "path is not a project file"));
         }
         let run = args["run"].as_bool().unwrap_or(false);
+        if run && !self.local_builds {
+            let mut failure = Failure::new("forbidden", "this server has turned off running code");
+            failure.committed = Committed::No;
+            return Err(failure);
+        }
         if run && !who.at_least(Role::Editor) {
             let mut failure = Failure::new("forbidden", "running code needs an Editor token");
             failure.committed = Committed::No;

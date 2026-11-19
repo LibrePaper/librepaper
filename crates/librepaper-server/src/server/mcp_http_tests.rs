@@ -28,6 +28,11 @@ struct Served {
 }
 
 async fn serve(slug: &str, connectors: bool) -> Option<Served> {
+    serve_with(slug, connectors, true).await
+}
+
+/// The same, with the host's `agents` switch as well.
+async fn serve_with(slug: &str, connectors: bool, agents: bool) -> Option<Served> {
     let mut deployment = http_deployment(
         DocumentInput {
             slug: slug.into(),
@@ -52,6 +57,7 @@ async fn serve(slug: &str, connectors: bool) -> Option<Served> {
         .to_owned();
     deployment.server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
     deployment.server.agent_connectors = connectors;
+    deployment.server.agents = agents;
     let Deployment {
         server,
         slug,
@@ -622,4 +628,22 @@ async fn a_failed_tool_list_keeps_its_status_and_never_looks_like_a_tool_result(
     assert_eq!(body["error"]["code"], -32603);
     assert_eq!(body["error"]["message"], "it broke");
     assert!(body.get("result").is_none(), "{body}");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn with_agents_off_the_endpoint_is_not_found() {
+    let Some(served) = serve_with("mcp-agents-off", true, false).await else {
+        return;
+    };
+    // No token: with agents off, a bearer token is refused before the
+    // connector gate, and no token can be minted to send.
+    let response = served
+        .send(
+            reqwest::Method::POST,
+            None,
+            Some(json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+        )
+        .await;
+    assert_eq!(response.status().as_u16(), 404);
 }
