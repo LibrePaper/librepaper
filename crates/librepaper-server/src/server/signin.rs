@@ -827,11 +827,11 @@ fn config_body(
     let mut body = json!(config);
     if let Some(fields) = body.as_object_mut() {
         fields.insert("latex".to_string(), json!(latex.is_some()));
+        // The pinned release directory URL, not the mirror root.
+        fields.insert("latexMirror".to_string(), json!(latex));
         // The host's two switches, so the page offers nothing that would be refused.
         fields.insert("agents".to_string(), json!(agents));
         fields.insert("local_builds".to_string(), json!(local_builds));
-        // The pinned release directory URL, not the mirror root.
-        fields.insert("latexMirror".to_string(), json!(latex));
         // The server version, so a diagnostics report can name the build.
         fields.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
     }

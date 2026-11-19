@@ -678,8 +678,7 @@ async fn with_agents_off_no_token_is_created() {
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn with_agents_off_a_token_is_refused_on_its_own_tools() {
-    let Some(served) = serve_configured("agents-off-tools", Default::default(), false).await
-    else {
+    let Some(served) = serve_configured("agents-off-tools", Default::default(), false).await else {
         return;
     };
     let token = agent_token_string(READER, &served.slug, &"0".repeat(64));
@@ -694,7 +693,10 @@ async fn with_agents_off_the_tool_routes_are_not_found() {
         return;
     };
     let response = reqwest::Client::new()
-        .get(format!("{}/api/documents/{}/tools", served.base, served.slug))
+        .get(format!(
+            "{}/api/documents/{}/tools",
+            served.base, served.slug
+        ))
         .header("host", "paper.example")
         .header("authorization", &served.owner)
         .send()
