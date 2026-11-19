@@ -53,6 +53,9 @@ export const ICONS = {
   "chevron-down": [["path", "m6 9 6 6 6-6"]],
   "chevron-up": [["path", "m18 15-6-6-6 6"]],
   "list-filter": [["path", "M3 6h18"], ["path", "M7 12h10"], ["path", "M10 18h4"]],
+  // Lucide's funnel, which it called "filter" until it renamed it: which of a
+  // list's entries are showing.
+  filter: [["path", "M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"]],
   // Lucide's arrow-up-down, for the phone's sort control.
   "arrow-up-down": [["path", "m21 16-4 4-4-4"], ["path", "M17 20V4"], ["path", "m3 8 4-4 4 4"], ["path", "M7 4v16"]],
   // Lucide's diff, for "compare since this label" in the timeline.
