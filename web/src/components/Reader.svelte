@@ -24,6 +24,7 @@
   import * as latex from "../lib/latex.js";
   import { parse as parseSynctex, lineAt as synctexLineAt, offsetOfLine as synctexOffsetOfLine } from "../lib/synctex.js";
   import * as localQuarto from "../lib/desktop/client.js";
+  import { agentsAllowed, localBuildsAllowed } from "../lib/host-switches.js";
   import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
   import { basename } from "../lib/file-manager.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
@@ -430,6 +431,14 @@
   let preview = $state(null);
   // The desktop app is there or it is not; this page never changes its mind.
   const hasDesktop = Boolean(localQuarto.desktop());
+  // What this server's host allows (lib/host-switches.js): agents at all, and
+  // builds on this computer. The answer kept from the last visit stands until
+  // loadRules has this visit's.
+  let hostAgents = $state(agentsAllowed());
+  let hostLocalBuilds = $state(localBuildsAllowed());
+  // Whether a build may be sent to this computer: in the desktop app, on a
+  // server whose host allows it.
+  const buildsHere = $derived(hasDesktop && hostLocalBuilds);
 
   /// Which document this browser tab is about, as far as the desktop app is
   /// concerned. It picks up whatever binding the client already remembers for
@@ -2402,7 +2411,7 @@
   // the document's `format: pdf` options and shows no code output. Only the
   // desktop app, which can run Quarto itself, offers it for Quarto. Plain
   // Markdown keeps PDF everywhere. The stored preference is left alone.
-  const quartoPdfOffered = $derived(hasDesktop || displayedFormat !== "quarto");
+  const quartoPdfOffered = $derived(buildsHere || displayedFormat !== "quarto");
   // This browser-only choice affects the pane and is never published. It is
   // not conditioned on the source pane being open: the output starts on the
   // person's default preview for this format (HTML unless they chose PDF in
@@ -2484,8 +2493,9 @@
   });
   const buildPreferences = $derived(buildSettings.state.preferences);
   // Where the toggle is offered: in the desktop app, for every editable
-  // document whose format is set to this computer.
-  const runCodeOffered = $derived(mayEdit && !suggestOnly && hasDesktop && buildPreferences.backend === "local");
+  // document whose format is set to this computer. Not on a server whose host
+  // has turned local builds off.
+  const runCodeOffered = $derived(mayEdit && !suggestOnly && buildsHere && buildPreferences.backend === "local");
   // The Run directory is read whenever a Quarto or Typst document's code may
   // be run here; reading it only asks the desktop app for the setting.
   $effect(() => {
@@ -2931,7 +2941,7 @@
     onshare: setShareResults,
     shareStatus: sharedResults.state.status,
     agents: agentRunAllowed,
-    onagents: hasDesktop ? setAgentRun : undefined,
+    onagents: buildsHere && hostAgents ? setAgentRun : undefined,
   });
   const stopLatex = () => buildSettings.stopLatex();
 
@@ -3584,11 +3594,12 @@
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
   const tabs = $derived(
-    tabsFor({ role: doc.role, mayEdit, suggestOnly, editing, canSeeSharing: DEMO || canSeeSharing, canPublish, desktop: hasDesktop })
+    tabsFor({ role: doc.role, mayEdit, suggestOnly, editing, canSeeSharing: DEMO || canSeeSharing, canPublish, desktop: hasDesktop, agents: hostAgents })
       .map((tab) => (DEMO && DEMO_OFF.includes(tab.id) ? { ...tab, disabled: true } : tab)),
   );
   // The robot buttons hand work to the agent. The agent runs only in the
-  // desktop app, so in a browser they say so rather than disappear.
+  // desktop app, so in a browser they say so rather than disappear. Where the
+  // host has turned agents off there is no agent tab, so they are gone.
   const agentOffered = $derived(!DEMO && tabs.some((tab) => tab.id === "agent"));
   // Where the column goes back to when what it showed is taken away: the
   // files, for every role that is offered them, which is every role that has
@@ -3883,7 +3894,7 @@
   // A Quarto or Typst export is itself an explicit request to run the code, so
   // it needs no switch, only a folder to run in.
   const exportsLocally = $derived(
-    hasDesktop && mayEdit && !suggestOnly && buildPreferences.backend === "local"
+    buildsHere && mayEdit && !suggestOnly && buildPreferences.backend === "local"
       && (runsExplicitly ? runDirectoryReady : localExecution),
   );
 
@@ -3954,7 +3965,7 @@
       const placeholders = unfetched + (file.missing?.length ?? 0);
       if (placeholders > 0) say(m.readerc_figures_placeholder({ count: placeholders }), { kind: "problem", id: "reader:export-figures" });
       if (!local && unrunCells(format, tree) > 0) {
-        say(m.readerc_cells_not_run(), { id });
+        say(hostLocalBuilds ? m.readerc_cells_not_run() : m.readerc_cells_not_run_host_off(), { id });
       } else {
         toaster.dismiss(id);
       }
@@ -4156,6 +4167,9 @@
   function loadRules() {
     configOrRemembered()
       .then(({ config: answer, remembered }) => {
+        // api.js has already handed this answer to lib/host-switches.js.
+        hostAgents = agentsAllowed();
+        hostLocalBuilds = localBuildsAllowed();
         if (remembered) configRetry = setTimeout(loadRules, 30_000);
         if (remembered && rulesRemembered) return;
         rulesRemembered = remembered;
