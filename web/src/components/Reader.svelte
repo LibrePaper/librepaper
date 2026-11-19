@@ -316,9 +316,10 @@
       // announced to nobody either.
       if (up && runsExplicitly) void refreshResults();
       // A server that came back may have new rules, the host's switches among
-      // them, so they are read again. The first connection is not one:
-      // loadRules has already run for it.
-      if (up && connectedBefore) loadRules();
+      // them, so they are read again. The first connection is not one,
+      // loadRules has already run for it, unless the rules in hand are the
+      // ones remembered from a page that opened offline.
+      if (up && (connectedBefore || rulesRemembered)) loadRules();
       if (up) connectedBefore = true;
     },
     onSession: (active) => {
@@ -4195,6 +4196,8 @@
   let connectedBefore = false;
   let rulesRemembered = false;
   function loadRules() {
+    // One retry at a time: a load asked for on reconnect replaces a pending one.
+    clearTimeout(configRetry);
     configOrRemembered()
       .then(({ config: answer, remembered }) => {
         // api.js has already handed this answer to lib/host-switches.js.
