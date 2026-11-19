@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { config, configOrRemembered } from "../../src/lib/api.js";
 import { CONFIG } from "../../src/lib/storage.js";
+import { agentsAllowed, localBuildsAllowed } from "../../src/lib/host-switches.js";
 
 const store = new Map();
 globalThis.localStorage = {
@@ -83,6 +84,20 @@ const down = async () => { throw unreachable; };
   assert.deepEqual(await configOrRemembered(), { config: rules, remembered: false }, "a load still works when it cannot be kept");
   globalThis.fetch = down;
   await assert.rejects(configOrRemembered(), (error) => error === unreachable, "with no storage the original failure surfaces");
+}
+
+// The host's switches come with the rules: a host that has turned agents or
+// local builds off is seen as such, and a later answer without them lifts it.
+{
+  store.clear();
+  globalThis.fetch = answered({ ...rules, agents: false, local_builds: false });
+  await config();
+  assert.equal(agentsAllowed(), false);
+  assert.equal(localBuildsAllowed(), false);
+  globalThis.fetch = answered(rules);
+  await config();
+  assert.equal(agentsAllowed(), true);
+  assert.equal(localBuildsAllowed(), true);
 }
 
 console.log("api-config: the rules are kept on success and stand in when the server cannot be reached");

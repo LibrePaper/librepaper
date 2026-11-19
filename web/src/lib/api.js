@@ -1,6 +1,7 @@
 import { forgetLocalData } from "./local-data.js";
 import { m } from "./paraglide/messages.js";
 import { CONFIG, read, write } from "./storage.js";
+import { setHostSwitches } from "./host-switches.js";
 
 // Talking to the server.
 //
@@ -78,7 +79,10 @@ export function upload(form, { onprogress } = {}) {
 /// disagree about what will be refused. Each answer is kept in this browser
 /// for `configOrRemembered`.
 export const config = () => get("/api/config").then((answer) => {
-  if (answer && typeof answer === "object") write(CONFIG, answer);
+  if (answer && typeof answer === "object") {
+    write(CONFIG, answer);
+    setHostSwitches(answer);
+  }
   return answer;
 });
 
@@ -91,6 +95,7 @@ export async function configOrRemembered() {
   } catch (error) {
     const kept = read(CONFIG, null);
     if (!kept || typeof kept !== "object") throw error;
+    setHostSwitches(kept);
     return { config: kept, remembered: true };
   }
 }

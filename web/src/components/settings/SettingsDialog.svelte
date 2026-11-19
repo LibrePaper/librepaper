@@ -8,6 +8,7 @@
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
   import { m } from "../../lib/paraglide/messages.js";
+  import { localBuildsAllowed } from "../../lib/host-switches.js";
   import GeneralSettings from "./GeneralSettings.svelte";
   import EditorSettings from "./EditorSettings.svelte";
   import LatexFilesSettings from "./LatexFilesSettings.svelte";
@@ -21,6 +22,9 @@
   import BackupsSettings from "./BackupsSettings.svelte";
   import AgentSettings from "./AgentSettings.svelte";
   import ToolsSettings from "./ToolsSettings.svelte";
+
+  // Whether this server's host allows building on this computer.
+  const localBuilds = localBuildsAllowed();
 
   let {
     open = $bindable(false),
@@ -126,7 +130,7 @@
         {:else if shown.id === "rendering"}
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4></div>
-            <p class="settings-section-note">{m.renderersettings_description({ name: "LaTeX" })}</p>
+            <p class="settings-section-note">{localBuilds ? m.renderersettings_description({ name: "LaTeX" }) : m.renderersettings_description_browser_only({ name: "LaTeX" })}</p>
             <DefaultPreviewSetting format="latex" {userId} onpreferences={onbuildpreferences} />
             <LiveCompileSetting {userId} />
             <BuildSettings format="latex" {userId} onpreferences={onbuildpreferences} />
@@ -136,21 +140,21 @@
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Typst</h4></div>
-            <p class="settings-section-note">{m.renderersettings_description({ name: "Typst" })}</p>
+            <p class="settings-section-note">{localBuilds ? m.renderersettings_description({ name: "Typst" }) : m.renderersettings_description_browser_only({ name: "Typst" })}</p>
             <DefaultPreviewSetting format="typst" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="typst" {userId} onpreferences={onbuildpreferences} />
           </section>
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Markdown</h4></div>
-            <p class="settings-section-note">{m.renderersettings_description({ name: "Markdown" })}</p>
+            <p class="settings-section-note">{localBuilds ? m.renderersettings_description({ name: "Markdown" }) : m.renderersettings_description_browser_only({ name: "Markdown" })}</p>
             <DefaultPreviewSetting format="markdown" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="markdown" {userId} onpreferences={onbuildpreferences} />
           </section>
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Quarto</h4></div>
-            <p class="settings-section-note">{m.settingsdialog_quarto_note()}</p>
+            <p class="settings-section-note">{localBuilds ? m.settingsdialog_quarto_note() : m.settingsdialog_quarto_note_browser_only()}</p>
             <DefaultPreviewSetting format="quarto" {userId} onpreferences={onbuildpreferences} />
             <RendererSettings format="quarto" {userId} onpreferences={onbuildpreferences} />
           </section>

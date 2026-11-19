@@ -8,11 +8,13 @@
   import { LOCAL_OUTPUTS, desktop } from "../../lib/desktop/client.js";
   import { defaults, read, update } from "../../lib/build-preferences.js";
   import { m } from "../../lib/paraglide/messages.js";
+  import { localBuildsAllowed } from "../../lib/host-switches.js";
 
   let { format, userId = "anonymous", onpreferences = undefined } = $props();
 
   const NAMES = { latex: "LaTeX", typst: "Typst", markdown: "Markdown", quarto: "Quarto" };
-  const hasDesktop = Boolean(desktop());
+  // This computer is offered in the desktop app, where the host allows local builds.
+  const hasDesktop = Boolean(desktop()) && localBuildsAllowed();
   const scope = () => ({ origin: globalThis.location?.origin || "", user: userId });
   /** @type {import("../../lib/reader/build-settings.svelte.js").BuildPreference} */
   let preference = $state(defaults());
