@@ -385,7 +385,9 @@
        cannot see is a verb you do not know you have, so reply, resolve and
        delete are painted on every card rather than only the hovered one.
        Resolve follows the delete rule: an author on their own comment, or
-       an editor on any, so the server's `deletable` flag decides both.
+       an editor on any, so the server's `deletable` flag decides both. A
+       reader who may not comment is shown only the verbs that still work for
+       them, which may be none.
 
        Delete was behind a "•••" menu whose only item was Delete -- a menu
        is for choosing, and there was nothing to choose. It is its own button
@@ -402,11 +404,10 @@
         }}
       />
     {/if}
-    {#if onagent && !comment.resolved}
+    {#if onagent && canComment && !comment.resolved}
       <IconButton
         icon="bot"
         label={m.commentcard_agent()}
-        disabled={!canComment}
         onclick={(e) => {
           e.stopPropagation();
           onagent?.(comment);
@@ -445,16 +446,17 @@
         }}
       />
     {/if}
-    <IconButton
-      icon="reply"
-      label={m.commentcard_reply()}
-      tone={canComment ? "tonal" : null}
-      disabled={!canComment}
-      onclick={(e) => {
-        e.stopPropagation();
-        void reply();
-      }}
-    />
+    {#if canComment}
+      <IconButton
+        icon="reply"
+        label={m.commentcard_reply()}
+        tone="tonal"
+        onclick={(e) => {
+          e.stopPropagation();
+          void reply();
+        }}
+      />
+    {/if}
   </div>
 
   {#if replying && canComment}
@@ -482,6 +484,10 @@
   /* The selected card takes the shared selected ground (librepaper.css), so the
      raised ground goes only to the cards that are not selected. */
   .card.comment-card:not(.lp-selected) { background: var(--color-raised); }
+  /* Skeleton sizes a badge at 0.8 of the smallest text size, which is 9.6px
+     here: too small to read in a column this narrow. The panel's own small
+     size instead. */
+  .comment-card :global(.badge) { --badge-size: var(--panel-meta-size); font-weight: 600; }
 
   /* The conversation: runs of one author separated by a little air, the lines
      within a run tight enough to read as one person still talking. No rail
@@ -504,6 +510,9 @@
   .quote { margin: 0; border-color: color-mix(in oklab, currentColor 30%, transparent); color: var(--panel-muted); overflow-wrap: anywhere; }
 
   .actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; margin-top: 7px; }
+  /* A reader with nothing to do to a card gets no empty row under it. Not
+     `:empty`: the row still holds the markers Svelte leaves for its blocks. */
+  .actions:not(:has(:global(*))) { display: none; }
   .actions :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
   .actions :global(.icon-control svg) { width: 16px; height: 16px; }
 

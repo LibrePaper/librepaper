@@ -117,6 +117,13 @@
   const deletable = $derived(filtered.filter((comment) => canModerate || comment.deletable));
   const clearable = $derived(deletable.filter((comment) => comment.resolved));
 
+  // Whether the header has any verb to offer this caller. A reader who may
+  // not comment has none, and gets no empty row where they would have been.
+  const bulkOffered = $derived(
+    canComment && Boolean(resolvable.length || clearable.length || (canModerate && deletable.length)),
+  );
+  const headerActions = $derived(Boolean(onhistory) || (canComment && Boolean(onwholedocument)) || bulkOffered);
+
   // Commenting and highlighting are not offered here: they act on a passage,
   // and the bar over the selection is where they belong. See
   // `lib/annotating.js`.
@@ -140,41 +147,43 @@
 <!-- One of the column's panels: the column itself, with the tabs that choose
      between them, is the reader's. -->
 <div class="comments-panel">
+  {#snippet headerButtons()}
+    <div class="flex flex-wrap items-center gap-1">
+      {#if onhistory}
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={onhistory}>{m.comments_show_changes()}</button>
+      {/if}
+      {#if canComment && onwholedocument}
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onwholedocument?.()}>{m.common_comment_whole_document()}</button>
+      {/if}
+      {#if bulkOffered}
+        <div class="bulk flex flex-wrap justify-end gap-1" role="group" aria-label={partial ? m.comments_group_loaded() : m.comments_group_all()}>
+          {#if resolvable.length}
+            <button type="button" class="btn btn-sm lp-control-tonal-brand"
+              data-tip={partial ? m.comments_resolve_loaded_title() : m.comments_resolve_all_title()}
+              onclick={resolveAll}>{partial ? m.comments_resolve_loaded() : m.comments_resolve_all()}</button>
+          {/if}
+          {#if clearable.length}
+            <button type="button" class="btn btn-sm lp-control-tonal-brand"
+              data-tip={partial ? m.comments_clear_loaded_title() : m.comments_clear_all_title()}
+              disabled={!ondeletemany}
+              onclick={() => ondeletemany?.(clearable)}>{m.comments_clear()}</button>
+          {/if}
+          {#if canModerate && deletable.length}
+            <button type="button" class="btn btn-sm lp-control-tonal-brand"
+              data-tip={partial ? m.comments_delete_loaded_title() : m.comments_delete_all_title()}
+              disabled={!ondeletemany}
+              onclick={() => ondeletemany?.(deletable)}>{partial ? m.comments_delete_loaded() : m.comments_delete_all()}</button>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {/snippet}
+
   <PanelHeader
     title={title}
     meta={meta}
+    actions={headerActions ? headerButtons : undefined}
   >
-    {#snippet actions()}
-      <div class="flex flex-wrap items-center gap-1">
-        {#if onhistory}
-          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={onhistory}>{m.comments_show_changes()}</button>
-        {/if}
-        {#if canComment && onwholedocument}
-          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onwholedocument?.()}>{m.common_comment_whole_document()}</button>
-        {/if}
-        {#if canComment && (resolvable.length || clearable.length || (canModerate && deletable.length))}
-          <div class="bulk flex gap-1" role="group" aria-label={partial ? m.comments_group_loaded() : m.comments_group_all()}>
-            {#if resolvable.length}
-              <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                data-tip={partial ? m.comments_resolve_loaded_title() : m.comments_resolve_all_title()}
-                onclick={resolveAll}>{partial ? m.comments_resolve_loaded() : m.comments_resolve_all()}</button>
-            {/if}
-            {#if clearable.length}
-              <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                data-tip={partial ? m.comments_clear_loaded_title() : m.comments_clear_all_title()}
-                disabled={!ondeletemany}
-                onclick={() => ondeletemany?.(clearable)}>{m.comments_clear()}</button>
-            {/if}
-            {#if canModerate && deletable.length}
-              <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                data-tip={partial ? m.comments_delete_loaded_title() : m.comments_delete_all_title()}
-                disabled={!ondeletemany}
-                onclick={() => ondeletemany?.(deletable)}>{partial ? m.comments_delete_loaded() : m.comments_delete_all()}</button>
-            {/if}
-          </div>
-        {/if}
-      </div>
-    {/snippet}
     {#if !canComment}
       <p class="panel-muted">{m.comments_read_only()}</p>
     {:else}
@@ -259,7 +268,10 @@
   .comments-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .load-more { align-self: center; margin: calc(var(--spacing) * 2) 0; }
   .page-error { padding: calc(var(--spacing) * 2); display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); align-items: flex-start; }
-  .bulk { margin-left: auto; }
+  /* The bulk verbs keep to the right, and wrap onto a second line rather than
+     run past the edge of a narrow column: without `min-width: 0` the group is
+     as wide as its buttons, however little room there is. */
+  .bulk { min-width: 0; margin-left: auto; }
   /* Phones: the panel's buttons, including Load more, are finger-sized. */
   @media (max-width: 767px) {
     .comments-panel .btn,
