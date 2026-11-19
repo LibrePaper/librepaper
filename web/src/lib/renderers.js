@@ -31,6 +31,7 @@ import { logMissesAFile, runDirectoryDiagnostics } from "./reader/run-directory.
 import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
+import { localBuildsAllowed } from "./host-switches.js";
 import { m } from "./paraglide/messages.js";
 import { houseStyleCss, latexmlWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle, withHouseStyle } from "./house-style.js";
 
@@ -217,9 +218,10 @@ export async function render(tree, title, { manual = false, format: requestedFor
   const format = previewFormatOf(tree.main);
   // A format set to this computer renders there, through the command Settings
   // holds for its output. The caller has already turned that off while Run
-  // code is off, so a document never runs without consent.
+  // code is off, so a document never runs without consent. Where the host has
+  // turned local builds off, nothing renders there and the browser renders instead.
   const output = localOutput(format, buildPreferences, requestedFormat);
-  if (output && buildPreferences?.backend === "local") {
+  if (output && buildPreferences?.backend === "local" && localBuildsAllowed()) {
     localBridge.configure({ project, origin: globalThis.location?.origin || "" });
     const digest = await snapshotDigest(tree);
     // Stop pressed while the snapshot was being hashed: nothing has started,

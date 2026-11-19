@@ -7,6 +7,7 @@
 // Computer-scoped pages: Tools, AI agents. Account-scoped pages: Backups, Account.
 
 import { desktop } from "../../lib/desktop/client.js";
+import { agentsAllowed } from "../../lib/host-switches.js";
 import { m } from "../../lib/paraglide/messages.js";
 
 // `offered` answers with whether somebody is signed in; a row may also ask
@@ -74,8 +75,9 @@ export const CATEGORIES = [
       { id: "tools-activity", says: m.common_activity(), terms: m.registry_tools_activity_terms() },
     ],
   },
+  // Not offered where the host has turned agents off.
   {
-    id: "agents", says: m.registry_agents(), offered: always,
+    id: "agents", says: m.registry_agents(), offered: () => agentsAllowed(),
     note: m.common_this_computer(),
     entries: [
       { id: "agents-list", says: m.common_agents_on_this_computer(), terms: m.registry_agents_list_terms() },

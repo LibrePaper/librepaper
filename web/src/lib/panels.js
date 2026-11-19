@@ -20,8 +20,9 @@ export const TABS = [
   { id: "collaboration", says: m.common_collaboration(), icon: "comment" },
   { id: "changes", says: m.common_changes(), icon: "pencil" },
   // The agent edits the document for whoever runs it, and runs only in the
-  // desktop app: a suggester's changes are tracked, so it is not offered.
-  { id: "agent", says: m.common_agent(), icon: "bot", when: (who) => !who.suggestOnly },
+  // desktop app: a suggester's changes are tracked, so it is not offered. A
+  // host can turn agents off, and then nobody is offered it.
+  { id: "agent", says: m.common_agent(), icon: "bot", when: (who) => who.agents !== false && !who.suggestOnly },
   // History is readable by link-holders too: reviewers need the “since”
   // view even when they cannot edit or restore the live source.
   { id: "history", says: m.common_history(), icon: "history" },
