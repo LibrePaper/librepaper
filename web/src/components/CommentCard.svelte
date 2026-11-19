@@ -385,7 +385,9 @@
        cannot see is a verb you do not know you have, so reply, resolve and
        delete are painted on every card rather than only the hovered one.
        Resolve follows the delete rule: an author on their own comment, or
-       an editor on any, so the server's `deletable` flag decides both. A reader who may not comment is shown only the verbs that still work for them, which may be none.
+       an editor on any, so the server's `deletable` flag decides both. A
+       reader who may not comment is shown only the verbs that still work for
+       them, which may be none.
 
        Delete was behind a "•••" menu whose only item was Delete -- a menu
        is for choosing, and there was nothing to choose. It is its own button
@@ -508,8 +510,9 @@
   .quote { margin: 0; border-color: color-mix(in oklab, currentColor 30%, transparent); color: var(--panel-muted); overflow-wrap: anywhere; }
 
   .actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; margin-top: 7px; }
-  /* A reader with nothing to do to a card gets no empty row under it. */
-  .actions:empty { display: none; }
+  /* A reader with nothing to do to a card gets no empty row under it. Not
+     `:empty`: the row still holds the markers Svelte leaves for its blocks. */
+  .actions:not(:has(:global(*))) { display: none; }
   .actions :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
   .actions :global(.icon-control svg) { width: 16px; height: 16px; }
 
