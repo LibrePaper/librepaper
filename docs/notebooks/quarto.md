@@ -22,6 +22,8 @@ Code in a cell is part of the document. Code in a script stays in your Run direc
 2. Open your Quarto document and press **Run code** at the top of the editor. The first time, LibrePaper asks for a Run directory: the suggested `~/LibrePaper/<project>`, or a folder you already have. Your code runs there.
 3. Put your data and scripts in the Run directory, and write paths relative to it, such as `read.csv("data/survey.csv")`.
 
+A host can [turn **Run code** off](../host/advanced.html#agents-and-local-builds) for a whole server; the button is then not shown.
+
 Each press of **Run code** runs the whole document once. **Stop** ends a run. Nothing runs when a document opens or while you type. To change the folder, open the menu beside **Run code** and choose **Run directory**, which shows the current folder's name.
 
 You can preview HTML, RevealJS slides or PDF. Word (DOCX) is download only. LibrePaper previews one document, not whole websites or books.

@@ -41,7 +41,7 @@ The connection lasts 30 days and renews while the app keeps using it. It is list
 
 Chat apps such as claude.ai and ChatGPT call the server from the app maker's servers. For them, the LibrePaper server must be reachable from the internet. A server that is only on a local network or a Tailscale network cannot be used by a chat app. Coding agents connect from your computer, so this does not apply to them.
 
-A host can turn connectors off with `agent_connectors = false` in `librepaper.toml`. The Agent panel then hides this section. See [Anonymous access](host/advanced.html#anonymous-access).
+A host can turn connectors off with `agent_connectors = false` in `librepaper.toml`. The Agent panel then hides this section. A host can also turn every agent off with `agents = false`: the Agent panel is then hidden and existing tokens and connections are refused. See [Agents and local builds](host/advanced.html#agents-and-local-builds).
 
 ## Use a token
 

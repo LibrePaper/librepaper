@@ -17,6 +17,8 @@ The browser cannot run code. The [LibrePaper desktop app](../desktop-app.html) r
 
 If the desktop app does not find Calepin, install it or put it on PATH. **Settings → Tools → Programs** shows what it found.
 
+A host can [turn **Run code** off](../host/advanced.html#agents-and-local-builds) for a whole server; the button is then not shown.
+
 ## Run
 
 In **Settings → Rendering**, set **Typst renders in** to **This computer**. A **Run code** button then appears at the top of the editor for Typst documents.
