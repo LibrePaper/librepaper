@@ -112,6 +112,10 @@
     Boolean(comment.deletable) || Boolean(comment.temp_id) || Boolean(comment.pending) || canModerate,
   );
 
+  // Resolve follows the delete rule: an author on their own comment, or an
+  // editor on any, so the server's `deletable` flag decides both.
+  const canResolve = $derived(canComment && (Boolean(comment.deletable) || canModerate));
+
   const stamp = (value) => (value || "").replace("T", " ").slice(0, 16) + " UTC";
   // The one line a resolved card shows: what it was about, then what was said
   // about it.
@@ -193,7 +197,9 @@
   // knows yet.
   const editable = (target) => Boolean(target?.mine) && !target.temp_id && !target.pending;
   const canEditNote = $derived(!isHighlight && canComment && editable(comment));
-  const canEditPost = (post) => canComment && Boolean(post.reply) && editable(post.reply);
+  // The comment itself is the thread's first post (`post.reply` is null);
+  // the rest are replies. Either way the pencil sits beside the words it edits.
+  const canEditPost = (post) => (post.reply ? canComment && editable(post.reply) : canEditNote);
 
   async function startEdit(id, body) {
     expanded = true;
@@ -251,8 +257,8 @@
      button inside a button is a worse thing than a click handler on an
      article. The keyboard reaches everything in it through those, and the
      open card's click, which shows the passage in the document, is the Show
-     in document button. A collapsed card holds no buttons at all, so there
-     the summary is the button. -->
+     in document button. A collapsed card holds two buttons and nothing else:
+     the summary, which opens it, and the check that reopens the thread. -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
 <article
   id="{cardIdPrefix}-{comment.id}"
@@ -267,8 +273,24 @@
   onclick={click}
 >
   {#if collapsed}
-    <button type="button" class="summary" aria-expanded="false"
-            onclick={open}>{summary}</button>
+    <!-- Settled business is one line: what it was about, which is the button
+         that opens it again, and the check that undoes what collapsed it. The
+         card's other verbs come back when it is opened. -->
+    <div class="collapsed-row">
+      <button type="button" class="summary" aria-expanded="false"
+              onclick={open}>{summary}</button>
+      {#if canResolve}
+        <IconButton
+          icon="check"
+          label={m.commentcard_reopen()}
+          pressed={true}
+          onclick={(e) => {
+            e.stopPropagation();
+            onresolve?.(comment);
+          }}
+        />
+      {/if}
+    </div>
   {:else}
     <div class="flex flex-col gap-2">
       {#if unpainted || whole || comment.inSourceOnly || (comment.motivation && comment.motivation !== "commenting")}
@@ -336,7 +358,7 @@
                   {#if canEditPost(post)}
                     <IconButton
                       icon="pencil"
-                      label={m.commentcard_edit_reply()}
+                      label={post.reply ? m.commentcard_edit_reply() : m.commentcard_edit_comment()}
                       tone="plain"
                       size="btn-icon-sm"
                       onclick={(e) => {
@@ -379,103 +401,95 @@
         </Row>
       {/if}
     </div>
-  {/if}
 
-  <!-- One row of verbs for the whole thread, and it stays put: a verb you
-       cannot see is a verb you do not know you have, so reply, resolve and
-       delete are painted on every card rather than only the hovered one.
-       Resolve follows the delete rule: an author on their own comment, or
-       an editor on any, so the server's `deletable` flag decides both. A
-       reader who may not comment is shown only the verbs that still work for
-       them, which may be none.
+    {#if replying && canComment}
+      <form class="mt-2 flex flex-col gap-2" onsubmit={submitReply}>
+        {#if !identity}
+          <p class="panel-meta">{m.commentcard_replying_as({ name: commentingAs })}</p>
+        {/if}
+        <textarea
+          class="textarea"
+          aria-label={m.commentcard_reply()}
+          placeholder={m.commentcard_reply_placeholder()}
+          rows="2"
+          maxlength="5000"
+          required
+          bind:this={replyField}
+          bind:value={replyBody}
+          onkeydown={replyKey}
+        ></textarea>
+      </form>
+    {/if}
 
-       Delete was behind a "•••" menu whose only item was Delete -- a menu
-       is for choosing, and there was nothing to choose. It is its own button
-       now, and it is still the confirmed one: what it opens is the dialog,
-       not the deletion. -->
-  <div class="actions">
-    {#if onreveal && !comment.orphaned && !whole}
-      <IconButton
-        icon="eye"
-        label={m.commentcard_show_in_document()}
-        onclick={(e) => {
-          e.stopPropagation();
-          onreveal?.(comment);
-        }}
-      />
-    {/if}
-    {#if onagent && canComment && !comment.resolved}
-      <IconButton
-        icon="bot"
-        label={m.commentcard_agent()}
-        onclick={(e) => {
-          e.stopPropagation();
-          onagent?.(comment);
-        }}
-      />
-    {/if}
-    {#if canComment && (Boolean(comment.deletable) || canModerate)}
-      <IconButton
-        icon="check"
-        label={comment.resolved ? m.commentcard_reopen() : m.commentcard_resolve()}
-        pressed={Boolean(comment.resolved)}
-        onclick={(e) => {
-          e.stopPropagation();
-          expanded = false;
-          onresolve?.(comment);
-        }}
-      />
-    {/if}
-    {#if canEditNote}
-      <IconButton
-        icon="pencil"
-        label={m.commentcard_edit_comment()}
-        onclick={(e) => {
-          e.stopPropagation();
-          void startEdit(`note-${comment.id}`, comment.body);
-        }}
-      />
-    {/if}
-    {#if deletable}
-      <IconButton
-        icon="trash"
-        label={m.commentcard_delete_comment()}
-        onclick={(e) => {
-          e.stopPropagation();
-          ondelete?.(comment);
-        }}
-      />
-    {/if}
-    {#if canComment}
-      <IconButton
-        icon="reply"
-        label={m.commentcard_reply()}
-        tone="tonal"
-        onclick={(e) => {
-          e.stopPropagation();
-          void reply();
-        }}
-      />
-    {/if}
-  </div>
+    <!-- One row of verbs for the whole thread, and it stays put: a verb you
+         cannot see is a verb you do not know you have, so reply, resolve and
+         delete are painted on every card rather than only the hovered one.
+         Resolve follows the delete rule: an author on their own comment, or
+         an editor on any, so the server's `deletable` flag decides both. A
+         reader who may not comment is shown only the verbs that still work for
+         them, which may be none.
 
-  {#if replying && canComment}
-    <form class="mt-2 flex flex-col gap-2" onsubmit={submitReply}>
-      {#if !identity}
-        <p class="panel-meta">{m.commentcard_replying_as({ name: commentingAs })}</p>
+         Delete was behind a "•••" menu whose only item was Delete -- a menu
+         is for choosing, and there was nothing to choose. It is its own button
+         now, and it is still the confirmed one: what it opens is the dialog,
+         not the deletion.
+
+         The reply box opens above this row, directly under the last thing
+         said, rather than below it with the verbs in between. -->
+    <div class="actions">
+      {#if onreveal && !comment.orphaned && !whole}
+        <IconButton
+          icon="eye"
+          label={m.commentcard_show_in_document()}
+          onclick={(e) => {
+            e.stopPropagation();
+            onreveal?.(comment);
+          }}
+        />
       {/if}
-      <textarea
-        class="textarea"
-        aria-label={m.commentcard_reply()}
-        placeholder={m.commentcard_reply_placeholder()}
-        rows="2"
-        maxlength="5000"
-        required
-        bind:this={replyField}
-        bind:value={replyBody}
-        onkeydown={replyKey}
-      ></textarea>
-    </form>
+      {#if onagent && canComment && !comment.resolved}
+        <IconButton
+          icon="bot"
+          label={m.commentcard_agent()}
+          onclick={(e) => {
+            e.stopPropagation();
+            onagent?.(comment);
+          }}
+        />
+      {/if}
+      {#if canResolve}
+        <IconButton
+          icon="check"
+          label={comment.resolved ? m.commentcard_reopen() : m.commentcard_resolve()}
+          pressed={Boolean(comment.resolved)}
+          onclick={(e) => {
+            e.stopPropagation();
+            expanded = false;
+            onresolve?.(comment);
+          }}
+        />
+      {/if}
+      {#if deletable}
+        <IconButton
+          icon="trash"
+          label={m.commentcard_delete_comment()}
+          onclick={(e) => {
+            e.stopPropagation();
+            ondelete?.(comment);
+          }}
+        />
+      {/if}
+      {#if canComment}
+        <IconButton
+          icon="reply"
+          label={m.commentcard_reply()}
+          onclick={(e) => {
+            e.stopPropagation();
+            void reply();
+          }}
+        />
+      {/if}
+    </div>
   {/if}
 </article>
 
@@ -489,6 +503,13 @@
      size instead. */
   .comment-card :global(.badge) { --badge-size: var(--panel-meta-size); font-weight: 600; }
 
+  /* A resolved note is one line, so its card is only as tall as its one
+     button. The summary takes the room and gives up its words to an ellipsis
+     before the check gives up its place. */
+  .card.comment-card.collapsed { padding-block: 4px; }
+  .collapsed-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .collapsed-row .summary { flex: 1 1 auto; width: auto; min-width: 0; }
+
   /* The conversation: runs of one author separated by a little air, the lines
      within a run tight enough to read as one person still talking. No rail
      down the side and no avatar gutter -- a long reply in a sidebar this
@@ -498,12 +519,12 @@
   .reply-error { color: var(--color-error-text); }
   .run { display: flex; flex-direction: column; gap: 6px; }
   .run-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
-  .run-author { min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
-  .run-head :global(.panel-meta) { flex: none; font-size: 13px; line-height: 1.3; }
-  .post { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 15px; line-height: 1.4; }
+  .run-author { min-width: 0; overflow: hidden; font-size: var(--panel-font-size); font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+  .run-head :global(.panel-meta) { flex: none; font-size: var(--panel-meta-size); line-height: 1.3; }
+  .post { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: var(--panel-font-size); line-height: 1.45; }
   .post-row { display: flex; align-items: flex-start; gap: 4px; min-width: 0; }
   .post-row .post { flex: 1 1 auto; min-width: 0; }
-  .edited { margin: 0; font-size: 13px; line-height: 1.3; }
+  .edited { margin: 0; font-size: var(--panel-meta-size); line-height: 1.3; }
   .edit-actions { display: flex; justify-content: flex-end; gap: 6px; }
   /* The highlighted words, in the highlight's own colour when it has one.
      Quiet enough to read as a quotation rather than as something said. */
@@ -513,14 +534,18 @@
   /* A reader with nothing to do to a card gets no empty row under it. Not
      `:empty`: the row still holds the markers Svelte leaves for its blocks. */
   .actions:not(:has(:global(*))) { display: none; }
-  .actions :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
-  .actions :global(.icon-control svg) { width: 16px; height: 16px; }
+  :is(.actions, .collapsed-row) :global(.icon-control) { box-sizing: border-box; flex: none; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
+  :is(.actions, .collapsed-row) :global(.icon-control svg) { width: 16px; height: 16px; }
+  /* The selected card's ground is the ground a pressed check wears, so on
+     that card the check goes one step darker to still read as pressed. */
+  .lp-selected :is(.actions, .collapsed-row) :global(.icon-control[aria-pressed="true"]) { background: var(--color-tonal-pressed); }
 
   /* Phones: the comment actions wrap rather than squeeze, each is a finger's
      size with its icon unchanged, and the reply box keeps 16px. */
   @media (max-width: 767px) {
     .actions { flex-wrap: wrap; }
     .actions :global(.icon-control),
+    .collapsed-row :global(.icon-control),
     .post-row :global(.icon-control) { width: 2.75rem; height: 2.75rem; min-width: 2.75rem; min-height: 2.75rem; }
     .comment-card .btn { min-height: 2.75rem; }
     .comment-card textarea { font-size: 1rem; }
