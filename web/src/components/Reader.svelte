@@ -315,6 +315,11 @@
       // Shared results changed or deleted while the socket was down were
       // announced to nobody either.
       if (up && runsExplicitly) void refreshResults();
+      // A server that came back may have new rules, the host's switches among
+      // them, so they are read again. The first connection is not one:
+      // loadRules has already run for it.
+      if (up && connectedBefore) loadRules();
+      if (up) connectedBefore = true;
     },
     onSession: (active) => {
       changesUnsubscribe?.();
@@ -2551,6 +2556,13 @@
       && readLiveCompile(buildScope(), "latex") && (renderers.latexHtmlLastSeconds() ?? 0) <= 3;
   }
   const markdownOutput = $derived(quartoPdfOffered && buildPreferences.output === "pdf" ? "pdf" : "html");
+  // What the preview renders with. A stored PDF choice for Quarto previews as
+  // HTML where its PDF is not offered, so the render agrees with the frame.
+  const previewPreferences = $derived(
+    markdownOutput === "html" && buildPreferences.output === "pdf" && ["markdown", "quarto"].includes(displayedFormat)
+      ? { ...buildPreferences, output: "html" }
+      : buildPreferences,
+  );
   const buildScope = () => buildSettings.scopeFor(buildUserId);
   $effect(() => {
     const format = sourceFormat;
@@ -3205,7 +3217,7 @@
       paintsTheFrame,
       latexOutput,
       typstOutput,
-      buildPreferences,
+      buildPreferences: previewPreferences,
       localExecution,
       runDirectory,
       runResults,
@@ -4178,6 +4190,9 @@
   // last visit stand in until then, and are applied once rather than on every
   // try.
   let configRetry = null;
+  // Whether this page has been connected before: the next connection is then
+  // a reconnection, and the server may have been restarted with other rules.
+  let connectedBefore = false;
   let rulesRemembered = false;
   function loadRules() {
     configOrRemembered()

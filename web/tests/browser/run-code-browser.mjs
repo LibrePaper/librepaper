@@ -45,13 +45,13 @@ globalThis.WebSocket = class {
 const account = {name:'Tester',providers:[]};
 const params = new URLSearchParams(location.search);
 const format = params.get('format') === 'typst' ? 'typst' : 'quarto';
-// What the host's switches say: with host=off the server has turned agents and local builds off.
-const hostSwitches = params.get('host') === 'off' ? { agents: false, local_builds: false } : {};
+// What the host's switches say: with host=off the server has turned agents and local builds off. The test can also turn them off later, as a host restarting the server would.
+const hostSwitches = () => (params.get('host') === 'off' || window.hostTurnedOff ? { agents: false, local_builds: false } : {});
 globalThis.fetch = async (url) => {
   const path = String(url);
   if (path.includes('/__lp/')) { (window.lpCalls ||= []).push(path); return Response.json({}); }
   if (path.endsWith('/me')) return Response.json(account);
-  if (path.endsWith('/config')) return Response.json({ extensions: ['.qmd', '.md', '.typ'], text_extensions: ['.qmd', '.md', '.typ'], asset_extensions: ['.png'], derived_extensions: [], ...hostSwitches });
+  if (path.endsWith('/config')) return Response.json({ extensions: ['.qmd', '.md', '.typ'], text_extensions: ['.qmd', '.md', '.typ'], asset_extensions: ['.png'], derived_extensions: [], ...hostSwitches() });
   if (path === '/api/documents/paper') return Response.json({title:'Run code',created_at:'test',role:'owner',source_format:format,docs_origin:location.origin});
   if (path.endsWith('/frame')) return Response.json({token:'frame-token',until:9999999999});
   if (path.endsWith('/chat')) return Response.json({id:'chat',token:'private'});
@@ -163,6 +163,17 @@ try {
   await settle();
   assert.equal(await runButtonExists(),false,'no Run for a Quarto document either');
 
+  // Case 8: the host turns both switches off while the page is open. When the
+  // connection comes back, as after a server restart, the page reads the rules
+  // again and stops offering Run and the Agent tab.
+  await b.evaluate('localStorage.clear()');
+  await b.navigate(desktopUrl);
+  await until('Run button before the host turns it off',runButtonExists,10000);
+  await until('Agent tab before the host turns it off',agentTabExists,10000);
+  await b.evaluate('window.hostTurnedOff = true; window.roomConnected(false); window.roomConnected(true);');
+  await until('Run gone once the page reconnected',async()=>!(await runButtonExists()),10000);
+  await until('Agent tab gone once the page reconnected',async()=>!(await agentTabExists()),10000);
+
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log("run-code-browser: not offered in a browser, offered in the desktop app, nothing runs until Run, Run asks for a folder; Typst is offered Run only when this computer renders it; a host with both switches off gets neither Run nor the Agent tab");
+  console.log("run-code-browser: not offered in a browser, offered in the desktop app, nothing runs until Run, Run asks for a folder; Typst is offered Run only when this computer renders it; a host with both switches off gets neither Run nor the Agent tab; a host that turns them off is obeyed when the page reconnects");
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

@@ -23,9 +23,6 @@
   import AgentSettings from "./AgentSettings.svelte";
   import ToolsSettings from "./ToolsSettings.svelte";
 
-  // Whether this server's host allows building on this computer.
-  const localBuilds = localBuildsAllowed();
-
   let {
     open = $bindable(false),
     category = $bindable("general"),
@@ -69,8 +66,13 @@
   const view = createMachineView();
   onMount(() => view.start());
 
+  // Whether this server's host allows building on this computer. Read again
+  // each time the dialog opens: the answer can change while the page stays open.
+  const localBuilds = $derived.by(() => { void open; return localBuildsAllowed(); });
+
   const context = $derived({ signedIn: Boolean(account.provider) });
-  const available = $derived(offered(context));
+  // Asked again each time the dialog opens, for the same reason.
+  const available = $derived.by(() => { void open; return offered(context); });
   // The category shown: the one asked for, or the first when that id is unknown.
   const shown = $derived(available.find((each) => each.id === category) || available[0]);
   const row = (id) => Boolean(shown) && has(shown, id, context);
@@ -134,7 +136,7 @@
             <DefaultPreviewSetting format="latex" {userId} onpreferences={onbuildpreferences} />
             <LiveCompileSetting {userId} />
             <BuildSettings format="latex" {userId} onpreferences={onbuildpreferences} />
-            <RendererSettings format="latex" {userId} onpreferences={onbuildpreferences} />
+            <RendererSettings format="latex" {userId} {localBuilds} onpreferences={onbuildpreferences} />
             <LatexFilesSettings />
           </section>
 
@@ -142,21 +144,21 @@
             <div class="settings-section-title"><h4 class="settings-subhead">Typst</h4></div>
             <p class="settings-section-note">{localBuilds ? m.renderersettings_description({ name: "Typst" }) : m.renderersettings_description_browser_only({ name: "Typst" })}</p>
             <DefaultPreviewSetting format="typst" {userId} onpreferences={onbuildpreferences} />
-            <RendererSettings format="typst" {userId} onpreferences={onbuildpreferences} />
+            <RendererSettings format="typst" {userId} {localBuilds} onpreferences={onbuildpreferences} />
           </section>
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Markdown</h4></div>
             <p class="settings-section-note">{localBuilds ? m.renderersettings_description({ name: "Markdown" }) : m.renderersettings_description_browser_only({ name: "Markdown" })}</p>
             <DefaultPreviewSetting format="markdown" {userId} onpreferences={onbuildpreferences} />
-            <RendererSettings format="markdown" {userId} onpreferences={onbuildpreferences} />
+            <RendererSettings format="markdown" {userId} {localBuilds} onpreferences={onbuildpreferences} />
           </section>
 
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">Quarto</h4></div>
             <p class="settings-section-note">{localBuilds ? m.settingsdialog_quarto_note() : m.settingsdialog_quarto_note_browser_only()}</p>
             <DefaultPreviewSetting format="quarto" {userId} onpreferences={onbuildpreferences} />
-            <RendererSettings format="quarto" {userId} onpreferences={onbuildpreferences} />
+            <RendererSettings format="quarto" {userId} {localBuilds} onpreferences={onbuildpreferences} />
           </section>
         {:else if shown.id === "agents"}
           <AgentSettings {view} />
