@@ -12,7 +12,8 @@ import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 // The panel's bulk verbs act only on what the cards would let this caller do
 // one at a time: "Resolve all" skips what is already resolved; "Delete resolved" and "Delete all" hand
 // the page one list, so it can confirm once, and only ever name comments the
-// caller may delete. The three verbs are the items of one menu in the panel's bar.
+// caller may delete. The three verbs are the items of one menu in the panel's
+// bar.
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-comments-bulk-"));
 const entry = join(temporary, "entry.js");
