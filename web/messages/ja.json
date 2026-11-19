@@ -541,6 +541,7 @@
   "collaboration_clear_chat": "チャットをすべて削除",
   "collaboration_highlight_hint": "ハイライトするには、プレビューウィンドウでテキストを選択してください。",
   "collaboration_highlights": "ハイライト",
+  "collaboration_highlights_empty": "ハイライトはまだありません。",
   "collaboration_unread": "未読メッセージ",
   "collaboration_views_label": "共同編集ビュー",
   "commandpalette_empty": "一致するコマンドはありません。",

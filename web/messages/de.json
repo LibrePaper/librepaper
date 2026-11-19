@@ -541,6 +541,7 @@
   "collaboration_clear_chat": "Chat leeren",
   "collaboration_highlight_hint": "Wählen Sie Text im Vorschaufenster aus, um ihn hervorzuheben.",
   "collaboration_highlights": "Hervorhebungen",
+  "collaboration_highlights_empty": "Noch keine Hervorhebungen.",
   "collaboration_unread": "Ungelesene Nachrichten",
   "collaboration_views_label": "Ansichten der Zusammenarbeit",
   "commandpalette_empty": "Kein Befehl passt dazu.",

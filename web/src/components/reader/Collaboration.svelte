@@ -60,7 +60,7 @@
     <Tabs.Content value="highlights">
       <Comments {...common()} {comments} filter="highlights" title={m.collaboration_highlights()}
         cardIdPrefix="collaboration-highlight"
-        hint={m.collaboration_highlight_hint()} />
+        hint={m.collaboration_highlight_hint()} empty={m.collaboration_highlights_empty()} />
     </Tabs.Content>
   </PanelTabs>
 </section>

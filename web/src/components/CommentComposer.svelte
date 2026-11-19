@@ -17,9 +17,12 @@
     // words where they are rather than throwing them away.
     onsend,
     oncancel,
+    // The words being written. They are the list's to keep (`bind:body`): this
+    // card's place in the column follows the cards around it, so it can be
+    // taken down and put up again mid-sentence.
+    body = $bindable(""),
   } = $props();
 
-  let body = $state("");
   let field = $state(null);
   let card = $state(null);
 

@@ -541,6 +541,7 @@
   "collaboration_clear_chat": "Clear chat",
   "collaboration_highlight_hint": "Select text in the preview window to highlight.",
   "collaboration_highlights": "Highlights",
+  "collaboration_highlights_empty": "No highlights yet.",
   "collaboration_unread": "Unread messages",
   "collaboration_views_label": "Collaboration views",
   "commandpalette_empty": "No command matches that.",

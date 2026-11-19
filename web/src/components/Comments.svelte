@@ -43,6 +43,8 @@
     // all. It is not an empty state -- someone who has read one comment still
     // has to be told where the next one comes from -- so it stays put.
     hint = m.comments_hint(),
+    // What an empty tab says: there is nothing of this tab's kind yet.
+    empty = m.comments_empty(),
     onhistory = undefined,
     // Starts a comment on the document as a whole. Shown only where commenting
     // is allowed, and only by the caller that owns the draft.
@@ -95,17 +97,68 @@
     { value: "all", label: m.history_all_short() },
   ]);
   const statusLabel = $derived(STATUSES.find((one) => one.value === status)?.label ?? "");
-  // The card the page has singled out is listed whatever the filter says: a
-  // click on a resolved comment's passage has to be able to open its card.
+  const cardKey = (comment) => comment._uiKey ?? comment.id ?? comment.temp_id;
+  // Cards holding words that have not been sent: an open reply with something
+  // in it, or an edit. A card says so through `onhold`.
+  let holding = $state([]);
+  function hold(key, on) {
+    const held = holding.includes(key);
+    if (on && !held) holding = [...holding, key];
+    else if (!on && held) holding = holding.filter((one) => one !== key);
+  }
+  // Two kinds of card are listed whatever the filter says. The one the page
+  // has singled out: a click on a resolved comment's passage has to be able to
+  // open its card. And one holding unsent words: a thread that somebody else
+  // resolves, or a change of filter, must not take what was being typed.
   const visible = $derived(filtered.filter((comment) =>
     status === "all"
       || (status === "resolved" ? Boolean(comment.resolved) : !comment.resolved)
-      || String(comment.id) === String(selected)));
+      || String(comment.id) === String(selected)
+      || holding.includes(cardKey(comment))));
   const shown = $derived([...visible].sort((a, b) => place(a) - place(b) || a.seq - b.seq));
   // A new comment is unresolved, so a draft begun while only the resolved
   // ones are listed would vanish the moment it was sent.
   $effect(() => {
     if (composing && status === "resolved") status = "open";
+  });
+
+  // The words of the draft, kept here rather than in the composer. The
+  // composer's slot follows the cards around it, so a card that leaves the
+  // list mid-sentence (resolved, filtered out, deleted) moves the composer to
+  // another slot, which is another component: it would start again empty.
+  let draftBody = $state("");
+  let draftId = null;
+  $effect.pre(() => {
+    const id = composing?.id ?? null;
+    if (id === draftId) return;
+    draftId = id;
+    draftBody = "";
+  });
+
+  // A card that leaves the list takes the focused element with it: resolved
+  // under Unresolved, reopened under Resolved. The keyboard goes to the card
+  // that took its place, or to the filter when none is left, rather than
+  // being dropped on nothing.
+  let list = $state(null);
+  let leaving = null;
+  $effect.pre(() => {
+    shown;
+    const card = document.activeElement?.closest?.("article");
+    leaving = card && list?.contains(card)
+      ? { id: card.id, next: card.nextElementSibling?.id || "", previous: card.previousElementSibling?.id || "" }
+      : null;
+  });
+  $effect(() => {
+    shown;
+    if (!leaving || document.getElementById(leaving.id)) return;
+    const from = leaving;
+    leaving = null;
+    const neighbour = (from.next && document.getElementById(from.next))
+      || (from.previous && document.getElementById(from.previous))
+      || null;
+    const target = neighbour?.querySelector("button, textarea, a[href]")
+      ?? list?.closest(".comments-panel")?.querySelector(".filter-trigger");
+    target?.focus({ preventScroll: true });
   });
 
   const open = $derived(filtered.filter((comment) => !comment.resolved).length);
@@ -162,8 +215,6 @@
     return next ? cardKey(next) : "";
   });
 
-  const cardKey = (comment) => comment._uiKey ?? comment.id ?? comment.temp_id;
-
   function resolveAll() {
     for (const comment of resolvable) onresolve?.(comment);
   }
@@ -196,14 +247,19 @@
           <button type="button" class="text-action" onclick={onhistory}>{m.comments_show_changes()}</button>
         {/if}
         {#if filtered.length}
-          <Menu onSelect={(chosen) => (status = chosen.value)}
-                positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
+          <!-- One of three, so the choices are radio items: the tick is for
+               the eye, and the checked state says the same to a screen reader. -->
+          <Menu positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
             <MenuIconButton icon="filter" size="1rem" class="filter-trigger"
                             pressed={status !== "all"}
                             label={m.comments_filter_label({ name: statusLabel })} />
             <ExplorerMenu>
               {#each STATUSES as option (option.value)}
-                <Menu.Item value={option.value} class="menuitem"><span class="menuitem-check">{status === option.value ? "✓" : ""}</span>{option.label}</Menu.Item>
+                <Menu.OptionItem type="radio" value={option.value} checked={status === option.value}
+                                 onCheckedChange={() => (status = option.value)} class="menuitem">
+                  <span class="menuitem-check" aria-hidden="true">{status === option.value ? "✓" : ""}</span>
+                  <span class="menuitem-label">{option.label}</span>
+                </Menu.OptionItem>
               {/each}
             </ExplorerMenu>
           </Menu>
@@ -241,6 +297,7 @@
     {#key composing.id}
     <CommentComposer
       pending={composing.pending}
+      bind:body={draftBody}
       {identity}
       {commentingAs}
       {needsLogin}
@@ -251,7 +308,7 @@
     {/key}
   {/snippet}
 
-  <div id="{cardIdPrefix}-list" class="comments-list flex flex-col gap-2">
+  <div id="{cardIdPrefix}-list" class="comments-list flex flex-col gap-2" bind:this={list}>
     {@render pending?.()}
     {#each shown as comment (cardKey(comment))}
       {#if composerKey === cardKey(comment)}{@render composer()}{/if}
@@ -272,6 +329,7 @@
         {onloadreplies}
         {onattach}
         {attachable}
+        onhold={(on) => hold(cardKey(comment), on)}
       />
     {/each}
     {#if composerKey === ""}{@render composer()}{/if}
@@ -284,7 +342,9 @@
     <!-- What lies past the cards. Four states, and they are not the same
          thing: still arriving, arrived and empty, holding a prefix, and
          holding the lot. A failed request keeps every card above it
-         exactly where it is and offers the request again. -->
+         exactly where it is and offers the request again. Empty is said per
+         tab: a document with comments and no highlights has an empty
+         Highlights tab. -->
     {#if page}
       {#if page.error}
         <p class="page-error" role="alert">
@@ -296,8 +356,8 @@
       {/if}
       {#if page.loading}
         <p class="panel-muted" role="status">{m.comments_loading_list()}</p>
-      {:else if !page.total}
-        <p class="panel-muted" role="status">{m.comments_empty()}</p>
+      {:else if !page.total || (!partial && !filtered.length)}
+        <p class="panel-muted" role="status">{empty}</p>
       {:else if partial}
         <button type="button" class="load-more btn btn-sm lp-control-tonal-brand"
           disabled={page.busy}
