@@ -170,6 +170,8 @@ try {
   await b.navigate(desktopUrl);
   await until('Run button before the host turns it off',runButtonExists,10000);
   await until('Agent tab before the host turns it off',agentTabExists,10000);
+  await until('the page joined its room before the host turns it off',()=>b.evaluate('typeof window.roomConnected === "function"'),10000);
+  await settle();
   await b.evaluate('window.hostTurnedOff = true; window.roomConnected(false); window.roomConnected(true);');
   await until('Run gone once the page reconnected',async()=>!(await runButtonExists()),10000);
   await until('Agent tab gone once the page reconnected',async()=>!(await agentTabExists()),10000);
