@@ -541,6 +541,7 @@
   "collaboration_clear_chat": "Limpar chat",
   "collaboration_highlight_hint": "Selecione texto na janela de pré-visualização para destacar.",
   "collaboration_highlights": "Destaques",
+  "collaboration_highlights_empty": "Ainda não há destaques.",
   "collaboration_unread": "Mensagens não lidas",
   "collaboration_views_label": "Exibições de colaboração",
   "commandpalette_empty": "Nenhum comando corresponde.",

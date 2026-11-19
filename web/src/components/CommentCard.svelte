@@ -41,6 +41,9 @@
     // the comment was made on. `attachable` says whether a selection is there.
     onattach = undefined,
     attachable = false,
+    // Tells the list whether this card holds words that have not been sent,
+    // so the list keeps it where it is whatever its filter says.
+    onhold = undefined,
   } = $props();
 
   // How many replies this card is not showing. `reply_total` is the
@@ -100,7 +103,33 @@
   let replyField = $state(null);
   const replyName = $derived(identity || commentingAs);
 
-  const collapsed = $derived(Boolean(comment.resolved) && !expanded);
+  // Words typed here and not yet sent: a reply with something in it, or an
+  // edit. Such a card does not collapse when its thread is resolved under the
+  // writer, and the list keeps it whatever its filter says (`onhold`).
+  const unsent = $derived.by(() => Boolean(replying && replyBody.trim()) || editing !== null);
+  const collapsed = $derived(Boolean(comment.resolved) && !expanded && !unsent);
+  $effect(() => {
+    onhold?.(unsent);
+  });
+  // Taken down with words still in it (deleted, or its tab closed): nothing
+  // is left to hold.
+  $effect(() => () => onhold?.(false));
+
+  // Resolving and reopening both replace the button that was pressed: the open
+  // card's row of verbs and the collapsed card's check are different elements.
+  // The keyboard would be left on nothing, so it goes to the check the card now
+  // has, which is the same verb in its other state.
+  const resolved = $derived(Boolean(comment.resolved));
+  let hadFocus = false;
+  $effect.pre(() => {
+    resolved;
+    hadFocus = Boolean(card?.contains(document.activeElement));
+  });
+  $effect(() => {
+    resolved;
+    if (!hadFocus || card?.contains(document.activeElement)) return;
+    card?.querySelector("button[aria-pressed]")?.focus({ preventScroll: true });
+  });
   $effect(() => {
     if (!comment.resolved) expanded = false;
   });

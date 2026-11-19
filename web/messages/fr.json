@@ -541,6 +541,7 @@
   "collaboration_clear_chat": "Effacer le clavardage",
   "collaboration_highlight_hint": "Sélectionnez du texte dans la fenêtre d’aperçu pour le surligner.",
   "collaboration_highlights": "Surlignages",
+  "collaboration_highlights_empty": "Aucun surlignage pour l’instant.",
   "collaboration_unread": "Messages non lus",
   "collaboration_views_label": "Vues de collaboration",
   "commandpalette_empty": "Aucune commande ne correspond.",

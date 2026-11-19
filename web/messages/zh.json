@@ -541,6 +541,7 @@
   "collaboration_clear_chat": "清除聊天",
   "collaboration_highlight_hint": "在预览窗口中选择文本即可高亮。",
   "collaboration_highlights": "高亮",
+  "collaboration_highlights_empty": "还没有高亮。",
   "collaboration_unread": "未读消息",
   "collaboration_views_label": "协作视图",
   "commandpalette_empty": "没有匹配的命令。",
