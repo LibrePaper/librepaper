@@ -33,6 +33,7 @@ lp withdraw 3f9c… 7a1e…
 | Explain, summarize, outline, answer a question | `read`, then answer in chat | Read |
 | Review | `comment` | Comment |
 | See the comments already there | `call document_read` with a `thread` query, shown below | Read |
+| Check that a file builds, read its errors | `call document_compile`, see the next section | Read |
 | Proofread, tighten, rewrite | `suggest` (tracked change) | Suggest |
 | Add text | `insert` (tracked insertion) | Suggest |
 | New file, when the user asks for it | `create` (untracked) | Edit |
@@ -53,9 +54,11 @@ lp withdraw 3f9c… 7a1e…
 
 ## Builds, compile errors and running code
 
-- Compile results come from a browser renderer, and only the in-app Agent panel has one. An agent connected by token or connector gets `renderer_unavailable` for `validation: "compile"` and for render queries. Do not create no-op candidates to probe for errors. Ask the user to paste the error from the editor's build log, or read the source and reason about the error. Say which of the two you did.
+- To see whether a file builds, or to read its errors, compile it: `lp call document_compile '{"path":"main.tex"}'`. Every role can. Nothing compiles on the server: the owner's open editor tab does the work, and the answer has a `status`, the `diagnostics` (each with a `file` and a `line`) and the end of the compiler log. The fields, the statuses and what to do with a `pending` answer are in [agent-tools.md](agent-tools.md).
+- `renderer_unavailable` from `document_compile` means the owner has no tab open on the project. Ask the user to open it in a browser signed in as its owner, then compile again. If they cannot, ask them to paste the error from the editor's build log, or read the source and reason about the error. Say which of the two you did.
+- `validation: "compile"` on a proposal and the render queries are a different route. They use the in-app Agent panel's own renderer, so an agent connected by token or connector gets `renderer_unavailable` for them whatever is open. Do not create no-op candidates to probe for errors. Make the change, then compile the file with `document_compile`.
 - In Quarto and Calepin projects, code runs on the user's computer, in their Run directory, not on the server. The project holds the `.qmd`, `.bib`, images and `_quarto.yml`. Code cannot read project files, so data and scripts stay in the Run directory. Never upload data, scripts, prompts or other files that code reads to fix a "file not found" or "cannot open the connection" error; it will not help. Ask the user for their Run directory path.
-- A token cannot run code or trigger a Run. If you have a shell, Quarto and the user's Run directory, you can render a local copy yourself: read the files with the helper, write them to a scratch folder, and run `quarto render <file>.qmd --execute-dir <run directory>`. Report the results. Never write into the Run directory without asking.
+- `document_compile` with `"run": true` runs the code, and only when all of these hold: an Edit token, the desktop app, a Run directory, and the owner's "Let agents run code" setting for the project. A token below Edit is refused with `forbidden`, and when one of the others is missing the answer is `run_unavailable`. Nothing else a token does runs code. If you have a shell, Quarto and the user's Run directory, you can also render a local copy yourself: read the files with the helper, write them to a scratch folder, and run `quarto render <file>.qmd --execute-dir <run directory>`. Report the results. Never write into the Run directory without asking.
 - For the full model, see `docs/notebooks/quarto.md`.
 
 ## The token
@@ -135,7 +138,7 @@ Start with one `document_read` that combines queries: `{"kind":"manifest"}` to l
 - When updating an existing document, propose targeted patches over the passages that change. Never replace a whole file or section to change part of it; keep the rest of the author's text.
 - To add a reference by DOI, call `reference_from_doi` (served only by `librepaper mcp`, answered on the user's machine) and append its `bibtex` to the `.bib` with `document_propose`. Never write reference metadata yourself.
 - Keep the change ids that `document_propose` returns in `effects`. If a pass went wrong, withdraw it with those ids before proposing again. Do not try to "restore" text by proposing the old text over your own pending change.
-- Use `validation: "compile"` when the change must still build, and only claim it compiles from a matching render result.
+- Use `validation: "compile"` when the change must still build, and only claim it compiles from a matching render result. That validation needs the in-app Agent panel. With a token or connector, compile the file with `document_compile` after the change instead.
 
 ### Step 4: Writes and recovery
 
