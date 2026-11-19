@@ -75,7 +75,7 @@
   }
 </script>
 
-<article bind:this={card} id="composer" class="card composer lp-control-tonal-brand p-2" aria-label={m.commentcomposer_aria()}>
+<article bind:this={card} id="composer" class="card composer" aria-label={m.commentcomposer_aria()}>
   <div class="flex flex-col gap-2">
     <blockquote class="quote border-[var(--color-brand)] border-l-2 pl-3 text-sm">{quotation}</blockquote>
 
@@ -112,9 +112,13 @@
 </article>
 
 <style>
-  /* The one card in the column that is not yet an annotation, ringed like the
-     selected one because the passage it is about is ringed in the document. */
-  .composer { box-shadow: 0 0 0 1px var(--color-focus); }
+  /* The one card in the column that is not yet an annotation. It is the same
+     box as the comment cards around it (CommentCard.svelte), so its words line
+     up with theirs, and its border is the ring: the passage it is about is
+     ringed in the document. The ring is the border rather than a shadow
+     because the list this sits in scrolls, and a shadow drawn outside the card
+     is clipped at the list's edges. */
+  .card.composer { box-sizing: border-box; min-width: 0; padding: 10px 13px; border: 1px solid var(--color-focus); border-radius: 9px; background: var(--color-raised); }
   .quote { overflow-wrap: anywhere; }
   /* Phones: the composer's field and buttons are finger-sized, with 16px text. */
   @media (max-width: 767px) {
