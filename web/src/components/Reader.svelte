@@ -2064,7 +2064,9 @@
     if (arrivedToEdit || !ARRIVED_TO_EDIT || !editing || !editor || !ws.files.length) return;
     untrack(() => {
       arrivedToEdit = true;
+      // A phone shows one face; a tight split keeps the preferred pane.
       if (compact) arrangement.showMobileView("source");
+      else arrangement.focusPane("source");
       const url = new URL(location.href);
       url.searchParams.delete("edit");
       window.history.replaceState(window.history.state, "", url);
