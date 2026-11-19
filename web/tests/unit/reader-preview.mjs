@@ -71,7 +71,7 @@ assert.match(offlineSource, /request\.onblocked = \(\) => \{[\s\S]*?blocked = tr
 assert.match(persistenceSource, /pendingFlush\.catch\(\(\) => \{\}\)\.finally/);
 assert.match(editorSource, /states = new WeakMap\(\);\s*undoManager = null;\s*undoManagerDoc = null/);
 assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && markdownOutput === "pdf"[\s\S]*?\? "pdf"/);
-assert.match(readerSource, /const quartoPdfOffered = \$derived\(hasDesktop \|\| displayedFormat !== "quarto"\)/);
+assert.match(readerSource, /const quartoPdfOffered = \$derived\(buildsHere \|\| displayedFormat !== "quarto"\)/);
 assert.match(readerSource, /const markdownOutput = \$derived\(quartoPdfOffered && buildPreferences\.output === "pdf"/);
 assert.match(readerSource, /const frameLoaded = \(\) => \{[\s\S]*?framePreview\.markReady\(\)[\s\S]*?replayPreview\(\)/);
 assert.match(readerSource, /<Preview[\s\S]*?onload=\{frameLoaded\}/);
@@ -103,7 +103,7 @@ assert.doesNotMatch(previewSource, /livePreviewOwnsPane/i);
 assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?<RunButton phase=\{runPhase\}[\s\S]*?onrun=\{runCode\}[\s\S]*?\{:else if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
 // The switch is offered in the desktop app, for every document this person may
 // edit outright (not only suggest) whose format is set to this computer.
-assert.match(readerSource, /const runCodeOffered = \$derived\(mayEdit && !suggestOnly && hasDesktop && buildPreferences\.backend === "local"\)/);
+assert.match(readerSource, /const runCodeOffered = \$derived\(mayEdit && !suggestOnly && buildsHere && buildPreferences\.backend === "local"\)/);
 // There is no confirmation dialog any more.
 assert.doesNotMatch(readerSource, /Run code on this computer/);
 // The browser makes Markdown and Quarto PDFs itself, so no card sends the
