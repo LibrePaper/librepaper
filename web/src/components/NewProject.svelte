@@ -85,8 +85,9 @@
   let error = $state("");
   let busy = $state(false);
   let blankFormat = $state(untrack(() => (FORMATS.some((f) => f.id === initialFormat) ? initialFormat : rememberedFormat() || "latex")));
-  // Blank opens with the name selected, so typing replaces the suggestion.
-  let focusedOnce = false;
+  // A page that opens on Blank has the name selected, so typing replaces the
+  // suggestion. Moving to Blank later leaves focus on the tab strip.
+  let focusedOnce = untrack(() => tab !== "blank");
   $effect(() => {
     if (tab !== "blank" || focusedOnce) return;
     focusedOnce = true;
@@ -270,7 +271,14 @@
     return fresh;
   });
   $effect(() => {
-    if (!nameTouched) name = suggestion;
+    if (nameTouched) return;
+    name = suggestion;
+    // A suggestion that changes under the selected name (the project list
+    // arrived late) stays selected, so typing still replaces it.
+    void tick().then(() => {
+      const input = /** @type {HTMLInputElement | null} */ (document.getElementById("new-project-name"));
+      if (input && document.activeElement === input && !nameTouched) input.select();
+    });
   });
 
   /* ------------------------------------------------------------- create */
@@ -311,19 +319,21 @@
   async function create(event) {
     event.preventDefault();
     if (busy) return;
+    // The tab pressed, not whichever one is showing when the request returns.
+    const from = tab;
     const title = name.trim();
     if (!title) return refuse(m.common_give_project_name(), "new-project-name");
-    if (tab === "template" && !selected) return refuse(m.newproject_template_required());
-    if (tab === "upload" && !hasDocument) return refuse(m.newproject_document_required());
+    if (from === "template" && !selected) return refuse(m.newproject_template_required());
+    if (from === "upload" && !hasDocument) return refuse(m.newproject_document_required());
     busy = true;
     error = "";
     let navigated = false;
     try {
       let response;
-      if (tab === "blank") {
+      if (from === "blank") {
         remember(blankFormat);
         response = await publishBuiltIn("blank", blankFormat, title);
-      } else if (tab === "template") {
+      } else if (from === "template") {
         if (selected.custom) {
           response = await fetch(`/api/documents/${selected.id}/fork`, {
             method: "POST",
@@ -341,7 +351,7 @@
         progress = { loaded: 0, total: 0 };
         response = await upload(form, { onprogress: (loaded, total) => (progress = { loaded, total }) });
       }
-      navigated = await finish(response, tab !== "upload");
+      navigated = await finish(response, from !== "upload");
     } catch (failure) {
       error = failure?.message || m.newproject_create_failed();
     } finally {
