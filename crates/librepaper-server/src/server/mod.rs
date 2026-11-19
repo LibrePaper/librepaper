@@ -179,6 +179,12 @@ impl DocumentService {
 // On `Server` rather than `DocumentService`, because the anonymous switches
 // are deployment policy, which the server holds.
 impl Server {
+    /// Whether the connector routes are open: agents are allowed at all, and
+    /// connectors are.
+    pub(super) fn connectors_open(&self) -> bool {
+        self.agents && self.agent_connectors
+    }
+
     /// Apply the complete read policy to an already-resolved caller.
     fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
         may_read(entry, who, self.anonymous)
@@ -297,9 +303,18 @@ pub struct Server {
     /// Which link roles an anonymous caller may hold, per the `[access]`
     /// switches. Everything is off until `serve` installs the operator's.
     pub anonymous: librepaper_base::role::AnonymousAccess,
+    /// Whether agents may reach projects at all. Off, every agent token and
+    /// delegated agent grant is refused, none is issued, and the tool routes,
+    /// the connector routes and the assistant channel answer not found.
+    pub agents: bool,
     /// Whether apps and agents may connect to a project as a remote MCP connector
     /// (`/mcp/<slug>` and the OAuth routes).
     pub agent_connectors: bool,
+    /// Whether the desktop app may build documents and run their code on the
+    /// author's computer. The server runs no document code either way: this is
+    /// published in `/api/config` for the page, and `document_compile` refuses
+    /// `run` when it is off.
+    pub local_builds: bool,
     /// Days of invented history to write for the starter project a new
     /// account is given, or nothing. A demonstration deployment asks for one;
     /// every other deployment keeps the honest history of a document
@@ -429,6 +444,10 @@ impl std::ops::Deref for Server {
 /// cached account is used for attribution and deployment policy only: the
 /// supplied link bounds authority, so an owner login cannot elevate it.
 pub const AUTOMATION_HEADER: &str = "x-librepaper-automation";
+
+/// What every refused agent request is told when the host has turned
+/// agents off (`[access] agents = false`).
+pub(super) const AGENTS_OFF: &str = "this server has turned off agent access";
 
 /// What an agent request may do here, and the reason the assistant is not a
 /// way to launder an owner session into a reader link.
@@ -887,7 +906,9 @@ impl Server {
             publishers,
             commenters,
             anonymous: Default::default(),
+            agents: true,
             agent_connectors: true,
+            local_builds: true,
             simulate_activity: None,
             pending: PendingCodes::new(),
             chat: chat::Hub::default(),

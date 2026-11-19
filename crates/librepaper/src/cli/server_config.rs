@@ -76,8 +76,12 @@ pub(crate) struct ResolvedConfig {
     pub(crate) commenters: Policy,
     /// Which link roles may be held without signing in.
     pub(crate) anonymous: librepaper_base::role::AnonymousAccess,
+    /// Whether agents may reach projects at all: agent tokens, connectors and the desktop app's own agent.
+    pub(crate) agents: bool,
     /// Whether apps and agents may connect to a project as a remote MCP connector.
     pub(crate) agent_connectors: bool,
+    /// Whether the desktop app may build documents and run their code on the author's computer.
+    pub(crate) local_builds: bool,
     pub(crate) simulate_activity: Option<u32>,
     pub(crate) expire_after: Option<String>,
     pub(crate) expire_from: Option<String>,
@@ -126,7 +130,9 @@ impl fmt::Debug for ResolvedConfig {
             .field("publishers", &self.publishers)
             .field("commenters", &self.commenters)
             .field("anonymous", &self.anonymous)
+            .field("agents", &self.agents)
             .field("agent_connectors", &self.agent_connectors)
+            .field("local_builds", &self.local_builds)
             .field("simulate_activity", &self.simulate_activity)
             .field("expire_after", &self.expire_after)
             .field("expire_from", &self.expire_from)
@@ -262,7 +268,9 @@ struct Access {
     anonymous_comments: Option<Input<bool>>,
     anonymous_suggests: Option<Input<bool>>,
     anonymous_edits: Option<Input<bool>>,
+    agents: Option<Input<bool>>,
     agent_connectors: Option<Input<bool>>,
+    local_builds: Option<Input<bool>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -579,7 +587,9 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "anonymous_comments",
             "anonymous_suggests",
             "anonymous_edits",
+            "agents",
             "agent_connectors",
+            "local_builds",
         ],
     )?;
     section(
@@ -775,7 +785,9 @@ pub(crate) fn load_with_postgres_env(
         false,
     )?;
     let anonymous_edits = r.value("access.anonymous_edits", raw.access.anonymous_edits, false)?;
+    let agents = r.value("access.agents", raw.access.agents, true)?;
     let agent_connectors = r.value("access.agent_connectors", raw.access.agent_connectors, true)?;
+    let local_builds = r.value("access.local_builds", raw.access.local_builds, true)?;
     let expire_after = r.optional("retention.expire_after", raw.retention.expire_after)?;
     let erase_inactive_after = r.optional(
         "retention.erase_inactive_after",
@@ -946,7 +958,9 @@ pub(crate) fn load_with_postgres_env(
             suggests: anonymous_suggests,
             edits: anonymous_edits,
         },
+        agents,
         agent_connectors,
+        local_builds,
         simulate_activity,
         expire_after,
         expire_from,
@@ -1759,9 +1773,23 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     value(
         &mut out,
         &c.sources,
+        "access.agents",
+        "agents",
+        &c.agents.to_string(),
+    );
+    value(
+        &mut out,
+        &c.sources,
         "access.agent_connectors",
         "agent_connectors",
         &c.agent_connectors.to_string(),
+    );
+    value(
+        &mut out,
+        &c.sources,
+        "access.local_builds",
+        "local_builds",
+        &c.local_builds.to_string(),
     );
     section(&mut out, "limits");
     value(
@@ -2628,6 +2656,19 @@ client_secret = { file = "missing-oauth-secret" }
         let loaded = load_text("[access]\nagent_connectors = false\n").unwrap();
         assert!(!loaded.agent_connectors);
         assert!(show_resolved(&loaded).contains("agent_connectors = false"));
+    }
+
+    #[test]
+    fn agents_and_local_builds_switches_default_on_and_round_trip() {
+        let loaded = load_text("").unwrap();
+        assert!(loaded.agents);
+        assert!(loaded.local_builds);
+        let loaded = load_text("[access]\nagents = false\nlocal_builds = false\n").unwrap();
+        assert!(!loaded.agents);
+        assert!(!loaded.local_builds);
+        let shown = show_resolved(&loaded);
+        assert!(shown.contains("agents = false"));
+        assert!(shown.contains("local_builds = false"));
     }
 
     fn oidc_ids(loaded: &ResolvedConfig) -> Vec<&str> {

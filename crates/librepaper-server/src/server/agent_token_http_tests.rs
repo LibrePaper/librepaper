@@ -53,6 +53,15 @@ async fn serve_with(
     slug: &str,
     anonymous: librepaper_base::role::AnonymousAccess,
 ) -> Option<Served> {
+    serve_configured(slug, anonymous, true).await
+}
+
+/// The same, with the host's `agents` switch as well.
+async fn serve_configured(
+    slug: &str,
+    anonymous: librepaper_base::role::AnonymousAccess,
+    agents: bool,
+) -> Option<Served> {
     let mut deployment = http_deployment(
         DocumentInput {
             slug: slug.into(),
@@ -77,6 +86,7 @@ async fn serve_with(
         .to_owned();
     deployment.server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
     deployment.server.anonymous = anonymous;
+    deployment.server.agents = agents;
     let Deployment {
         server,
         catalog,
@@ -644,6 +654,74 @@ async fn a_token_works_only_on_its_documents_tools() {
     assert_eq!(status, 401);
     let link_key_as_token = agent_token_string(READER, &served.slug, &"0".repeat(64));
     assert_eq!(served.tools(&link_key_as_token).await.0, 401);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn with_agents_off_no_token_is_created() {
+    let Some(served) = serve_configured("agents-off-create", Default::default(), false).await
+    else {
+        return;
+    };
+    let (status, body) = served
+        .share(json!({"create": {"kind": "token", "role": "read", "name": "Agent", "until": "1d"}}))
+        .await;
+    assert_ne!(status, 200, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("turned off agent access")),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn with_agents_off_a_token_is_refused_on_its_own_tools() {
+    let Some(served) = serve_configured("agents-off-tools", Default::default(), false).await else {
+        return;
+    };
+    let token = agent_token_string(READER, &served.slug, &"0".repeat(64));
+    assert_eq!(served.tools(&token).await.0, 403);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn with_agents_off_the_tool_routes_are_not_found() {
+    let Some(served) = serve_configured("agents-off-routes", Default::default(), false).await
+    else {
+        return;
+    };
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{}/api/documents/{}/tools",
+            served.base, served.slug
+        ))
+        .header("host", "paper.example")
+        .header("authorization", &served.owner)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 404);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_config_reports_the_host_switches() {
+    let Some(served) = serve_configured("agents-off-config", Default::default(), false).await
+    else {
+        return;
+    };
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/config", served.base))
+        .header("host", "paper.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["agents"], false, "{body}");
+    assert_eq!(body["local_builds"], true, "{body}");
 }
 
 #[tokio::test]

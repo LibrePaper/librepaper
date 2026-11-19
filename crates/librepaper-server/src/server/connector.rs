@@ -408,7 +408,7 @@ impl Server {
         ctx: &RequestContext,
         headers: &HeaderMap,
     ) -> Option<Reply> {
-        if !self.agent_connectors || ctx.arrival.is_docs_host() {
+        if !self.connectors_open() || ctx.arrival.is_docs_host() {
             return Some(self.not_found(headers));
         }
         None

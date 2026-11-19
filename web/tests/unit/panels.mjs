@@ -67,6 +67,21 @@ assert.deepEqual(
   "and so is an owner",
 );
 
+// A host that has turned agents off offers nobody the Agent panel, not even an
+// owner. A host that says nothing about agents, or says they are on, offers it.
+assert.ok(
+  !offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true, agents: false }).includes("agent"),
+  "a host with agents off offers no Agent panel, even to an owner",
+);
+assert.ok(
+  offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true }).includes("agent"),
+  "a host that says nothing about agents still offers the Agent panel",
+);
+assert.ok(
+  offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true, agents: true }).includes("agent"),
+  "and so does a host with agents on",
+);
+
 // The conditions still apply above the role rules: a panel whose `when` is
 // false is not offered to an editor either.
 assert.ok(

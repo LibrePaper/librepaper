@@ -35,7 +35,7 @@
   import Row from "./layout/Row.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import { say } from "../lib/toast.svelte.js";
-  import { SHELL_HEADERS, get, getPrivate, me as whoami, signInHref } from "../lib/api.js";
+  import { SHELL_HEADERS, config, get, getPrivate, me as whoami, signInHref } from "../lib/api.js";
   import { day as isoDay, since } from "../lib/dates.js";
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
   import { tagColour } from "../lib/tag-colours.js";
@@ -1219,7 +1219,8 @@
 
   $effect(() => {
     localBridge.configure({ project: null, origin: location.origin });
-    get("/api/config").then((answer) => { rules = answer ?? {}; }).catch(() => {});
+    // The shared config(), so this page's Settings also know the host's switches.
+    config().then((answer) => { rules = answer ?? {}; }).catch(() => {});
     // Not the shared me(), which folds a failed request into an empty account:
     // this page needs to tell the two apart in order to say which it is.
     get("/api/me")
