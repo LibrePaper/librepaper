@@ -159,14 +159,20 @@ try {
   assert.deepEqual(await q("[...document.querySelectorAll('#new-project [role=tab]')].map(node => node.textContent.trim())"), ["Blank", "From Template", "Upload files"]);
   await until("the suggested name", async () => (await valueOf("#new-project-name")) === "Untitled project 2");
 
-  // b. A name alone makes the project: nothing is sent but the title, and the
-  // project starts with no files and no format.
-  assert.equal(await exists("#new-project-format"), false, "blank asks for no format");
+  // b. A name and a format make the project: it starts with the empty
+  // document in that format, titled, and opens on the editor.
+  assert.equal(await q("document.activeElement?.id"), "new-project-name", "the name has focus");
+  assert.equal(await q("(({ selectionStart, selectionEnd, value }) => selectionEnd - selectionStart === value.length)(document.activeElement)"), true, "the suggested name is selected");
+  assert.deepEqual(await q("[...document.querySelectorAll('#new-project-blank-format option')].map(option => option.value)"),
+    ["markdown", "quarto", "org", "latex", "typst", "html"]);
   await set("#new-project-name", "A Paper You Can Change");
+  await set("#new-project-blank-format", "typst", "change");
   await submit();
   const made = await sent();
-  assert.deepEqual(made.map((one) => one.name), ["title"]);
-  assert.equal(made[0].bytes, "A Paper You Can Change");
+  assert.deepEqual(made.filter((one) => one.name === "file").map((one) => one.filename), ["main.typ"]);
+  assert.match(made.find((one) => one.name === "file").bytes, /A Paper You Can Change/);
+  assert.equal(made.find((one) => one.name === "title").bytes, "A Paper You Can Change");
+  assert.equal(await q("new URLSearchParams(location.search).get('edit')"), "1", "the project opens on the editor");
   assert.deepEqual(await wentWrong(), []);
 
   // c. An unnamed project is refused on the page, and nothing is sent.
