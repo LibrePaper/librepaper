@@ -209,6 +209,9 @@ async fn tools_list(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
+    if !server.agents {
+        return plain(404, "not found");
+    }
     let mut reply = server.handle_tools_list(request, &ctx, &slug).await;
     mcp::announce_min_skill_version(&mut reply);
     reply
@@ -220,6 +223,9 @@ async fn tool_call(
     Path((slug, name)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
+    if !server.agents {
+        return plain(404, "not found");
+    }
     let mut reply = server.handle_tool_call(request, &ctx, &slug, &name).await;
     mcp::announce_min_skill_version(&mut reply);
     reply
@@ -517,6 +523,9 @@ async fn chat(
     Path((slug, tail)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
+    if !server.agents {
+        return plain(404, "not found");
+    }
     let tail = tail.split('/').collect::<Vec<_>>();
     server.handle_chat(request, &ctx, &slug, &tail).await
 }
@@ -527,6 +536,9 @@ async fn chat_root(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
+    if !server.agents {
+        return plain(404, "not found");
+    }
     server.handle_chat(request, &ctx, &slug, &[]).await
 }
 
@@ -536,6 +548,9 @@ async fn assistant_capabilities(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
+    if !server.agents {
+        return plain(404, "not found");
+    }
     server
         .handle_assistant_capabilities(request.headers(), &ctx.arrival, &slug)
         .await

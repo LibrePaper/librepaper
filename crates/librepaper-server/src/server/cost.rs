@@ -512,6 +512,10 @@ async fn middleware_inner(
     // sync uses to a token with the Edit role, so a new route or the socket
     // answers 401 without anyone having to remember to list it.
     if let Some(token) = agent_token_bearer(request.headers()) {
+        // With agents off, a token is refused on every route, its own included.
+        if !server.agents {
+            return write_json(403, &json!({"error": super::AGENTS_OFF}));
+        }
         let admitted = match agent_token_route(&token, &path, &method) {
             Some(TokenRoute::Tools) => true,
             Some(TokenRoute::Sync) => match server.agent_token_edits(&token).await {
@@ -533,7 +537,7 @@ async fn middleware_inner(
             // A token for another project on a connector's `/mcp/<slug>` is
             // sent to that project's authorization server, as the handler
             // would have done for a missing one.
-            if server.agent_connectors && !arrival.is_docs_host() {
+            if server.connectors_open() && !arrival.is_docs_host() {
                 if let Some(slug) = path
                     .strip_prefix("/mcp/")
                     .filter(|slug| !slug.contains('/') && server.valid_slug(slug))
@@ -560,6 +564,10 @@ async fn middleware_inner(
         .as_deref()
         .and_then(|value| value.strip_prefix("Bearer "))
         .is_some_and(|token| token.starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX));
+    // The desktop app's agent holds a delegated grant; off is off for it too.
+    if delegated_agent && !server.agents {
+        return write_json(403, &json!({"error": super::AGENTS_OFF}));
+    }
     if delegated_agent && authentication.is_ok() && !agent_document_path(&server, &path) {
         return write_json(
             403,
