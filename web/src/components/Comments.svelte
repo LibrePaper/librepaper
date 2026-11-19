@@ -3,7 +3,9 @@
   import IconButton from "./IconButton.svelte";
   import CommentCard from "./CommentCard.svelte";
   import CommentComposer from "./CommentComposer.svelte";
-  import PanelHeader from "./PanelHeader.svelte";
+  import { Menu } from "@skeletonlabs/skeleton-svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
+  import MenuIconButton from "./MenuIconButton.svelte";
   import { aboutWholeDocument } from "../lib/anchor.js";
 
   // The annotations, in document order: an annotation is about a place in the
@@ -81,7 +83,30 @@
     if (filter === "comments") return comment.motivation !== "highlighting" || comment.body || comment.replies?.length;
     return true;
   }));
-  const shown = $derived([...filtered].sort((a, b) => place(a) - place(b) || a.seq - b.seq));
+  // Which of them the list shows, by whether they are settled: "open",
+  // "resolved" or "all". The panel starts on what is unresolved, because what
+  // is settled stays out of the way until it is asked for. This is the
+  // reader's own view of the list and is kept nowhere else: the counts in the
+  // bar and the bulk verbs go on speaking for the whole tab.
+  let status = $state("open");
+  const STATUSES = $derived([
+    { value: "open", label: m.comments_filter_unresolved() },
+    { value: "resolved", label: m.commentcard_resolved() },
+    { value: "all", label: m.history_all_short() },
+  ]);
+  const statusLabel = $derived(STATUSES.find((one) => one.value === status)?.label ?? "");
+  // The card the page has singled out is listed whatever the filter says: a
+  // click on a resolved comment's passage has to be able to open its card.
+  const visible = $derived(filtered.filter((comment) =>
+    status === "all"
+      || (status === "resolved" ? Boolean(comment.resolved) : !comment.resolved)
+      || String(comment.id) === String(selected)));
+  const shown = $derived([...visible].sort((a, b) => place(a) - place(b) || a.seq - b.seq));
+  // A new comment is unresolved, so a draft begun while only the resolved
+  // ones are listed would vanish the moment it was sent.
+  $effect(() => {
+    if (composing && status === "resolved") status = "open";
+  });
 
   const open = $derived(filtered.filter((comment) => !comment.resolved).length);
 
@@ -96,15 +121,16 @@
   const partial = $derived(Boolean(page) && !page.complete);
   const meta = $derived.by(() => {
     if (!page) return filtered.length ? m.comments_meta_total({ open, total: filtered.length }) : undefined;
-    if (page.loading) return m.common_loading();
+    // Still arriving, or arrived and empty: the list says so itself, and a
+    // count over "No comments yet." says the same thing twice.
+    if (page.loading || !page.total) return undefined;
     if (filter === "all") {
       return partial
         ? m.comments_meta_loaded({ open: page.open, total: page.total, loaded: comments.length })
         : m.comments_meta_total({ open: page.open, total: page.total });
     }
-    return partial
-      ? m.comments_meta_filtered({ open, filtered: filtered.length, loaded: comments.length })
-      : m.comments_meta_total({ open, total: filtered.length });
+    if (partial) return m.comments_meta_filtered({ open, filtered: filtered.length, loaded: comments.length });
+    return filtered.length ? m.comments_meta_total({ open, total: filtered.length }) : undefined;
   });
   // Against everything loaded, not against this tab's share of it: what
   // "Load more" fetches is comments, not comments of one kind.
@@ -117,12 +143,11 @@
   const deletable = $derived(filtered.filter((comment) => canModerate || comment.deletable));
   const clearable = $derived(deletable.filter((comment) => comment.resolved));
 
-  // Whether the header has any verb to offer this caller. A reader who may
-  // not comment has none, and gets no empty row where they would have been.
-  const bulkOffered = $derived(
-    canComment && Boolean(resolvable.length || clearable.length || (canModerate && deletable.length)),
-  );
-  const headerActions = $derived(Boolean(onhistory) || (canComment && Boolean(onwholedocument)) || bulkOffered);
+  // Whether there is any bulk verb to offer this caller. A reader who may not
+  // comment has none, and gets no menu.
+  const bulkOffered = $derived(canComment && Boolean(resolvable.length || clearable.length));
+  // Whether the bar over the list has anything in it.
+  const headed = $derived(Boolean(meta) || Boolean(onhistory) || bulkOffered || filtered.length > 0);
 
   // Commenting and highlighting are not offered here: they act on a passage,
   // and the bar over the selection is where they belong. See
@@ -142,54 +167,72 @@
   function resolveAll() {
     for (const comment of resolvable) onresolve?.(comment);
   }
+
+  // The bulk verbs, by the value of the menu item that asks for them. The
+  // deletion hands the page one list, so it can confirm once. There is no
+  // "Delete all": a document's whole discussion is not one click from gone.
+  function bulk(verb) {
+    if (verb === "resolve") resolveAll();
+    else if (verb === "clear") ondeletemany?.(clearable);
+  }
 </script>
 
 <!-- One of the column's panels: the column itself, with the tabs that choose
      between them, is the reader's. -->
 <div class="comments-panel">
-  {#snippet headerButtons()}
-    <div class="flex flex-wrap items-center gap-1">
-      {#if onhistory}
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={onhistory}>{m.comments_show_changes()}</button>
-      {/if}
-      {#if canComment && onwholedocument}
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onwholedocument?.()}>{m.common_comment_whole_document()}</button>
-      {/if}
-      {#if bulkOffered}
-        <div class="bulk flex flex-wrap justify-end gap-1" role="group" aria-label={partial ? m.comments_group_loaded() : m.comments_group_all()}>
-          {#if resolvable.length}
-            <button type="button" class="btn btn-sm lp-control-tonal-brand"
-              data-tip={partial ? m.comments_resolve_loaded_title() : m.comments_resolve_all_title()}
-              onclick={resolveAll}>{partial ? m.comments_resolve_loaded() : m.comments_resolve_all()}</button>
-          {/if}
-          {#if clearable.length}
-            <button type="button" class="btn btn-sm lp-control-tonal-brand"
-              data-tip={partial ? m.comments_clear_loaded_title() : m.comments_clear_all_title()}
-              disabled={!ondeletemany}
-              onclick={() => ondeletemany?.(clearable)}>{m.comments_clear()}</button>
-          {/if}
-          {#if canModerate && deletable.length}
-            <button type="button" class="btn btn-sm lp-control-tonal-brand"
-              data-tip={partial ? m.comments_delete_loaded_title() : m.comments_delete_all_title()}
-              disabled={!ondeletemany}
-              onclick={() => ondeletemany?.(deletable)}>{partial ? m.comments_delete_loaded() : m.comments_delete_all()}</button>
-          {/if}
-        </div>
-      {/if}
-    </div>
-  {/snippet}
+  <!-- The selected rail icon and the open tab name the panel, so its heading
+       is for assistive technology only. -->
+  <h2 class="sr-only">{title}</h2>
 
-  <PanelHeader
-    title={title}
-    meta={meta}
-    actions={headerActions ? headerButtons : undefined}
-  >
-    {#if !canComment}
-      <p class="panel-muted">{m.comments_read_only()}</p>
-    {:else}
-      <p class="panel-muted">{hint}</p>
-    {/if}
-  </PanelHeader>
+  <!-- One bar over the list, as in the Changes panel: what is here, which of
+       it is listed, and the verbs that act on all of it behind one menu.
+       Three buttons used to stand over every comment; a menu is for
+       choosing, and here there is something to choose. -->
+  {#if headed}
+    <header class="comments-header">
+      <span class="comments-count panel-meta">{meta}</span>
+      <div class="header-end">
+        {#if onhistory}
+          <button type="button" class="text-action" onclick={onhistory}>{m.comments_show_changes()}</button>
+        {/if}
+        {#if filtered.length}
+          <Menu onSelect={(chosen) => (status = chosen.value)}
+                positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
+            <MenuIconButton icon="filter" size="1rem" class="filter-trigger"
+                            pressed={status !== "all"}
+                            label={m.comments_filter_label({ name: statusLabel })} />
+            <ExplorerMenu>
+              {#each STATUSES as option (option.value)}
+                <Menu.Item value={option.value} class="menuitem"><span class="menuitem-check">{status === option.value ? "✓" : ""}</span>{option.label}</Menu.Item>
+              {/each}
+            </ExplorerMenu>
+          </Menu>
+        {/if}
+        {#if bulkOffered}
+          <Menu onSelect={(chosen) => bulk(chosen.value)}
+                positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
+            <MenuIconButton icon="more-horizontal" size="1rem" class="bulk-trigger"
+                            label={partial ? m.comments_group_loaded() : m.comments_group_all()} />
+            <ExplorerMenu>
+              {#if resolvable.length}
+                <Menu.Item value="resolve" class="menuitem">
+                  <span class="menuitem-label">{partial ? m.comments_resolve_loaded() : m.comments_resolve_all()}</span>
+                </Menu.Item>
+              {/if}
+              {#if resolvable.length && clearable.length}
+                <hr class="hr my-1" />
+              {/if}
+              {#if clearable.length}
+                <Menu.Item value="clear" class="menuitem" disabled={!ondeletemany}>
+                  <span class="menuitem-label">{m.comments_clear()}</span>
+                </Menu.Item>
+              {/if}
+            </ExplorerMenu>
+          </Menu>
+        {/if}
+      </div>
+    </header>
+  {/if}
 
   <!-- Keyed on the draft: the composer keeps what is being typed in its own
        state, so a second draft has to be a second component rather than the
@@ -233,6 +276,11 @@
     {/each}
     {#if composerKey === ""}{@render composer()}{/if}
 
+    <!-- There are comments here, and the filter is hiding every one. -->
+    {#if filtered.length && !shown.length && !composing}
+      <p class="panel-muted" role="status">{m.comments_filter_empty()}</p>
+    {/if}
+
     <!-- What lies past the cards. Four states, and they are not the same
          thing: still arriving, arrived and empty, holding a prefix, and
          holding the lot. A failed request keeps every card above it
@@ -259,22 +307,52 @@
       {/if}
     {/if}
   </div>
+
+  <!-- How a comment gets made, at the foot of the panel where the Changes
+       panel keeps its own hint. It is not an empty state -- someone who has
+       read one comment still has to be told where the next one comes from --
+       so it stays put, and down here it stays out of the comments' way. A
+       remark about the whole document is the one kind that starts here
+       rather than from a selection. -->
+  <footer class="comments-hint">
+    <p>{canComment ? hint : m.comments_read_only()}</p>
+    {#if canComment && onwholedocument}
+      <button type="button" class="text-action" onclick={() => onwholedocument?.()}>{m.common_comment_whole_document()}</button>
+    {/if}
+  </footer>
 </div>
 
 <style>
-  /* The pane the collaboration panel puts this in carries the padding. */
-  .comments-panel { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; overflow: hidden; }
+  /* The pane the collaboration panel puts this in carries the padding. The
+     bar, the list and the hint bleed into it, so their dividers and the
+     list's scrollbar run to the panel's edges, and each takes the gutter back
+     as padding so everything shares one left edge. Nothing here clips: the
+     pane already does. */
+  .comments-panel { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; }
   .comments-panel > :global(*) { flex-shrink: 0; }
-  .comments-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .comments-header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-width: 0; min-height: 2rem; margin-inline: calc(var(--panel-padding) * -1); padding: 0 var(--panel-padding) .4rem; border-bottom: 1px solid var(--color-divider); }
+  .comments-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .header-end { display: inline-flex; flex: none; align-items: center; gap: .125rem; margin-inline-start: auto; }
+  .comments-header :global(:is(.filter-trigger, .bulk-trigger)) { width: 2rem; height: 2rem; }
+  /* The last trigger's icon, not its hover box, shares the right edge with the cards. */
+  .header-end > :global(:is(.filter-trigger, .bulk-trigger):last-child) { margin-inline-end: -.5rem; }
+  /* A filter that is hiding something wears the ground of a state that is on. */
+  .comments-header :global(.filter-trigger[aria-pressed="true"]) { background: var(--color-row-selected); }
+  .header-end > .text-action { margin-inline-end: .375rem; }
+  .comments-list { flex: 1 1 auto; min-height: 0; margin-inline: calc(var(--panel-padding) * -1); padding: calc(var(--spacing) * 3) var(--panel-padding); overflow-y: auto; overscroll-behavior: contain; }
   .load-more { align-self: center; margin: calc(var(--spacing) * 2) 0; }
   .page-error { padding: calc(var(--spacing) * 2); display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); align-items: flex-start; }
-  /* The bulk verbs keep to the right, and wrap onto a second line rather than
-     run past the edge of a narrow column: without `min-width: 0` the group is
-     as wide as its buttons, however little room there is. */
-  .bulk { min-width: 0; margin-left: auto; }
+  .comments-hint { margin: 0 calc(var(--panel-padding) * -1) calc(var(--panel-padding) * -1); padding: .5rem var(--panel-padding); border-top: 1px solid var(--color-divider); color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }
+  .comments-hint p { margin: 0; }
+  /* The same quiet text button the Changes panel uses for "Select all". */
+  .text-action { display: inline-flex; align-items: center; min-height: 2rem; padding: 0; border: 0; background: none; color: var(--color-link, var(--color-brand)); font-size: var(--panel-meta-size); font-weight: 500; cursor: pointer; }
+  .text-action:hover { text-decoration: underline; }
+  .text-action:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
   /* Phones: the panel's buttons, including Load more, are finger-sized. */
   @media (max-width: 767px) {
     .comments-panel .btn,
-    .load-more { min-height: 2.75rem; }
+    .load-more,
+    .text-action { min-height: 2.75rem; }
+    .comments-header :global(:is(.filter-trigger, .bulk-trigger)) { width: 2.75rem; height: 2.75rem; }
   }
 </style>

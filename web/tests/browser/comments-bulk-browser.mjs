@@ -10,9 +10,10 @@ import { fileURLToPath } from "node:url";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 // The panel's bulk verbs act only on what the cards would let this caller do
-// one at a time: "Resolve all" skips what is already resolved; "Delete resolved" and "Delete all" hand
-// the page one list, so it can confirm once, and only ever name comments the
-// caller may delete.
+// one at a time: "Resolve all" skips what is already resolved, and "Delete
+// resolved" hands the page one list, so it can confirm once, and only ever
+// names comments the caller may delete. Both are items of one menu in the
+// panel's bar, beside the filter that chooses which comments are listed.
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-comments-bulk-"));
 const entry = join(temporary, "entry.js");
@@ -30,8 +31,39 @@ const comments=[
 const handlers={onresolve:c=>window.resolved.push(c.id),ondeletemany:list=>window.deleted.push(list.map(c=>c.id))};
 let component=mount(Comments,{target:document.body,props:{comments,canModerate:false,...handlers}});
 window.asModerator=async()=>{await unmount(component);window.deleted=[];component=mount(Comments,{target:document.body,props:{comments,canModerate:true,...handlers}});};
-window.click=label=>{const b=Array.from(document.querySelectorAll(".bulk button")).find(b=>b.textContent===label);if(!b)return false;b.click();return true;};
-window.labels=()=>Array.from(document.querySelectorAll(".bulk button")).map(b=>b.textContent);
+// The bulk verbs are the items of one menu. Only the menu actually on show
+// counts: a closed menu keeps its items in the page.
+const press=node=>{for(const type of ['pointerdown','pointerup','click'])node.dispatchEvent(new PointerEvent(type,{bubbles:true,composed:true,button:0,isPrimary:true,pointerType:'mouse'}));};
+const settle=()=>new Promise(resolve=>setTimeout(resolve,120));
+const openItems=()=>Array.from(document.querySelectorAll('[data-part="content"][data-state="open"] [data-part="item"]'));
+window.labels=async()=>{
+  const trigger=document.querySelector(".bulk-trigger");
+  if(!trigger)return [];
+  press(trigger);await settle();
+  const labels=openItems().map(node=>node.textContent.trim());
+  press(trigger);await settle();
+  return labels;
+};
+window.click=async label=>{
+  const trigger=document.querySelector(".bulk-trigger");
+  if(!trigger)return false;
+  press(trigger);await settle();
+  const item=openItems().find(node=>node.textContent.trim()===label);
+  if(!item){press(trigger);await settle();return false;}
+  press(item);await settle();
+  return true;
+};
+// Which comments the list holds, and the filter that chooses them.
+window.cards=()=>Array.from(document.querySelectorAll(".comments-list article")).map(node=>node.id);
+window.show=async label=>{
+  const trigger=document.querySelector(".filter-trigger");
+  if(!trigger)return false;
+  press(trigger);await settle();
+  const item=openItems().find(node=>node.textContent.replace("\\u2713","").trim()===label);
+  if(!item){press(trigger);await settle();return false;}
+  press(item);await settle();
+  return true;
+};
 window.verbs=id=>Array.from(document.querySelectorAll("#comment-"+id+" .actions button"))
   .map(b=>(b.getAttribute("aria-label")||b.textContent).trim());
 `);
@@ -49,6 +81,19 @@ try {
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("panel", () => page.evaluate('document.body.innerText.includes("2 open · 4 total")'), 10000);
 
+  // The list starts on what is unresolved. The filter in the bar lists the
+  // resolved ones instead, or everything, and the count goes on speaking for
+  // the whole tab.
+  assert.deepEqual(await page.evaluate("window.cards()"), ["comment-open", "comment-theirs"]);
+  assert.ok(await page.evaluate('window.show("Resolved")'));
+  assert.deepEqual(await page.evaluate("window.cards()"), ["comment-done", "comment-locked"]);
+  assert.ok(await page.evaluate('window.show("All")'));
+  assert.deepEqual(await page.evaluate("window.cards()"),
+    ["comment-open", "comment-theirs", "comment-done", "comment-locked"]);
+  assert.ok(await page.evaluate('document.body.innerText.includes("2 open · 4 total")'));
+  assert.ok(await page.evaluate('window.show("Unresolved")'));
+  assert.deepEqual(await page.evaluate("window.cards()"), ["comment-open", "comment-theirs"]);
+
   // One card's own verbs, in the order they are read in: settle it, remove
   // it, answer it. Delete used to be the only item of a "•••" menu, which is
   // a menu with nothing to choose; it is a button like the other two.
@@ -60,23 +105,21 @@ try {
   // since Resolve follows the same rule as delete.
   assert.deepEqual(await page.evaluate('window.verbs("theirs")'), ["Reply"]);
 
-  // A commenter: no "Delete all", since they cannot delete what is not theirs.
+  // A commenter resolves and clears what is theirs.
   assert.deepEqual(await page.evaluate("window.labels()"), ["Resolve all", "Delete resolved"]);
   assert.ok(await page.evaluate('window.click("Resolve all")'));
   assert.deepEqual(await page.evaluate("window.resolved"), ["open"]);
   assert.ok(await page.evaluate('window.click("Delete resolved")'));
   assert.deepEqual(await page.evaluate("window.deleted"), [["done"]]);
 
-  // An owner clears everything in one list.
+  // An owner clears every resolved comment in one list, their own or not. And
+  // nobody is offered "Delete all": there is no such verb.
   await page.evaluate("window.asModerator()");
-  await until("moderator panel", () => page.evaluate('window.labels().includes("Delete all")'), 2000);
+  await until("moderator panel", () => page.evaluate('window.verbs("theirs").includes("Delete comment")'), 5000);
+  assert.deepEqual(await page.evaluate("window.labels()"), ["Resolve all", "Delete resolved"]);
   assert.ok(await page.evaluate('window.click("Delete resolved")'));
-  assert.ok(await page.evaluate('window.click("Delete all")'));
-  assert.deepEqual(await page.evaluate("window.deleted"), [
-    ["done", "locked"],
-    ["open", "theirs", "done", "locked"],
-  ]);
-  console.log("comments-bulk-browser: a card's own verbs, and resolve all / delete resolved / delete all respecting each caller's reach");
+  assert.deepEqual(await page.evaluate("window.deleted"), [["done", "locked"]]);
+  console.log("comments-bulk-browser: a card's own verbs, the unresolved / resolved / all filter, and resolve all / delete resolved respecting each caller's reach");
 } finally {
   await page?.close();
   if (server) await new Promise((resolve) => server.close(resolve));

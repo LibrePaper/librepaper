@@ -296,7 +296,8 @@ try {
     {id:'discussed-highlight',seq:3,motivation:'highlighting',exact:'document',position:7,color:'#ddeeff',body:'Discuss this highlight',replies:[]}
   ]})`);
   await frameMessage({type:'ready',text:'A long document'});
-  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Passage discussion")'), true);
+  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Passage discussion")'), false,
+    'a resolved comment is filtered out of the list until it is asked for');
   assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Discuss this highlight")'), true);
   assert.equal(await visible('.collaboration article[id$=plain-highlight]'), false);
   await selectDiscussionTab('Highlights');
@@ -331,6 +332,8 @@ try {
   assert.equal(await b.evaluate('Boolean(document.querySelector(".collab-tabs .unread"))'), false);
   await frameMessage({type:'focus',id:'passage'});
   assert.equal(await b.evaluate('document.querySelector(".collab-tabs [aria-selected=true]").textContent.trim()'), 'Comments');
+  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Passage discussion")'), true,
+    'a click on a resolved passage lists its card whatever the filter says');
   assert.equal(await b.evaluate('document.querySelector(".collaboration article[id$=passage]").classList.contains("collapsed")'), false);
   assert.equal(await b.evaluate('Array.from(document.querySelectorAll("[id]")).map(node=>node.id).length === new Set(Array.from(document.querySelectorAll("[id]")).map(node=>node.id)).size'), true, 'tab instances never duplicate DOM IDs');
 
