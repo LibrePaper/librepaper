@@ -5,8 +5,6 @@
 - **Owner:** the connector, or a token for scripts and sync.
 - **Collaborator (not the owner):** your share link, with `librepaper mcp --link`, below. Or ask the owner for a token if you want a separately named, separately revocable agent.
 
-The owner has no share link of their own, so an owner never uses the share link route.
-
 ## The connector (the main way)
 
 For any client that supports remote MCP, such as claude.ai, Claude Desktop, ChatGPT and Claude Code, recommend the connector. It needs no token in the chat, and the owner approves it in LibrePaper.

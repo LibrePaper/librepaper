@@ -22,7 +22,7 @@ Three environment variables matter. The two token variables hold different crede
 | Variable | Credential | Read by |
 |---|---|---|
 | `LIBREPAPER_AGENT_TOKEN` | An `lpt_` agent token for one project | `librepaper mcp` |
-| `LIBREPAPER_TOKEN` | An `lpt_` project token, or another credential instead of the stored sign-in | `pull`, `push`, `list`, `export`. `librepaper mcp --link` also uses the stored sign-in, and this variable overrides it |
+| `LIBREPAPER_TOKEN` | An `lpt_` project token, or another credential instead of the stored sign-in | `pull`, `push`, `list`, `export`. `librepaper mcp --link` also uses the stored sign-in |
 | `LIBREPAPER_SERVER` | Not a credential: the server's address, such as `https://app.librepaper.org` | `login`, `list`, `export`, and `push --title`. `pull` and `push` otherwise take the server from the project address |
 
 - `librepaper login` signs this computer in for 90 days. It prints a code and a URL, and the user approves it in a browser. An agent cannot finish it alone, so hand it to the user. A signed-in computer can `list`, `export`, `pull` and `push` the projects the person can reach.
