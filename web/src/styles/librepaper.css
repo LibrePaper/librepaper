@@ -671,6 +671,104 @@ main.reader.source-right .editorpane {
   z-index: 10;
 }
 
+/* The controls on a divider. The pill is a column of buttons stacked on the
+   separator, under a grab handle that drags the split. It is not inside the
+   separator: a separator's children are hidden from assistive technology, so
+   the buttons sit in a slot beside it. The slot takes no room in the row, and
+   the pill is centred on the divider by moving it left by half the grip's
+   width. */
+.grip-pill-slot {
+  position: relative;
+  flex: 0 0 0;
+  width: 0;
+  align-self: stretch;
+  z-index: 6;
+}
+.grip-pill {
+  position: absolute;
+  bottom: 14px;
+  left: -0.1875rem;
+  translate: -50% 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 2rem;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-raised);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.12);
+}
+/* Six dots in two columns: the handle that drags the split. Its hover is
+   carried up to the divider by the :has() rule below. */
+.grip-grab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  cursor: col-resize;
+  transition: background 0.15s, color 0.15s;
+}
+.grip-grab:hover {
+  background: color-mix(in srgb, var(--color-brand) 12%, transparent);
+}
+.grip-pill-rule {
+  display: block;
+  width: 12px;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--color-border);
+}
+/* The buttons the Reader puts in the pill. Round and transparent until they
+   are pointed at, when they take the brand colour. `is-on` marks a state that
+   is set, such as a locked split, by tinting the icon rather than the button. */
+.grip-pill-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.grip-pill-button svg {
+  width: 15px;
+  height: 15px;
+}
+.grip-pill-button.is-on {
+  color: var(--color-brand);
+}
+.grip-pill-button:hover,
+.grip-pill-button:focus-visible {
+  background: var(--color-brand);
+  color: #ffffff;
+  outline: none;
+}
+/* A divider is lit while its handle is under the pointer or a drag is on. */
+.grip.grip-dragging,
+.grip:has(+ .grip-pill-slot .grip-grab:hover) {
+  background: var(--color-brand);
+}
+.grip.grip-dragging::after,
+.grip:has(+ .grip-pill-slot .grip-grab:hover)::after {
+  background: transparent;
+}
+@media (prefers-reduced-motion: reduce) {
+  .grip-grab,
+  .grip-pill-button {
+    transition: none;
+  }
+}
+
 /* ---------------------------------------------------------------- the source
  *
  * CodeMirror brings its own layout and no opinion about how it should look, so
@@ -1073,11 +1171,13 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
     border-right: 0;
   }
   main.reader.mobile-sidebar .grip,
+  main.reader.mobile-sidebar .grip-pill-slot,
   main.reader.mobile-sidebar .editorpane,
   main.reader.mobile-sidebar .latexpane { display: none; }
   main.reader.mobile-document .sidebar,
   main.reader.mobile-document .editorpane,
-  main.reader.mobile-document .grip { display: none; }
+  main.reader.mobile-document .grip,
+  main.reader.mobile-document .grip-pill-slot { display: none; }
   main.reader.mobile-document .viewport:not(.away),
   main.reader.mobile-document .latexpane {
     display: flex;
@@ -1086,7 +1186,8 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   }
   main.reader.mobile-source .sidebar,
   main.reader.mobile-source .latexpane,
-  main.reader.mobile-source .grip { display: none; }
+  main.reader.mobile-source .grip,
+  main.reader.mobile-source .grip-pill-slot { display: none; }
   main.reader.mobile-source .editorpane {
     display: grid;
     flex: 1 1 100%;
@@ -1183,21 +1284,6 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .grip-guide.held {
   width: 3px;
   background: var(--color-brand);
-}
-
-/* The quiet sign that clicking in one pane no longer takes the other along.
-   Not a control: the toolbar is not where a preference set once belongs. */
-.grip-aside {
-  position: absolute;
-  top: --spacing(2);
-  left: 50%;
-  translate: -50% 0;
-  color: var(--color-text-secondary);
-  pointer-events: none;
-}
-.grip-aside svg {
-  width: --spacing(3);
-  height: --spacing(3);
 }
 
 /* A figure, where the editor would be. An image is shown as itself and a PDF
