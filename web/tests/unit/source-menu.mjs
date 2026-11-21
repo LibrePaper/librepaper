@@ -23,8 +23,8 @@ assert.equal(rightClickSelection({ from: 4, to: 9 }, undefined), null, "no posit
 
 /* -------------------------------------------------------------- the items */
 
-// Comment and Link first, then the clipboard trio; every item is a registry command.
-assert.deepEqual(SOURCE_MENU, [["comment", "link"], ["cut", "copy", "paste"]]);
+// Comment and Link first, then the clipboard trio, then Show in preview; every item is a registry command.
+assert.deepEqual(SOURCE_MENU, [["comment", "link"], ["cut", "copy", "paste"], ["show-in-preview"]]);
 for (const group of SOURCE_MENU) {
   for (const id of group) {
     assert.ok(COMMANDS.some((command) => command.id === id), `${id} is a registry command`);

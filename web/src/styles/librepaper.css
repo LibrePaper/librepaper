@@ -1023,6 +1023,22 @@ main.reader.source-right .editorpane {
   from { background-color: color-mix(in srgb, var(--presence, var(--color-text-secondary)) 30%, transparent); }
   to { background-color: transparent; }
 }
+
+/* The flash over the line a jump landed on (lib/landing-flash.js): a warm
+ * tint from the theme's warning token that fades out. With reduced motion
+ * there is no fade; the editor removes the tint after the same second. */
+.cm-line.cm-landing-flash {
+  background-color: color-mix(in srgb, var(--color-warning-solid) 35%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cm-line.cm-landing-flash {
+    animation: landing-fade 0.9s ease-out forwards;
+  }
+}
+@keyframes landing-fade {
+  from { background-color: color-mix(in srgb, var(--color-warning-solid) 35%, transparent); }
+  to { background-color: transparent; }
+}
 .user-color-926500 { --presence: #926500; }
 .user-color-377395 { --presence: #377395; }
 
