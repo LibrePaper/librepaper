@@ -120,11 +120,7 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
 /// Serve the project named by a share link, as the stored sign-in at that
 /// link's role. The sign-in comes from `AutomationPeer::open`; the grant file
 /// is not read on this path.
-async fn run_mcp_link(
-    link: &str,
-    server: Option<&str>,
-    token: Option<&str>,
-) -> Result<(), String> {
+async fn run_mcp_link(link: &str, server: Option<&str>, token: Option<&str>) -> Result<(), String> {
     let link = DocumentLink::parse(link, server.unwrap_or(""))?;
     require_key(&link)?;
     let peer = AutomationPeer::open(link, server, token).await?;

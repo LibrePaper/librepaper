@@ -407,12 +407,15 @@ With --title, publish the directory as a new project instead.
 
 Serve a project's document tools to an MCP client over stdio
 
-Give it an agent token in LIBREPAPER_AGENT_TOKEN. The token names its server and its project, so no other flag is needed. Register it with Claude Code once with `claude mcp add librepaper --scope user -- librepaper mcp`.
+Two ways to name the project. Give an agent token in LIBREPAPER_AGENT_TOKEN; the token names its server and its project, so no other flag is needed. Or, as a collaborator, pass --link with a share link that includes its key; the agent then works as you, with your `librepaper login` sign-in, at that link's role.
+
+Register it with Claude Code once with `claude mcp add librepaper --scope user -- librepaper mcp`, adding `--link URL` after `mcp` when you use a share link.
 
 **Usage:** `librepaper mcp [OPTIONS]`
 
 ###### **Options:**
 
+* `--link <URL>`: A share link to the project. The agent works as you, with your `librepaper login` sign-in, at that link's role. For collaborators, who cannot issue agent tokens
 * `--server <URL>`: Deployment to talk to
 * `--token <TOKEN>`: A credential to use instead of the one `login` stored
 
