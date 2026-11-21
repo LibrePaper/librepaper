@@ -1,5 +1,10 @@
 # Connecting an agent to a LibrePaper project
 
+## Which route to use
+
+- **Owner:** the connector, or a token for scripts and sync.
+- **Collaborator (not the owner):** your share link, with `librepaper mcp --link`, below. Or ask the owner for a token if you want a separately named, separately revocable agent.
+
 ## The connector (the main way)
 
 For any client that supports remote MCP, such as claude.ai, Claude Desktop, ChatGPT and Claude Code, recommend the connector. It needs no token in the chat, and the owner approves it in LibrePaper.
@@ -15,6 +20,21 @@ For any client that supports remote MCP, such as claude.ai, Claude Desktop, Chat
 Only the owner can connect a project, and each project is connected separately: its URL names it. The connection lasts 30 days, renews while the app uses it, and the owner can revoke it in the Connect tab. A chat app (claude.ai, ChatGPT) calls the server from its maker's servers, so the server must be reachable from the internet for it. A coding agent on the owner's computer also works with a server on a local network or Tailscale.
 
 If the app cannot add a remote MCP server, use a token, below.
+
+## Collaborator: your share link
+
+If you are not the owner, you cannot create a token or approve the connector. You can let an agent work as yourself, at the role of the share link you hold. The link must include its key, as the Share panel gives it: `https://<server>/docs/<slug>#k=...`.
+
+1. Sign in on this computer once with `librepaper login`. It prints a code and a URL, and the user approves them in a browser, so hand that step to the user.
+2. Register the link with your client, in place of the placeholder:
+
+   ```sh
+   claude mcp add librepaper --scope user -- librepaper mcp --link 'https://<server>/docs/<slug>#k=...'
+   ```
+
+3. Start a new client session. An MCP server registered mid-session does not appear until then.
+
+The agent works as you, so its edits and comments appear under your name. There is no separate agent entry in the Agent panel. The access ends when the owner revokes the link, or when the sign-in expires after 90 days. The role is the link's role. The desktop app's built-in agent works the same way, without this setup.
 
 ## Fallback: a token
 

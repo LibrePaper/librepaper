@@ -12,6 +12,8 @@ The project lives on the LibrePaper server, and the token names the server and t
 
 If a step is blocked, say exactly what to allow, as [If a sandbox blocks you](#if-a-sandbox-blocks-you) explains.
 
+If the user gives a project link instead of a token, and is not the owner, the helper cannot use it: `scripts/lp` works only with an `lpt_` token. Tell them the two options. Either they run `librepaper login` and register `librepaper mcp --link '<share link>'` with their client, then start a new session, or they ask the owner for a token. [agent-setup.md](agent-setup.md) has the steps.
+
 ## Doing the task
 
 For reading, reviewing, proofreading, adding text and new files, use the helper's task commands. Each one reads a fresh copy of the source, so you never handle `view_id`, `range_id` or `operation` with them. Do not read schemas or [agent-tools.md](agent-tools.md) for these. Go straight to the write after `read`.
@@ -65,8 +67,8 @@ lp withdraw 3f9c… 7a1e…
 
 - Format: `lpt_<base64url origin>.<slug>.<key>`. Split at the first and last dot. The first part decodes to the server origin (for example `https://app.librepaper.org`). The slug is the project in that server's address bar.
 - The owner makes one in the project's Agent panel (robot icon in the sidebar), Connect tab, New token. The owner can copy it again from the token's row: the copy icon there copies connection instructions that include the token.
-- It works only on two routes for its own project: `GET` and `POST /api/documents/<slug>/tools[/<name>]`. Nothing else accepts it.
-- It cannot upload images, publish, share or run code. Comments carry the token's name. Each token has an hourly comment budget (`budget_exceeded` when spent). Edit tokens expire after one day by default.
+- For its own project, a token works on the document tools (`GET` and `POST /api/documents/<slug>/tools[/<name>]`) and on the remote MCP endpoint `/mcp/<slug>`. An Edit token also reaches the sync routes that `librepaper pull` and `push` use, under `/api/documents/<slug>`: `GET /history`, `GET /history/<id>`, `GET /project`, `PUT|POST /assets`, `GET|HEAD /assets/<name>` and `POST /source-change`. So an Edit token can upload files through `librepaper push`. No other route accepts it.
+- The document tools cannot upload images, publish, share or run code. Comments carry the token's name. Each token has an hourly comment budget (`budget_exceeded` when spent). Edit tokens expire after one day by default.
 - It is a credential. Never print it whole, write it into a repo, a config file or a commit, or send it anywhere but its own origin. When echoing it, show `lpt_…` plus the last four characters. A user who pastes it into chat has made their own decision about that; it does not relax this rule for you.
 
 ## Step 1: Pick the connection
