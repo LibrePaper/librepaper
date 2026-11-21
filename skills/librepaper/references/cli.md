@@ -8,7 +8,7 @@ Install it as [agent-setup.md](agent-setup.md) step 2 shows. `librepaper --versi
 
 | Task | Use |
 |---|---|
-| Read, comment on, suggest changes to or edit a project | MCP or the HTTP routes with an agent token ([agent.md](agent.md)), not the CLI |
+| Read, comment on, suggest changes to or edit a project as an agent | MCP or the HTTP routes with an agent token ([agent.md](agent.md)). A collaborator with a share link uses `librepaper mcp --link` ([agent-setup.md](agent-setup.md)). The other CLI commands do not do this work |
 | Register LibrePaper with an MCP client | `librepaper mcp` ([agent-setup.md](agent-setup.md)) |
 | Keep a folder or Git repository in step with a project | `librepaper pull` and `librepaper push` ([sync.md](sync.md)) |
 | List the user's projects | `librepaper list` |
@@ -22,10 +22,10 @@ Three environment variables matter. The two token variables hold different crede
 | Variable | Credential | Read by |
 |---|---|---|
 | `LIBREPAPER_AGENT_TOKEN` | An `lpt_` agent token for one project | `librepaper mcp` |
-| `LIBREPAPER_TOKEN` | An `lpt_` project token, or another credential instead of the stored sign-in | `pull`, `push`, `list`, `export` |
+| `LIBREPAPER_TOKEN` | An `lpt_` project token, or another credential instead of the stored sign-in | `pull`, `push`, `list`, `export`. `librepaper mcp --link` also uses the stored sign-in, and this variable overrides it |
 | `LIBREPAPER_SERVER` | Not a credential: the server's address, such as `https://app.librepaper.org` | `login`, `list`, `export`, and `push --title`. `pull` and `push` otherwise take the server from the project address |
 
-- `librepaper login` signs this computer in for 90 days. It prints a code and a URL, and the user approves it in a browser. An agent cannot finish it alone, so hand it to the user.
+- `librepaper login` signs this computer in for 90 days. It prints a code and a URL, and the user approves it in a browser. An agent cannot finish it alone, so hand it to the user. A signed-in computer can `list`, `export`, `pull` and `push` the projects the person can reach.
 - `librepaper logout` forgets the stored sign-in on this computer. A token copied elsewhere keeps working until it expires or is revoked.
 - Never print a token whole or write it into a file the user did not ask for. Read it into the environment without echo, as [agent-setup.md](agent-setup.md) shows.
 

@@ -12,6 +12,24 @@ There are three ways to connect an agent:
 
 > **Warning:** A shared document holds text from everyone with suggest or edit access. An agent that reads it may follow instructions hidden in that text.
 
+## Two ways an agent reaches a project
+
+An agent reaches a project in one of two ways. They differ in whose authority the agent uses.
+
+1. **An agent token from the owner.** The owner makes a token in the project's Agent panel, or approves an app through the connector. Both give an `lpt_` token. The token is the authority: it has its own role (Read, Comment, Suggest or Edit), expiry and name. The owner sees it in the Agent panel and revokes it there. Its comments and suggestions carry the token's name. Only the owner can create tokens or approve the connector.
+2. **Your own share link, with your sign-in.** Anyone with a share link to the project who is not its owner can let an agent work as them, at that link's role. Two clients do this: the desktop app's built-in agent, and the `librepaper` command's `mcp --link` option, which uses the sign-in from `librepaper login`. The work appears under your own name. There is no separate agent entry in the Agent panel. It ends when the owner revokes the link or when your sign-in expires, after 90 days.
+
+Owners use a token or the connector. The owner has no share link of their own. Collaborators use their share link, or ask the owner for a token if they want a separately named agent that the owner can revoke on its own. To use a share link from the command line, sign in once and register the link with Claude Code:
+
+```sh
+librepaper login
+claude mcp add librepaper --scope user -- librepaper mcp --link 'https://app.librepaper.org/docs/<slug>#k=...'
+```
+
+The link must include its key after the `#`, exactly as the Share panel gives it. Start a new Claude Code session afterwards, because an MCP server added during a session does not appear until then.
+
+## Connect an app or agent
+
 ## Connect an app or agent
 
 Use the connector to let a chat app or a coding agent work on one project. It is the main way to connect. You add the project's URL to the app, and the app opens a LibrePaper page where you approve the connection. No token goes into the chat, and you configure nothing by hand.
@@ -157,7 +175,7 @@ When you click **New token**, you pick a permission and an expiry. The defaults 
 
 ### What a token cannot do
 
-A token reaches only its own project. It cannot upload images, publish, share or run code. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
+A token reaches only its own project, through the agent tools, the connector endpoint and, for an Edit token, the sync that `librepaper push` uses. An Edit token can therefore upload files, images included, with `librepaper push`. The agent tools themselves cannot upload images, publish, share or run code. A single replacement is at most 60,000 characters and a single new file at most 262,144 characters, so agents split larger changes.
 
 A token stops working when it expires, when you revoke it with the revoke button on its row in the Connect tab, when the project changes owner, or when your account is blocked or erased. Signing out does not stop it, so the agent keeps working while you are signed out or LibrePaper is closed.
 
