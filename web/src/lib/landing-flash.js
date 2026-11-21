@@ -1,5 +1,5 @@
-// The short highlight drawn over the line a jump landed on: a "show in source"
-// from the preview, a search result, a diagnostic. It is line decoration only;
+// The short highlight drawn over the line a jump from the preview landed on:
+// Show in source, or a double-click in the preview. It is line decoration only;
 // it never changes the text, the selection or the caret. The fade is a CSS
 // animation that reduced-motion users do not get (see styles/librepaper.css).
 // The editor removes the decoration after LANDING_FLASH_MS (Editor.svelte).

@@ -210,15 +210,15 @@ import { morphChildren } from "./morph.js";
   const markStyle = document.createElement("style");
   markStyle.dataset.librepaperMarks = "1";
   markStyle.textContent = `
-    /* The annotation the sidebar has singled out: a ring around every piece
-       of its passage, so that it stands out from the wash the others sit
-       under. */
     /* The span a jump from the source has just landed on, painted for about a
        second by flashLanding. The Custom Highlight API draws it where it is
        supported; elsewhere nothing is drawn. */
     ::highlight(librepaper-landing) {
       background-color: rgb(230 159 0 / 0.35);
     }
+    /* The annotation the sidebar has singled out: a ring around every piece
+       of its passage, so that it stands out from the wash the others sit
+       under. */
     mark[data-librepaper][data-librepaper-selected] {
       outline: 2px solid #0072b2;
       outline-offset: 1px;
