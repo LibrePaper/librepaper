@@ -567,6 +567,7 @@
   "commands_focus_files": "聚焦文件",
   "commands_focus_outline": "聚焦大纲",
   "commands_focus_preview": "聚焦预览",
+  "commands_focus_search": "搜索所有文件",
   "commands_go_to_definition": "转到定义",
   "commands_heading_level": "标题 {level}",
   "commands_layout_cycle": "切换编辑器 / 预览 / 分栏",
@@ -588,6 +589,7 @@
   "commands_note_not_while_typing": "输入时不可用",
   "commands_note_outline_panel": "大纲面板",
   "commands_note_preview_visible": "预览可见",
+  "commands_note_search_panel": "搜索面板",
   "commands_note_wide_layout": "宽布局",
   "commands_org_demote": "降级标题或列表项",
   "commands_org_demote_subtree": "降级章节及其子标题",
@@ -829,6 +831,7 @@
   "common_save": "保存",
   "common_saved": "已保存",
   "common_saving": "正在保存…",
+  "common_search": "搜索",
   "common_search_symbols": "搜索符号",
   "common_section": "章节",
   "common_select_all": "全选",
@@ -984,10 +987,10 @@
         "warningsPlural"
       ],
       "match": {
-        "errorsPlural=one warningsPlural=one": "此文件中有 {errors} 个错误、{warnings} 个警告",
-        "errorsPlural=one warningsPlural=*": "此文件中有 {errors} 个错误、{warnings} 个警告",
-        "errorsPlural=* warningsPlural=one": "此文件中有 {errors} 个错误、{warnings} 个警告",
-        "errorsPlural=* warningsPlural=*": "此文件中有 {errors} 个错误、{warnings} 个警告"
+        "errorsPlural=one, warningsPlural=one": "此文件中有 {errors} 个错误、{warnings} 个警告",
+        "errorsPlural=one, warningsPlural=*": "此文件中有 {errors} 个错误、{warnings} 个警告",
+        "errorsPlural=*, warningsPlural=one": "此文件中有 {errors} 个错误、{warnings} 个警告",
+        "errorsPlural=*, warningsPlural=*": "此文件中有 {errors} 个错误、{warnings} 个警告"
       }
     }
   ],
@@ -2213,7 +2216,6 @@
   "previewcontrols_page_view": "页面视图",
   "previewcontrols_present": "演示",
   "previewcontrols_previous_match": "上一个匹配项",
-  "previewcontrols_search": "搜索",
   "previewcontrols_search_document": "搜索文档",
   "previewcontrols_select_text": "选择文本",
   "previewcontrols_spread": "双页并排",
@@ -2591,6 +2593,69 @@
   "renderersettings_title": "渲染位置",
   "room_submission_failed": "批注提交失败",
   "room_submission_failed_status": "批注提交失败（{status}）",
+  "search_capped": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "仅显示前 {count} 个结果。请缩小搜索范围以查看其余结果。",
+        "countPlural=*": "仅显示前 {count} 个结果。请缩小搜索范围以查看其余结果。"
+      }
+    }
+  ],
+  "search_file_matches": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} 个匹配项",
+        "countPlural=*": "{count} 个匹配项"
+      }
+    }
+  ],
+  "search_hide_replace": "隐藏替换",
+  "search_hint": "搜索项目中的每个文本文件。",
+  "search_input_label": "搜索所有文件",
+  "search_invalid_regex": "此正则表达式无效。",
+  "search_match_case": "区分大小写",
+  "search_no_results": "没有结果。",
+  "search_regex": "正则表达式",
+  "search_replace_all": "全部替换",
+  "search_replace_label": "替换为",
+  "search_replace_one": "替换此匹配项",
+  "search_section_label": "搜索项目中的所有文件",
+  "search_show_replace": "显示替换",
+  "search_summary": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "{files} 个文件中共有 {count} 个结果",
+        "countPlural=one, filesPlural=*": "{files} 个文件中共有 {count} 个结果",
+        "countPlural=*, filesPlural=one": "{files} 个文件中共有 {count} 个结果",
+        "countPlural=*, filesPlural=*": "{files} 个文件中共有 {count} 个结果"
+      }
+    }
+  ],
+  "search_whole_word": "全字匹配",
   "settingsdialog_categories_label": "设置类别",
   "settingsdialog_nothing_matches": "没有匹配项。",
   "settingsdialog_quarto_note": "Quarto 文档在浏览器中渲染草稿。点击“运行代码”即可在这台电脑上运行其代码。",

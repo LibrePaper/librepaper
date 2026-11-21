@@ -256,7 +256,7 @@
   import { commentMarks, setCommentMarks as setCommentMarksEffect } from "../lib/source-comment-marks.js";
   import { authorshipRuns, summarize, markSpans } from "../lib/authorship.js";
   import { authorshipMarks, setAuthorshipMarks } from "../lib/authorship-marks.js";
-  import { CHANGES, PRUNE_ORIGIN, planEdits, plannedWrite, writePlanned, writtenState, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, PRUNE_ORIGIN, planEdits, plannedWrite, writePlanned, writtenState, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplices, untrackedSplices, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory, projectPaths } from "../lib/projection.js";
@@ -672,21 +672,30 @@
   /// committed before the records are written, so the commit that carries the
   /// text keeps its origin and stays in the undo history.
   function writeText(fileId, text, from, to, insert) {
-    insert = toLf(insert);
+    writeTexts(fileId, text, [{ from, to, insert }]);
+  }
+
+  /// Writes several edits to a file that is not on screen, in one pass: one
+  /// read of the text, one commit of the splices and one anchor record. `edits`
+  /// are { from, to, insert } in the coordinates of `text`, not overlapping, in
+  /// any order. The splices run from the end of the file back, so each offset
+  /// is still valid when it is used. The anchor index takes the edits in
+  /// ascending order, as its Edit contract requires.
+  function writeTexts(fileId, text, edits) {
     const doc = session.doc;
+    const ascending = edits.map(({ from, to, insert }) => ({ from, to, insert: toLf(insert) })).sort((a, b) => a.from - b.from);
     const before = text.toString();
     session.anchors.get(fileId);
     const known = new Set(doc.getMap(CHANGES).size ? resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.map((f) => f.id)) : []);
-    if (tracked) trackedSplice(doc, fileId, from, to, insert, me);
-    else untrackedSplice(doc, fileId, from, to, insert);
+    if (tracked) trackedSplices(doc, fileId, ascending, me);
+    else untrackedSplices(doc, fileId, ascending);
     doc.commit();
-    const edits = [{ from, to, insert }];
     let fragments = [];
-    if (to > from && doc.getMap(CHANGES).size) {
+    if (ascending.some((edit) => edit.to > edit.from) && doc.getMap(CHANGES).size) {
       const created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
-      fragments = fragmentRangesFor(before, edits, created);
+      fragments = fragmentRangesFor(before, ascending, created);
     }
-    session.anchors.record([{ fileId, edits, fragments }], session.anchorMemory);
+    session.anchors.record([{ fileId, edits: ascending, fragments }], session.anchorMemory);
     doc.commit({ origin: ANCHORS_ORIGIN });
   }
 
@@ -1186,6 +1195,44 @@
     const doc = view.state.doc;
     const at = doc.line(Math.min(Math.max(line, 1), doc.lines));
     goTo(Math.min(at.from + Math.max(column - 1, 0), at.to));
+  }
+
+  /// Opens a file and selects a range in it, scrolled to the middle of the
+  /// view. What choosing a result in the Search panel does.
+  export function selectIn(id, from, to) {
+    if (!view || !id) return;
+    show(id);
+    const length = view.state.doc.length;
+    const clamp = (at) => Math.min(Math.max(Number(at) || 0, 0), length);
+    const anchor = clamp(from);
+    const head = clamp(to);
+    view.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: "center" }) });
+    view.focus();
+  }
+
+  /// Replaces ranges in one file for the Search panel. `edits` are
+  /// { from, to, insert } in that file's current text and do not overlap.
+  /// The file on screen goes through the view, so the replacement is one undo
+  /// step and is tracked like typing. Any other file goes through writeText,
+  /// which records a tracked change when tracking is on.
+  export function replaceIn(id, edits) {
+    if (!editable || !session || !view || !id || !edits?.length) return false;
+    // CodeMirror changes all refer to the document as it was, and out-of-order
+    // specs are composed one by one, which is quadratic. So ascending.
+    const sorted = [...edits].sort((a, b) => a.from - b.from);
+    if (id === showing) {
+      view.dispatch({ changes: sorted.map(({ from, to, insert }) => ({ from, to, insert })) });
+      return true;
+    }
+    const text = session.textOf(id);
+    if (!text) return false;
+    writeTexts(id, text, sorted);
+    // As importDoiEntries does: prune drops the records of files that are gone,
+    // empty records that have stayed empty, and stale cursors that have stayed
+    // stale. The edits above can leave such records behind.
+    if (tracked) prune(session.doc);
+    session.doc.commit();
+    return true;
   }
 
   /// The panel CodeMirror provides, for the document with nine errors. The

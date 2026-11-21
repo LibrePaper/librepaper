@@ -567,6 +567,7 @@
   "commands_focus_files": "Focus Files",
   "commands_focus_outline": "Focus Outline",
   "commands_focus_preview": "Focus Preview",
+  "commands_focus_search": "Search all files",
   "commands_go_to_definition": "Go to definition",
   "commands_heading_level": "Heading {level}",
   "commands_layout_cycle": "Toggle editor / preview / split",
@@ -588,6 +589,7 @@
   "commands_note_not_while_typing": "Not while typing",
   "commands_note_outline_panel": "Outline panel",
   "commands_note_preview_visible": "Preview visible",
+  "commands_note_search_panel": "Search panel",
   "commands_note_wide_layout": "Wide layout",
   "commands_org_demote": "Demote heading or item",
   "commands_org_demote_subtree": "Demote subtree",
@@ -829,6 +831,7 @@
   "common_save": "Save",
   "common_saved": "Saved",
   "common_saving": "Saving…",
+  "common_search": "Search",
   "common_search_symbols": "Search symbols",
   "common_section": "Section",
   "common_select_all": "Select all",
@@ -984,10 +987,10 @@
         "warningsPlural"
       ],
       "match": {
-        "errorsPlural=one warningsPlural=one": "{errors} error, {warnings} warning in this file",
-        "errorsPlural=one warningsPlural=*": "{errors} error, {warnings} warnings in this file",
-        "errorsPlural=* warningsPlural=one": "{errors} errors, {warnings} warning in this file",
-        "errorsPlural=* warningsPlural=*": "{errors} errors, {warnings} warnings in this file"
+        "errorsPlural=one, warningsPlural=one": "{errors} error, {warnings} warning in this file",
+        "errorsPlural=one, warningsPlural=*": "{errors} error, {warnings} warnings in this file",
+        "errorsPlural=*, warningsPlural=one": "{errors} errors, {warnings} warning in this file",
+        "errorsPlural=*, warningsPlural=*": "{errors} errors, {warnings} warnings in this file"
       }
     }
   ],
@@ -2228,7 +2231,6 @@
   "previewcontrols_page_view": "Page view",
   "previewcontrols_present": "Present",
   "previewcontrols_previous_match": "Previous match",
-  "previewcontrols_search": "Search",
   "previewcontrols_search_document": "Search the document",
   "previewcontrols_select_text": "Select text",
   "previewcontrols_spread": "Two pages side by side",
@@ -2606,6 +2608,69 @@
   "renderersettings_title": "Renders in",
   "room_submission_failed": "comment submission failed",
   "room_submission_failed_status": "comment submission failed ({status})",
+  "search_capped": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Showing the first {count} result. Narrow the search to see the rest.",
+        "countPlural=*": "Showing the first {count} results. Narrow the search to see the rest."
+      }
+    }
+  ],
+  "search_file_matches": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} match",
+        "countPlural=*": "{count} matches"
+      }
+    }
+  ],
+  "search_hide_replace": "Hide replace",
+  "search_hint": "Search every text file in the project.",
+  "search_input_label": "Search all files",
+  "search_invalid_regex": "This regular expression is not valid.",
+  "search_match_case": "Match case",
+  "search_no_results": "No results.",
+  "search_regex": "Regular expression",
+  "search_replace_all": "Replace all",
+  "search_replace_label": "Replace with",
+  "search_replace_one": "Replace this match",
+  "search_section_label": "Search all project files",
+  "search_show_replace": "Show replace",
+  "search_summary": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "{count} result in {files} file",
+        "countPlural=one, filesPlural=*": "{count} result in {files} files",
+        "countPlural=*, filesPlural=one": "{count} results in {files} file",
+        "countPlural=*, filesPlural=*": "{count} results in {files} files"
+      }
+    }
+  ],
+  "search_whole_word": "Whole word",
   "settingsdialog_categories_label": "Settings categories",
   "settingsdialog_nothing_matches": "Nothing matches.",
   "settingsdialog_quarto_note": "Quarto documents render a draft in the browser. Press Run code to run their code on this computer.",

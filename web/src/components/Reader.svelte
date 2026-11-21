@@ -145,6 +145,7 @@
   import { watchKeyboard } from "../lib/mobile/keyboard.js";
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
+  import Search from "./reader/Search.svelte";
   import WordCount from "./reader/WordCount.svelte";
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
@@ -200,6 +201,8 @@
     hidden: () => hidden,
     onProject: (next) => {
       workspace.fromProject(next);
+      // A reader's Search panel searches the projection, so it searches again.
+      searchRevision += 1;
       // Readers load the project whole too, on every projection that lands.
       warmFigures();
       changeRows = readerChangeRows(next.changes);
@@ -4148,6 +4151,28 @@
   const isDisplayableImage = (path) => /\.(?:png|jpg|jpeg|gif|svg|webp)$/i.test(path);
   let outlineActiveFrom = $state(null);
   let outlineRevision = $state(0);
+  // Bumped on every change to the project's files, so the Search panel
+  // searches again. The panel waits for typing to pause before it does.
+  let searchRevision = $state(0);
+  let searchSeed = $state(null);
+  const searchFiles = $derived(files.filter((file) => file.kind === "text").map((file) => ({ id: file.id || file.path, path: file.path })));
+  // An editor reads the live text; somebody holding a read or comment link has
+  // no session, only the projection the server sent, keyed by path.
+  function searchTextOf(id) {
+    if (session) return String(session.textOf?.(id)?.toString?.() ?? "");
+    const path = searchFiles.find((file) => file.id === id)?.path;
+    return path ? String(projection.tree()?.texts?.[path] ?? "") : "";
+  }
+  // Every search file's text in one pass, so a search reads the projection's
+  // tree once rather than once per file.
+  function searchTexts() {
+    const texts = session ? null : projection.tree()?.texts || {};
+    const out = {};
+    for (const file of searchFiles) {
+      out[file.id] = texts ? String(texts[file.path] ?? "") : searchTextOf(file.id);
+    }
+    return out;
+  }
   // The outline can be shown with no editor open, so it also follows the typst
   // module's arrival itself.
   $effect(() => onTypstSyntax(() => { outlineRevision += 1; }));
@@ -4273,6 +4298,7 @@
   // it can alter the render of whichever file the preview is drawing.
   function filesChanged(events, active = session, by = "local") {
     if (!active || active !== session) return;
+    searchRevision += 1;
     // Nested text edits change the preview, but not the file list. Which
     // events are the directory's is the session's to say: the list moves with
     // four maps, not one.
@@ -4390,6 +4416,34 @@
         || !outlineHeadings.some((item) => item.from === heading.from)) return;
     if (editor.goToIn) editor.goToIn(id, heading.from);
     else editor.openAt?.(id, heading.line, 1);
+  }
+
+  // A search result is a place in the source. Like an outline entry, it may be
+  // the first source command in a document-only or compact view, so the lazy
+  // editor is mounted before it is asked to select anything. Someone who may
+  // only read has no source pane: the file is opened and that is all.
+  async function openSearchResult({ id, from, to }) {
+    const file = files.find((entry) => (entry.id || entry.path) === id && entry.kind === "text");
+    if (!file) return;
+    rememberPlace(file.id, from);
+    openTheFile(file);
+    if (!mayEdit) return;
+    if (!editing) await startEditing();
+    if (readerDisposed) return;
+    arrangement.showMobileView("source");
+    await tick();
+    editor?.selectIn?.(id, from, to);
+  }
+
+  // The edits are planned here, after the editor is ready, from the file's text
+  // as it is now: a collaborator's edit made while the editor was mounting
+  // cannot leave the offsets pointing at the wrong place.
+  async function replaceInFile(id, plan) {
+    if (!mayEdit || !session) return;
+    if (!editing) await startEditing();
+    await tick();
+    const edits = plan(searchTextOf(id));
+    if (edits.length) editor?.replaceIn?.(id, edits);
   }
 
   // The bytes of the figure being looked at are fetched by the workspace;
@@ -4709,6 +4763,16 @@
     if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
+    if (id === "focus-search") {
+      // A selection on one line fills the search, as in other editors. Opening the
+      // panel only: the Search panel's seed effect focuses its input, even with
+      // nothing selected. focusPanel would race that and land on the tab header.
+      const selected = editor?.selection?.();
+      const selectedText = selected ? String(session?.textOf?.(selected.file)?.toString?.() ?? "").slice(selected.from, selected.to) : "";
+      const text = selectedText && !selectedText.includes("\n") ? selectedText : "";
+      searchSeed = { text, n: (searchSeed?.n || 0) + 1 };
+      return openPanel("search");
+    }
     if (id === "symbols" || id === "math") return openPalette(id);
     // A template command opens the Math overlay on its template.
     if (id.startsWith("math-")) return openPalette("math", id.slice("math-".length));
@@ -5067,6 +5131,15 @@
     </PanelBoundary>
   {/snippet}
 
+  {#snippet searchPanel()}
+    <PanelBoundary name="the search panel">
+    <!-- No replace beside a figure: the editor is not mounted then, so replaceInFile would do nothing. -->
+    <Search files={searchFiles} textsFor={searchTexts}
+      revision={searchRevision} active={panel === "search" && shown.comments} canReplace={mayEdit && !shownFigure} seed={searchSeed}
+      onopen={openSearchResult} onreplace={replaceInFile} />
+    </PanelBoundary>
+  {/snippet}
+
   {#snippet agentPanel()}
     <PanelBoundary name="the agent panel">
     {#if lazy.agent.component}
@@ -5189,7 +5262,7 @@
   <Sidebar
     {shown} {tabs} {panel} {settled} {compact} mounted={mountedPanels} {badges}
     label={m.common_document()}
-    panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
+    panels={{ files: filesPanel, outline: outlinePanel, search: searchPanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
               share: sharePanel, git: gitPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}

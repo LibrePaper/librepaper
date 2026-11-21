@@ -567,6 +567,7 @@
   "commands_focus_files": "Ir a Archivos",
   "commands_focus_outline": "Ir a Esquema",
   "commands_focus_preview": "Ir a Vista previa",
+  "commands_focus_search": "Buscar en todos los archivos",
   "commands_go_to_definition": "Ir a la definición",
   "commands_heading_level": "Encabezado {level}",
   "commands_layout_cycle": "Alternar editor / vista previa / dividido",
@@ -588,6 +589,7 @@
   "commands_note_not_while_typing": "No mientras se escribe",
   "commands_note_outline_panel": "Panel de esquema",
   "commands_note_preview_visible": "Vista previa visible",
+  "commands_note_search_panel": "Panel de búsqueda",
   "commands_note_wide_layout": "Diseño ancho",
   "commands_org_demote": "Bajar de nivel el encabezado o el elemento",
   "commands_org_demote_subtree": "Bajar de nivel la sección y sus subencabezados",
@@ -829,6 +831,7 @@
   "common_save": "Guardar",
   "common_saved": "Guardado",
   "common_saving": "Guardando…",
+  "common_search": "Buscar",
   "common_search_symbols": "Buscar símbolos",
   "common_section": "Sección",
   "common_select_all": "Seleccionar todo",
@@ -984,10 +987,10 @@
         "warningsPlural"
       ],
       "match": {
-        "errorsPlural=one warningsPlural=one": "{errors} error, {warnings} advertencia en este archivo",
-        "errorsPlural=one warningsPlural=*": "{errors} error, {warnings} advertencias en este archivo",
-        "errorsPlural=* warningsPlural=one": "{errors} errores, {warnings} advertencia en este archivo",
-        "errorsPlural=* warningsPlural=*": "{errors} errores, {warnings} advertencias en este archivo"
+        "errorsPlural=one, warningsPlural=one": "{errors} error, {warnings} advertencia en este archivo",
+        "errorsPlural=one, warningsPlural=*": "{errors} error, {warnings} advertencias en este archivo",
+        "errorsPlural=*, warningsPlural=one": "{errors} errores, {warnings} advertencia en este archivo",
+        "errorsPlural=*, warningsPlural=*": "{errors} errores, {warnings} advertencias en este archivo"
       }
     }
   ],
@@ -2228,7 +2231,6 @@
   "previewcontrols_page_view": "Vista de página",
   "previewcontrols_present": "Presentar",
   "previewcontrols_previous_match": "Coincidencia anterior",
-  "previewcontrols_search": "Buscar",
   "previewcontrols_search_document": "Buscar en el documento",
   "previewcontrols_select_text": "Seleccionar texto",
   "previewcontrols_spread": "Dos páginas en paralelo",
@@ -2606,6 +2608,69 @@
   "renderersettings_title": "Se compila en",
   "room_submission_failed": "error al enviar el comentario",
   "room_submission_failed_status": "error al enviar el comentario ({status})",
+  "search_capped": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Se muestra el primer resultado. Reduce la búsqueda para ver el resto.",
+        "countPlural=*": "Se muestran los primeros {count} resultados. Reduce la búsqueda para ver el resto."
+      }
+    }
+  ],
+  "search_file_matches": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} coincidencia",
+        "countPlural=*": "{count} coincidencias"
+      }
+    }
+  ],
+  "search_hide_replace": "Ocultar reemplazo",
+  "search_hint": "Busca en todos los archivos de texto del proyecto.",
+  "search_input_label": "Buscar en todos los archivos",
+  "search_invalid_regex": "Esta expresión regular no es válida.",
+  "search_match_case": "Coincidir mayúsculas",
+  "search_no_results": "No hay resultados.",
+  "search_regex": "Expresión regular",
+  "search_replace_all": "Reemplazar todo",
+  "search_replace_label": "Reemplazar por",
+  "search_replace_one": "Reemplazar esta coincidencia",
+  "search_section_label": "Buscar en todos los archivos del proyecto",
+  "search_show_replace": "Mostrar reemplazo",
+  "search_summary": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "{count} resultado en {files} archivo",
+        "countPlural=one, filesPlural=*": "{count} resultado en {files} archivos",
+        "countPlural=*, filesPlural=one": "{count} resultados en {files} archivo",
+        "countPlural=*, filesPlural=*": "{count} resultados en {files} archivos"
+      }
+    }
+  ],
+  "search_whole_word": "Palabra completa",
   "settingsdialog_categories_label": "Categorías de configuración",
   "settingsdialog_nothing_matches": "No hay coincidencias.",
   "settingsdialog_quarto_note": "En el navegador, los documentos de Quarto se compilan como borrador. Pulse «Ejecutar código» para ejecutar su código en este equipo.",
