@@ -575,6 +575,8 @@
   "commands_layout_source": "Show editor only",
   "commands_layout_split": "Show editor and preview",
   "commands_linked": "Keep in step",
+  "commands_show_in_preview": "Show in preview",
+  "commands_show_in_source": "Show in source",
   "commands_math": "Insert math",
   "commands_math_template": "Insert {label}",
   "commands_menu_edit": "Open Edit menu",

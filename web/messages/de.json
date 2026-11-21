@@ -575,6 +575,8 @@
   "commands_layout_source": "Nur Editor anzeigen",
   "commands_layout_split": "Editor und Vorschau anzeigen",
   "commands_linked": "Synchron halten",
+  "commands_show_in_preview": "In Vorschau anzeigen",
+  "commands_show_in_source": "Im Quelltext anzeigen",
   "commands_math": "Formel einfügen",
   "commands_math_template": "{label} einfügen",
   "commands_menu_edit": "Menü „Bearbeiten“ öffnen",

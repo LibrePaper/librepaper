@@ -210,6 +210,12 @@ import { morphChildren } from "./morph.js";
   const markStyle = document.createElement("style");
   markStyle.dataset.librepaperMarks = "1";
   markStyle.textContent = `
+    /* The span a jump from the source has just landed on, painted for about a
+       second by flashLanding. The Custom Highlight API draws it where it is
+       supported; elsewhere nothing is drawn. */
+    ::highlight(librepaper-landing) {
+      background-color: rgb(230 159 0 / 0.35);
+    }
     /* The annotation the sidebar has singled out: a ring around every piece
        of its passage, so that it stands out from the wash the others sit
        under. */
@@ -385,6 +391,29 @@ import { morphChildren } from "./morph.js";
       if (to > from) pieces.push({ node: table.nodes[i], from, to, end: nodeStart + to });
     }
     return pieces;
+  }
+
+  // The tint over text a jump from the source has just landed on: every
+  // piece of it, not only the first, for about a second. A browser without the
+  // Custom Highlight API gets nothing extra; the scroll is the whole effect.
+  // The next correction a long locate has queued (see the "locate" message).
+  let locateSettle = 0;
+
+  let landingTimer = 0;
+  function flashLanding(pieces) {
+    if (!globalThis.CSS?.highlights || typeof Highlight !== "function") return;
+    const ranges = pieces.map((piece) => {
+      const range = document.createRange();
+      range.setStart(piece.node, piece.from);
+      range.setEnd(piece.node, piece.to);
+      return range;
+    });
+    CSS.highlights.set("librepaper-landing", new Highlight(...ranges));
+    clearTimeout(landingTimer);
+    landingTimer = setTimeout(() => {
+      landingTimer = 0;
+      CSS.highlights.delete("librepaper-landing");
+    }, 1000);
   }
 
   // Paint, from a list of {id, start, end, resolved} the sidebar worked out.
@@ -827,6 +856,7 @@ import { morphChildren } from "./morph.js";
     //
     // innerHTML does not run scripts, so a preview never executes anything.
     if (message.type === "preview") {
+      cancelAnimationFrame(locateSettle);
       // The sources the page's data-sourcepos tags name. Kept for the next
       // selection; a page without them clears the ones from the last page.
       previewSources = Array.isArray(message.sources) ? message.sources : null;
@@ -919,16 +949,39 @@ import { morphChildren } from "./morph.js";
     // the editor works out which offset a caret in the source corresponds to,
     // and this end knows which node holds it.
     if (message.type === "locate") {
+      // A newer jump, or a new page, ends the corrections an earlier long jump
+      // still has queued, so they cannot pull the preview back to its passage.
+      cancelAnimationFrame(locateSettle);
       const start = Number(message.start) || 0;
-      const [piece] = piecesFor(start, start + Math.max(1, Number(message.length) || 1));
+      const pieces = piecesFor(start, start + Math.max(1, Number(message.length) || 1));
+      const [piece] = pieces;
       if (!piece) return;
+      if (message.flash) flashLanding(pieces);
       const range = document.createRange();
       range.setStart(piece.node, piece.from);
       range.setEnd(piece.node, piece.to);
-      const box = range.getBoundingClientRect();
       // Scrolled to a third of the way down rather than to the very top: a
       // line pinned to the edge of the frame reads as cut off.
-      scrollTo({ top: scrollY + box.top - innerHeight / 3, behavior: "smooth" });
+      const target = () => scrollY + range.getBoundingClientRect().top - innerHeight / 3;
+      const top = target();
+      if (Math.abs(top - scrollY) <= innerHeight * 1.5) {
+        scrollTo({ top, behavior: "smooth" });
+        return;
+      }
+      // The live preview lays out blocks far off screen at an estimated height
+      // until they are drawn (content-visibility in document.css). A long smooth
+      // scroll draws every block it passes, the page shrinks under it, and it
+      // lands well past the passage. A long jump goes there at once instead,
+      // then corrects for the blocks drawn on arrival until the place holds.
+      scrollTo({ top, behavior: "instant" });
+      let corrections = 0;
+      const settle = () => {
+        const next = target();
+        if (Math.abs(next - scrollY) <= 2 || corrections++ >= 5) return;
+        scrollTo({ top: next, behavior: "instant" });
+        locateSettle = requestAnimationFrame(settle);
+      };
+      locateSettle = requestAnimationFrame(settle);
       return;
     }
     if (message.type === "reading-position") {
@@ -1117,9 +1170,23 @@ import { morphChildren } from "./morph.js";
   // the passage in hand, Escape for the mode the sidebar armed -- so neither
   // takes a key away from a document that wants one.
   document.addEventListener("keydown", (event) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target instanceof Element ? event.target : null;
-    if (target && ((target instanceof HTMLElement && target.isContentEditable) || target.closest("input,textarea,select,[contenteditable]"))) return;
+    const editable = target && ((target instanceof HTMLElement && target.isContentEditable) || target.closest("input,textarea,select,[contenteditable]"));
+    // Only Mod+Alt chords travel to the Reader. Those are the workspace's own
+    // shortcuts, and no document or browser default wants them; copy, paste
+    // and the rest stay with the frame. The frame does not preventDefault,
+    // since it cannot know whether the Reader will claim the chord.
+    if ((event.ctrlKey || event.metaKey) && event.altKey) {
+      // Pressing the modifiers themselves names no chord yet.
+      if (editable || ["Control", "Meta", "Alt", "Shift"].includes(event.key)) return;
+      post({
+        type: "shortcut", key: event.key, code: event.code,
+        ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey,
+      });
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (editable) return;
     if (event.key === "Escape") {
       post({ type: "disarm" });
       return;

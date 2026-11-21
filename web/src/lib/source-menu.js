@@ -6,7 +6,9 @@ import { EditorView } from "@codemirror/view";
 // the menu prints the same keys the registry binds.
 
 /// The menu's items, in the order it draws them, as groups divided by rules.
-export const SOURCE_MENU = [["comment", "link"], ["cut", "copy", "paste"]];
+/// The last group is "Show in preview", which the editor drops unless the host
+/// passes it a handler (Editor.svelte's `onshowinpreview`).
+export const SOURCE_MENU = [["comment", "link"], ["cut", "copy", "paste"], ["show-in-preview"]];
 
 /// Where a right-click at `pos` leaves the caret, or null to leave it where it
 /// is. A click inside the selection keeps the selection, so the menu acts on

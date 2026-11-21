@@ -70,11 +70,22 @@ for (const message of [
   { type: "reading-position", start: 4 },
 ]) assert.ok(accepted(message), `${message.type} is an emitted frame message`);
 assert.deepEqual(accepted({ type: "unfocus" }), { type: "unfocus" });
+// A shortcut from the preview keeps its key and code, and its modifier flags
+// are true only when sent as true. A missing code becomes "".
+assert.deepEqual(accepted({ type: "shortcut", key: "k", code: "KeyK", ctrlKey: true, altKey: true }), {
+  type: "shortcut", key: "k", code: "KeyK", ctrlKey: true, metaKey: false, altKey: true, shiftKey: false,
+});
+assert.deepEqual(accepted({ type: "shortcut", key: "J", ctrlKey: "yes", metaKey: true, altKey: 1, shiftKey: true, junk: 1 }), {
+  type: "shortcut", key: "J", code: "", ctrlKey: false, metaKey: true, altKey: false, shiftKey: true,
+});
 // A reading position is a text offset, a PDF point, or both. An offset that
 // is missing is null, and a PDF point that is invalid is dropped.
 assert.deepEqual(accepted({ type: "reading-position", start: 4 }), { type: "reading-position", start: 4, pdf: null });
 assert.deepEqual(accepted({ type: "reading-position", start: null, pdf: { page: 1, x: 10, y: 20 } }), { type: "reading-position", start: null, pdf: { page: 1, x: 10, y: 20 } });
 assert.deepEqual(accepted({ type: "reading-position", start: 7, pdf: { page: 1, x: NaN, y: 2 } }), { type: "reading-position", start: 7, pdf: null });
+// An empty reply is still a reply: the reader settles its request with it.
+assert.deepEqual(accepted({ type: "reading-position", start: null }), { type: "reading-position", start: null, pdf: null });
+assert.deepEqual(accepted({ type: "reading-position", start: null, pdf: { page: 1, x: NaN, y: 1 } }), { type: "reading-position", start: null, pdf: null });
 // Scroll reports pass through with their numbers. A non-finite or missing
 // bottom is dropped from the result, not treated as a rejection.
 assert.deepEqual(accepted({ type: "scroll", delta: 12, top: 340, bottom: 1200 }), { type: "scroll", delta: 12, top: 340, bottom: 1200 });
@@ -106,11 +117,16 @@ for (const message of [
   { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, find: { current: 1, total: 10_001 } },
   { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, find: { current: -1, total: 4 } },
   { type: "focus", id: "x".repeat(257) }, { type: "reading-position", start: 1.25 },
-  { type: "reading-position", start: -1, pdf: null }, { type: "reading-position", start: null, pdf: null },
-  { type: "reading-position", start: null }, { type: "reading-position", start: null, pdf: { page: 1, x: NaN, y: 1 } },
+  { type: "reading-position", start: -1, pdf: null },
   { type: "scroll", top: 0 }, { type: "scroll", delta: "12", top: 0 }, { type: "scroll", delta: NaN, top: 0 },
   { type: "scroll", delta: 1, top: undefined }, { type: "scroll", delta: 1, top: 100_000_001 },
   { type: "scroll", delta: -100_000_001, top: 0 },
+  { type: "shortcut", code: "KeyK", ctrlKey: true, altKey: true },
+  { type: "shortcut", key: "", code: "KeyK", ctrlKey: true, altKey: true },
+  { type: "shortcut", key: "k".repeat(33), code: "KeyK", ctrlKey: true, altKey: true },
+  { type: "shortcut", key: 107, code: "KeyK", ctrlKey: true, altKey: true },
+  { type: "shortcut", key: "k", code: 75, ctrlKey: true, altKey: true },
+  { type: "shortcut", key: "k", code: "C".repeat(33), ctrlKey: true, altKey: true },
 ]) rejected(message);
 
 // A long ready message costs more bucket units than a short one: ten 2 MB
