@@ -14,7 +14,9 @@
     textOf = () => "", // (id) => current text of that file
     revision = 0, // changes whenever any file's text may have changed
     canReplace = false, // false for people who may only read
-    seed = null, // { text, n }: when n changes, search for text and focus the input
+    // { text, n }: each new n asks the panel to focus its input and select it.
+    // A non-empty text also becomes the query. An empty text leaves the query as it is.
+    seed = null,
     onopen, // ({ id, path, from, to }) => void
     onreplace, // (id, edits) => void, applied synchronously
   } = $props();
@@ -33,6 +35,15 @@
 
   const fmt = (n) => new Intl.NumberFormat(locale()).format(n);
   const current = () => ({ query, caseSensitive, wholeWord, regex });
+  // True only when the shown results came from the current query and options.
+  // During the debounce they are stale, and replacing from them would apply the old query.
+  const fresh = $derived(
+    !!results &&
+      results.options.query === query &&
+      results.options.caseSensitive === caseSensitive &&
+      results.options.wholeWord === wholeWord &&
+      results.options.regex === regex,
+  );
 
   // Runs the engine over the files' current text. `opts` is kept on the result
   // so that a replace applies the options the shown matches came from.
@@ -62,13 +73,14 @@
     return () => clearTimeout(timer);
   });
 
-  // A seed from the editor's selection or the Find command: take its text as
-  // the query and focus the input with the text selected.
+  // A new seed from the editor's selection or the Find command: take its text as
+  // the query when there is some, then focus the input with its contents selected.
+  // This also runs once on mount, so a seed set before the panel opened still focuses it.
   $effect(() => {
     const n = seed?.n;
     const text = seed?.text;
-    if (n == null || !text) return;
-    query = text;
+    if (n == null) return;
+    if (text) query = text;
     tick().then(() => {
       input?.focus();
       input?.select();
@@ -91,14 +103,20 @@
   }
 
   function replaceOne(group, match) {
+    if (!fresh) return;
     onreplace?.(group.id, replacementsFor(textOf(group.id), [match], replacement, results.options));
     recompute();
   }
 
+  // Replaces every match in the project, not only the 1,000 the list shows, so
+  // it searches again uncapped at click time over the current text.
   function replaceAll() {
-    if (!results) return;
-    for (const group of results.groups) {
-      onreplace?.(group.id, replacementsFor(textOf(group.id), group.matches, replacement, results.options));
+    if (!fresh) return;
+    const opts = results.options;
+    const inputs = files.map((file) => ({ id: file.id, path: file.path, text: textOf(file.id) }));
+    const all = searchProject(inputs, opts, { limit: Infinity });
+    for (const group of all.groups) {
+      onreplace?.(group.id, replacementsFor(textOf(group.id), group.matches, replacement, opts));
     }
     recompute();
   }
@@ -139,7 +157,7 @@
           placeholder={m.search_replace_label()}
           bind:value={replacement}
         />
-        <button type="button" class="btn btn-sm lp-control-tonal" disabled={!hasResults}
+        <button type="button" class="btn btn-sm lp-control-tonal" disabled={!hasResults || !fresh}
                 onclick={replaceAll}>{m.search_replace_all()}</button>
       </div>
     {/if}
@@ -174,7 +192,7 @@
                       <span class="search-text">{match.before}<mark>{match.text}</mark>{match.after}</span>
                     </button>
                     {#if canReplace && replacing}
-                      <IconButton icon="check" label={m.search_replace_one()} onclick={() => replaceOne(group, match)} />
+                      <IconButton icon="check" label={m.search_replace_one()} disabled={!fresh} onclick={() => replaceOne(group, match)} />
                     {/if}
                   </li>
                 {/each}
