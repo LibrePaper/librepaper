@@ -167,9 +167,12 @@ try {
   const sourceOffset = (needle) => report.indexOf(needle) + 3;
   // Whether the preview's landing highlight is on, or null while the frame is not there.
   const landingHighlight = () => b.evaluate(frame('return w.CSS.highlights.has("librepaper-landing");'));
-  // The divider pill's centre, and the edges of the two panes it sits between.
+  // The divider pill's centre, and the edges of the two panes it sits between:
+  // the source pane and whichever preview pane is on screen. This harness has
+  // no renderer, so the Reader shows its "could not render" card there and the
+  // frame itself waits off screen.
   const pillCentre = () => b.evaluate(`(() => { const r = document.querySelector('.grip-pill')?.getBoundingClientRect(); return r ? r.left + r.width / 2 : null; })()`);
-  const paneEdges = () => b.evaluate(`(() => { const e = document.querySelector('.editorpane')?.getBoundingClientRect(); const v = document.querySelector('.viewport')?.getBoundingClientRect(); return e && v ? { editor: { left: e.left, right: e.right }, viewport: { left: v.left, right: v.right } } : null; })()`);
+  const paneEdges = () => b.evaluate(`(() => { const e = document.querySelector('.editorpane')?.getBoundingClientRect(); const v = [...document.querySelectorAll('.viewport:not(.away), .latexpane')].map(n => n.getBoundingClientRect()).find(r => r.width > 0); return e && v ? { editor: { left: e.left, right: e.right }, viewport: { left: v.left, right: v.right } } : null; })()`);
   const assertPillBetweenPanes = async (side) => {
     await flush();
     const panes = await paneEdges();
