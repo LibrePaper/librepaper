@@ -1188,6 +1188,42 @@
     goTo(Math.min(at.from + Math.max(column - 1, 0), at.to));
   }
 
+  /// Opens a file and selects a range in it, scrolled to the middle of the
+  /// view. What choosing a result in the Search panel does.
+  export function selectIn(id, from, to) {
+    if (!view || !id) return;
+    show(id);
+    const length = view.state.doc.length;
+    const clamp = (at) => Math.min(Math.max(Number(at) || 0, 0), length);
+    const anchor = clamp(from);
+    const head = clamp(to);
+    view.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: "center" }) });
+    view.focus();
+  }
+
+  /// Replaces ranges in one file for the Search panel. `edits` are
+  /// { from, to, insert } in that file's current text and do not overlap.
+  /// The file on screen goes through the view, so the replacement is one undo
+  /// step and is tracked like typing. Any other file goes through writeText,
+  /// which records a tracked change when tracking is on.
+  export function replaceIn(id, edits) {
+    if (!editable || !session || !view || !id || !edits?.length) return false;
+    const sorted = [...edits].sort((a, b) => b.from - a.from);
+    if (id === showing) {
+      view.dispatch({ changes: sorted.map(({ from, to, insert }) => ({ from, to, insert })) });
+      return true;
+    }
+    const text = session.textOf(id);
+    if (!text) return false;
+    for (const { from, to, insert } of sorted) writeText(id, text, from, to, insert);
+    // As importDoiEntries does: prune drops the records of files that are gone,
+    // empty records that have stayed empty, and stale cursors that have stayed
+    // stale. The edits above can leave such records behind.
+    if (tracked) prune(session.doc);
+    session.doc.commit();
+    return true;
+  }
+
   /// The panel CodeMirror provides, for the document with nine errors. The
   /// badge is the whole of it for the common case, which is one.
   export function showDiagnosticPanel() {
