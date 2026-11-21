@@ -2623,6 +2623,9 @@
       }
     }
   ],
+  "search_clear": "Clear search",
+  "search_collapse_all": "Collapse all",
+  "search_expand_all": "Expand all",
   "search_file_matches": [
     {
       "declarations": [
@@ -2639,15 +2642,35 @@
     }
   ],
   "search_hide_replace": "Hide replace",
-  "search_hint": "Search every text file in the project.",
   "search_input_label": "Search all files",
   "search_invalid_regex": "This regular expression is not valid.",
   "search_match_case": "Match case",
-  "search_no_results": "No results.",
-  "search_regex": "Regular expression",
+  "search_match_whole_word": "Match whole word",
+  "search_no_results": "No results found",
   "search_replace_all": "Replace all",
+  "search_replace_all_scope": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "Replace {count} match in {files} file",
+        "countPlural=one, filesPlural=*": "Replace {count} match in {files} files",
+        "countPlural=*, filesPlural=one": "Replace {count} matches in {files} file",
+        "countPlural=*, filesPlural=*": "Replace {count} matches in {files} files"
+      }
+    }
+  ],
   "search_replace_label": "Replace with",
-  "search_replace_one": "Replace this match",
+  "search_replace_line": "Replace the matches on this line",
+  "search_searching": "Searching…",
   "search_section_label": "Search all project files",
   "search_show_replace": "Show replace",
   "search_summary": [
@@ -2670,7 +2693,7 @@
       }
     }
   ],
-  "search_whole_word": "Whole word",
+  "search_use_regex": "Use regular expression",
   "settingsdialog_categories_label": "Settings categories",
   "settingsdialog_nothing_matches": "Nothing matches.",
   "settingsdialog_quarto_note": "Quarto documents render a draft in the browser. Press Run code to run their code on this computer.",

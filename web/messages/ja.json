@@ -2608,6 +2608,9 @@
       }
     }
   ],
+  "search_clear": "検索をクリア",
+  "search_collapse_all": "すべて折りたたむ",
+  "search_expand_all": "すべて展開",
   "search_file_matches": [
     {
       "declarations": [
@@ -2624,15 +2627,35 @@
     }
   ],
   "search_hide_replace": "置換を非表示",
-  "search_hint": "プロジェクト内のすべてのテキストファイルを検索します。",
   "search_input_label": "すべてのファイルを検索",
   "search_invalid_regex": "この正規表現は無効です。",
   "search_match_case": "大文字と小文字を区別",
-  "search_no_results": "結果はありません。",
-  "search_regex": "正規表現",
+  "search_match_whole_word": "単語単位",
+  "search_no_results": "結果が見つかりません",
   "search_replace_all": "すべて置換",
+  "search_replace_all_scope": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "{files}個のファイルで{count}件の一致を置換",
+        "countPlural=one, filesPlural=*": "{files}個のファイルで{count}件の一致を置換",
+        "countPlural=*, filesPlural=one": "{files}個のファイルで{count}件の一致を置換",
+        "countPlural=*, filesPlural=*": "{files}個のファイルで{count}件の一致を置換"
+      }
+    }
+  ],
   "search_replace_label": "置換後の文字列",
-  "search_replace_one": "この一致を置換",
+  "search_replace_line": "この行の一致を置換",
+  "search_searching": "検索中…",
   "search_section_label": "プロジェクト内のすべてのファイルを検索",
   "search_show_replace": "置換を表示",
   "search_summary": [
@@ -2655,7 +2678,7 @@
       }
     }
   ],
-  "search_whole_word": "単語単位",
+  "search_use_regex": "正規表現を使用",
   "settingsdialog_categories_label": "設定のカテゴリー",
   "settingsdialog_nothing_matches": "一致する項目がありません。",
   "settingsdialog_quarto_note": "Quartoドキュメントは、ブラウザーで下書きをレンダリングします。「コードを実行」を押すと、このコンピューターでコードを実行します。",

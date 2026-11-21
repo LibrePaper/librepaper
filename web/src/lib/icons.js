@@ -249,6 +249,15 @@ export const ICONS = {
     ["path", "M12 3v12"],
   ],
   search: [["circle", { cx: 11, cy: 11, r: 8 }], ["path", "m21 21-4.3-4.3"]],
+  replace: [
+    ["path", "M14 4a1 1 0 0 1 1-1"],
+    ["path", "M15 10a1 1 0 0 1-1-1"],
+    ["path", "M21 4a1 1 0 0 0-1-1"],
+    ["path", "M21 9a1 1 0 0 1-1 1"],
+    ["path", "m3 7 3 3 3-3"],
+    ["path", "M6 10V5a2 2 0 0 1 2-2h2"],
+    ["rect", { x: 3, y: 14, width: 7, height: 7, rx: 1 }],
+  ],
   // Lucide's command icon, for the command palette.
   command: [["path", "M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"]],
   // Lucide's list icon, from https://github.com/lucide-icons/lucide/blob/main/icons/list.svg.

@@ -2623,6 +2623,9 @@
       }
     }
   ],
+  "search_clear": "Effacer la recherche",
+  "search_collapse_all": "Tout réduire",
+  "search_expand_all": "Tout développer",
   "search_file_matches": [
     {
       "declarations": [
@@ -2639,15 +2642,35 @@
     }
   ],
   "search_hide_replace": "Masquer le remplacement",
-  "search_hint": "Rechercher dans chaque fichier texte du projet.",
   "search_input_label": "Rechercher dans tous les fichiers",
   "search_invalid_regex": "Cette expression régulière n’est pas valide.",
   "search_match_case": "Respecter la casse",
-  "search_no_results": "Aucun résultat.",
-  "search_regex": "Expression régulière",
+  "search_match_whole_word": "Mot entier",
+  "search_no_results": "Aucun résultat trouvé",
   "search_replace_all": "Tout remplacer",
+  "search_replace_all_scope": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "Remplacer {count} occurrence dans {files} fichier",
+        "countPlural=one, filesPlural=*": "Remplacer {count} occurrence dans {files} fichiers",
+        "countPlural=*, filesPlural=one": "Remplacer {count} occurrences dans {files} fichier",
+        "countPlural=*, filesPlural=*": "Remplacer {count} occurrences dans {files} fichiers"
+      }
+    }
+  ],
   "search_replace_label": "Remplacer par",
-  "search_replace_one": "Remplacer cette occurrence",
+  "search_replace_line": "Remplacer les occurrences de cette ligne",
+  "search_searching": "Recherche en cours…",
   "search_section_label": "Rechercher dans tous les fichiers du projet",
   "search_show_replace": "Afficher le remplacement",
   "search_summary": [
@@ -2670,7 +2693,7 @@
       }
     }
   ],
-  "search_whole_word": "Mot entier",
+  "search_use_regex": "Utiliser une expression régulière",
   "settingsdialog_categories_label": "Catégories des paramètres",
   "settingsdialog_nothing_matches": "Aucun résultat.",
   "settingsdialog_quarto_note": "Dans le navigateur, les documents Quarto produisent un brouillon. Appuyez sur « Exécuter le code » pour exécuter leur code sur cet ordinateur.",

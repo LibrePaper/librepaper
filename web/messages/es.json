@@ -2623,6 +2623,9 @@
       }
     }
   ],
+  "search_clear": "Borrar la búsqueda",
+  "search_collapse_all": "Contraer todo",
+  "search_expand_all": "Expandir todo",
   "search_file_matches": [
     {
       "declarations": [
@@ -2639,15 +2642,35 @@
     }
   ],
   "search_hide_replace": "Ocultar reemplazo",
-  "search_hint": "Busca en todos los archivos de texto del proyecto.",
   "search_input_label": "Buscar en todos los archivos",
   "search_invalid_regex": "Esta expresión regular no es válida.",
   "search_match_case": "Coincidir mayúsculas",
-  "search_no_results": "No hay resultados.",
-  "search_regex": "Expresión regular",
+  "search_match_whole_word": "Palabra completa",
+  "search_no_results": "No se encontraron resultados",
   "search_replace_all": "Reemplazar todo",
+  "search_replace_all_scope": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "Reemplazar {count} coincidencia en {files} archivo",
+        "countPlural=one, filesPlural=*": "Reemplazar {count} coincidencia en {files} archivos",
+        "countPlural=*, filesPlural=one": "Reemplazar {count} coincidencias en {files} archivo",
+        "countPlural=*, filesPlural=*": "Reemplazar {count} coincidencias en {files} archivos"
+      }
+    }
+  ],
   "search_replace_label": "Reemplazar por",
-  "search_replace_one": "Reemplazar esta coincidencia",
+  "search_replace_line": "Reemplazar las coincidencias de esta línea",
+  "search_searching": "Buscando…",
   "search_section_label": "Buscar en todos los archivos del proyecto",
   "search_show_replace": "Mostrar reemplazo",
   "search_summary": [
@@ -2670,7 +2693,7 @@
       }
     }
   ],
-  "search_whole_word": "Palabra completa",
+  "search_use_regex": "Usar expresión regular",
   "settingsdialog_categories_label": "Categorías de configuración",
   "settingsdialog_nothing_matches": "No hay coincidencias.",
   "settingsdialog_quarto_note": "En el navegador, los documentos de Quarto se compilan como borrador. Pulse «Ejecutar código» para ejecutar su código en este equipo.",
