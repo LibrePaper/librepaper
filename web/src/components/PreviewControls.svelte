@@ -139,7 +139,7 @@
     ];
     return [
       { id: "pages", group: "page", label: m.common_pages(), pressed: Boolean(view.sidebar), onselect: () => send({ type: "viewer-sidebar", open: !view.sidebar }) },
-      { id: "search", group: "page", label: m.previewcontrols_search(), pressed: searching, onselect: () => (searching ? closeSearch() : void reveal()) },
+      { id: "search", group: "page", label: m.common_search(), pressed: searching, onselect: () => (searching ? closeSearch() : void reveal()) },
       { id: "page", group: "page", pinned: true },
       { id: "zoom-out", group: "page", icon: "zoom-out", label: m.previewcontrols_zoom_out(), pressed: null, disabled: at <= MIN, onselect: () => step(1 / 1.1) },
       { id: "zoom", group: "page", pinned: true },
@@ -158,7 +158,7 @@
         <IconButton icon="panel-left" label={m.common_pages()} tone="plain" size="btn-icon-sm"
                     pressed={view.sidebar} onclick={entry.onselect} />
       {:else if entry.id === "search"}
-        <IconButton icon="search" label={m.previewcontrols_search()} tone="plain" size="btn-icon-sm"
+        <IconButton icon="search" label={m.common_search()} tone="plain" size="btn-icon-sm"
                     pressed={searching} onclick={entry.onselect} />
       {:else if entry.id === "page"}
         <span class="preview-page">
@@ -211,7 +211,7 @@
   </ToolBand>
   {#if searching}
     <div class="preview-find" role="search" aria-label={m.previewcontrols_search_document()}>
-      <input class="preview-find-input" type="text" placeholder={m.previewcontrols_search()} aria-label={m.previewcontrols_search_document()}
+      <input class="preview-find-input" type="text" placeholder={m.common_search()} aria-label={m.previewcontrols_search_document()}
              autocomplete="off" spellcheck="false" maxlength="200"
              bind:this={field} bind:value={query} oninput={typed} onkeydown={searchKey} />
       <span class="preview-find-count" role="status" aria-live="polite">{found}</span>

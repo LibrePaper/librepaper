@@ -567,6 +567,7 @@
   "commands_focus_files": "Fokus auf Dateien",
   "commands_focus_outline": "Fokus auf Gliederung",
   "commands_focus_preview": "Fokus auf Vorschau",
+  "commands_focus_search": "In allen Dateien suchen",
   "commands_go_to_definition": "Zur Definition springen",
   "commands_heading_level": "Überschrift {level}",
   "commands_layout_cycle": "Zwischen Editor, Vorschau und geteilter Ansicht wechseln",
@@ -588,6 +589,7 @@
   "commands_note_not_while_typing": "Nicht beim Tippen",
   "commands_note_outline_panel": "Bereich „Gliederung“",
   "commands_note_preview_visible": "Vorschau sichtbar",
+  "commands_note_search_panel": "Suchbereich",
   "commands_note_wide_layout": "Breites Layout",
   "commands_org_demote": "Überschrift oder Eintrag herabstufen",
   "commands_org_demote_subtree": "Abschnitt mit Unterüberschriften herabstufen",
@@ -829,6 +831,7 @@
   "common_save": "Speichern",
   "common_saved": "Gespeichert",
   "common_saving": "Wird gespeichert…",
+  "common_search": "Suchen",
   "common_search_symbols": "Symbole suchen",
   "common_section": "Abschnitt",
   "common_select_all": "Alle auswählen",
@@ -2228,7 +2231,6 @@
   "previewcontrols_page_view": "Seitenansicht",
   "previewcontrols_present": "Präsentieren",
   "previewcontrols_previous_match": "Vorheriger Treffer",
-  "previewcontrols_search": "Suchen",
   "previewcontrols_search_document": "Im Dokument suchen",
   "previewcontrols_select_text": "Text auswählen",
   "previewcontrols_spread": "Zwei Seiten nebeneinander",
@@ -2606,6 +2608,69 @@
   "renderersettings_title": "Darstellung in",
   "room_submission_failed": "Senden des Kommentars fehlgeschlagen",
   "room_submission_failed_status": "Senden des Kommentars fehlgeschlagen ({status})",
+  "search_capped": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Das erste Ergebnis wird angezeigt. Grenzen Sie die Suche ein, um den Rest zu sehen.",
+        "countPlural=*": "Die ersten {count} Ergebnisse werden angezeigt. Grenzen Sie die Suche ein, um den Rest zu sehen."
+      }
+    }
+  ],
+  "search_file_matches": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} Treffer",
+        "countPlural=*": "{count} Treffer"
+      }
+    }
+  ],
+  "search_hide_replace": "Ersetzen ausblenden",
+  "search_hint": "Durchsucht jede Textdatei im Projekt.",
+  "search_input_label": "In allen Dateien suchen",
+  "search_invalid_regex": "Dieser reguläre Ausdruck ist ungültig.",
+  "search_match_case": "Groß-/Kleinschreibung beachten",
+  "search_no_results": "Keine Ergebnisse.",
+  "search_regex": "Regulärer Ausdruck",
+  "search_replace_all": "Alle ersetzen",
+  "search_replace_label": "Ersetzen durch",
+  "search_replace_one": "Diesen Treffer ersetzen",
+  "search_section_label": "In allen Projektdateien suchen",
+  "search_show_replace": "Ersetzen anzeigen",
+  "search_summary": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one filesPlural=one": "{count} Ergebnis in {files} Datei",
+        "countPlural=one filesPlural=*": "{count} Ergebnis in {files} Dateien",
+        "countPlural=* filesPlural=one": "{count} Ergebnisse in {files} Datei",
+        "countPlural=* filesPlural=*": "{count} Ergebnisse in {files} Dateien"
+      }
+    }
+  ],
+  "search_whole_word": "Ganzes Wort",
   "settingsdialog_categories_label": "Kategorien der Einstellungen",
   "settingsdialog_nothing_matches": "Keine Treffer.",
   "settingsdialog_quarto_note": "Quarto-Dokumente werden im Browser als Entwurf gerendert. Drücken Sie „Code ausführen“, um ihren Code auf diesem Computer auszuführen.",

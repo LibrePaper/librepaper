@@ -567,6 +567,7 @@
   "commands_focus_files": "ファイルにフォーカス",
   "commands_focus_outline": "アウトラインにフォーカス",
   "commands_focus_preview": "プレビューにフォーカス",
+  "commands_focus_search": "すべてのファイルを検索",
   "commands_go_to_definition": "定義へ移動",
   "commands_heading_level": "見出し {level}",
   "commands_layout_cycle": "エディター / プレビュー / 分割を切り替え",
@@ -588,6 +589,7 @@
   "commands_note_not_while_typing": "入力中は無効",
   "commands_note_outline_panel": "アウトラインパネル",
   "commands_note_preview_visible": "プレビュー表示中",
+  "commands_note_search_panel": "検索パネル",
   "commands_note_wide_layout": "ワイドレイアウト",
   "commands_org_demote": "見出しまたは項目を下げる",
   "commands_org_demote_subtree": "セクションとその下位の見出しを下げる",
@@ -829,6 +831,7 @@
   "common_save": "保存",
   "common_saved": "保存しました",
   "common_saving": "保存中…",
+  "common_search": "検索",
   "common_search_symbols": "記号を検索",
   "common_section": "セクション",
   "common_select_all": "すべて選択",
@@ -2213,7 +2216,6 @@
   "previewcontrols_page_view": "ページ表示",
   "previewcontrols_present": "プレゼンテーション",
   "previewcontrols_previous_match": "前の一致",
-  "previewcontrols_search": "検索",
   "previewcontrols_search_document": "ドキュメント内を検索",
   "previewcontrols_select_text": "テキストを選択",
   "previewcontrols_spread": "2ページを並べて表示",
@@ -2591,6 +2593,69 @@
   "renderersettings_title": "レンダリング先",
   "room_submission_failed": "コメントを送信できませんでした",
   "room_submission_failed_status": "コメントを送信できませんでした（{status}）",
+  "search_capped": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "最初の{count}件の結果を表示しています。検索範囲を絞ると残りの結果を表示できます。",
+        "countPlural=*": "最初の{count}件の結果を表示しています。検索範囲を絞ると残りの結果を表示できます。"
+      }
+    }
+  ],
+  "search_file_matches": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count}件の一致",
+        "countPlural=*": "{count}件の一致"
+      }
+    }
+  ],
+  "search_hide_replace": "置換を非表示",
+  "search_hint": "プロジェクト内のすべてのテキストファイルを検索します。",
+  "search_input_label": "すべてのファイルを検索",
+  "search_invalid_regex": "この正規表現は無効です。",
+  "search_match_case": "大文字と小文字を区別",
+  "search_no_results": "結果はありません。",
+  "search_regex": "正規表現",
+  "search_replace_all": "すべて置換",
+  "search_replace_label": "置換後の文字列",
+  "search_replace_one": "この一致を置換",
+  "search_section_label": "プロジェクト内のすべてのファイルを検索",
+  "search_show_replace": "置換を表示",
+  "search_summary": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one filesPlural=one": "{files}個のファイルで{count}件の結果",
+        "countPlural=one filesPlural=*": "{files}個のファイルで{count}件の結果",
+        "countPlural=* filesPlural=one": "{files}個のファイルで{count}件の結果",
+        "countPlural=* filesPlural=*": "{files}個のファイルで{count}件の結果"
+      }
+    }
+  ],
+  "search_whole_word": "単語単位",
   "settingsdialog_categories_label": "設定のカテゴリー",
   "settingsdialog_nothing_matches": "一致する項目がありません。",
   "settingsdialog_quarto_note": "Quartoドキュメントは、ブラウザーで下書きをレンダリングします。「コードを実行」を押すと、このコンピューターでコードを実行します。",

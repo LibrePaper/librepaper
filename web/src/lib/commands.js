@@ -256,6 +256,7 @@ export const COMMANDS = [
   { id: "palette", label: m.common_command_palette(), category: m.commands_category_navigation(), scope: "workspace", menu: "help", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
   { id: "focus-files", label: m.commands_focus_files(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+E"], available: panel("files"), note: m.commands_note_files_panel() },
   { id: "focus-outline", label: m.commands_focus_outline(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+O"], available: panel("outline"), note: m.commands_note_outline_panel() },
+  { id: "focus-search", label: m.commands_focus_search(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Shift+F"], available: panel("search"), note: m.commands_note_search_panel() },
   { id: "focus-comments", label: m.commands_focus_comments(), category: m.commands_category_navigation(), scope: "workspace", keys: [], available: panel("collaboration"), note: m.commands_note_comments_panel() },
   { id: "focus-preview", label: m.commands_focus_preview(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: m.commands_note_preview_visible() },
 
