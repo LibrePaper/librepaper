@@ -147,9 +147,12 @@
     collapsed = new Set();
     limit = PAGE;
   });
-  // New results invalidate the position that Enter was stepping through.
+  // A different query or option invalidates the position Enter was stepping
+  // through. A recompute after an edit or a replace keeps it, so a click on a
+  // stale row does not lose its highlight to the search that click runs.
+  const searchKey = $derived(results ? JSON.stringify(results.options) : "");
   $effect(() => {
-    void results;
+    void searchKey;
     cursor = -1;
     selected = null;
   });
@@ -328,18 +331,19 @@
 
     {#if canReplace && replacing}
       <div class="search-replace" id="search-replace-row">
-        <input
-          type="text"
-          class="search-field search-input search-replace-input"
-          aria-label={m.search_replace_label()}
-          placeholder={m.search_replace_label()}
-          autocomplete="off"
-          spellcheck="false"
-          bind:value={replacement}
-        />
+        <div class="search-field search-replace-field">
+          <input
+            type="text"
+            class="search-input"
+            aria-label={m.search_replace_label()}
+            placeholder={m.search_replace_label()}
+            autocomplete="off"
+            spellcheck="false"
+            bind:value={replacement}
+          />
+        </div>
         <button type="button" class="btn btn-sm lp-control-tonal" disabled={!hasResults || !fresh || busy}
                 data-tip={hasResults ? m.search_replace_all_scope({ count: results.total, files: groups.length }) : undefined}
-                aria-description={hasResults ? m.search_replace_all_scope({ count: results.total, files: groups.length }) : undefined}
                 onclick={replaceAll}>{m.search_replace_all()}</button>
       </div>
     {/if}
@@ -382,7 +386,7 @@
                             onclick={() => openRow(group, row)}>
                       <span class="search-line">{row.line}</span>
                       <span class="search-snippet">
-                        {#if row.before}<span class="search-before"><span dir="ltr">{row.before}</span></span>{/if}
+                        {#if row.before}<span class="search-before"><span>{row.before}</span></span>{/if}
                         <span class="search-segments">{#each row.segments as seg}{#if seg.mark}<mark>{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
                       </span>
                     </button>
@@ -437,8 +441,7 @@
     background: transparent; color: inherit; font: inherit; font-size: var(--text-sm);
   }
   .search-input:focus { outline: 0; box-shadow: none; }
-  .search-replace-input { padding: 0 calc(var(--spacing) * 2.5); flex: 1 1 8rem; }
-  .search-replace-input:focus { border-color: var(--color-focus); box-shadow: 0 0 0 1px var(--color-focus); }
+  .search-replace-field { flex: 1 1 8rem; }
 
   .search-toggle {
     position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center;
@@ -456,7 +459,6 @@
 
   .search-error { margin: 0; margin-left: var(--gutter); padding: calc(var(--spacing) * .5) calc(var(--spacing) * 2); border-radius: var(--radius-base); }
   .search-replace { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 1.5); margin-left: var(--gutter); }
-  .search-replace-input.search-field { height: calc(var(--spacing) * 9.5); }
 
   .search-summary { display: flex; align-items: baseline; justify-content: space-between; gap: calc(var(--spacing) * 2); margin: calc(var(--spacing) * 1) 0 0; }
   .search-capped { margin: calc(var(--spacing) * -1) 0 0; }
@@ -495,8 +497,10 @@
     display: flex; flex: 1 1 auto; min-width: 0; white-space: pre;
     font-family: var(--font-mono, ui-monospace, monospace);
   }
-  .search-before { flex: 0 1 auto; max-width: 40%; overflow: hidden; direction: rtl; text-overflow: ellipsis; text-align: left; }
-  .search-before > span { unicode-bidi: isolate; }
+  /* The context before a match is end-aligned and clipped at its start, so the
+     words next to the match stay in view however narrow the panel gets. */
+  .search-before { display: flex; flex: 0 1 auto; justify-content: flex-end; max-width: 40%; min-width: 0; overflow: hidden; }
+  .search-before > span { flex: none; }
   .search-segments { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .search-snippet mark {
     padding: 0 1px; border-radius: 2px; color: var(--color-text); font-weight: 600;
