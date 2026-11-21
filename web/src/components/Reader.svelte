@@ -3549,7 +3549,7 @@
   // flash. A phone shows the document pane; a desktop with no preview on screen
   // gets the split first, so there is a preview to show it in.
   async function showInPreview() {
-    if (!editing || !editor || docText === null || ws.figure) return;
+    if (!editing || !editor || docText === null || ws.figure || !previewUsable) return;
     clearTimeout(stepTimer);
     if (compact) {
       arrangement.showMobileView("document");
@@ -3570,7 +3570,7 @@
   // the source (on a phone, or on a desktop whose split is too narrow for it)
   // and moves it there. The same path serves every layout.
   function showInSource() {
-    if (!editing || !editor || docText === null || ws.figure) return;
+    if (!editing || !editor || docText === null || ws.figure || !previewUsable) return;
     positionAsked = false;
     sourceAsked = true;
     tell({ type: "reading-position" });
@@ -4400,6 +4400,11 @@
   // A failure is reported once the render has settled as failed. One that a
   // retry is already superseding is not.
   const failedBeforeRender = $derived(renderState.failure && !painted.state.shown && !compiling);
+  // Whether the preview frame holds the document now on show. When a card
+  // stands in its place (a file with no preview, a failed render, a sign-in),
+  // the frame keeps the previous document, so a jump would read or show the
+  // wrong one.
+  const previewUsable = $derived(!(documentNeedsSignIn || heldFile || noCompiler || failedBeforeRender || projection.state.unreadable || previewCard));
   // The one waiting display. It stands in for the pane until the page for the
   // current target is drawn, whatever the format. A stand-in page from the
   // cache is drawn like any other, so a recompile under one never lands here.
@@ -4776,9 +4781,10 @@
     edit: editAvailability,
     canClearChat: chatState.canClear,
     canComment: mayChat,
-    // The jumps need a source caret on the other side. While an image or figure
-    // is shown where the editor would be, there is none, so they are off.
-    linkable: Boolean(editing && editor && !ws.figure && docText !== null),
+    // The jumps need a source caret and a preview of the document on show.
+    // While an image or figure is shown where the editor would be, or a card
+    // where the preview would be, one side is missing, so they are off.
+    linkable: Boolean(editing && editor && !ws.figure && docText !== null && previewUsable),
     // In Vim or Emacs mode Alt is the editor's, so the Alt menu chords stand down in the source.
     modalEditor: keys === "vim" || keys === "emacs",
   });
@@ -5354,7 +5360,7 @@
         <PanelBoundary name="the source editor">
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
-                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone} onshowinpreview={() => void showInPreview()}
+                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone} onshowinpreview={can["show-in-preview"] ? () => void showInPreview() : null}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
                   onchangeselect={selectChangeFromSource}
                   onformatstate={(state) => { formatActive = state; refreshEditAvailability(); }}

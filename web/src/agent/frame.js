@@ -396,6 +396,9 @@ import { morphChildren } from "./morph.js";
   // The tint over text a jump from the source has just landed on: every
   // piece of it, not only the first, for about a second. A browser without the
   // Custom Highlight API gets nothing extra; the scroll is the whole effect.
+  // The next correction a long locate has queued (see the "locate" message).
+  let locateSettle = 0;
+
   let landingTimer = 0;
   function flashLanding(pieces) {
     if (!globalThis.CSS?.highlights || typeof Highlight !== "function") return;
@@ -853,6 +856,7 @@ import { morphChildren } from "./morph.js";
     //
     // innerHTML does not run scripts, so a preview never executes anything.
     if (message.type === "preview") {
+      cancelAnimationFrame(locateSettle);
       // The sources the page's data-sourcepos tags name. Kept for the next
       // selection; a page without them clears the ones from the last page.
       previewSources = Array.isArray(message.sources) ? message.sources : null;
@@ -945,6 +949,9 @@ import { morphChildren } from "./morph.js";
     // the editor works out which offset a caret in the source corresponds to,
     // and this end knows which node holds it.
     if (message.type === "locate") {
+      // A newer jump, or a new page, ends the corrections an earlier long jump
+      // still has queued, so they cannot pull the preview back to its passage.
+      cancelAnimationFrame(locateSettle);
       const start = Number(message.start) || 0;
       const pieces = piecesFor(start, start + Math.max(1, Number(message.length) || 1));
       const [piece] = pieces;
@@ -972,9 +979,9 @@ import { morphChildren } from "./morph.js";
         const next = target();
         if (Math.abs(next - scrollY) <= 2 || corrections++ >= 5) return;
         scrollTo({ top: next, behavior: "instant" });
-        requestAnimationFrame(settle);
+        locateSettle = requestAnimationFrame(settle);
       };
-      requestAnimationFrame(settle);
+      locateSettle = requestAnimationFrame(settle);
       return;
     }
     if (message.type === "reading-position") {
