@@ -987,10 +987,10 @@
         "warningsPlural"
       ],
       "match": {
-        "errorsPlural=one warningsPlural=one": "このファイルにエラー{errors}件、警告{warnings}件",
-        "errorsPlural=one warningsPlural=*": "このファイルにエラー{errors}件、警告{warnings}件",
-        "errorsPlural=* warningsPlural=one": "このファイルにエラー{errors}件、警告{warnings}件",
-        "errorsPlural=* warningsPlural=*": "このファイルにエラー{errors}件、警告{warnings}件"
+        "errorsPlural=one, warningsPlural=one": "このファイルにエラー{errors}件、警告{warnings}件",
+        "errorsPlural=one, warningsPlural=*": "このファイルにエラー{errors}件、警告{warnings}件",
+        "errorsPlural=*, warningsPlural=one": "このファイルにエラー{errors}件、警告{warnings}件",
+        "errorsPlural=*, warningsPlural=*": "このファイルにエラー{errors}件、警告{warnings}件"
       }
     }
   ],
@@ -2648,10 +2648,10 @@
         "filesPlural"
       ],
       "match": {
-        "countPlural=one filesPlural=one": "{files}個のファイルで{count}件の結果",
-        "countPlural=one filesPlural=*": "{files}個のファイルで{count}件の結果",
-        "countPlural=* filesPlural=one": "{files}個のファイルで{count}件の結果",
-        "countPlural=* filesPlural=*": "{files}個のファイルで{count}件の結果"
+        "countPlural=one, filesPlural=one": "{files}個のファイルで{count}件の結果",
+        "countPlural=one, filesPlural=*": "{files}個のファイルで{count}件の結果",
+        "countPlural=*, filesPlural=one": "{files}個のファイルで{count}件の結果",
+        "countPlural=*, filesPlural=*": "{files}個のファイルで{count}件の結果"
       }
     }
   ],

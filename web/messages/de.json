@@ -987,10 +987,10 @@
         "warningsPlural"
       ],
       "match": {
-        "errorsPlural=one warningsPlural=one": "{errors} Fehler, {warnings} Warnung in dieser Datei",
-        "errorsPlural=one warningsPlural=*": "{errors} Fehler, {warnings} Warnungen in dieser Datei",
-        "errorsPlural=* warningsPlural=one": "{errors} Fehler, {warnings} Warnung in dieser Datei",
-        "errorsPlural=* warningsPlural=*": "{errors} Fehler, {warnings} Warnungen in dieser Datei"
+        "errorsPlural=one, warningsPlural=one": "{errors} Fehler, {warnings} Warnung in dieser Datei",
+        "errorsPlural=one, warningsPlural=*": "{errors} Fehler, {warnings} Warnungen in dieser Datei",
+        "errorsPlural=*, warningsPlural=one": "{errors} Fehler, {warnings} Warnung in dieser Datei",
+        "errorsPlural=*, warningsPlural=*": "{errors} Fehler, {warnings} Warnungen in dieser Datei"
       }
     }
   ],
@@ -2663,10 +2663,10 @@
         "filesPlural"
       ],
       "match": {
-        "countPlural=one filesPlural=one": "{count} Ergebnis in {files} Datei",
-        "countPlural=one filesPlural=*": "{count} Ergebnis in {files} Dateien",
-        "countPlural=* filesPlural=one": "{count} Ergebnisse in {files} Datei",
-        "countPlural=* filesPlural=*": "{count} Ergebnisse in {files} Dateien"
+        "countPlural=one, filesPlural=one": "{count} Ergebnis in {files} Datei",
+        "countPlural=one, filesPlural=*": "{count} Ergebnis in {files} Dateien",
+        "countPlural=*, filesPlural=one": "{count} Ergebnisse in {files} Datei",
+        "countPlural=*, filesPlural=*": "{count} Ergebnisse in {files} Dateien"
       }
     }
   ],

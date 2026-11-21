@@ -987,10 +987,10 @@
         "warningsPlural"
       ],
       "match": {
-        "errorsPlural=one warningsPlural=one": "此文件中有 {errors} 个错误、{warnings} 个警告",
-        "errorsPlural=one warningsPlural=*": "此文件中有 {errors} 个错误、{warnings} 个警告",
-        "errorsPlural=* warningsPlural=one": "此文件中有 {errors} 个错误、{warnings} 个警告",
-        "errorsPlural=* warningsPlural=*": "此文件中有 {errors} 个错误、{warnings} 个警告"
+        "errorsPlural=one, warningsPlural=one": "此文件中有 {errors} 个错误、{warnings} 个警告",
+        "errorsPlural=one, warningsPlural=*": "此文件中有 {errors} 个错误、{warnings} 个警告",
+        "errorsPlural=*, warningsPlural=one": "此文件中有 {errors} 个错误、{warnings} 个警告",
+        "errorsPlural=*, warningsPlural=*": "此文件中有 {errors} 个错误、{warnings} 个警告"
       }
     }
   ],
@@ -2648,10 +2648,10 @@
         "filesPlural"
       ],
       "match": {
-        "countPlural=one filesPlural=one": "{files} 个文件中共有 {count} 个结果",
-        "countPlural=one filesPlural=*": "{files} 个文件中共有 {count} 个结果",
-        "countPlural=* filesPlural=one": "{files} 个文件中共有 {count} 个结果",
-        "countPlural=* filesPlural=*": "{files} 个文件中共有 {count} 个结果"
+        "countPlural=one, filesPlural=one": "{files} 个文件中共有 {count} 个结果",
+        "countPlural=one, filesPlural=*": "{files} 个文件中共有 {count} 个结果",
+        "countPlural=*, filesPlural=one": "{files} 个文件中共有 {count} 个结果",
+        "countPlural=*, filesPlural=*": "{files} 个文件中共有 {count} 个结果"
       }
     }
   ],
