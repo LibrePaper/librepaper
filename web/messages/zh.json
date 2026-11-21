@@ -2608,6 +2608,9 @@
       }
     }
   ],
+  "search_clear": "清除搜索",
+  "search_collapse_all": "全部折叠",
+  "search_expand_all": "全部展开",
   "search_file_matches": [
     {
       "declarations": [
@@ -2624,15 +2627,36 @@
     }
   ],
   "search_hide_replace": "隐藏替换",
-  "search_hint": "搜索项目中的每个文本文件。",
   "search_input_label": "搜索所有文件",
   "search_invalid_regex": "此正则表达式无效。",
   "search_match_case": "区分大小写",
-  "search_no_results": "没有结果。",
-  "search_regex": "正则表达式",
+  "search_match_whole_word": "全字匹配",
+  "search_no_results": "未找到结果",
   "search_replace_all": "全部替换",
+  "search_replace_all_capped": "替换项目中的所有匹配项，包括未显示的",
+  "search_replace_all_scope": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "替换 {files} 个文件中的 {count} 个匹配项",
+        "countPlural=one, filesPlural=*": "替换 {files} 个文件中的 {count} 个匹配项",
+        "countPlural=*, filesPlural=one": "替换 {files} 个文件中的 {count} 个匹配项",
+        "countPlural=*, filesPlural=*": "替换 {files} 个文件中的 {count} 个匹配项"
+      }
+    }
+  ],
   "search_replace_label": "替换为",
-  "search_replace_one": "替换此匹配项",
+  "search_replace_line": "替换此行中的匹配项",
+  "search_searching": "搜索中…",
   "search_section_label": "搜索项目中的所有文件",
   "search_show_replace": "显示替换",
   "search_summary": [
@@ -2655,7 +2679,7 @@
       }
     }
   ],
-  "search_whole_word": "全字匹配",
+  "search_use_regex": "使用正则表达式",
   "settingsdialog_categories_label": "设置类别",
   "settingsdialog_nothing_matches": "没有匹配项。",
   "settingsdialog_quarto_note": "Quarto 文档在浏览器中渲染草稿。点击“运行代码”即可在这台电脑上运行其代码。",

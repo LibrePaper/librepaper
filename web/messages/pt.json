@@ -2623,6 +2623,9 @@
       }
     }
   ],
+  "search_clear": "Limpar pesquisa",
+  "search_collapse_all": "Recolher tudo",
+  "search_expand_all": "Expandir tudo",
   "search_file_matches": [
     {
       "declarations": [
@@ -2639,15 +2642,36 @@
     }
   ],
   "search_hide_replace": "Ocultar substituição",
-  "search_hint": "Pesquisa em todos os arquivos de texto do projeto.",
   "search_input_label": "Pesquisar em todos os arquivos",
   "search_invalid_regex": "Esta expressão regular não é válida.",
   "search_match_case": "Diferenciar maiúsculas",
-  "search_no_results": "Nenhum resultado.",
-  "search_regex": "Expressão regular",
+  "search_match_whole_word": "Palavra inteira",
+  "search_no_results": "Nenhum resultado encontrado",
   "search_replace_all": "Substituir tudo",
+  "search_replace_all_capped": "Substituir todas as ocorrências do projeto, incluindo as que não são mostradas",
+  "search_replace_all_scope": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "Substituir {count} ocorrência em {files} arquivo",
+        "countPlural=one, filesPlural=*": "Substituir {count} ocorrência em {files} arquivos",
+        "countPlural=*, filesPlural=one": "Substituir {count} ocorrências em {files} arquivo",
+        "countPlural=*, filesPlural=*": "Substituir {count} ocorrências em {files} arquivos"
+      }
+    }
+  ],
   "search_replace_label": "Substituir por",
-  "search_replace_one": "Substituir esta ocorrência",
+  "search_replace_line": "Substituir as ocorrências desta linha",
+  "search_searching": "Pesquisando…",
   "search_section_label": "Pesquisar em todos os arquivos do projeto",
   "search_show_replace": "Mostrar substituição",
   "search_summary": [
@@ -2670,7 +2694,7 @@
       }
     }
   ],
-  "search_whole_word": "Palavra inteira",
+  "search_use_regex": "Usar expressão regular",
   "settingsdialog_categories_label": "Categorias de configurações",
   "settingsdialog_nothing_matches": "Nada corresponde.",
   "settingsdialog_quarto_note": "Os documentos Quarto renderizam um rascunho no navegador. Clique em Executar código para executar o código deles neste computador.",

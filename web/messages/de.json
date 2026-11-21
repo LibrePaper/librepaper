@@ -2623,6 +2623,9 @@
       }
     }
   ],
+  "search_clear": "Suche leeren",
+  "search_collapse_all": "Alle einklappen",
+  "search_expand_all": "Alle ausklappen",
   "search_file_matches": [
     {
       "declarations": [
@@ -2639,15 +2642,36 @@
     }
   ],
   "search_hide_replace": "Ersetzen ausblenden",
-  "search_hint": "Durchsucht jede Textdatei im Projekt.",
   "search_input_label": "In allen Dateien suchen",
   "search_invalid_regex": "Dieser reguläre Ausdruck ist ungültig.",
   "search_match_case": "Groß-/Kleinschreibung beachten",
-  "search_no_results": "Keine Ergebnisse.",
-  "search_regex": "Regulärer Ausdruck",
+  "search_match_whole_word": "Ganzes Wort",
+  "search_no_results": "Keine Ergebnisse gefunden",
   "search_replace_all": "Alle ersetzen",
+  "search_replace_all_capped": "Alle Treffer im Projekt ersetzen, auch die nicht angezeigten",
+  "search_replace_all_scope": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "{count} Treffer in {files} Datei ersetzen",
+        "countPlural=one, filesPlural=*": "{count} Treffer in {files} Dateien ersetzen",
+        "countPlural=*, filesPlural=one": "{count} Treffer in {files} Datei ersetzen",
+        "countPlural=*, filesPlural=*": "{count} Treffer in {files} Dateien ersetzen"
+      }
+    }
+  ],
   "search_replace_label": "Ersetzen durch",
-  "search_replace_one": "Diesen Treffer ersetzen",
+  "search_replace_line": "Treffer in dieser Zeile ersetzen",
+  "search_searching": "Suche läuft…",
   "search_section_label": "In allen Projektdateien suchen",
   "search_show_replace": "Ersetzen anzeigen",
   "search_summary": [
@@ -2670,7 +2694,7 @@
       }
     }
   ],
-  "search_whole_word": "Ganzes Wort",
+  "search_use_regex": "Regulären Ausdruck verwenden",
   "settingsdialog_categories_label": "Kategorien der Einstellungen",
   "settingsdialog_nothing_matches": "Keine Treffer.",
   "settingsdialog_quarto_note": "Quarto-Dokumente werden im Browser als Entwurf gerendert. Drücken Sie „Code ausführen“, um ihren Code auf diesem Computer auszuführen.",
