@@ -67,7 +67,7 @@ export function compileQuery(options) {
 // \b is the ASCII word boundary.
 /** @returns {string} */
 function wholeWordSource(raw, unicode) {
-  if (unicode) return `(?<![\\p{L}\\p{N}_])(?:${raw})(?![\\p{L}\\p{N}_])`;
+  if (unicode) return `(?<![\\p{L}\\p{M}\\p{N}_])(?:${raw})(?![\\p{L}\\p{M}\\p{N}_])`;
   return `\\b(?:${raw})\\b`;
 }
 
@@ -127,6 +127,12 @@ function findMatches(text, re, room) {
       re.lastIndex = m.index + (re.unicode ? codePointWidth(text, m.index) : 1);
       continue;
     }
+    // Without `u` the pattern can end or start between the halves of a pair
+    // (`\-.` on "-😀"). Such a match is not a character the person can see, so it
+    // is not reported. The regex has already moved past it, so just continue.
+    if (!re.unicode && (splitsPair(text, m.index) || splitsPair(text, m.index + m[0].length))) {
+      continue;
+    }
     if (matches.length === room) return { matches, more: true };
     while (nextNewline !== -1 && nextNewline < m.index) {
       line += 1;
@@ -136,6 +142,15 @@ function findMatches(text, re, room) {
     matches.push(describe(text, m.index, m[0], line, lineStart));
   }
   return { matches, more: false };
+}
+
+// True when `index` falls between the two halves of a surrogate pair.
+/** @returns {boolean} */
+function splitsPair(text, index) {
+  if (index <= 0 || index >= text.length) return false;
+  const before = text.charCodeAt(index - 1);
+  const after = text.charCodeAt(index);
+  return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
 }
 
 // 2 when a surrogate pair starts at `index`, otherwise 1.
@@ -234,17 +249,20 @@ export function replacementsFor(text, matches, replacement, options) {
  * @param {{ from: number, to: number }} match
  * @returns {string}
  */
+// `$<name>` is a token only when the pattern has named groups, as in JavaScript.
+// Otherwise `$<` is literal text.
+const TOKEN_PLAIN = /\$(\$|&|`|'|\d{1,2})/g;
+const TOKEN_NAMED = /\$(\$|&|`|'|<[^>]*>|\d{1,2})/g;
+
 function expandTemplate(template, hit, text, match) {
   const count = hit.length - 1;
-  return template.replace(/\$(\$|&|`|'|<[^>]*>|\d{1,2})/g, (whole, token) => {
+  const tokens = hit.groups ? TOKEN_NAMED : TOKEN_PLAIN;
+  return template.replace(tokens, (whole, token) => {
     if (token === "$") return "$";
     if (token === "&") return hit[0];
     if (token === "`") return text.slice(0, match.from);
     if (token === "'") return text.slice(match.to);
-    if (token[0] === "<") {
-      if (!hit.groups) return whole;
-      return hit.groups[token.slice(1, -1)] ?? "";
-    }
+    if (token[0] === "<") return hit.groups[token.slice(1, -1)] ?? "";
     return groupFor(token, hit, count, whole);
   });
 }

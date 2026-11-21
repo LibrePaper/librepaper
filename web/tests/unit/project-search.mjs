@@ -170,6 +170,23 @@ assert.equal(one("😀x", { query: "(?=x)", regex: true }).length, 0);
   assert.equal(across.capped, true);
 }
 
+// A pattern valid only without `u` never reports a match that splits a
+// surrogate pair: `\-.` on "-😀" would end inside the emoji.
+{
+  const matches = one("-😀 -a", { query: "\\-.", regex: true });
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].from, 4);
+  assert.equal(matches[0].text, "-a");
+}
+
+// Whole word follows combining marks: the base letters of a decomposed "café"
+// are not a whole word.
+{
+  const matches = one("café cafe", { query: "cafe", wholeWord: true });
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].from, 6);
+}
+
 /* ------------------------------------------------------------ replacements */
 
 // Literal replacement: `$` in the replacement is not special.
@@ -247,4 +264,20 @@ assert.equal(one("😀x", { query: "(?=x)", regex: true }).length, 0);
   const matches = searchProject([file("f", "f.tex", "foo bar foo")], options).groups[0].matches;
   const edits = replacementsFor("foo bar fox", matches, "X", options);
   assert.deepEqual(edits, [{ from: 0, to: 3, insert: "X" }]);
+}
+
+// Without named groups, `$<` is literal and the tokens after it still expand.
+{
+  const text = "foo";
+  const options = { query: "foo", regex: true };
+  const matches = searchProject([file("f", "f.tex", text)], options).groups[0].matches;
+  assert.equal(applyEdits(text, replacementsFor(text, matches, "$<$&>", options)), "$<foo>");
+}
+
+// With named groups, `$<name>` is still a token.
+{
+  const text = "foo";
+  const options = { query: "(?<w>o+)", regex: true };
+  const matches = searchProject([file("f", "f.tex", text)], options).groups[0].matches;
+  assert.equal(applyEdits(text, replacementsFor(text, matches, "[$<w>]", options)), "f[oo]");
 }
