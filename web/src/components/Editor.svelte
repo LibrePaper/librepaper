@@ -672,21 +672,33 @@
   /// committed before the records are written, so the commit that carries the
   /// text keeps its origin and stays in the undo history.
   function writeText(fileId, text, from, to, insert) {
-    insert = toLf(insert);
+    writeTexts(fileId, text, [{ from, to, insert }]);
+  }
+
+  /// Writes several edits to a file that is not on screen, in one pass: one
+  /// read of the text, one commit of the splices and one anchor record. `edits`
+  /// are { from, to, insert } in the coordinates of `text`, not overlapping, in
+  /// any order. The splices run from the end of the file back, so each offset
+  /// is still valid when it is used. The anchor index takes the edits in
+  /// ascending order, as its Edit contract requires.
+  function writeTexts(fileId, text, edits) {
     const doc = session.doc;
+    const ascending = edits.map(({ from, to, insert }) => ({ from, to, insert: toLf(insert) })).sort((a, b) => a.from - b.from);
     const before = text.toString();
     session.anchors.get(fileId);
     const known = new Set(doc.getMap(CHANGES).size ? resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.map((f) => f.id)) : []);
-    if (tracked) trackedSplice(doc, fileId, from, to, insert, me);
-    else untrackedSplice(doc, fileId, from, to, insert);
-    doc.commit();
-    const edits = [{ from, to, insert }];
-    let fragments = [];
-    if (to > from && doc.getMap(CHANGES).size) {
-      const created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
-      fragments = fragmentRangesFor(before, edits, created);
+    for (let i = ascending.length - 1; i >= 0; i--) {
+      const { from, to, insert } = ascending[i];
+      if (tracked) trackedSplice(doc, fileId, from, to, insert, me);
+      else untrackedSplice(doc, fileId, from, to, insert);
     }
-    session.anchors.record([{ fileId, edits, fragments }], session.anchorMemory);
+    doc.commit();
+    let fragments = [];
+    if (ascending.some((edit) => edit.to > edit.from) && doc.getMap(CHANGES).size) {
+      const created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
+      fragments = fragmentRangesFor(before, ascending, created);
+    }
+    session.anchors.record([{ fileId, edits: ascending, fragments }], session.anchorMemory);
     doc.commit({ origin: ANCHORS_ORIGIN });
   }
 
@@ -1208,14 +1220,16 @@
   /// which records a tracked change when tracking is on.
   export function replaceIn(id, edits) {
     if (!editable || !session || !view || !id || !edits?.length) return false;
-    const sorted = [...edits].sort((a, b) => b.from - a.from);
+    // CodeMirror changes all refer to the document as it was, and out-of-order
+    // specs are composed one by one, which is quadratic. So ascending.
+    const sorted = [...edits].sort((a, b) => a.from - b.from);
     if (id === showing) {
       view.dispatch({ changes: sorted.map(({ from, to, insert }) => ({ from, to, insert })) });
       return true;
     }
     const text = session.textOf(id);
     if (!text) return false;
-    for (const { from, to, insert } of sorted) writeText(id, text, from, to, insert);
+    writeTexts(id, text, sorted);
     // As importDoiEntries does: prune drops the records of files that are gone,
     // empty records that have stayed empty, and stale cursors that have stayed
     // stale. The edits above can leave such records behind.
