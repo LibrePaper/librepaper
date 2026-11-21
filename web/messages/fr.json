@@ -567,6 +567,7 @@
   "commands_focus_files": "Aller aux fichiers",
   "commands_focus_outline": "Aller au plan",
   "commands_focus_preview": "Aller à l’aperçu",
+  "commands_focus_search": "Rechercher dans tous les fichiers",
   "commands_go_to_definition": "Aller à la définition",
   "commands_heading_level": "Titre {level}",
   "commands_layout_cycle": "Alterner entre éditeur, aperçu et côte à côte",
@@ -588,6 +589,7 @@
   "commands_note_not_while_typing": "Pas pendant la saisie",
   "commands_note_outline_panel": "Panneau Plan",
   "commands_note_preview_visible": "Aperçu visible",
+  "commands_note_search_panel": "Panneau Recherche",
   "commands_note_wide_layout": "Écran large",
   "commands_org_demote": "Rétrograder le titre ou l’élément",
   "commands_org_demote_subtree": "Rétrograder la section et ses sous-titres",
@@ -829,6 +831,7 @@
   "common_save": "Enregistrer",
   "common_saved": "Enregistré",
   "common_saving": "Enregistrement…",
+  "common_search": "Rechercher",
   "common_search_symbols": "Rechercher des symboles",
   "common_section": "Section",
   "common_select_all": "Tout sélectionner",
@@ -2228,7 +2231,6 @@
   "previewcontrols_page_view": "Affichage des pages",
   "previewcontrols_present": "Présenter",
   "previewcontrols_previous_match": "Résultat précédent",
-  "previewcontrols_search": "Rechercher",
   "previewcontrols_search_document": "Rechercher dans le document",
   "previewcontrols_select_text": "Sélectionner le texte",
   "previewcontrols_spread": "Deux pages côte à côte",
@@ -2606,6 +2608,69 @@
   "renderersettings_title": "Rendu dans",
   "room_submission_failed": "L’envoi du commentaire a échoué",
   "room_submission_failed_status": "L’envoi du commentaire a échoué ({status})",
+  "search_capped": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Affichage du premier résultat. Affinez la recherche pour voir les autres.",
+        "countPlural=*": "Affichage des {count} premiers résultats. Affinez la recherche pour voir les autres."
+      }
+    }
+  ],
+  "search_file_matches": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} occurrence",
+        "countPlural=*": "{count} occurrences"
+      }
+    }
+  ],
+  "search_hide_replace": "Masquer le remplacement",
+  "search_hint": "Rechercher dans chaque fichier texte du projet.",
+  "search_input_label": "Rechercher dans tous les fichiers",
+  "search_invalid_regex": "Cette expression régulière n’est pas valide.",
+  "search_match_case": "Respecter la casse",
+  "search_no_results": "Aucun résultat.",
+  "search_regex": "Expression régulière",
+  "search_replace_all": "Tout remplacer",
+  "search_replace_label": "Remplacer par",
+  "search_replace_one": "Remplacer cette occurrence",
+  "search_section_label": "Rechercher dans tous les fichiers du projet",
+  "search_show_replace": "Afficher le remplacement",
+  "search_summary": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one filesPlural=one": "{count} résultat dans {files} fichier",
+        "countPlural=one filesPlural=*": "{count} résultat dans {files} fichiers",
+        "countPlural=* filesPlural=one": "{count} résultats dans {files} fichier",
+        "countPlural=* filesPlural=*": "{count} résultats dans {files} fichiers"
+      }
+    }
+  ],
+  "search_whole_word": "Mot entier",
   "settingsdialog_categories_label": "Catégories des paramètres",
   "settingsdialog_nothing_matches": "Aucun résultat.",
   "settingsdialog_quarto_note": "Dans le navigateur, les documents Quarto produisent un brouillon. Appuyez sur « Exécuter le code » pour exécuter leur code sur cet ordinateur.",
