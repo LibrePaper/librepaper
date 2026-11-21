@@ -32,6 +32,7 @@ import {
   resolveFileCached,
   shiftResolved,
   trackedSplice,
+  trackedSplices,
   untrackedSplice,
   writePlanned,
   writtenState,
@@ -1816,6 +1817,20 @@ function trackedKeystroke(doc, edits) {
   const result = trackedKeystroke(doc, [{ from: 2, to: 3, insert: "Q" }]);
   assert.equal(result.adopted, false, "a relocated gap is not adopted");
   assert.equal(shape(resolveFileCached(doc, "f1")), shape(resolveFile(doc, "f1")));
+}
+
+// A tracked batch of two replacements in one file gives the same text and the
+// same change records as two single splices applied from the end back.
+{
+  const single = makeDoc("the cat and the dog");
+  const batch = makeDoc("the cat and the dog");
+  trackedSplice(single, "f1", 16, 19, "fox", ME);
+  trackedSplice(single, "f1", 0, 3, "a", ME);
+  trackedSplices(batch, "f1", [{ from: 0, to: 3, insert: "a" }, { from: 16, to: 19, insert: "fox" }], ME);
+  single.commit();
+  batch.commit();
+  assert.equal(textOf(batch), textOf(single));
+  assert.equal(listChanges(batch).length, listChanges(single).length);
 }
 
 console.log("track-changes: ok");

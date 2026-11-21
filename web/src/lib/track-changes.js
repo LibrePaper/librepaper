@@ -1150,6 +1150,43 @@ export function recordEdits(doc, fileId, before, preResolved, edits, me, { run =
 }
 
 /**
+ * Applies edits to a `LoroText` from the end of the text back, so each offset
+ * is still valid when it is used. Each edit is delete, then insert.
+ *
+ * @param {import("loro-crdt").LoroText} text
+ * @param {Edit[]} edits ascending, non-overlapping, in the text's current coordinates
+ */
+function spliceDescending(text, edits) {
+  for (let i = edits.length - 1; i >= 0; i--) {
+    const { from, to, insert } = edits[i];
+    if (to > from) text.delete(from, to - from);
+    if (insert) text.insert(from, insert);
+  }
+}
+
+/**
+ * Replaces several ranges of a file and records them as tracked changes in one
+ * pass: the text is read and the records resolved once, the splices run from
+ * the end back, and the records are planned together. Does not commit. Returns
+ * the ids of the change records it wrote.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} fileId
+ * @param {Edit[]} edits { from, to, insert } in the file's current coordinates, ascending, non-overlapping
+ * @param {Me} me
+ * @param {{ run?: string | null, now?: number }} [opts]
+ * @returns {string[]}
+ */
+export function trackedSplices(doc, fileId, edits, me, opts) {
+  const text = fileText(doc, fileId);
+  if (!text || edits.length === 0) return [];
+  const before = text.toString();
+  const pre = resolveFile(doc, fileId);
+  spliceDescending(text, edits);
+  return recordEdits(doc, fileId, before, pre, edits, me, opts);
+}
+
+/**
  * Replaces `[from, to)` with `insert` in a file and records it as a tracked
  * change. Does not commit. Returns the ids of the change records it wrote.
  *
@@ -1163,13 +1200,27 @@ export function recordEdits(doc, fileId, before, preResolved, edits, me, { run =
  * @returns {string[]}
  */
 export function trackedSplice(doc, fileId, from, to, insert, me, opts) {
+  return trackedSplices(doc, fileId, [{ from, to, insert }], me, opts);
+}
+
+/**
+ * Replaces several ranges of a file without tracking, keeping the records in
+ * step in one pass: the text is read and the records resolved once, the splices
+ * run from the end back, and the records are planned together. Does not commit.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} fileId
+ * @param {Edit[]} edits { from, to, insert } in the file's current coordinates, ascending, non-overlapping
+ */
+export function untrackedSplices(doc, fileId, edits) {
   const text = fileText(doc, fileId);
-  if (!text) return [];
+  if (!text) return;
   const before = text.toString();
   const pre = resolveFile(doc, fileId);
-  if (to > from) text.delete(from, to - from);
-  if (insert) text.insert(from, insert);
-  return recordEdits(doc, fileId, before, pre, [{ from, to, insert }], me, opts);
+  spliceDescending(text, edits);
+  if (pre.changes.length === 0 && pre.gaps.length === 0) return;
+  const plan = planEdits(before, pre, edits, { who: "", author: "" }, { now: Date.now(), mintId: () => crypto.randomUUID(), untracked: true });
+  writePlanned(doc, fileId, plan);
 }
 
 /**
@@ -1177,15 +1228,7 @@ export function trackedSplice(doc, fileId, from, to, insert, me, opts) {
  * step: pending spans shrink or split, collapsed gaps merge. Does not commit.
  */
 export function untrackedSplice(doc, fileId, from, to, insert) {
-  const text = fileText(doc, fileId);
-  if (!text) return;
-  const before = text.toString();
-  const pre = resolveFile(doc, fileId);
-  if (to > from) text.delete(from, to - from);
-  if (insert) text.insert(from, insert);
-  if (pre.changes.length === 0 && pre.gaps.length === 0) return;
-  const plan = planEdits(before, pre, [{ from, to, insert }], { who: "", author: "" }, { now: Date.now(), mintId: () => crypto.randomUUID(), untracked: true });
-  writePlanned(doc, fileId, plan);
+  untrackedSplices(doc, fileId, [{ from, to, insert }]);
 }
 
 /**

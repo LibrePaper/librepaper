@@ -256,7 +256,7 @@
   import { commentMarks, setCommentMarks as setCommentMarksEffect } from "../lib/source-comment-marks.js";
   import { authorshipRuns, summarize, markSpans } from "../lib/authorship.js";
   import { authorshipMarks, setAuthorshipMarks } from "../lib/authorship-marks.js";
-  import { CHANGES, PRUNE_ORIGIN, planEdits, plannedWrite, writePlanned, writtenState, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, PRUNE_ORIGIN, planEdits, plannedWrite, writePlanned, writtenState, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplices, untrackedSplices, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory, projectPaths } from "../lib/projection.js";
@@ -687,11 +687,8 @@
     const before = text.toString();
     session.anchors.get(fileId);
     const known = new Set(doc.getMap(CHANGES).size ? resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.map((f) => f.id)) : []);
-    for (let i = ascending.length - 1; i >= 0; i--) {
-      const { from, to, insert } = ascending[i];
-      if (tracked) trackedSplice(doc, fileId, from, to, insert, me);
-      else untrackedSplice(doc, fileId, from, to, insert);
-    }
+    if (tracked) trackedSplices(doc, fileId, ascending, me);
+    else untrackedSplices(doc, fileId, ascending);
     doc.commit();
     let fragments = [];
     if (ascending.some((edit) => edit.to > edit.from) && doc.getMap(CHANGES).size) {
