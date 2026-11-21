@@ -143,6 +143,22 @@ export function validateFrameMessage(input) {
       return { type: input.type };
     case "focus":
       return boundedString(input.id, MAX_ID) && input.id.length ? { type: "focus", id: input.id } : null;
+    case "shortcut": {
+      // A keystroke the frame saw with Mod+Alt held, passed on so the Reader
+      // can run its own shortcut. The key must be present; the code may be
+      // missing. Modifier flags are only true when sent as true.
+      if (!boundedString(input.key, 32) || !input.key.length) return null;
+      if (input.code !== undefined && input.code !== null && !boundedString(input.code, 32)) return null;
+      return {
+        type: "shortcut",
+        key: input.key,
+        code: typeof input.code === "string" ? input.code : "",
+        ctrlKey: input.ctrlKey === true,
+        metaKey: input.metaKey === true,
+        altKey: input.altKey === true,
+        shiftKey: input.shiftKey === true,
+      };
+    }
     case "reading-position": {
       // The text offset is null when the frame found no text under the probe
       // point; the PDF point is optional and dropped when it is invalid. A

@@ -70,6 +70,14 @@ for (const message of [
   { type: "reading-position", start: 4 },
 ]) assert.ok(accepted(message), `${message.type} is an emitted frame message`);
 assert.deepEqual(accepted({ type: "unfocus" }), { type: "unfocus" });
+// A shortcut from the preview keeps its key and code, and its modifier flags
+// are true only when sent as true. A missing code becomes "".
+assert.deepEqual(accepted({ type: "shortcut", key: "k", code: "KeyK", ctrlKey: true, altKey: true }), {
+  type: "shortcut", key: "k", code: "KeyK", ctrlKey: true, metaKey: false, altKey: true, shiftKey: false,
+});
+assert.deepEqual(accepted({ type: "shortcut", key: "J", ctrlKey: "yes", metaKey: true, altKey: 1, shiftKey: true, junk: 1 }), {
+  type: "shortcut", key: "J", code: "", ctrlKey: false, metaKey: true, altKey: false, shiftKey: true,
+});
 // A reading position is a text offset, a PDF point, or both. An offset that
 // is missing is null, and a PDF point that is invalid is dropped.
 assert.deepEqual(accepted({ type: "reading-position", start: 4 }), { type: "reading-position", start: 4, pdf: null });
@@ -113,6 +121,12 @@ for (const message of [
   { type: "scroll", top: 0 }, { type: "scroll", delta: "12", top: 0 }, { type: "scroll", delta: NaN, top: 0 },
   { type: "scroll", delta: 1, top: undefined }, { type: "scroll", delta: 1, top: 100_000_001 },
   { type: "scroll", delta: -100_000_001, top: 0 },
+  { type: "shortcut", code: "KeyK", ctrlKey: true, altKey: true },
+  { type: "shortcut", key: "", code: "KeyK", ctrlKey: true, altKey: true },
+  { type: "shortcut", key: "k".repeat(33), code: "KeyK", ctrlKey: true, altKey: true },
+  { type: "shortcut", key: 107, code: "KeyK", ctrlKey: true, altKey: true },
+  { type: "shortcut", key: "k", code: 75, ctrlKey: true, altKey: true },
+  { type: "shortcut", key: "k", code: "C".repeat(33), ctrlKey: true, altKey: true },
 ]) rejected(message);
 
 // A long ready message costs more bucket units than a short one: ten 2 MB

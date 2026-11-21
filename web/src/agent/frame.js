@@ -1170,9 +1170,22 @@ import { morphChildren } from "./morph.js";
   // the passage in hand, Escape for the mode the sidebar armed -- so neither
   // takes a key away from a document that wants one.
   document.addEventListener("keydown", (event) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target instanceof Element ? event.target : null;
-    if (target && ((target instanceof HTMLElement && target.isContentEditable) || target.closest("input,textarea,select,[contenteditable]"))) return;
+    const editable = target && ((target instanceof HTMLElement && target.isContentEditable) || target.closest("input,textarea,select,[contenteditable]"));
+    // Only Mod+Alt chords travel to the Reader. Those are the workspace's own
+    // shortcuts, and no document or browser default wants them; copy, paste
+    // and the rest stay with the frame. The frame does not preventDefault,
+    // since it cannot know whether the Reader will claim the chord.
+    if ((event.ctrlKey || event.metaKey) && event.altKey) {
+      if (editable) return;
+      post({
+        type: "shortcut", key: event.key, code: event.code,
+        ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey,
+      });
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (editable) return;
     if (event.key === "Escape") {
       post({ type: "disarm" });
       return;

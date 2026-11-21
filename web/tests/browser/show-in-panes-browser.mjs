@@ -242,6 +242,22 @@ try {
   // The source tints the line it landed on.
   await until("the source landing flash", () => exists(".cm-landing-flash"), 2000);
 
+  // 4b. The same Show in source, pressed as a chord with the keyboard focus in
+  // the preview: Ctrl+Alt+K reaches the Reader through the frame, not through
+  // the window. The source caret starts at the end of the document, and the
+  // preview is scrolled so Paragraph 15 is near its top.
+  await scrollFrame((await paragraphTop(15)) - 40);
+  await flush();
+  await setCaret((await b.evaluate('window.EditorView.findFromDOM(document.querySelector(".cm-editor")).state.doc.length')));
+  await flush();
+  await b.evaluate(`(() => { const f = document.querySelector('iframe[title=Document]'); f.focus(); f.contentWindow.focus(); f.contentDocument.body.focus(); return true; })()`);
+  await flush();
+  // Browser key events go to the focused frame, and Mod is Ctrl on Linux: Ctrl (2) + Alt (1) = 3.
+  await b.command("Input.dispatchKeyEvent", { type: "keyDown", modifiers: 3, key: "k", code: "KeyK", windowsVirtualKeyCode: 75 });
+  await b.command("Input.dispatchKeyEvent", { type: "keyUp", modifiers: 3, key: "k", code: "KeyK", windowsVirtualKeyCode: 75 });
+  await until("the source caret at the passage near the top of the preview from the preview's shortcut", async () => /\b(Section|Paragraph) (14|15|16)\b/.test(await caretLine()), 10000);
+  assert.match(await caretLine(), /\b(Section|Paragraph) (14|15|16)\b/, "Ctrl+Alt+K pressed in the preview moves the source caret to the passage at the top of the preview (Section or Paragraph 15, within one)");
+
   // 5. A double-click on a passage in the preview moves the source caret there,
   // with Keep in step still off.
   await setCaret(0);
@@ -278,5 +294,5 @@ try {
   await setSourceSide("left");
   await assertPillBetweenPanes("left");
 
-  console.log("show-in-panes-browser: Keep in step is on by default, its toggle sets the pill, Show in preview and Show in source move the panes with it off, a double-click moves the source, the lock restores, and the pill sits between the panes on both sides");
+  console.log("show-in-panes-browser: Keep in step is on by default, its toggle sets the pill, Show in preview and Show in source move the panes with it off, Ctrl+Alt+K pressed in the preview moves the source, a double-click moves the source, the lock restores, and the pill sits between the panes on both sides");
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

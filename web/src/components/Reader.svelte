@@ -840,6 +840,9 @@
           followReadingPosition(message.start, message.pdf);
         }
         break;
+      case "shortcut":
+        runFrameShortcut(message);
+        break;
       case "focus":
         void focusAnnotation(message.id);
         break;
@@ -4909,6 +4912,26 @@
   function focusPreview() {
     if (compact) arrangement.showMobileView("document");
     preview?.focus();
+  }
+
+  // The commands a keystroke in the preview may start. The document in the
+  // preview is untrusted and could fake keystrokes, so only commands that move
+  // or link the panes may be started from it -- never downloads, sharing or
+  // anything that changes the project.
+  const FRAME_COMMANDS = ["show-in-preview", "show-in-source", "linked"];
+
+  // A chord pressed inside the preview arrives as a message, not as a window
+  // keydown. It is read against the same registry as a keystroke in the
+  // workspace, with the preview as the target, and runs only when it names one
+  // of FRAME_COMMANDS. The frame has not cancelled it, so nothing is undone here.
+  function runFrameShortcut(message) {
+    const event = {
+      key: message.key, code: message.code, ctrlKey: message.ctrlKey, metaKey: message.metaKey,
+      altKey: message.altKey, shiftKey: message.shiftKey, target: document.body,
+    };
+    const command = commandFor(event, commandContext);
+    if (!command || !FRAME_COMMANDS.includes(command.id)) return;
+    void runCommand(command.id);
   }
 
   function shortcut(event) {
