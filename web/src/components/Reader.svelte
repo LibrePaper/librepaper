@@ -4742,10 +4742,12 @@
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
     if (id === "focus-search") {
-      // A selection on one line fills the search, as in other editors.
+      // A selection on one line fills the search, as in other editors. The seed
+      // always moves focus to the search input, even with nothing selected.
       const selected = editor?.selection?.();
-      const text = selected ? String(session?.textOf?.(selected.file)?.toString?.() ?? "").slice(selected.from, selected.to) : "";
-      if (text && !text.includes("\n")) searchSeed = { text, n: (searchSeed?.n || 0) + 1 };
+      const selectedText = selected ? String(session?.textOf?.(selected.file)?.toString?.() ?? "").slice(selected.from, selected.to) : "";
+      const text = selectedText && !selectedText.includes("\n") ? selectedText : "";
+      searchSeed = { text, n: (searchSeed?.n || 0) + 1 };
       return focusPanel("search");
     }
     if (id === "symbols" || id === "math") return openPalette(id);
@@ -5108,8 +5110,9 @@
 
   {#snippet searchPanel()}
     <PanelBoundary name="the search panel">
+    <!-- No replace beside a figure: the editor is not mounted then, so replaceInFile would do nothing. -->
     <Search files={searchFiles} textOf={(id) => String(session?.textOf?.(id)?.toString?.() ?? "")}
-      revision={searchRevision} canReplace={mayEdit} seed={searchSeed}
+      revision={searchRevision} canReplace={mayEdit && !shownFigure} seed={searchSeed}
       onopen={openSearchResult} onreplace={replaceInFile} />
     </PanelBoundary>
   {/snippet}
