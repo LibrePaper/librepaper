@@ -68,7 +68,7 @@
 
   function recompute() {
     if (!results) return;
-    results = run(current(), files);
+    show(run(current(), files));
   }
 
   // Debounced: a query, option, file list, revision or visibility change recomputes
@@ -80,11 +80,11 @@
     void revision;
     if (!active) return;
     if (!opts.query) {
-      results = null;
+      show(null);
       return;
     }
     const timer = setTimeout(() => {
-      results = run(opts, snapshot);
+      show(run(opts, snapshot));
     }, 150);
     return () => clearTimeout(timer);
   });
@@ -153,12 +153,18 @@
   // A different query or option invalidates the position Enter was stepping
   // through. A recompute after an edit or a replace keeps it, so a click on a
   // stale row does not lose its highlight to the search that click runs.
-  const searchKey = $derived(results ? JSON.stringify(results.options) : "");
-  $effect(() => {
-    void searchKey;
-    at = null;
-    selected = null;
-  });
+  // The reset happens where results are assigned, not in an effect: Enter can
+  // search and step in one go, and an effect would run after the step and undo it.
+  let searchKey = "";
+  function show(next) {
+    const key = next ? JSON.stringify(next.options) : "";
+    if (key !== searchKey) {
+      searchKey = key;
+      at = null;
+      selected = null;
+    }
+    results = next;
+  }
 
   $effect(() => {
     if (!sentinel || !resultsEl || typeof IntersectionObserver === "undefined") return;
@@ -234,7 +240,7 @@
     // During the debounce, or before the first search, the shown matches are not
     // this query's. Search now so Enter steps through the right ones.
     if (!fresh || !results) {
-      results = run(current(), files);
+      show(run(current(), files));
       if (invalid || !flat.length) return;
     }
     step(event.shiftKey ? -1 : 1);
@@ -243,10 +249,10 @@
   function onResultsKeydown(event) {
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     const items = [...resultsEl.querySelectorAll("[data-nav]")];
-    const at = items.indexOf(document.activeElement);
-    if (at < 0) return;
+    const focused = items.indexOf(document.activeElement);
+    if (focused < 0) return;
     event.preventDefault();
-    const to = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : at + (event.key === "ArrowDown" ? 1 : -1);
+    const to = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : focused + (event.key === "ArrowDown" ? 1 : -1);
     items[Math.max(0, Math.min(items.length - 1, to))]?.focus();
   }
 
