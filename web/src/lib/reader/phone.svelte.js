@@ -276,7 +276,7 @@ export function createPhone({
       { rows: [...panelRows, ...collaborationRows] },
       { rows: [
         { id: "settings", icon: "settings", label: m.common_settings() },
-        { id: "palette", icon: "search", label: m.common_command_palette() },
+        { id: "palette", icon: "command", label: m.common_command_palette() },
         { id: "home", icon: "house", label: m.common_projects(), href: "/" },
         { id: "help", icon: "circle-help", label: m.mobilenav_help(), href: DOCUMENTATION_URL, external: true },
         ...(role().me.name ? [{ id: "signout", icon: "log-out", label: m.common_sign_out() }]
