@@ -213,6 +213,12 @@ import { morphChildren } from "./morph.js";
     /* The annotation the sidebar has singled out: a ring around every piece
        of its passage, so that it stands out from the wash the others sit
        under. */
+    /* The span a jump from the source has just landed on, painted for about a
+       second by flashLanding. The Custom Highlight API draws it where it is
+       supported; elsewhere nothing is drawn. */
+    ::highlight(librepaper-landing) {
+      background-color: rgb(230 159 0 / 0.35);
+    }
     mark[data-librepaper][data-librepaper-selected] {
       outline: 2px solid #0072b2;
       outline-offset: 1px;
@@ -385,6 +391,26 @@ import { morphChildren } from "./morph.js";
       if (to > from) pieces.push({ node: table.nodes[i], from, to, end: nodeStart + to });
     }
     return pieces;
+  }
+
+  // The tint over text a jump from the source has just landed on: every
+  // piece of it, not only the first, for about a second. A browser without the
+  // Custom Highlight API gets nothing extra; the scroll is the whole effect.
+  let landingTimer = 0;
+  function flashLanding(pieces) {
+    if (!globalThis.CSS?.highlights || typeof Highlight !== "function") return;
+    const ranges = pieces.map((piece) => {
+      const range = document.createRange();
+      range.setStart(piece.node, piece.from);
+      range.setEnd(piece.node, piece.to);
+      return range;
+    });
+    CSS.highlights.set("librepaper-landing", new Highlight(...ranges));
+    clearTimeout(landingTimer);
+    landingTimer = setTimeout(() => {
+      landingTimer = 0;
+      CSS.highlights.delete("librepaper-landing");
+    }, 1000);
   }
 
   // Paint, from a list of {id, start, end, resolved} the sidebar worked out.
@@ -920,8 +946,10 @@ import { morphChildren } from "./morph.js";
     // and this end knows which node holds it.
     if (message.type === "locate") {
       const start = Number(message.start) || 0;
-      const [piece] = piecesFor(start, start + Math.max(1, Number(message.length) || 1));
+      const pieces = piecesFor(start, start + Math.max(1, Number(message.length) || 1));
+      const [piece] = pieces;
       if (!piece) return;
+      if (message.flash) flashLanding(pieces);
       const range = document.createRange();
       range.setStart(piece.node, piece.from);
       range.setEnd(piece.node, piece.to);

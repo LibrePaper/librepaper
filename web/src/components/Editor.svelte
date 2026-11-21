@@ -266,6 +266,7 @@
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
   import { FLASH_MS, flashPresence, presenceFlash } from "../lib/presence-flash.js";
+  import { LANDING_FLASH_MS, flashLanding, landingFlash } from "../lib/landing-flash.js";
   import { formatOf as documentFormat, sourceFormatOf } from "../lib/formats.js";
   import { spellcheckExtension } from "../lib/spellcheck/extension.js";
   import { harperExtension } from "../lib/harper/extension.js";
@@ -293,7 +294,7 @@
   // `me` is who the tracked edits belong to, `{who, author}`. `selectedChange`
   // is the id of the change the reviewer is looking at.
   /** @type {{ me?: { who: string, author: string }, [key: string]: any }} */
-  let { session, format = "", file = "", keys = "default", editable = true,
+  let { session, format = "", file = "", keys = "default", editable = true, onshowinpreview = null,
     completion = true, brackets = true, latexAssist = true, proofing = "browser", dialect = "american", check = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     // A suggester's typing is always tracked: tracking starts on and cannot be stopped.
@@ -1170,22 +1171,22 @@
   /// has to happen before the caret moves -- an offset means nothing until the
   /// view is showing the text it is an offset into -- which is why this is one
   /// function and not the caller doing both.
-  export function goToIn(id, at) {
+  export function goToIn(id, at, options = {}) {
     if (!view || !id) return;
     show(id);
-    goTo(at);
+    goTo(at, options);
   }
 
   /// Opens a file and puts the caret on a line in it. What choosing a
   /// diagnostic in the panel does, and what the badge does when the next one
   /// is in another chapter.
-  export function openAt(id, line, column = 1) {
+  export function openAt(id, line, column = 1, options = {}) {
     if (!view || !id) return;
     show(id);
     // The state has just been swapped, so the coordinates are this file's.
     const doc = view.state.doc;
     const at = doc.line(Math.min(Math.max(line, 1), doc.lines));
-    goTo(Math.min(at.from + Math.max(column - 1, 0), at.to));
+    goTo(Math.min(at.from + Math.max(column - 1, 0), at.to), options);
   }
 
   /// The panel CodeMirror provides, for the document with nine errors. The
@@ -1243,19 +1244,32 @@
     }, FLASH_MS);
   }
 
+  let landingTimer = 0;
   /// Puts the caret at an offset and scrolls it into the middle of the view:
   /// what a click in the document does when the two are kept in step. With
   /// `focus: false` the caret and the view move but the keyboard stays where
-  /// it is, which is what a click in the preview needs.
-  export function goTo(at, { focus = true } = {}) {
+  /// it is, which is what a click in the preview needs. With `flash: true` the
+  /// line the caret lands on is tinted for about a second, so the person can
+  /// see where a jump went.
+  export function goTo(at, { focus = true, flash = false } = {}) {
     if (!view) return;
     // A place remembered earlier may lie past the end of a file that has
     // shrunk since, and CodeMirror throws on a selection outside the text.
     const place = Math.min(Math.max(Number(at) || 0, 0), view.state.doc.length);
     view.dispatch({
       selection: { anchor: place },
-      effects: EditorView.scrollIntoView(place, { y: "center" }),
+      effects: [
+        EditorView.scrollIntoView(place, { y: "center" }),
+        ...(flash ? [flashLanding.of(place)] : []),
+      ],
     });
+    if (flash) {
+      clearTimeout(landingTimer);
+      landingTimer = setTimeout(() => {
+        landingTimer = 0;
+        view?.dispatch({ effects: flashLanding.of(null) });
+      }, LANDING_FLASH_MS);
+    }
     if (focus) view.focus();
   }
 
@@ -1360,16 +1374,26 @@
 
   // Shown at once from what the editor knows, then again once the clipboard
   // probe has answered, so Paste is never offered on a stale answer.
+  // Show in preview is offered exactly when the host hands the editor a way to show it.
+  const previewAvailable = () => ({ "show-in-preview": typeof onshowinpreview === "function" });
+  // The menu's groups without the items this editor cannot offer; an emptied group goes too.
+  const sourceMenu = $derived(SOURCE_MENU
+    .map((group) => group.filter((command) => command !== "show-in-preview" || typeof onshowinpreview === "function"))
+    .filter((group) => group.length));
   async function openSourceMenu() {
-    sourceMenuAvailable = editAvailability();
+    sourceMenuAvailable = { ...editAvailability(), ...previewAvailable() };
     await probeClipboard();
-    sourceMenuAvailable = editAvailability();
+    sourceMenuAvailable = { ...editAvailability(), ...previewAvailable() };
   }
 
   // Runs a source-menu item. Zag hands focus back to the trigger as the menu
   // closes, so the command waits a tick and then the editor takes the focus
   // itself. A refused clipboard read greys Paste (editCommand turns it off).
   function runSourceMenu(command) {
+    if (command === "show-in-preview") {
+      setTimeout(() => onshowinpreview?.(), 0);
+      return;
+    }
     setTimeout(() => { void editCommand(command).catch(() => {}); }, 0);
   }
 
@@ -1779,6 +1803,8 @@
         pendingChanges,
         // The flash over a collaborator's place after a click on their avatar.
         presenceFlash,
+        // The tint over the line a jump landed on (goTo with flash).
+        landingFlash,
         // The bar over a selection, offering the annotating verbs.
         commentBar,
         // A right click outside the selection moves the caret there, before the source menu opens.
@@ -2455,7 +2481,7 @@
     {/snippet}
   </Menu.ContextTrigger>
   <ExplorerMenu>
-    {#each SOURCE_MENU as group, index}
+    {#each sourceMenu as group, index}
       {#if index}<hr class="hr my-1" />{/if}
       {#each group as command (command)}
         <Menu.Item value={command} class="menuitem" disabled={!sourceMenuAvailable[command]} data-tip={command === "paste" && !pasteReadable ? m.editor_paste_blocked() : undefined} data-tip-place="right">
