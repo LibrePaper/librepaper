@@ -3396,13 +3396,25 @@
   // SyncTeX first; otherwise the words are searched for across the directory,
   // since they may belong to any file, and the file they are in is opened.
   // Both Show in source and a double-click come here, so they reach the source
-  // the same way. A phone shows the source pane first and reaches the place
-  // once it is laid out; a desktop whose split is too narrow for the source to
-  // be on screen switches to the split and brings the source forward first.
+  // the same way. The destination is worked out before any pane moves: a click
+  // that has nowhere to go (a figure, say) must not hide the preview and show
+  // the old caret. Only then does a phone show the source pane and reach the
+  // place once it is laid out, or a desktop whose split is too narrow for the
+  // source to be on screen switch to the split and bring the source forward.
   // Focus stays out of it on a phone so the keyboard does not open.
   async function jumpToSource(offset, pdfPoint = null) {
     if (!editing || docText === null || !editor) return;
     if ((offset === null || offset === undefined) && !pdfPoint) return;
+    const synctex = pdfTarget(pdfPoint);
+    let text = null;
+    if (!synctex && offset !== null && offset !== undefined) {
+      const found = sync.sourcePlaceInTree(docText, offset, treeNow(), {
+        open: session?.paths?.get(openFile) || "",
+        formatOf: renderers.previewFormatOf,
+      });
+      if (found) text = { id: session.idOf(found.path), at: found.at };
+    }
+    if (!synctex && !text) return;
     const focus = !compact;
     if (compact) {
       skipReadingPosition = true;
@@ -3423,37 +3435,34 @@
     clearTimeout(stepTimer);
     previewPlacing = true;
     try {
-      if (followPdfClick(pdfPoint, { focus })) return;
-      // A PDF point with no SyncTeX match and no text to search for: nothing to go to.
-      if (offset === null || offset === undefined) return;
-      const found = sync.sourcePlaceInTree(docText, offset, treeNow(), {
-        open: session?.paths?.get(openFile) || "",
-        formatOf: renderers.previewFormatOf,
-      });
-      if (!found) return;
-      const id = session.idOf(found.path);
-      rememberPlace(id, found.at);
-      if (id) {
-        ws.openFile = id;
-        editor.goToIn(id, found.at, { focus, flash: true });
+      if (synctex) {
+        rememberPlace(synctex.id);
+        ws.openFile = synctex.id;
+        editor.openAt(synctex.id, synctex.line, 1, { focus, flash: true });
       } else {
-        editor.goTo(found.at, { focus, flash: true });
+        rememberPlace(text.id, text.at);
+        if (text.id) {
+          ws.openFile = text.id;
+          editor.goToIn(text.id, text.at, { focus, flash: true });
+        } else {
+          editor.goTo(text.at, { focus, flash: true });
+        }
       }
     } finally {
       previewPlacing = false;
     }
   }
 
-  function followPdfClick(pdfPoint, { focus = true } = {}) {
+  // Where a PDF point lands in the source, as { id, line }, or null when
+  // SyncTeX cannot place it in a file the reader has open to edit. It only
+  // reads state, so jumpToSource can ask before it moves anything.
+  function pdfTarget(pdfPoint) {
     if (!editing || !editor || sourceFormat !== "latex" ||
-        !painted.synctex || !pdfPoint) return false;
+        !painted.synctex || !pdfPoint) return null;
     const precise = painted.synctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
     const id = precise && session.idOf(precise.path);
-    if (!id) return false;
-    rememberPlace(id);
-    ws.openFile = id;
-    editor.openAt(id, precise.line, 1, { focus, flash: true });
-    return true;
+    if (!id) return null;
+    return { id, line: precise.line };
   }
 
   // The source offset that matches a place in the preview, or null when there
@@ -3505,9 +3514,12 @@
   let positionAsked = false;
   // Set by Show in source: the reply names the place to show in the source, and
   // jumpToSource moves there rather than the reply moving the source in place.
-  // Set while the preview is still on screen, so it can be measured.
+  // Set while the preview is still on screen, so it can be measured. Only one
+  // of the two is pending at a time: each request clears the other, so a reply
+  // to one can never be taken for the answer to the other.
   let sourceAsked = false;
   function askReadingPosition() {
+    sourceAsked = false;
     positionAsked = true;
     tell({ type: "reading-position" });
   }
@@ -3537,7 +3549,7 @@
   // flash. A phone shows the document pane; a desktop with no preview on screen
   // gets the split first, so there is a preview to show it in.
   async function showInPreview() {
-    if (!editing || !editor || docText === null) return;
+    if (!editing || !editor || docText === null || ws.figure) return;
     clearTimeout(stepTimer);
     if (compact) {
       arrangement.showMobileView("document");
@@ -3558,7 +3570,8 @@
   // the source (on a phone, or on a desktop whose split is too narrow for it)
   // and moves it there. The same path serves every layout.
   function showInSource() {
-    if (!editing || !editor || docText === null) return;
+    if (!editing || !editor || docText === null || ws.figure) return;
+    positionAsked = false;
     sourceAsked = true;
     tell({ type: "reading-position" });
   }
@@ -4763,6 +4776,9 @@
     edit: editAvailability,
     canClearChat: chatState.canClear,
     canComment: mayChat,
+    // The jumps need a source caret on the other side. While an image or figure
+    // is shown where the editor would be, there is none, so they are off.
+    linkable: Boolean(editing && editor && !ws.figure && docText !== null),
     // In Vim or Emacs mode Alt is the editor's, so the Alt menu chords stand down in the source.
     modalEditor: keys === "vim" || keys === "emacs",
   });
@@ -5359,10 +5375,10 @@
           ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}>
       {#snippet pill()}
         {#if !linked}
-          <button type="button" class="grip-pill-button" aria-label={m.commands_show_in_preview()} data-tip={m.commands_show_in_preview()} data-tip-place={pillTipPlace} onclick={() => void showInPreview()}>
+          <button type="button" class="grip-pill-button" aria-label={m.commands_show_in_preview()} data-tip={m.commands_show_in_preview()} data-tip-place={pillTipPlace} disabled={!can["show-in-preview"]} onclick={() => void showInPreview()}>
             <Icon name={previewArrow} />
           </button>
-          <button type="button" class="grip-pill-button" aria-label={m.commands_show_in_source()} data-tip={m.commands_show_in_source()} data-tip-place={pillTipPlace} onclick={() => void showInSource()}>
+          <button type="button" class="grip-pill-button" aria-label={m.commands_show_in_source()} data-tip={m.commands_show_in_source()} data-tip-place={pillTipPlace} disabled={!can["show-in-source"]} onclick={() => void showInSource()}>
             <Icon name={sourceArrow} />
           </button>
           <span class="grip-pill-rule"></span>

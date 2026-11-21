@@ -146,11 +146,13 @@ export function validateFrameMessage(input) {
     case "reading-position": {
       // The text offset is null when the frame found no text under the probe
       // point; the PDF point is optional and dropped when it is invalid. A
-      // reply with neither says nothing the reader can use.
+      // reply with neither is still accepted, as an empty reply: the reader
+      // asked for a position and needs every answer, even an empty one, to
+      // settle that request. Otherwise a Show in source that got no answer
+      // would stay pending and hijack the next automatic reading position.
       const start = input.start;
       if (start !== null && (!Number.isSafeInteger(start) || start < 0 || start > MAX_READY_TEXT)) return null;
       const pdf = pdfPoint(input.pdf);
-      if (start === null && !pdf) return null;
       return { type: "reading-position", start, pdf };
     }
     case "scroll": {
