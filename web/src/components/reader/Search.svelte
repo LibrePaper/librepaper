@@ -27,6 +27,9 @@
     // (id, plan) => void | Promise<void>. plan(text) returns the edits for that file's
     // text as it is when the write happens, so the caller plans after any wait.
     onreplace,
+    // (options | null) => void: the options of the search the list shows, for the editor to mark;
+    // null when there is nothing to mark.
+    onquery,
   } = $props();
 
   let input = $state(null);
@@ -109,6 +112,11 @@
 
   // One display row per line, computed once per result set.
   const groupRows = $derived(groups.map((group) => ({ group, rows: lineRows(group.matches) })));
+  $effect(() => {
+    onquery?.(active && results && !invalid && results.total > 0 ? results.options : null);
+    return () => onquery?.(null);
+  });
+
   const stale = $derived(!!query && !!results && !invalid && !fresh);
   const allCollapsed = $derived(groups.length > 0 && groups.every((group) => collapsed.has(group.path)));
   // Every match in result order, for stepping through them with Enter.
