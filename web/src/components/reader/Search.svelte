@@ -112,8 +112,11 @@
 
   // One display row per line, computed once per result set.
   const groupRows = $derived(groups.map((group) => ({ group, rows: lineRows(group.matches) })));
+  // The editor marks the matches of the search the list shows. Keyed by the options,
+  // so a recompute after an edit does not make the editor rebuild its marks.
+  const marked = $derived(active && results && !invalid && results.total > 0 ? JSON.stringify(results.options) : "");
   $effect(() => {
-    onquery?.(active && results && !invalid && results.total > 0 ? results.options : null);
+    onquery?.(marked ? JSON.parse(marked) : null);
     return () => onquery?.(null);
   });
 
