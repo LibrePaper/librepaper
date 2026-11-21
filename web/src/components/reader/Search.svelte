@@ -4,7 +4,9 @@
   import IconButton from "../IconButton.svelte";
   import { m } from "../../lib/paraglide/messages.js";
   import { locale } from "../../lib/locale.js";
+  import Icon from "../Icon.svelte";
   import { searchProject, replacementsFor } from "../../lib/project-search.js";
+  import { lineRows, splitPath } from "../../lib/search-rows.js";
 
   // Search across every text file in the project. The engine does the matching
   // and the edit planning; this component holds the query, debounces it, shows
@@ -103,6 +105,123 @@
   const invalid = $derived(results?.error === "invalid");
   const hasResults = $derived(!!results && !invalid && results.total > 0);
 
+  // One display row per line, computed once per result set.
+  const groupRows = $derived(groups.map((group) => ({ group, rows: lineRows(group.matches) })));
+  const stale = $derived(!!query && !!results && !invalid && !fresh);
+  const allCollapsed = $derived(groups.length > 0 && groups.every((group) => collapsed.has(group.path)));
+  // Every match in result order, for stepping through them with Enter.
+  const flat = $derived(groups.flatMap((group) => group.matches.map((match) => ({ group, match }))));
+
+  const PAGE = 300;
+  // How many rows are drawn; more are added as the end of the list scrolls into view.
+  let limit = $state(PAGE);
+  let cursor = -1;
+  let selected = $state(null);
+  let resultsEl = $state(null);
+  let sentinel = $state(null);
+
+  // The groups to draw, with expanded groups cut to the row budget.
+  const visible = $derived.by(() => {
+    let left = limit;
+    const out = [];
+    let more = false;
+    for (const entry of groupRows) {
+      if (left <= 0) {
+        more = true;
+        break;
+      }
+      const expanded = !collapsed.has(entry.group.path);
+      const rows = expanded ? entry.rows.slice(0, left) : [];
+      if (expanded && rows.length < entry.rows.length) more = true;
+      left -= rows.length;
+      out.push({ ...entry, expanded, rows });
+    }
+    return { entries: out, more };
+  });
+
+  const rowKey = (group, row) => `${group.id}:${row.matches[0].from}`;
+
+  // A new query starts from a clean list: everything expanded, first page, no selection.
+  $effect(() => {
+    void query;
+    collapsed = new Set();
+    limit = PAGE;
+  });
+  // New results invalidate the position that Enter was stepping through.
+  $effect(() => {
+    void results;
+    cursor = -1;
+    selected = null;
+  });
+
+  $effect(() => {
+    if (!sentinel || !resultsEl || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) limit += PAGE;
+    }, { root: resultsEl });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  });
+
+  function clearQuery() {
+    query = "";
+    input?.focus();
+  }
+
+  function collapseToggle() {
+    collapsed = allCollapsed ? new Set() : new Set(groups.map((group) => group.path));
+  }
+
+  // Enter and Shift+Enter step through every match, wrapping at the ends.
+  async function step(direction) {
+    if (!flat.length) return;
+    cursor = (cursor + direction + flat.length) % flat.length;
+    const { group, match } = flat[cursor];
+    if (collapsed.has(group.path)) {
+      const next = new Set(collapsed);
+      next.delete(group.path);
+      collapsed = next;
+    }
+    // Make sure the row is among the drawn ones.
+    let rowsBefore = 0;
+    for (const entry of groupRows) {
+      if (entry.group === group) {
+        const index = entry.rows.findIndex((row) => row.matches.includes(match));
+        selected = rowKey(group, entry.rows[index]);
+        rowsBefore += index + 1;
+        break;
+      }
+      rowsBefore += entry.rows.length;
+    }
+    if (rowsBefore > limit) limit = rowsBefore;
+    open(group, match);
+    await tick();
+    resultsEl?.querySelector(`[data-key="${CSS.escape(selected)}"]`)?.scrollIntoView({ block: "nearest" });
+  }
+
+  function onInputKeydown(event) {
+    if (event.key !== "Enter" || event.isComposing || !flat.length) return;
+    event.preventDefault();
+    step(event.shiftKey ? -1 : 1);
+  }
+
+  function onResultsKeydown(event) {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const items = [...resultsEl.querySelectorAll("[data-nav]")];
+    const at = items.indexOf(document.activeElement);
+    if (at < 0) return;
+    event.preventDefault();
+    const to = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : at + (event.key === "ArrowDown" ? 1 : -1);
+    items[Math.max(0, Math.min(items.length - 1, to))]?.focus();
+  }
+
+  function openRow(group, row) {
+    selected = rowKey(group, row);
+    const index = flat.findIndex((entry) => entry.match === row.matches[0]);
+    if (index >= 0) cursor = index;
+    open(group, row.matches[0]);
+  }
+
   function toggleGroup(path) {
     const next = new Set(collapsed);
     if (next.has(path)) next.delete(path);
@@ -128,13 +247,13 @@
     onopen?.({ id: group.id, path: group.path, from: best.from, to: best.to });
   }
 
-  async function replaceOne(group, match) {
+  async function replaceLine(group, row) {
     if (!fresh || busy) return;
     const opts = results.options;
     const replacementText = replacement;
     busy = true;
     try {
-      await onreplace?.(group.id, (text) => replacementsFor(text, [match], replacementText, opts));
+      await onreplace?.(group.id, (text) => replacementsFor(text, row.matches, replacementText, opts));
     } finally {
       busy = false;
       recompute();
@@ -165,75 +284,113 @@
 
 <section class="panel panel-tabbed" aria-label={m.search_section_label()}>
   <PanelTabs id="search" title={m.common_search()}>
-  <div class="search-body">
-    <input
-      bind:this={input}
-      type="search"
-      class="input input-sm"
-      aria-label={m.search_input_label()}
-      placeholder={m.search_input_label()}
-      bind:value={query}
-    />
-    <div class="search-row">
-      <button type="button" class="btn btn-xs {caseSensitive ? 'lp-control-tonal-brand' : 'lp-control-tonal'}"
-              aria-pressed={caseSensitive} onclick={() => (caseSensitive = !caseSensitive)}>{m.search_match_case()}</button>
-      <button type="button" class="btn btn-xs {wholeWord ? 'lp-control-tonal-brand' : 'lp-control-tonal'}"
-              aria-pressed={wholeWord} onclick={() => (wholeWord = !wholeWord)}>{m.search_whole_word()}</button>
-      <button type="button" class="btn btn-xs {regex ? 'lp-control-tonal-brand' : 'lp-control-tonal'}"
-              aria-pressed={regex} onclick={() => (regex = !regex)}>{m.search_regex()}</button>
+  <div class="search-body" class:has-gutter={canReplace}>
+    <div class="search-top">
       {#if canReplace}
-        <button type="button" class="btn btn-xs lp-control-tonal" aria-expanded={replacing}
-                aria-controls="search-replace-row" onclick={() => (replacing = !replacing)}>
-          {replacing ? m.search_hide_replace() : m.search_show_replace()}
+        <button type="button" class="search-chevron" aria-expanded={replacing}
+                aria-controls="search-replace-row"
+                aria-label={replacing ? m.search_hide_replace() : m.search_show_replace()}
+                data-tip={replacing ? m.search_hide_replace() : m.search_show_replace()}
+                onclick={() => (replacing = !replacing)}>
+          <span class="chev" class:open={replacing}><Icon name="chevron-right" /></span>
         </button>
       {/if}
+      <div class="search-field" class:invalid>
+        <input
+          bind:this={input}
+          type="text"
+          class="search-input"
+          aria-label={m.search_input_label()}
+          placeholder={m.search_input_label()}
+          autocomplete="off"
+          spellcheck="false"
+          bind:value={query}
+          onkeydown={onInputKeydown}
+        />
+        {#if query}
+          <button type="button" class="search-toggle" aria-label={m.search_clear()} data-tip={m.search_clear()}
+                  onclick={clearQuery}><Icon name="x" /></button>
+        {/if}
+        <button type="button" class="search-toggle" aria-pressed={caseSensitive}
+                aria-label={m.search_match_case()} data-tip={m.search_match_case()}
+                onclick={() => (caseSensitive = !caseSensitive)}><span aria-hidden="true">Aa</span></button>
+        <button type="button" class="search-toggle" aria-pressed={wholeWord}
+                aria-label={m.search_match_whole_word()} data-tip={m.search_match_whole_word()}
+                onclick={() => (wholeWord = !wholeWord)}><span class="underlined" aria-hidden="true">ab</span></button>
+        <button type="button" class="search-toggle" aria-pressed={regex}
+                aria-label={m.search_use_regex()} data-tip={m.search_use_regex()}
+                onclick={() => (regex = !regex)}><span aria-hidden="true">.*</span></button>
+      </div>
     </div>
+    {#if invalid}
+      <p class="search-error lp-tone-error text-sm" role="alert">{m.search_invalid_regex()}</p>
+    {/if}
 
     {#if canReplace && replacing}
-      <div class="search-row" id="search-replace-row">
+      <div class="search-replace" id="search-replace-row">
         <input
           type="text"
-          class="input input-sm"
+          class="search-field search-input search-replace-input"
           aria-label={m.search_replace_label()}
           placeholder={m.search_replace_label()}
+          autocomplete="off"
+          spellcheck="false"
           bind:value={replacement}
         />
         <button type="button" class="btn btn-sm lp-control-tonal" disabled={!hasResults || !fresh || busy}
+                data-tip={hasResults ? m.search_replace_all_scope({ count: results.total, files: groups.length }) : undefined}
+                aria-description={hasResults ? m.search_replace_all_scope({ count: results.total, files: groups.length }) : undefined}
                 onclick={replaceAll}>{m.search_replace_all()}</button>
       </div>
     {/if}
 
-    {#if !query}
-      <p class="panel-muted">{m.search_hint()}</p>
-    {:else if invalid}
-      <p class="lp-tone-error text-sm" role="alert">{m.search_invalid_regex()}</p>
-    {:else if results && results.total === 0}
-      <p class="panel-muted">{m.search_no_results()}</p>
-    {:else if results}
-      <p class="panel-meta">{m.search_summary({ count: results.total, files: groups.length })}</p>
+    {#if hasResults}
+      <div class="search-summary">
+        <span class="panel-meta">{stale ? m.search_searching() : m.search_summary({ count: results.total, files: groups.length })}</span>
+        <button type="button" class="search-link" onclick={collapseToggle}>
+          {allCollapsed ? m.search_expand_all() : m.search_collapse_all()}
+        </button>
+      </div>
       {#if results.capped}
-        <p class="panel-meta">{m.search_capped({ count: results.total })}</p>
+        <p class="panel-meta search-capped">{m.search_capped({ count: results.total })}</p>
       {/if}
-      <div class="search-results">
-        {#each groups as group (group.id)}
-          {@const expanded = !collapsed.has(group.path)}
+    {:else if query && stale}
+      <p class="panel-meta search-summary">{m.search_searching()}</p>
+    {:else if query && results && !invalid}
+      <p class="panel-muted search-empty">{m.search_no_results()}</p>
+    {/if}
+
+    {#if hasResults}
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div class="search-results" class:stale bind:this={resultsEl} onkeydown={onResultsKeydown} role="group" aria-label={m.search_section_label()}>
+        {#each visible.entries as { group, rows, expanded } (group.id)}
           {@const countLabel = m.search_file_matches({ count: group.matches.length })}
+          {@const parts = splitPath(group.path)}
           <div class="search-group">
-            <button type="button" class="search-group-head" aria-expanded={expanded}
+            <button type="button" class="search-group-head" data-nav aria-expanded={expanded}
                     onclick={() => toggleGroup(group.path)}>
-              <span class="search-path">{group.path}</span>
+              <span class="chev" class:open={expanded}><Icon name="chevron-right" /></span>
+              <span class="search-name">{parts.name}</span>
+              {#if parts.dir}<span class="search-dir">{parts.dir}</span>{/if}
               <span class="search-count" aria-label={countLabel} data-tip={countLabel}>{fmt(group.matches.length)}</span>
             </button>
             {#if expanded}
               <ul class="search-matches">
-                {#each group.matches as match (match.from)}
-                  <li class="search-match-row">
-                    <button type="button" class="search-match" onclick={() => open(group, match)}>
-                      <span class="search-line">{match.line}</span>
-                      <span class="search-text">{match.before}<mark>{match.text}</mark>{match.after}</span>
+                {#each rows as row (row.matches[0].from)}
+                  <li class="search-match-row" class:selected={selected === rowKey(group, row)}>
+                    <button type="button" class="search-match" data-nav data-key={rowKey(group, row)}
+                            onclick={() => openRow(group, row)}>
+                      <span class="search-line">{row.line}</span>
+                      <span class="search-snippet">
+                        {#if row.before}<span class="search-before"><span dir="ltr">{row.before}</span></span>{/if}
+                        <span class="search-segments">{#each row.segments as seg}{#if seg.mark}<mark>{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
+                      </span>
                     </button>
                     {#if canReplace && replacing}
-                      <IconButton icon="check" label={m.search_replace_one()} disabled={!fresh || busy} onclick={() => replaceOne(group, match)} />
+                      <span class="search-row-replace">
+                        <IconButton icon="replace" label={m.search_replace_line()} disabled={!fresh || busy}
+                                    onclick={() => replaceLine(group, row)} />
+                      </span>
                     {/if}
                   </li>
                 {/each}
@@ -241,6 +398,7 @@
             {/if}
           </div>
         {/each}
+        {#if visible.more}<div class="search-sentinel" bind:this={sentinel}></div>{/if}
       </div>
     {/if}
   </div>
@@ -248,27 +406,104 @@
 </section>
 
 <style>
-  .search-body { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; gap: calc(var(--spacing) * 2); }
-  .search-row { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 1.5); }
-  .search-row .input { flex: 1 1 8rem; min-width: 0; }
-  .search-results { flex: 1 1 0; min-height: 0; overflow: auto; }
-  .search-group + .search-group { margin-top: calc(var(--spacing) * 2); padding-top: calc(var(--spacing) * 2); border-top: 1px solid var(--color-divider); }
-  .search-group-head {
-    display: flex; width: 100%; min-width: 0; align-items: baseline; gap: calc(var(--spacing) * 2);
-    padding: calc(var(--spacing) * .5) 0; font-size: var(--text-sm); font-weight: 600; text-align: left;
+  .search-body {
+    --gutter: 0px;
+    display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; gap: calc(var(--spacing) * 2);
   }
-  .search-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .search-count { flex: none; color: var(--color-text-secondary); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
-  .search-matches { margin: 0; padding: 0 0 0 calc(var(--spacing) * 2); list-style: none; }
-  .search-match-row { display: flex; align-items: center; gap: calc(var(--spacing) * 1); }
+  .search-body.has-gutter { --gutter: calc(var(--spacing) * 6 + var(--spacing) * 1); }
+  .search-top { container-type: inline-size; display: flex; align-items: center; gap: var(--spacing); min-width: 0; }
+  .search-chevron {
+    display: inline-flex; flex: none; align-items: center; justify-content: center;
+    width: calc(var(--spacing) * 6); height: calc(var(--spacing) * 8); border-radius: var(--radius-base);
+    color: var(--color-text-secondary);
+  }
+  .search-chevron:hover { background: var(--color-divider); color: var(--color-text); }
+  .search-chevron:focus-visible, .search-toggle:focus-visible, .search-link:focus-visible,
+  .search-group-head:focus-visible, .search-match:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+  .chev { display: inline-flex; width: 14px; height: 14px; transition: transform .12s ease; }
+  .chev :global(svg) { width: 100%; height: 100%; }
+  .chev.open { transform: rotate(90deg); }
+
+  .search-field {
+    display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 2px;
+    height: calc(var(--spacing) * 9.5); padding: 0 calc(var(--spacing) * 1.5) 0 calc(var(--spacing) * 2.5);
+    border: 1px solid var(--color-divider); border-radius: var(--radius-base);
+    background: transparent; color: var(--color-text);
+  }
+  .search-field:focus-within { border-color: var(--color-focus); box-shadow: 0 0 0 1px var(--color-focus); }
+  .search-field.invalid { border-color: var(--color-error-border); box-shadow: none; }
+  .search-input {
+    flex: 1 1 auto; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; box-shadow: none;
+    background: transparent; color: inherit; font: inherit; font-size: var(--text-sm);
+  }
+  .search-input:focus { outline: 0; box-shadow: none; }
+  .search-replace-input { padding: 0 calc(var(--spacing) * 2.5); flex: 1 1 8rem; }
+  .search-replace-input:focus { border-color: var(--color-focus); box-shadow: 0 0 0 1px var(--color-focus); }
+
+  .search-toggle {
+    position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: 5px; color: var(--color-text-secondary);
+    font-size: var(--text-xs); font-weight: 600; line-height: 1;
+  }
+  .search-toggle::before { content: ""; position: absolute; inset: -4px; }
+  .search-toggle :global(svg) { width: 14px; height: 14px; }
+  .search-toggle:hover { background: var(--color-divider); color: var(--color-text); }
+  .search-toggle[aria-pressed="true"] {
+    background: color-mix(in srgb, var(--color-text) 14%, transparent); color: var(--color-text);
+  }
+  .underlined { text-decoration: underline; text-underline-offset: 2px; }
+  @container (max-width: 15rem) { .search-toggle { width: 20px; } }
+
+  .search-error { margin: 0; margin-left: var(--gutter); padding: calc(var(--spacing) * .5) calc(var(--spacing) * 2); border-radius: var(--radius-base); }
+  .search-replace { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 1.5); margin-left: var(--gutter); }
+  .search-replace-input.search-field { height: calc(var(--spacing) * 9.5); }
+
+  .search-summary { display: flex; align-items: baseline; justify-content: space-between; gap: calc(var(--spacing) * 2); margin: calc(var(--spacing) * 1) 0 0; }
+  .search-capped { margin: calc(var(--spacing) * -1) 0 0; }
+  .search-empty { margin: 0; padding: calc(var(--spacing) * 4) 0; text-align: center; }
+  .search-link { color: var(--color-text-secondary); font-size: var(--text-xs); }
+  .search-link:hover { color: var(--color-text); text-decoration: underline; }
+
+  .search-results { flex: 1 1 0; min-height: 0; overflow: auto; }
+  .search-results.stale { opacity: .6; }
+  .search-group + .search-group { margin-top: 2px; }
+  .search-group-head {
+    display: flex; width: 100%; min-width: 0; align-items: center; gap: calc(var(--spacing) * 1.5);
+    height: calc(var(--spacing) * 8); padding: 0 calc(var(--spacing) * 2); border-radius: var(--radius-base);
+    text-align: left; font-size: var(--text-sm);
+  }
+  .search-group-head:hover { background: var(--color-divider); }
+  .search-group-head .chev { flex: none; width: 12px; height: 12px; color: var(--color-text-secondary); }
+  .search-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .search-dir { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-secondary); font-size: var(--text-xs); }
+  .search-count { flex: none; margin-left: auto; color: var(--color-text-secondary); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+
+  .search-matches { margin: 0; padding: 0 0 0 calc(var(--spacing) * 4); list-style: none; }
+  .search-match-row { position: relative; display: flex; align-items: center; border-radius: var(--radius-base); }
+  .search-match-row:hover { background: var(--color-divider); }
+  .search-match-row.selected { background: color-mix(in srgb, var(--color-text) 14%, transparent); }
   .search-match {
     display: flex; flex: 1 1 auto; min-width: 0; align-items: baseline; gap: calc(var(--spacing) * 2);
-    padding: calc(var(--spacing) * .5) var(--spacing); border-radius: var(--radius-base);
-    color: var(--color-text-secondary); font-size: var(--text-sm); text-align: left;
+    min-height: 26px; padding: 2px calc(var(--spacing) * 2); border-radius: var(--radius-base);
+    color: var(--color-text-secondary); font-size: var(--text-xs); text-align: left;
   }
-  .search-match:hover, .search-match:focus-visible { background: var(--color-divider); }
-  .search-match:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
-  .search-line { flex: none; min-width: 2.5em; text-align: right; font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
-  .search-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
-  .search-text mark { padding: 0 1px; border-radius: 2px; background: color-mix(in srgb, var(--color-link) 25%, transparent); color: inherit; }
+  .search-line {
+    flex: none; min-width: 3ch; text-align: right; font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono, ui-monospace, monospace); color: var(--color-text-secondary); opacity: .8;
+  }
+  .search-snippet {
+    display: flex; flex: 1 1 auto; min-width: 0; white-space: pre;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  .search-before { flex: 0 1 auto; max-width: 40%; overflow: hidden; direction: rtl; text-overflow: ellipsis; text-align: left; }
+  .search-before > span { unicode-bidi: isolate; }
+  .search-segments { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .search-snippet mark {
+    padding: 0 1px; border-radius: 2px; color: var(--color-text); font-weight: 600;
+    background: color-mix(in srgb, var(--color-link) 32%, transparent);
+  }
+  .search-row-replace { flex: none; display: none; }
+  .search-match-row:hover .search-row-replace, .search-match-row:focus-within .search-row-replace { display: inline-flex; }
+  @media (hover: none) { .search-row-replace { display: inline-flex; } }
+  .search-sentinel { height: 1px; }
 </style>
