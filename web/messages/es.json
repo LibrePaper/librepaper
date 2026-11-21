@@ -574,6 +574,8 @@
   "commands_layout_source": "Mostrar solo el editor",
   "commands_layout_split": "Mostrar editor y vista previa",
   "commands_linked": "Mantener sincronizado",
+  "commands_show_in_preview": "Mostrar en vista previa",
+  "commands_show_in_source": "Mostrar en código fuente",
   "commands_math": "Insertar matemáticas",
   "commands_math_template": "Insertar {label}",
   "commands_menu_edit": "Abrir menú Edición",

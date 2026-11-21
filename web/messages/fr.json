@@ -574,6 +574,8 @@
   "commands_layout_source": "Afficher seulement l’éditeur",
   "commands_layout_split": "Afficher l’éditeur et l’aperçu",
   "commands_linked": "Garder en phase",
+  "commands_show_in_preview": "Afficher dans l’aperçu",
+  "commands_show_in_source": "Afficher dans la source",
   "commands_math": "Insérer une formule mathématique",
   "commands_math_template": "Insérer {label}",
   "commands_menu_edit": "Ouvrir le menu Édition",

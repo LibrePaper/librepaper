@@ -574,6 +574,8 @@
   "commands_layout_source": "エディターのみ表示",
   "commands_layout_split": "エディターとプレビューを表示",
   "commands_linked": "同期を保つ",
+  "commands_show_in_preview": "プレビューに表示",
+  "commands_show_in_source": "ソースに表示",
   "commands_math": "数式を挿入",
   "commands_math_template": "{label}を挿入",
   "commands_menu_edit": "編集メニューを開く",

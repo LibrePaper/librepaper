@@ -73,9 +73,11 @@ export function viewCommands(c) {
     { id: "format-pdf", label: "PDF", checked: c.selectedFormat === "pdf", disabled: !c.selectableFormat || c.pdfOffered === false },
   ];
 
-  /** @type {{ id: string, label: string, checked?: boolean }[]} */
+  /** @type {{ id: string, label: string, checked?: boolean, disabled?: boolean }[]} */
   const markup = [
     { id: "linked", label: labelOf("linked"), checked: c.linked },
+    { id: "show-in-preview", label: labelOf("show-in-preview"), disabled: !c.can?.["show-in-preview"] },
+    { id: "show-in-source", label: labelOf("show-in-source"), disabled: !c.can?.["show-in-source"] },
     { id: "visual-markup", label: labelOf("visual-markup"), checked: c.visual },
   ];
   // Quarto and Typst run their code on an explicit action rather than a switch.

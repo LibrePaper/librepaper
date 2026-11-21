@@ -574,6 +574,8 @@
   "commands_layout_source": "仅显示编辑器",
   "commands_layout_split": "显示编辑器和预览",
   "commands_linked": "保持同步",
+  "commands_show_in_preview": "在预览中显示",
+  "commands_show_in_source": "在源码中显示",
   "commands_math": "插入数学公式",
   "commands_math_template": "插入 {label}",
   "commands_menu_edit": "打开“编辑”菜单",
