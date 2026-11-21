@@ -17,8 +17,12 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
+import { assertFreshDist } from "../helpers/fresh-dist.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
 import { KATEX_DEFINE, serveKatex } from "../helpers/katex.mjs";
+
+// This check drives the built frame script, so a stale web/dist would test old code.
+assertFreshDist("show-in-panes-browser");
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-show-in-panes-"));
@@ -136,7 +140,8 @@ try {
   await new Promise((resolve, reject) => { serverHttp.once("error", reject); serverHttp.listen(0, "127.0.0.1", resolve); });
   b = await browser("chromium", join(temp, "profile"), 19000 + Math.floor(Math.random() * 1000));
   await b.resize(1400, 900);
-  await b.navigate(`http://127.0.0.1:${serverHttp.address().port}/docs/show-in-panes`);
+  const pageUrl = `http://127.0.0.1:${serverHttp.address().port}/docs/show-in-panes`;
+  await b.navigate(pageUrl);
 
   const flush = () => b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const click = async (selector) => { await b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node?.click(); })()`); await flush(); };
@@ -160,6 +165,27 @@ try {
   const setCaret = (at) => b.evaluate(`(() => { const view = window.EditorView.findFromDOM(document.querySelector('.cm-editor')); view.focus(); view.dispatch({ selection: { anchor: ${at} } }); return true; })()`);
   const caretLine = () => b.evaluate(`(() => { const view = window.EditorView.findFromDOM(document.querySelector('.cm-editor')); return view.state.doc.lineAt(view.state.selection.main.head).text; })()`);
   const sourceOffset = (needle) => report.indexOf(needle) + 3;
+  // Whether the preview's landing highlight is on, or null while the frame is not there.
+  const landingHighlight = () => b.evaluate(frame('return w.CSS.highlights.has("librepaper-landing");'));
+  // The divider pill's centre, and the edges of the two panes it sits between.
+  const pillCentre = () => b.evaluate(`(() => { const r = document.querySelector('.grip-pill')?.getBoundingClientRect(); return r ? r.left + r.width / 2 : null; })()`);
+  const paneEdges = () => b.evaluate(`(() => { const e = document.querySelector('.editorpane')?.getBoundingClientRect(); const v = document.querySelector('.viewport')?.getBoundingClientRect(); return e && v ? { editor: { left: e.left, right: e.right }, viewport: { left: v.left, right: v.right } } : null; })()`);
+  const assertPillBetweenPanes = async (side) => {
+    await flush();
+    const panes = await paneEdges();
+    const x = await pillCentre();
+    assert.ok(panes && x !== null, `with the source on the ${side} the panes and the divider pill are on the page`);
+    const left = side === "right" ? panes.viewport : panes.editor;
+    const right = side === "right" ? panes.editor : panes.viewport;
+    assert.ok(x >= left.right - 20 && x <= right.left + 20, `with the source on the ${side} the divider pill sits between the panes (pill at ${x}, left pane ends at ${left.right}, right pane starts at ${right.left})`);
+  };
+  // Stores the source side the Reader reads on load, then reloads the page to apply it.
+  const setSourceSide = async (side) => {
+    await b.evaluate(`localStorage.setItem("librepaper-source-side", ${JSON.stringify(JSON.stringify(side))})`);
+    await b.navigate(pageUrl);
+    await until("the divider pill after a reload", () => exists(".grip-pill .grip-pill-button"), 15000);
+    await until(`the source on the ${side}`, () => exists(side === "right" ? "main.reader.source-right" : "main.reader:not(.source-right)"), 15000);
+  };
 
   // 1. Keep in step is on by default: the pill holds one lock, pressed.
   await until("the divider pill", () => exists(".grip-pill .grip-pill-button"), 15000);
@@ -199,6 +225,9 @@ try {
   assert.ok((await frameScroll()) > scrolledBefore, "Show in preview scrolls the preview down to the source caret");
   await until("Paragraph 30 is in the preview's viewport", () => paragraphInView(30), 10000);
   assert.equal(await paragraphInView(30), true, "Show in preview leaves Paragraph 30 inside the preview's viewport");
+  // The preview tints the passage it landed on, and the tint clears after about a second.
+  await until("the preview landing highlight", async () => (await landingHighlight()) === true, 3000);
+  await until("the preview landing highlight cleared", async () => (await landingHighlight()) === false, 3000);
 
   // 4. Show in source: the preview's reading place goes to the source caret,
   // with Keep in step still off.
@@ -209,6 +238,8 @@ try {
   await click('.grip-pill-button[aria-label="Show in source"]');
   await until("the source caret at the passage near the top of the preview", async () => /\b(Section|Paragraph) (9|10|11)\b/.test(await caretLine()), 10000);
   assert.match(await caretLine(), /\b(Section|Paragraph) (9|10|11)\b/, "Show in source moves the source caret to the passage at the top of the preview (Section or Paragraph 10, within one)");
+  // The source tints the line it landed on.
+  await until("the source landing flash", () => exists(".cm-landing-flash"), 2000);
 
   // 5. A double-click on a passage in the preview moves the source caret there,
   // with Keep in step still off.
@@ -234,5 +265,13 @@ try {
   assert.equal(await b.evaluate('localStorage.getItem("librepaper-linked")'), "true", "turning Keep in step back on stores true");
   assert.deepEqual(await b.evaluate('window.testErrors'), [], "the page reports no errors");
 
-  console.log("show-in-panes-browser: Keep in step is on by default, its toggle sets the pill, Show in preview and Show in source move the panes with it off, a double-click moves the source, and the lock restores");
+  // 7. The divider pill sits between the two panes with the source on either
+  // side. The default is the left; the right is set by the stored side and a reload.
+  await assertPillBetweenPanes("left");
+  await setSourceSide("right");
+  await assertPillBetweenPanes("right");
+  await setSourceSide("left");
+  await assertPillBetweenPanes("left");
+
+  console.log("show-in-panes-browser: Keep in step is on by default, its toggle sets the pill, Show in preview and Show in source move the panes with it off, a double-click moves the source, the lock restores, and the pill sits between the panes on both sides");
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

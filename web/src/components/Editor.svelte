@@ -1173,7 +1173,7 @@
   /// function and not the caller doing both.
   export function goToIn(id, at, options = {}) {
     if (!view || !id) return;
-    show(id);
+    show(id, { focus: options.focus ?? true });
     goTo(at, options);
   }
 
@@ -1182,7 +1182,7 @@
   /// is in another chapter.
   export function openAt(id, line, column = 1, options = {}) {
     if (!view || !id) return;
-    show(id);
+    show(id, { focus: options.focus ?? true });
     // The state has just been swapped, so the coordinates are this file's.
     const doc = view.state.doc;
     const at = doc.line(Math.min(Math.max(line, 1), doc.lines));
@@ -2204,6 +2204,14 @@
 
   function show(id, { focus = true } = {}) {
     if (!view || !id || id === showing) return;
+    // A flash still running belongs to the outgoing file. Clear it before its
+    // state is cached, or the timer would clear the incoming file's state instead
+    // and the old flash would come back later.
+    if (landingTimer) {
+      clearTimeout(landingTimer);
+      landingTimer = 0;
+      view.dispatch({ effects: flashLanding.of(null) });
+    }
     if (showing && activeDocument) {
       stateMap(activeDocument).set(showing, view.state);
       topMap(activeDocument).set(showing, scrollPlace());

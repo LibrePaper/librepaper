@@ -610,6 +610,12 @@ main.reader.source-right .editorpane {
   border-right: 0;
   border-left: 1px solid var(--color-border-strong);
 }
+/* The editor's separator and its pill sit between the two panes, not outside
+   the preview. The sidebar's separator keeps its own place. */
+main.reader.source-right .grip-editor,
+main.reader.source-right .grip-pill-slot {
+  order: 2;
+}
 
 /* ------------------------------------------------------------------- grips */
 
