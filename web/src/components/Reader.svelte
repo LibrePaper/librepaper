@@ -825,7 +825,9 @@
         followDocumentClick(Number(message.offset) || 0, message.pdf);
         break;
       case "pdf-caret":
-        followPdfClick(message.pdf);
+        // A double-click on a PDF region with no text: the SyncTeX point is
+        // the only place to go, so it takes the same path as a text double-click.
+        void jumpToSource(null, message.pdf);
         break;
       case "click":
         followPreviewClick(message.offset, message.pdf);
@@ -3393,9 +3395,11 @@
   // The one move from the preview to the source. A PDF point goes through
   // SyncTeX first; otherwise the words are searched for across the directory,
   // since they may belong to any file, and the file they are in is opened.
-  // On a phone the source pane is hidden, so it is shown first and the place
-  // is reached once it is laid out. Focus stays out of it there so the phone
-  // keyboard does not open.
+  // Both Show in source and a double-click come here, so they reach the source
+  // the same way. A phone shows the source pane first and reaches the place
+  // once it is laid out; a desktop whose split is too narrow for the source to
+  // be on screen switches to the split and brings the source forward first.
+  // Focus stays out of it on a phone so the keyboard does not open.
   async function jumpToSource(offset, pdfPoint = null) {
     if (!editing || docText === null || !editor) return;
     if ((offset === null || offset === undefined) && !pdfPoint) return;
@@ -3408,20 +3412,35 @@
       // The source pane has only just been shown, so it is laid out next frame.
       await new Promise((done) => requestAnimationFrame(() => done()));
       if (!editor) return;
+    } else if (!shown.source) {
+      if (arrangement.state.layout !== "split") arrangement.state.layout = "split";
+      arrangement.focusPane("source");
+      await tick();
     }
-    if (followPdfClick(pdfPoint, { focus })) return;
-    const found = sync.sourcePlaceInTree(docText, offset, treeNow(), {
-      open: session?.paths?.get(openFile) || "",
-      formatOf: renderers.previewFormatOf,
-    });
-    if (!found) return;
-    const id = session.idOf(found.path);
-    rememberPlace(id, found.at);
-    if (id) {
-      ws.openFile = id;
-      editor.goToIn(id, found.at, { focus, flash: true });
-    } else {
-      editor.goTo(found.at, { focus, flash: true });
+    // The move below is the reader's jump, not a caret the preview should
+    // follow: with Keep in step on, the echo of this move must not scroll the
+    // preview back to where the caret now is.
+    clearTimeout(stepTimer);
+    previewPlacing = true;
+    try {
+      if (followPdfClick(pdfPoint, { focus })) return;
+      // A PDF point with no SyncTeX match and no text to search for: nothing to go to.
+      if (offset === null || offset === undefined) return;
+      const found = sync.sourcePlaceInTree(docText, offset, treeNow(), {
+        open: session?.paths?.get(openFile) || "",
+        formatOf: renderers.previewFormatOf,
+      });
+      if (!found) return;
+      const id = session.idOf(found.path);
+      rememberPlace(id, found.at);
+      if (id) {
+        ws.openFile = id;
+        editor.goToIn(id, found.at, { focus, flash: true });
+      } else {
+        editor.goTo(found.at, { focus, flash: true });
+      }
+    } finally {
+      previewPlacing = false;
     }
   }
 
@@ -3484,11 +3503,9 @@
   // Set when the reader switches from the preview to the source on a phone, so
   // that only the reply to that request moves the source.
   let positionAsked = false;
-  // Set by Show in source on a phone with Keep in step off: this one reply is
-  // taken even though the two are not kept in step.
-  let positionOnce = false;
-  // Set by Show in source on the desktop: the reply names the place to show in
-  // the source rather than moving it.
+  // Set by Show in source: the reply names the place to show in the source, and
+  // jumpToSource moves there rather than the reply moving the source in place.
+  // Set while the preview is still on screen, so it can be measured.
   let sourceAsked = false;
   function askReadingPosition() {
     positionAsked = true;
@@ -3501,9 +3518,7 @@
   function followReadingPosition(start, pdfPoint) {
     if (!positionAsked) return;
     positionAsked = false;
-    const once = positionOnce;
-    positionOnce = false;
-    if (!(linked || once) || !compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
+    if (!linked || !compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
     if (activeMobileView !== "source") return;
     const at = sourceOffsetForPreview(start, pdfPoint, { exact: false });
     if (at === null || at === undefined) return;
@@ -3511,7 +3526,7 @@
     requestAnimationFrame(() => {
       previewPlacing = true;
       try {
-        editor.goTo(at, { focus: false, flash: once });
+        editor.goTo(at, { focus: false });
       } finally {
         previewPlacing = false;
       }
@@ -3528,28 +3543,22 @@
       arrangement.showMobileView("document");
       await tick();
     } else if (!shown.document) {
-      arrangement.state.layout = "split";
+      // A too-narrow split shows one pane only: bring the document forward so
+      // the flash lands on a document the reader can see.
+      if (arrangement.state.layout !== "split") arrangement.state.layout = "split";
+      arrangement.focusPane("document");
       await tick();
     }
     showCaretInDocument({ flash: true });
   }
 
   // Show in source: the source goes to the place the reader is looking at in
-  // the preview. On a phone, Keep in step asks as the source is shown (see the
-  // effect below); with it off, this one switch asks and takes the reply.
-  async function showInSource() {
+  // the preview. The preview stays on screen while it is asked, so its reading
+  // position can be measured; the reply then goes to jumpToSource, which shows
+  // the source (on a phone, or on a desktop whose split is too narrow for it)
+  // and moves it there. The same path serves every layout.
+  function showInSource() {
     if (!editing || !editor || docText === null) return;
-    if (compact) {
-      if (linked) return arrangement.showMobileView("source");
-      positionOnce = true;
-      arrangement.showMobileView("source");
-      askReadingPosition();
-      return;
-    }
-    if (!shown.source) {
-      arrangement.state.layout = "split";
-      await tick();
-    }
     sourceAsked = true;
     tell({ type: "reading-position" });
   }
@@ -5349,11 +5358,7 @@
           onguide={(where) => (guide = where)}
           ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}>
       {#snippet pill()}
-        {#if linked}
-          <button type="button" class="grip-pill-button is-on" aria-label={m.commands_linked()} aria-pressed="true" data-tip={m.commands_linked()} data-tip-place={pillTipPlace} onclick={() => setLinked(false)}>
-            <Icon name="lock" />
-          </button>
-        {:else}
+        {#if !linked}
           <button type="button" class="grip-pill-button" aria-label={m.commands_show_in_preview()} data-tip={m.commands_show_in_preview()} data-tip-place={pillTipPlace} onclick={() => void showInPreview()}>
             <Icon name={previewArrow} />
           </button>
@@ -5361,10 +5366,12 @@
             <Icon name={sourceArrow} />
           </button>
           <span class="grip-pill-rule"></span>
-          <button type="button" class="grip-pill-button" aria-label={m.commands_linked()} aria-pressed="false" data-tip={m.commands_linked()} data-tip-place={pillTipPlace} onclick={() => setLinked(true)}>
-            <Icon name="unlock" />
-          </button>
         {/if}
+        <!-- One toggle, always rendered, so keyboard focus stays on it when the
+             direction buttons come and go with the lock state. -->
+        <button type="button" class="grip-pill-button" class:is-on={linked} aria-label={m.commands_linked()} aria-pressed={linked ? "true" : "false"} data-tip={m.commands_linked()} data-tip-place={pillTipPlace} onclick={() => setLinked(!linked)}>
+          <Icon name={linked ? "lock" : "unlock"} />
+        </button>
       {/snippet}
     </Grip>
   {/if}
