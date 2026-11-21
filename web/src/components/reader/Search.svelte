@@ -21,7 +21,9 @@
     // { text, n }: each new n asks the panel to focus its input and select it.
     // A non-empty text also becomes the query. An empty text leaves the query as it is.
     seed = null,
-    onopen, // ({ id, path, from, to }) => void
+    // ({ id, path, from, to, focus }) => void. focus is false while stepping with Enter,
+    // so the editor does not take the keyboard from the search box.
+    onopen,
     // (id, plan) => void | Promise<void>. plan(text) returns the edits for that file's
     // text as it is when the write happens, so the caller plans after any wait.
     onreplace,
@@ -115,7 +117,8 @@
   const PAGE = 300;
   // How many rows are drawn; more are added as the end of the list scrolls into view.
   let limit = $state(PAGE);
-  let cursor = -1;
+  // The last match stepped to or clicked, as { id, path, from }. Null means nothing is selected.
+  let at = null;
   let selected = $state(null);
   let resultsEl = $state(null);
   let sentinel = $state(null);
@@ -153,7 +156,7 @@
   const searchKey = $derived(results ? JSON.stringify(results.options) : "");
   $effect(() => {
     void searchKey;
-    cursor = -1;
+    at = null;
     selected = null;
   });
 
@@ -175,11 +178,34 @@
     collapsed = allCollapsed ? new Set() : new Set(groups.map((group) => group.path));
   }
 
+  // Index in `flat` of the match one step from `at`, or -1 when there are none.
+  // Matches are ordered by group, then `from`. A group that no longer has results
+  // is placed by path, as the engine orders files. From no position, forward goes to
+  // the first match and backward to the last. Wraps at both ends.
+  function nextIndex(list, order, pos, direction) {
+    if (!list.length) return -1;
+    if (!pos) return direction > 0 ? 0 : list.length - 1;
+    const posGroup = order.findIndex((group) => group.id === pos.id);
+    // Negative, zero or positive: where an entry sorts relative to the position.
+    const compare = (entry) => {
+      if (entry.group.id === pos.id) return entry.match.from - pos.from;
+      if (posGroup >= 0) return order.indexOf(entry.group) - posGroup;
+      return entry.group.path.localeCompare(pos.path, undefined, { numeric: true });
+    };
+    if (direction > 0) {
+      const found = list.findIndex((entry) => compare(entry) > 0);
+      return found < 0 ? 0 : found;
+    }
+    for (let i = list.length - 1; i >= 0; i--) if (compare(list[i]) < 0) return i;
+    return list.length - 1;
+  }
+
   // Enter and Shift+Enter step through every match, wrapping at the ends.
   async function step(direction) {
-    if (!flat.length) return;
-    cursor = (cursor + direction + flat.length) % flat.length;
-    const { group, match } = flat[cursor];
+    const index = nextIndex(flat, results?.groups ?? [], at, direction);
+    if (index < 0) return;
+    const { group, match } = flat[index];
+    at = { id: group.id, path: group.path, from: match.from };
     if (collapsed.has(group.path)) {
       const next = new Set(collapsed);
       next.delete(group.path);
@@ -197,14 +223,20 @@
       rowsBefore += entry.rows.length;
     }
     if (rowsBefore > limit) limit = rowsBefore;
-    open(group, match);
+    open(group, match, false);
     await tick();
     resultsEl?.querySelector(`[data-key="${CSS.escape(selected)}"]`)?.scrollIntoView({ block: "nearest" });
   }
 
   function onInputKeydown(event) {
-    if (event.key !== "Enter" || event.isComposing || !flat.length) return;
+    if (event.key !== "Enter" || event.isComposing || !query) return;
     event.preventDefault();
+    // During the debounce, or before the first search, the shown matches are not
+    // this query's. Search now so Enter steps through the right ones.
+    if (!fresh || !results) {
+      results = run(current(), files);
+      if (invalid || !flat.length) return;
+    }
     step(event.shiftKey ? -1 : 1);
   }
 
@@ -220,9 +252,8 @@
 
   function openRow(group, row) {
     selected = rowKey(group, row);
-    const index = flat.findIndex((entry) => entry.match === row.matches[0]);
-    if (index >= 0) cursor = index;
-    open(group, row.matches[0]);
+    at = { id: group.id, path: group.path, from: row.matches[0].from };
+    open(group, row.matches[0], true);
   }
 
   function toggleGroup(path) {
@@ -232,9 +263,9 @@
     collapsed = next;
   }
 
-  function open(group, match) {
+  function open(group, match, focus) {
     if (fresh) {
-      onopen?.({ id: group.id, path: group.path, from: match.from, to: match.to });
+      onopen?.({ id: group.id, path: group.path, from: match.from, to: match.to, focus });
       return;
     }
     // The shown matches are stale (the debounce after an edit), so their offsets
@@ -247,7 +278,7 @@
     for (const candidate of matches) {
       if (Math.abs(candidate.from - match.from) < Math.abs(best.from - match.from)) best = candidate;
     }
-    onopen?.({ id: group.id, path: group.path, from: best.from, to: best.to });
+    onopen?.({ id: group.id, path: group.path, from: best.from, to: best.to, focus });
   }
 
   async function replaceLine(group, row) {
@@ -256,7 +287,7 @@
     const replacementText = replacement;
     busy = true;
     try {
-      await onreplace?.(group.id, (text) => replacementsFor(text, row.matches, replacementText, opts));
+      await onreplace?.(group.id, (text) => replacementsFor(text, group.matches.filter((match) => match.line === row.line), replacementText, opts));
     } finally {
       busy = false;
       recompute();
@@ -343,7 +374,7 @@
           />
         </div>
         <button type="button" class="btn btn-sm lp-control-tonal" disabled={!hasResults || !fresh || busy}
-                data-tip={hasResults ? m.search_replace_all_scope({ count: results.total, files: groups.length }) : undefined}
+                data-tip={!hasResults ? undefined : results.capped ? m.search_replace_all_capped() : m.search_replace_all_scope({ count: results.total, files: groups.length })}
                 onclick={replaceAll}>{m.search_replace_all()}</button>
       </div>
     {/if}

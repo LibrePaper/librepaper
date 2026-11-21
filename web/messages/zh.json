@@ -2633,6 +2633,7 @@
   "search_match_whole_word": "全字匹配",
   "search_no_results": "未找到结果",
   "search_replace_all": "全部替换",
+  "search_replace_all_capped": "替换项目中的所有匹配项，包括未显示的",
   "search_replace_all_scope": [
     {
       "declarations": [

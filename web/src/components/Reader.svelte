@@ -4421,8 +4421,9 @@
   // A search result is a place in the source. Like an outline entry, it may be
   // the first source command in a document-only or compact view, so the lazy
   // editor is mounted before it is asked to select anything. Someone who may
-  // only read has no source pane: the file is opened and that is all.
-  async function openSearchResult({ id, from, to }) {
+  // only read has no source pane: the file is opened and that is all. `focus`
+  // false leaves the cursor in the search box, for stepping with Enter.
+  async function openSearchResult({ id, from, to, focus = true }) {
     const file = files.find((entry) => (entry.id || entry.path) === id && entry.kind === "text");
     if (!file) return;
     rememberPlace(file.id, from);
@@ -4432,7 +4433,7 @@
     if (readerDisposed) return;
     arrangement.showMobileView("source");
     await tick();
-    editor?.selectIn?.(id, from, to);
+    editor?.selectIn?.(id, from, to, { focus });
   }
 
   // The edits are planned here, after the editor is ready, from the file's text

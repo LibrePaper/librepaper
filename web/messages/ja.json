@@ -2633,6 +2633,7 @@
   "search_match_whole_word": "単語単位",
   "search_no_results": "結果が見つかりません",
   "search_replace_all": "すべて置換",
+  "search_replace_all_capped": "表示されていないものも含め、プロジェクト内のすべての一致を置換",
   "search_replace_all_scope": [
     {
       "declarations": [

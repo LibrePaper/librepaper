@@ -2648,6 +2648,7 @@
   "search_match_whole_word": "Match whole word",
   "search_no_results": "No results found",
   "search_replace_all": "Replace all",
+  "search_replace_all_capped": "Replace every match in the project, including those not shown",
   "search_replace_all_scope": [
     {
       "declarations": [

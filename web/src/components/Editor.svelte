@@ -1198,8 +1198,9 @@
   }
 
   /// Opens a file and selects a range in it, scrolled to the middle of the
-  /// view. What choosing a result in the Search panel does.
-  export function selectIn(id, from, to) {
+  /// view. What choosing a result in the Search panel does. The editor takes
+  /// focus unless `focus` is false, so Enter in the search box can keep stepping.
+  export function selectIn(id, from, to, { focus = true } = {}) {
     if (!view || !id) return;
     show(id);
     const length = view.state.doc.length;
@@ -1207,7 +1208,7 @@
     const anchor = clamp(from);
     const head = clamp(to);
     view.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: "center" }) });
-    view.focus();
+    if (focus) view.focus();
   }
 
   /// Replaces ranges in one file for the Search panel. `edits` are
