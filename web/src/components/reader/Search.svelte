@@ -13,6 +13,8 @@
     files = [], // [{ id, path }], text files only
     textOf = () => "", // (id) => current text of that file
     revision = 0, // changes whenever any file's text may have changed
+    // False while the panel is hidden: no project-wide search runs until it is shown again.
+    active = true,
     canReplace = false, // false for people who may only read
     // { text, n }: each new n asks the panel to focus its input and select it.
     // A non-empty text also becomes the query. An empty text leaves the query as it is.
@@ -35,21 +37,24 @@
 
   const fmt = (n) => new Intl.NumberFormat(locale()).format(n);
   const current = () => ({ query, caseSensitive, wholeWord, regex });
-  // True only when the shown results came from the current query and options.
-  // During the debounce they are stale, and replacing from them would apply the old query.
+  // True only when the shown results came from the current query, options and file text.
+  // During the debounce they are stale, and replacing from them would apply the old query
+  // or point at offsets that a collaborator's edit has moved.
   const fresh = $derived(
     !!results &&
       results.options.query === query &&
       results.options.caseSensitive === caseSensitive &&
       results.options.wholeWord === wholeWord &&
-      results.options.regex === regex,
+      results.options.regex === regex &&
+      results.revision === revision,
   );
 
   // Runs the engine over the files' current text. `opts` is kept on the result
-  // so that a replace applies the options the shown matches came from.
+  // so that a replace applies the options the shown matches came from, and
+  // `revision` is stamped so that `fresh` can tell when the text has changed since.
   function run(opts, snapshot) {
     const inputs = snapshot.map((file) => ({ id: file.id, path: file.path, text: textOf(file.id) }));
-    return { ...searchProject(inputs, opts, { limit: 1000 }), options: opts };
+    return { ...searchProject(inputs, opts, { limit: 1000 }), options: opts, revision };
   }
 
   function recompute() {
@@ -57,12 +62,14 @@
     results = run(current(), files);
   }
 
-  // Debounced: a query, option, file list or revision change recomputes 150 ms
-  // after the last one.
+  // Debounced: a query, option, file list, revision or visibility change recomputes
+  // 150 ms after the last one. While hidden it schedules nothing; becoming visible
+  // reruns this effect, which then searches the current text.
   $effect(() => {
     const opts = { query, caseSensitive, wholeWord, regex };
     const snapshot = files;
     void revision;
+    if (!active) return;
     if (!opts.query) {
       results = null;
       return;

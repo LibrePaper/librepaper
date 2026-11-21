@@ -4742,13 +4742,14 @@
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
     if (id === "focus-search") {
-      // A selection on one line fills the search, as in other editors. The seed
-      // always moves focus to the search input, even with nothing selected.
+      // A selection on one line fills the search, as in other editors. Opening the
+      // panel only: the Search panel's seed effect focuses its input, even with
+      // nothing selected. focusPanel would race that and land on the tab header.
       const selected = editor?.selection?.();
       const selectedText = selected ? String(session?.textOf?.(selected.file)?.toString?.() ?? "").slice(selected.from, selected.to) : "";
       const text = selectedText && !selectedText.includes("\n") ? selectedText : "";
       searchSeed = { text, n: (searchSeed?.n || 0) + 1 };
-      return focusPanel("search");
+      return openPanel("search");
     }
     if (id === "symbols" || id === "math") return openPalette(id);
     // A template command opens the Math overlay on its template.
@@ -5112,7 +5113,7 @@
     <PanelBoundary name="the search panel">
     <!-- No replace beside a figure: the editor is not mounted then, so replaceInFile would do nothing. -->
     <Search files={searchFiles} textOf={(id) => String(session?.textOf?.(id)?.toString?.() ?? "")}
-      revision={searchRevision} canReplace={mayEdit && !shownFigure} seed={searchSeed}
+      revision={searchRevision} active={panel === "search" && shown.comments} canReplace={mayEdit && !shownFigure} seed={searchSeed}
       onopen={openSearchResult} onreplace={replaceInFile} />
     </PanelBoundary>
   {/snippet}
