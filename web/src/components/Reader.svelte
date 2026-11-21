@@ -4261,6 +4261,8 @@
   // searches again. The panel waits for typing to pause before it does.
   let searchRevision = $state(0);
   let searchSeed = $state(null);
+  // The options of the search whose matches the source editor marks.
+  let searchMarksQuery = $state(null);
   const searchFiles = $derived(files.filter((file) => file.kind === "text").map((file) => ({ id: file.id || file.path, path: file.path })));
   // An editor reads the live text; somebody holding a read or comment link has
   // no session, only the projection the server sent, keyed by path.
@@ -5279,7 +5281,8 @@
     <!-- No replace beside a figure: the editor is not mounted then, so replaceInFile would do nothing. -->
     <Search files={searchFiles} textsFor={searchTexts}
       revision={searchRevision} active={panel === "search" && shown.comments} canReplace={mayEdit && !shownFigure} seed={searchSeed}
-      onopen={openSearchResult} onreplace={replaceInFile} />
+      onopen={openSearchResult} onreplace={replaceInFile}
+      onquery={(options) => (searchMarksQuery = options)} />
     </PanelBoundary>
   {/snippet}
 
@@ -5455,7 +5458,7 @@
                          onmenuselect={() => setTimeout(() => { if (!document.activeElement?.closest?.("#composer")) editor?.focus?.(); }, 60)} collapsed={compact && barHidden} />
         {/if}
         <PanelBoundary name="the source editor">
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
+        <Editor bind:this={editor} searchQuery={searchMarksQuery} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone} onshowinpreview={can["show-in-preview"] ? () => void showInPreview() : null}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}

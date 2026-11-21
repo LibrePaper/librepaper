@@ -10,6 +10,7 @@
   import { loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
   import { keymap } from "@codemirror/view";
   import { mode, onMode } from "../lib/theme.js";
+  import { searchMarks } from "../lib/search-marks.js";
 
   // The keys the editor answers to: Vim's, Emacs's, or nothing extra. One
   // compartment, whichever is chosen, so switching swaps one for the other.
@@ -39,6 +40,8 @@
   // The visual layer is drawn only for LaTeX, Typst and Markdown, and its colours follow
   // the page's mode, so it is brought into line when a file or the mode changes.
   const visualCompartment = new Compartment();
+  // The matches of the project search, marked while its panel is open.
+  const searchCompartment = new Compartment();
   // The line numbers, active-line highlight and fold gutter are source-code chrome. They are left
   // off where the visual layer draws the file, so the page reads as a document rather than code.
   const chromeCompartment = new Compartment();
@@ -300,6 +303,8 @@
     // A suggester's typing is always tracked: tracking starts on and cannot be stopped.
     suggestOnly = false,
     visual = false, imageUrl = null,
+    // { query, caseSensitive, wholeWord, regex } | null: the search whose matches are marked.
+    searchQuery = null,
     // A getter for the files of the last run (or null); figures that are not project files are drawn from them.
     resultsFiles = null,
     // Names which run those files are of; when it changes, figure widgets draw again.
@@ -1846,6 +1851,7 @@
         // the check is on.
         checkCompartment.of(checkOn(untrack(() => check), citationKeys, indexChecks)),
         visualCompartment.of(visualOn(untrack(() => visual), path)),
+        searchCompartment.of(searchMarks(untrack(() => searchQuery))),
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
@@ -2058,6 +2064,11 @@
     // Typst reads a leading slash, Markdown, Quarto and Org read the name beside the file.
     const id = textIdForPath(doc, resolveInclude(sourceFormatOf(from), from, name, treeForDoc(doc).texts));
     if (id) openAt(id, 1);
+  }
+
+  // Cached per-file states keep their old search marks, so each show redraws them.
+  function syncSearch(target) {
+    target?.dispatch({ effects: searchCompartment.reconfigure(searchMarks(untrack(() => searchQuery))) });
   }
 
   // Reconfigures the live view's visual layer for the file it shows.
@@ -2284,6 +2295,7 @@
     syncFeatures(view, id);
     syncTheme(view);
     syncVisual(view, id);
+    syncSearch(view);
     showing = id;
     announced = "";
     // A file this browser has open is where its caret is, which is what the
@@ -2490,6 +2502,12 @@
       syncFeatures(view);
       untrack(() => setDiagnostics(all));
     }
+  });
+
+  // The search marks follow the panel's query.
+  $effect(() => {
+    void searchQuery;
+    if (view) untrack(() => syncSearch(view));
   });
 
   // The visual layer switch works the same way, and redraws nothing else.
