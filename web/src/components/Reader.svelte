@@ -831,7 +831,12 @@
         followPreviewClick(message.offset, message.pdf);
         break;
       case "reading-position":
-        followReadingPosition(message.start, message.pdf);
+        if (sourceAsked) {
+          sourceAsked = false;
+          void jumpToSource(message.start, message.pdf);
+        } else {
+          followReadingPosition(message.start, message.pdf);
+        }
         break;
       case "focus":
         void focusAnnotation(message.id);
@@ -1794,7 +1799,8 @@
   const aloneSet = $derived(target.state.alone);
 
   let participants = $state([]);
-  let linked = $state(read(LINKED, false) === true);
+  // Keep in step is on unless the reader turned it off, on desktop and phone alike.
+  let linked = $state(read(LINKED, true) !== false);
   // The formatting at the caret, from the Editor while visual mode is on.
   let formatActive = $state(null);
 
@@ -3349,8 +3355,9 @@
   }
 
   // Shows the document at the place the caret is in the source, whether or not
-  // the two are kept in step.
-  function showCaretInDocument() {
+  // the two are kept in step. The caret-following path does not flash; the
+  // Show in preview command does, so the reader can see where it landed.
+  function showCaretInDocument({ flash = false } = {}) {
     if (!editing || docText === null || !editor) return;
     // The format of the file being edited, which is not always the
     // document's: a .bib beside a .tex has comments of its own kind, and
@@ -3367,20 +3374,43 @@
     }
     const place = sync.documentPlaceFor(editor.text(), editor.caret(), docText, format);
     if (place) {
-      tell({ type: "locate", start: place.at, length: place.length });
+      tell({ type: "locate", start: place.at, length: place.length, flash });
       return;
     }
   }
 
+  // Set just before a phone is switched to the source by a jump from the
+  // preview, so the reading-position effect does not move the source back to
+  // where the preview was. The effect clears it when it sees it.
+  let skipReadingPosition = false;
+
+  // A double-click in the preview: the source goes to the place the words or
+  // the PDF point name, whether or not the two are kept in step.
   function followDocumentClick(offset, pdfPoint = null) {
-    if (!linked || !editing || docText === null || !editor) return;
-    // The words double-clicked in the document may belong to any file: a reader
-    // double-clicking a paragraph of chapter three is asking for chapter three, not
-    // for the file that happens to be on screen. So the whole directory is
-    // searched, and the file the words are in is opened.
-    const tree = treeNow();
-    if (followPdfClick(pdfPoint)) return;
-    const found = sync.sourcePlaceInTree(docText, offset, tree, {
+    void jumpToSource(offset, pdfPoint);
+  }
+
+  // The one move from the preview to the source. A PDF point goes through
+  // SyncTeX first; otherwise the words are searched for across the directory,
+  // since they may belong to any file, and the file they are in is opened.
+  // On a phone the source pane is hidden, so it is shown first and the place
+  // is reached once it is laid out. Focus stays out of it there so the phone
+  // keyboard does not open.
+  async function jumpToSource(offset, pdfPoint = null) {
+    if (!editing || docText === null || !editor) return;
+    if ((offset === null || offset === undefined) && !pdfPoint) return;
+    const focus = !compact;
+    if (compact) {
+      skipReadingPosition = true;
+      arrangement.showMobileView("source");
+      await tick();
+      skipReadingPosition = false;
+      // The source pane has only just been shown, so it is laid out next frame.
+      await new Promise((done) => requestAnimationFrame(() => done()));
+      if (!editor) return;
+    }
+    if (followPdfClick(pdfPoint, { focus })) return;
+    const found = sync.sourcePlaceInTree(docText, offset, treeNow(), {
       open: session?.paths?.get(openFile) || "",
       formatOf: renderers.previewFormatOf,
     });
@@ -3389,21 +3419,21 @@
     rememberPlace(id, found.at);
     if (id) {
       ws.openFile = id;
-      editor.goToIn(id, found.at);
+      editor.goToIn(id, found.at, { focus, flash: true });
     } else {
-      editor.goTo(found.at);
+      editor.goTo(found.at, { focus, flash: true });
     }
   }
 
-  function followPdfClick(pdfPoint) {
-    if (!linked || !editing || !editor || sourceFormat !== "latex" ||
+  function followPdfClick(pdfPoint, { focus = true } = {}) {
+    if (!editing || !editor || sourceFormat !== "latex" ||
         !painted.synctex || !pdfPoint) return false;
     const precise = painted.synctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
     const id = precise && session.idOf(precise.path);
     if (!id) return false;
     rememberPlace(id);
     ws.openFile = id;
-    editor.openAt(id, precise.line, 1);
+    editor.openAt(id, precise.line, 1, { focus, flash: true });
     return true;
   }
 
@@ -3454,6 +3484,12 @@
   // Set when the reader switches from the preview to the source on a phone, so
   // that only the reply to that request moves the source.
   let positionAsked = false;
+  // Set by Show in source on a phone with Keep in step off: this one reply is
+  // taken even though the two are not kept in step.
+  let positionOnce = false;
+  // Set by Show in source on the desktop: the reply names the place to show in
+  // the source rather than moving it.
+  let sourceAsked = false;
   function askReadingPosition() {
     positionAsked = true;
     tell({ type: "reading-position" });
@@ -3465,7 +3501,9 @@
   function followReadingPosition(start, pdfPoint) {
     if (!positionAsked) return;
     positionAsked = false;
-    if (!linked || !compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
+    const once = positionOnce;
+    positionOnce = false;
+    if (!(linked || once) || !compact || !editing || comparing !== "" || !editor || docText === null || !openFile) return;
     if (activeMobileView !== "source") return;
     const at = sourceOffsetForPreview(start, pdfPoint, { exact: false });
     if (at === null || at === undefined) return;
@@ -3473,11 +3511,47 @@
     requestAnimationFrame(() => {
       previewPlacing = true;
       try {
-        editor.goTo(at, { focus: false });
+        editor.goTo(at, { focus: false, flash: once });
       } finally {
         previewPlacing = false;
       }
     });
+  }
+
+  // Show in preview: the document shows the place the caret is in, with a
+  // flash. A phone shows the document pane; a desktop with no preview on screen
+  // gets the split first, so there is a preview to show it in.
+  async function showInPreview() {
+    if (!editing || !editor || docText === null) return;
+    clearTimeout(stepTimer);
+    if (compact) {
+      arrangement.showMobileView("document");
+      await tick();
+    } else if (!shown.document) {
+      arrangement.state.layout = "split";
+      await tick();
+    }
+    showCaretInDocument({ flash: true });
+  }
+
+  // Show in source: the source goes to the place the reader is looking at in
+  // the preview. On a phone, Keep in step asks as the source is shown (see the
+  // effect below); with it off, this one switch asks and takes the reply.
+  async function showInSource() {
+    if (!editing || !editor || docText === null) return;
+    if (compact) {
+      if (linked) return arrangement.showMobileView("source");
+      positionOnce = true;
+      arrangement.showMobileView("source");
+      askReadingPosition();
+      return;
+    }
+    if (!shown.source) {
+      arrangement.state.layout = "split";
+      await tick();
+    }
+    sourceAsked = true;
+    tell({ type: "reading-position" });
   }
 
   function setLinked(on) {
@@ -3548,6 +3622,11 @@
     return () => document.removeEventListener("pointerdown", clear);
   });
   const sourceSide = $derived(prefs.sourceSide);
+  // The divider's direction buttons: the arrow points to the pane it shows in,
+  // so the preview arrow points away from the source.
+  const previewArrow = $derived(sourceSide === "right" ? "arrow-left" : "arrow-right");
+  const sourceArrow = $derived(sourceSide === "right" ? "arrow-right" : "arrow-left");
+  const pillTipPlace = $derived(sourceSide === "right" ? "left" : "right");
   const keys = $derived(prefs.keys);
   const completion = $derived(prefs.completion);
   const brackets = $derived(prefs.brackets);
@@ -3869,6 +3948,8 @@
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
     if (what.startsWith("ratio-")) return setSize(PANES.editor, Number(what.slice(6)));
     if (what === "linked") return setLinked(!linked);
+    if (what === "show-in-preview") return void showInPreview();
+    if (what === "show-in-source") return void showInSource();
     if (what === "visual-markup") return setVisual(!visual);
     if (TEXT_SIZE_COMMANDS.includes(what)) return changeTextSize(what);
   }
@@ -4736,7 +4817,7 @@
     "undo", "redo", "cut", "copy", "paste", "paste-plain", "select-all", "find", "replace", "bold", "italic",
     "link", "comment", "numbered-list", "bulleted-list", "heading-1", "heading-2", "heading-3", "heading-4", "heading-5", "heading-6",
   ];
-  const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
+  const LAYOUT_COMMANDS = ["linked", "show-in-preview", "show-in-source", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
   const TEXT_SIZE_COMMANDS = ["text-bigger", "text-smaller", "text-reset"];
 
   // The count reads the source, so the dialog is offered only where the source is open.
@@ -4853,14 +4934,21 @@
   });
 
   // Asks the preview where the reader is when they switch from it to the
-  // source on a phone, so the source can be moved to match. Only compact and
-  // the pane itself are tracked; the rest is read untracked.
+  // source on a phone, so the source can be moved to match. Only with Keep in
+  // step on: otherwise the source moves only when asked for. A jump from the
+  // preview sets skipReadingPosition, because the place it jumps to is the
+  // one to keep. Only compact and the pane itself are tracked; the rest is read
+  // untracked.
   let previousMobileView = null;
   $effect(() => {
     const view = activeMobileView;
     const previous = previousMobileView;
     previousMobileView = view;
     if (!compact || previous !== "document" || view !== "source") return;
+    if (skipReadingPosition) {
+      skipReadingPosition = false;
+      return;
+    }
     untrack(() => {
       if (linked && editing && comparing === "") askReadingPosition();
     });
@@ -5241,7 +5329,7 @@
         <PanelBoundary name="the source editor">
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
-                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
+                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone} onshowinpreview={() => void showInPreview()}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
                   onchangeselect={selectChangeFromSource}
                   onformatstate={(state) => { formatActive = state; refreshEditAvailability(); }}
@@ -5260,8 +5348,23 @@
           onsize={(size) => setSize(PANES.editor, size)}
           onguide={(where) => (guide = where)}
           ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}>
-      {#snippet aside()}
-        {#if !linked}<Icon name="unlock" />{/if}
+      {#snippet pill()}
+        {#if linked}
+          <button type="button" class="grip-pill-button is-on" aria-label={m.commands_linked()} aria-pressed="true" data-tip={m.commands_linked()} data-tip-place={pillTipPlace} onclick={() => setLinked(false)}>
+            <Icon name="lock" />
+          </button>
+        {:else}
+          <button type="button" class="grip-pill-button" aria-label={m.commands_show_in_preview()} data-tip={m.commands_show_in_preview()} data-tip-place={pillTipPlace} onclick={() => void showInPreview()}>
+            <Icon name={previewArrow} />
+          </button>
+          <button type="button" class="grip-pill-button" aria-label={m.commands_show_in_source()} data-tip={m.commands_show_in_source()} data-tip-place={pillTipPlace} onclick={() => void showInSource()}>
+            <Icon name={sourceArrow} />
+          </button>
+          <span class="grip-pill-rule"></span>
+          <button type="button" class="grip-pill-button" aria-label={m.commands_linked()} aria-pressed="false" data-tip={m.commands_linked()} data-tip-place={pillTipPlace} onclick={() => setLinked(true)}>
+            <Icon name="unlock" />
+          </button>
+        {/if}
       {/snippet}
     </Grip>
   {/if}
