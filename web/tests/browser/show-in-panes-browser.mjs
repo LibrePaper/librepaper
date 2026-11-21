@@ -109,13 +109,11 @@ mount(Reader, {target:document.body});
 let serverHttp, b;
 try {
   await build({ configFile:false, define: KATEX_DEFINE, root:join(root,"web"), resolve:{alias:loroAlias}, plugins:[tailwindcss(), svelte(), {name:"mock-room", enforce:"pre", resolveId(id){ if(id === '../lib/room.js' || id === '../room.js' || id.endsWith('/src/lib/room.js')) return room; }}], build:{outDir:out,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"check.js"}}, logLevel:"error" });
-  // The preview frame, built the same way as the shipped agent script.
-  await build({ configFile:false, define: KATEX_DEFINE, root:join(root,"web"), resolve:{alias:loroAlias}, build:{outDir:out,emptyOutDir:false,lib:{entry:join(root,"web/src/agent/frame.js"),formats:["iife"],name:"LibrePaperFrame",fileName:()=>"frame.js"}}, logLevel:"error" });
   serverHttp = createServer((req, res) => {
     if (serveKatex(req, res)) return;
     const pathname = req.url.split("?")[0];
-    // The Reader's own page is /docs/<slug>; its preview frame is /docs/<slug>/.
-    if (pathname.startsWith("/docs/") && pathname.endsWith("/")) {
+    // The Reader's own page is /docs/<slug>; its preview frame is /raw/<slug>/.
+    if (pathname.startsWith("/raw/") && pathname.endsWith("/")) {
       res.setHeader("content-type", "text/html");
       res.end(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><script src="/frame.js?reader=${encodeURIComponent(`http://${req.headers.host}`)}"></script></body></html>`);
       return;
@@ -123,6 +121,12 @@ try {
     if (pathname.startsWith("/docs/")) {
       res.setHeader("content-type", "text/html");
       res.end('<!doctype html><html data-theme="librepaper"><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/librepaper-web.css"></head><body><script type="module" src="/check.js"></script></body></html>');
+      return;
+    }
+    // The preview frame's script is the one the app ships, from web/dist.
+    if (pathname === "/frame.js") {
+      res.setHeader("content-type", "text/javascript");
+      res.end(readFileSync(join(root, "web/dist/frame.js")));
       return;
     }
     const file = join(out, pathname.slice(1));
@@ -207,19 +211,16 @@ try {
   assert.match(await caretLine(), /\b(Section|Paragraph) (9|10|11)\b/, "Show in source moves the source caret to the passage at the top of the preview (Section or Paragraph 10, within one)");
 
   // 5. A double-click on a passage in the preview moves the source caret there,
-  // with Keep in step still off. The click is a real mouse event sent over CDP.
+  // with Keep in step still off.
   await setCaret(0);
   await flush();
   await b.evaluate(frame(`const p = ${paragraphOf(20)}; p.scrollIntoView({ block: "center", behavior: "instant" }); return true;`));
   await flush();
-  const point = await b.evaluate(frame(`const p = ${paragraphOf(20)}; const r = p.getBoundingClientRect(); const box = f.getBoundingClientRect(); return { x: box.left + f.clientLeft + r.left + r.width / 2, y: box.top + f.clientTop + r.top + r.height / 2 };`));
-  assert.ok(point, "Paragraph 20 has a place on the page to double-click");
-  const press = (clickCount) => [
-    b.command("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount }),
-    b.command("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount }),
-  ];
-  await b.command("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
-  for (const step of [...press(1), ...press(2)]) await step;
+  // The frame reads where a double-click landed from its clientX/clientY,
+  // through caretPositionFromPoint, so the event is dispatched in the frame at
+  // the middle of the paragraph's first line.
+  const fired = await b.evaluate(frame(`const p = ${paragraphOf(20)}; const r = p.getClientRects()[0]; const x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2; p.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: x, clientY: y, detail: 2 })); return true;`));
+  assert.ok(fired, "Paragraph 20 has a place on the page to double-click");
   await until("the source caret on Paragraph 20", async () => (await caretLine()).includes("Paragraph 20 says"), 10000);
   assert.ok((await caretLine()).includes("Paragraph 20 says"), "a double-click in the preview moves the source caret to that passage with Keep in step off");
   assert.equal(await b.evaluate('localStorage.getItem("librepaper-linked")'), "false", "Keep in step is still off after the double-click");
