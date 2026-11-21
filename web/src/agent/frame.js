@@ -953,10 +953,28 @@ import { morphChildren } from "./morph.js";
       const range = document.createRange();
       range.setStart(piece.node, piece.from);
       range.setEnd(piece.node, piece.to);
-      const box = range.getBoundingClientRect();
       // Scrolled to a third of the way down rather than to the very top: a
       // line pinned to the edge of the frame reads as cut off.
-      scrollTo({ top: scrollY + box.top - innerHeight / 3, behavior: "smooth" });
+      const target = () => scrollY + range.getBoundingClientRect().top - innerHeight / 3;
+      const top = target();
+      if (Math.abs(top - scrollY) <= innerHeight * 1.5) {
+        scrollTo({ top, behavior: "smooth" });
+        return;
+      }
+      // The live preview lays out blocks far off screen at an estimated height
+      // until they are drawn (content-visibility in document.css). A long smooth
+      // scroll draws every block it passes, the page shrinks under it, and it
+      // lands well past the passage. A long jump goes there at once instead,
+      // then corrects for the blocks drawn on arrival until the place holds.
+      scrollTo({ top, behavior: "instant" });
+      let corrections = 0;
+      const settle = () => {
+        const next = target();
+        if (Math.abs(next - scrollY) <= 2 || corrections++ >= 5) return;
+        scrollTo({ top: next, behavior: "instant" });
+        requestAnimationFrame(settle);
+      };
+      requestAnimationFrame(settle);
       return;
     }
     if (message.type === "reading-position") {

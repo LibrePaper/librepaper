@@ -2,11 +2,11 @@
 // with Keep in step off, and of the Keep in step toggle in the divider's pill.
 // The room is the only module replaced, and the document and role answers come
 // from a small fetch mock, as in preview-follows-browser.mjs. The preview frame
-// is the real agent frame script (frame.js) on the documents origin; the
-// document it shows is handed to it as a preview message, because the
-// Markdown renderer needs a server this check does not run. Everything that
-// moves the source or the preview is the Reader's own code: the pill, the
-// caret, the reading-position round trip and the double-click in the frame.
+// is the real agent frame script (frame.js), and the document in it is the
+// Reader's own render of report.md by the Markdown module from web/wasm.
+// Everything that moves the source or the preview is the Reader's own code:
+// the pill, the caret, the reading-position round trip, and a double-click
+// sent through the browser's pointer.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -14,7 +14,8 @@ import tailwindcss from "@tailwindcss/vite";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { assertFreshDist } from "../helpers/fresh-dist.mjs";
@@ -36,14 +37,17 @@ const sections = 40;
 const reportLines = ["# Report", ""];
 for (let n = 1; n <= sections; n++) reportLines.push(`## Section ${n}`, "", `Paragraph ${n} says something unique number ${n}.`, "");
 const report = reportLines.join("\n");
-const sourcepos = (line) => `data-sourcepos="${line}:1-${line}:${reportLines[line - 1].length}"`;
-const previewPage = `<!doctype html><html><head><meta charset="utf-8"><title>Report</title></head><body><h1 ${sourcepos(1)}>Report</h1>${
-  Array.from({ length: sections }, (_, index) => {
-    const n = index + 1;
-    const heading = 3 + 4 * index;
-    return `<h2 ${sourcepos(heading)}>Section ${n}</h2><p ${sourcepos(heading + 2)}>Paragraph ${n} says something unique number ${n}.</p>`;
-  }).join("")
-}</body></html>`;
+
+// The preview is the Reader's own render of report.md, drawn by the Markdown
+// module from web/wasm. The renderer checks a module against the digest in its
+// URL, as the mirror lays it out.
+const markdownWasm = join(root, "web/wasm/markdown.wasm");
+if (!existsSync(markdownWasm)) {
+  console.log("show-in-panes-browser: no markdown module in web/wasm; skipping (fetch the wasm modules first)");
+  process.exit(0);
+}
+const markdownBytes = readFileSync(markdownWasm);
+const modules = { markdown: `/wasm/${createHash("sha256").update(markdownBytes).digest("hex")}/markdown.wasm` };
 
 writeFileSync(room, `
 import { LoroDoc, LoroText } from "loro-crdt";
@@ -85,6 +89,7 @@ writeFileSync(entry, `
 import ${JSON.stringify(join(root,"web/src/styles/app.css"))};
 import { EditorView } from ${JSON.stringify(join(root,"web/node_modules/@codemirror/view/dist/index.js"))};
 window.EditorView = EditorView;
+globalThis.LIBREPAPER_MODULES = ${JSON.stringify(modules)};
 window.testErrors = [];
 window.addEventListener('error', event => window.testErrors.push(event.message));
 window.addEventListener('unhandledrejection', event => window.testErrors.push(String(event.reason)));
@@ -115,6 +120,7 @@ try {
   await build({ configFile:false, define: KATEX_DEFINE, root:join(root,"web"), resolve:{alias:loroAlias}, plugins:[tailwindcss(), svelte(), {name:"mock-room", enforce:"pre", resolveId(id){ if(id === '../lib/room.js' || id === '../room.js' || id.endsWith('/src/lib/room.js')) return room; }}], build:{outDir:out,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"check.js"}}, logLevel:"error" });
   serverHttp = createServer((req, res) => {
     if (serveKatex(req, res)) return;
+    if (req.url === modules.markdown) { res.setHeader("content-type", "application/wasm"); res.end(markdownBytes); return; }
     const pathname = req.url.split("?")[0];
     // The Reader's own page is /docs/<slug>; its preview frame is /raw/<slug>/.
     if (pathname.startsWith("/raw/") && pathname.endsWith("/")) {
@@ -157,9 +163,6 @@ try {
   const paragraphTop = (n) => b.evaluate(frame(`const p = ${paragraphOf(n)}; return p ? p.getBoundingClientRect().top + w.scrollY : null;`));
   const paragraphInView = (n) => b.evaluate(frame(`const p = ${paragraphOf(n)}; if (!p) return false; const r = p.getBoundingClientRect(); return r.top >= 0 && r.bottom <= w.innerHeight;`));
   const frameHasParagraph = (n) => b.evaluate(frame(`return Boolean(${paragraphOf(n)});`));
-  // Hands the preview document to the frame. The frame only takes messages
-  // from its parent, which is this page, so the message comes from here.
-  const feedPreview = () => b.evaluate(frame(`w.postMessage({ librepaper: true, type: "preview", html: ${JSON.stringify(previewPage)}, sources: ["report.md"] }, "*"); return true;`));
 
   // The source caret, through the CodeMirror view of the source editor.
   const setCaret = (at) => b.evaluate(`(() => { const view = window.EditorView.findFromDOM(document.querySelector('.cm-editor')); view.focus(); view.dispatch({ selection: { anchor: ${at} } }); return true; })()`);
@@ -168,11 +171,9 @@ try {
   // Whether the preview's landing highlight is on, or null while the frame is not there.
   const landingHighlight = () => b.evaluate(frame('return w.CSS.highlights.has("librepaper-landing");'));
   // The divider pill's centre, and the edges of the two panes it sits between:
-  // the source pane and whichever preview pane is on screen. This harness has
-  // no renderer, so the Reader shows its "could not render" card there and the
-  // frame itself waits off screen.
+  // the source pane and the preview pane.
   const pillCentre = () => b.evaluate(`(() => { const r = document.querySelector('.grip-pill')?.getBoundingClientRect(); return r ? r.left + r.width / 2 : null; })()`);
-  const paneEdges = () => b.evaluate(`(() => { const e = document.querySelector('.editorpane')?.getBoundingClientRect(); const v = [...document.querySelectorAll('.viewport:not(.away), .latexpane')].map(n => n.getBoundingClientRect()).find(r => r.width > 0); return e && v ? { editor: { left: e.left, right: e.right }, viewport: { left: v.left, right: v.right } } : null; })()`);
+  const paneEdges = () => b.evaluate(`(() => { const e = document.querySelector('.editorpane')?.getBoundingClientRect(); const v = document.querySelector('.viewport:not(.away)')?.getBoundingClientRect(); return e && v ? { editor: { left: e.left, right: e.right }, viewport: { left: v.left, right: v.right } } : null; })()`);
   const assertPillBetweenPanes = async (side) => {
     await flush();
     const panes = await paneEdges();
@@ -206,13 +207,10 @@ try {
   assert.equal(offPill[2].pressed, "false", "the toggle reads aria-pressed=false with Keep in step off");
   assert.equal(await b.evaluate('localStorage.getItem("librepaper-linked")'), "false", "turning Keep in step off stores false under librepaper-linked");
 
-  // The preview gets its document once its frame is there.
+  // The Reader renders report.md into its preview frame, which is on screen.
   await until("the preview frame", () => exists('iframe[title=Document]'), 15000);
-  await until("the preview holds the report", async () => {
-    if (await frameHasParagraph(30)) return true;
-    await feedPreview();
-    return false;
-  }, 15000);
+  await until("the preview holds the report", () => frameHasParagraph(30), 30000);
+  assert.ok(await b.evaluate(`(() => { const r = document.querySelector('iframe[title=Document]').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.width > 200; })()`), "the preview frame is on screen beside the source");
 
   // 3. Show in preview: from the top of the preview, the source caret deep in
   // the document brings the preview down to it.
@@ -250,11 +248,15 @@ try {
   await flush();
   await b.evaluate(frame(`const p = ${paragraphOf(20)}; p.scrollIntoView({ block: "center", behavior: "instant" }); return true;`));
   await flush();
-  // The frame reads where a double-click landed from its clientX/clientY,
-  // through caretPositionFromPoint, so the event is dispatched in the frame at
-  // the middle of the paragraph's first line.
-  const fired = await b.evaluate(frame(`const p = ${paragraphOf(20)}; const r = p.getClientRects()[0]; const x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2; p.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: x, clientY: y, detail: 2 })); return true;`));
-  assert.ok(fired, "Paragraph 20 has a place on the page to double-click");
+  // A real double-click from the browser's pointer, at the start of the
+  // paragraph's first line, in page coordinates.
+  const point = await b.evaluate(frame(`const p = ${paragraphOf(20)}; const r = p.getClientRects()[0]; const box = f.getBoundingClientRect(); return { x: box.left + f.clientLeft + r.left + Math.min(40, r.width / 2), y: box.top + f.clientTop + r.top + r.height / 2 };`));
+  assert.ok(point && point.x > 0 && point.y > 0, "Paragraph 20 has a place on screen to double-click: " + JSON.stringify(point));
+  await b.command("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+  for (const clickCount of [1, 2]) {
+    await b.command("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount });
+    await b.command("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount });
+  }
   await until("the source caret on Paragraph 20", async () => (await caretLine()).includes("Paragraph 20 says"), 10000);
   assert.ok((await caretLine()).includes("Paragraph 20 says"), "a double-click in the preview moves the source caret to that passage with Keep in step off");
   assert.equal(await b.evaluate('localStorage.getItem("librepaper-linked")'), "false", "Keep in step is still off after the double-click");
