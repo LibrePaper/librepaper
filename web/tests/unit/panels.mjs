@@ -10,22 +10,22 @@ import { tabsFor, TABS } from "../../src/lib/panels.js";
 
 const offered = (who) => tabsFor(who).map((tab) => tab.id);
 
-// The two roles that arrive by a link. A read link is the project's files and
-// the pending changes in it, read only: link holders already hold every source
-// file, so the explorer hides nothing, and no other panel is one they could act
-// in.
+// The two roles that arrive by a link. A read link is the project's files, a
+// search across them and the pending changes in it, read only: link holders
+// already hold every source file, so the explorer and the search hide nothing,
+// and no other panel is one they could act in.
 assert.deepEqual(
   offered({ role: "reader", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }),
-  ["files", "changes"],
-  "a read link is offered the files and the changes, read only",
+  ["files", "search", "changes"],
+  "a read link is offered the files, search and the changes, read only",
 );
 
-// A comment link is the files, the comments and the changes, and only those:
+// A comment link is the files, search, the comments and the changes, and only those:
 // not the agent, not the history, none of which the link can touch.
 assert.deepEqual(
   offered({ role: "commenter", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }),
-  ["files", "collaboration", "changes"],
-  "a comment link is offered the files, the comments and the changes",
+  ["files", "search", "collaboration", "changes"],
+  "a comment link is offered the files, search, the comments and the changes",
 );
 
 // Neither of them is offered the outline or the panels that act on a source

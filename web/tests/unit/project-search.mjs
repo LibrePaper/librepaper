@@ -200,7 +200,7 @@ assert.deepEqual(compileQuery({ query: "" }), { re: null, error: "" });
 // Lookahead: the bar after the match is part of the test, but not replaced.
 {
   const text = "foo bar foo baz";
-  const options = { query: "foo(?=bar)", regex: true };
+  const options = { query: "foo(?= bar)", regex: true };
   const matches = searchProject([file("f", "f.tex", text)], options).groups[0].matches;
   const edits = replacementsFor(text, matches, "qux", options);
   assert.deepEqual(edits, [{ from: 0, to: 3, insert: "qux" }]);

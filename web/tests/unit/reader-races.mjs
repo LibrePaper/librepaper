@@ -474,7 +474,7 @@ console.log("reader-races: all checks passed");
     directoryChanged: (events) => !Array.isArray(events) || events.some((event) => directory.has(event.target)) };
   let targets = 0;
   const origins = [];
-  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: (options) => { changes++; origins.push(Boolean(options?.remote)); }, schedule: { scheduleTarget: () => targets++ } });
+  const ctx = context({ session: active, searchRevision: 0, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: (options) => { changes++; origins.push(Boolean(options?.remote)); }, schedule: { scheduleTarget: () => targets++ } });
   vm.runInContext(body("  function filesChanged(events, active = session, by = \"local\")", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: "cid:2@1:Text" }];
   vm.runInContext("filesChanged(events)", ctx);
