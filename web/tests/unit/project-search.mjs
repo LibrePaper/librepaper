@@ -64,6 +64,32 @@ function applyEdits(text, edits) {
 // An empty query matches nothing and is not an error.
 assert.deepEqual(compileQuery({ query: "" }), { re: null, error: "" });
 
+// Whole word follows Unicode letters, not ASCII.
+{
+  assert.equal(one("un café noir", { query: "café", wholeWord: true }).length, 1);
+  assert.equal(one("cafés", { query: "café", wholeWord: true }).length, 0);
+}
+
+// A pattern valid only without `u` still compiles, with whole word on.
+{
+  const matches = one("a-b", { query: "a\\-b", regex: true, wholeWord: true });
+  assert.deepEqual(matches.map((m) => m.text), ["a-b"]);
+}
+
+// A pattern invalid both with and without `u` is reported.
+assert.deepEqual(compileQuery({ query: "(", regex: true }), { re: null, error: "invalid" });
+
+// Under `u`, a match is a whole code point, and offsets are UTF-16.
+{
+  const matches = one("😀x\n😀y", { query: "^.", regex: true });
+  assert.deepEqual(matches.map((m) => m.text), ["😀", "😀"]);
+  assert.deepEqual(matches.map((m) => m.from), [0, 4]);
+  assert.ok(matches.every((m) => m.text.length === 2));
+}
+
+// Zero-length matches step past whole code points and terminate.
+assert.equal(one("😀x", { query: "(?=x)", regex: true }).length, 0);
+
 // Zero-length matches terminate and are not reported.
 {
   const matches = one("baab", { query: "a*", regex: true });
@@ -205,6 +231,14 @@ assert.deepEqual(compileQuery({ query: "" }), { re: null, error: "" });
   const edits = replacementsFor(text, matches, "qux", options);
   assert.deepEqual(edits, [{ from: 0, to: 3, insert: "qux" }]);
   assert.equal(applyEdits(text, edits), "qux bar foo baz");
+}
+
+// $` is the text before the match and $' the text after it.
+{
+  const text = "ab-cd";
+  const options = { query: "-", regex: true };
+  const matches = searchProject([file("f", "f.tex", text)], options).groups[0].matches;
+  assert.equal(applyEdits(text, replacementsFor(text, matches, "[$`|$']", options)), "ab[ab|cd]cd");
 }
 
 // A match whose text changed since the search is skipped.

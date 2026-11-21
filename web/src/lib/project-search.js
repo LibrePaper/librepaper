@@ -2,9 +2,11 @@
 // replace action all read, so the match the list shows is the same match the
 // replacement rewrites.
 //
-// Offsets are UTF-16 indices, the unit CodeMirror uses, so a match can be
-// dispatched into an editor without conversion. The RegExp has no `u` flag for
-// the same reason: the query and its offsets must agree on what a character is.
+// Offsets are UTF-16 code units, the unit both RegExp.exec and CodeMirror use,
+// so a match can be dispatched into an editor without conversion. The `u` flag
+// is used where the pattern allows it, so a match never splits a surrogate pair
+// and word boundaries know about letters beyond ASCII. A pattern that is only
+// valid without `u` falls back to a non-`u` RegExp.
 //
 // This module is pure. It imports nothing, so the Node unit tests can run it
 // without a browser or the message catalogue.
@@ -43,16 +45,30 @@ export function compileQuery(options) {
   const query = options?.query ?? "";
   if (query === "") return { re: null, error: "" };
   const raw = options.regex ? query : escapeRegExp(query);
-  try {
-    // Check the person's own pattern before wrapping it: `\b(?:a)(\b` would
-    // otherwise hide a broken pattern inside a valid group.
-    new RegExp(raw);
-    const source = options.wholeWord ? `\\b(?:${raw})\\b` : raw;
-    const flags = options.caseSensitive ? "gm" : "gim";
+  // Literal queries are always escaped syntax characters, which are valid under
+  // `u`. A regex tries `u` first and falls back to the plain form.
+  const modes = options.regex ? [true, false] : [true];
+  for (const unicode of modes) {
+    try {
+      // Check the person's own pattern before wrapping it: `\b(?:a)(\b` would
+      // otherwise hide a broken pattern inside a valid group.
+      new RegExp(raw, unicode ? "u" : "");
+    } catch {
+      continue;
+    }
+    const source = options.wholeWord ? wholeWordSource(raw, unicode) : raw;
+    const flags = (options.caseSensitive ? "gm" : "gim") + (unicode ? "u" : "");
     return { re: new RegExp(source, flags), error: "" };
-  } catch {
-    return { re: null, error: "invalid" };
   }
+  return { re: null, error: "invalid" };
+}
+
+// With `u`, a word is a letter, number or underscore in any script. Without it,
+// \b is the ASCII word boundary.
+/** @returns {string} */
+function wholeWordSource(raw, unicode) {
+  if (unicode) return `(?<![\\p{L}\\p{N}_])(?:${raw})(?![\\p{L}\\p{N}_])`;
+  return `\\b(?:${raw})\\b`;
 }
 
 /**
@@ -108,7 +124,7 @@ function findMatches(text, re, room) {
     // A zero-length match (`^`, `a*`) would leave lastIndex where it was and
     // loop forever, so step past it and do not report it.
     if (m[0].length === 0) {
-      re.lastIndex = m.index + 1;
+      re.lastIndex = m.index + (re.unicode ? codePointWidth(text, m.index) : 1);
       continue;
     }
     if (matches.length === room) return { matches, more: true };
@@ -120,6 +136,14 @@ function findMatches(text, re, room) {
     matches.push(describe(text, m.index, m[0], line, lineStart));
   }
   return { matches, more: false };
+}
+
+// 2 when a surrogate pair starts at `index`, otherwise 1.
+/** @returns {number} */
+function codePointWidth(text, index) {
+  const high = text.charCodeAt(index);
+  const low = text.charCodeAt(index + 1);
+  return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff ? 2 : 1;
 }
 
 /**
@@ -193,7 +217,7 @@ export function replacementsFor(text, matches, replacement, options) {
     const hit = sticky.exec(text);
     // The file changed since the search: this offset no longer holds the match.
     if (!hit || match.from + hit[0].length !== match.to) continue;
-    const insert = options.regex ? expandTemplate(replacement, hit) : replacement;
+    const insert = options.regex ? expandTemplate(replacement, hit, text, match) : replacement;
     edits.push({ from: match.from, to: match.to, insert });
     floor = match.from;
   }
@@ -206,13 +230,17 @@ export function replacementsFor(text, matches, replacement, options) {
 /**
  * @param {string} template
  * @param {RegExpExecArray} hit
+ * @param {string} text the file's current text
+ * @param {{ from: number, to: number }} match
  * @returns {string}
  */
-function expandTemplate(template, hit) {
+function expandTemplate(template, hit, text, match) {
   const count = hit.length - 1;
-  return template.replace(/\$(\$|&|<[^>]*>|\d{1,2})/g, (whole, token) => {
+  return template.replace(/\$(\$|&|`|'|<[^>]*>|\d{1,2})/g, (whole, token) => {
     if (token === "$") return "$";
     if (token === "&") return hit[0];
+    if (token === "`") return text.slice(0, match.from);
+    if (token === "'") return text.slice(match.to);
     if (token[0] === "<") {
       if (!hit.groups) return whole;
       return hit.groups[token.slice(1, -1)] ?? "";
