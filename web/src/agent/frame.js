@@ -1177,7 +1177,8 @@ import { morphChildren } from "./morph.js";
     // and the rest stay with the frame. The frame does not preventDefault,
     // since it cannot know whether the Reader will claim the chord.
     if ((event.ctrlKey || event.metaKey) && event.altKey) {
-      if (editable) return;
+      // Pressing the modifiers themselves names no chord yet.
+      if (editable || ["Control", "Meta", "Alt", "Shift"].includes(event.key)) return;
       post({
         type: "shortcut", key: event.key, code: event.code,
         ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey,
