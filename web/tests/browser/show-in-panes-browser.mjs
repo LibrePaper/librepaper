@@ -252,9 +252,14 @@ try {
   await flush();
   await b.evaluate(`(() => { const f = document.querySelector('iframe[title=Document]'); f.focus(); f.contentWindow.focus(); f.contentDocument.body.focus(); return true; })()`);
   await flush();
+  // The chord must be heard inside the frame, not by the Reader's own window,
+  // or this would only test the shortcut the Reader already had.
+  await b.evaluate(frame(`w.__keys = []; d.addEventListener('keydown', e => w.__keys.push(e.key)); return true;`));
+  assert.equal(await b.evaluate(`document.activeElement?.tagName`), "IFRAME", "the preview frame has the keyboard before the chord");
   // Browser key events go to the focused frame, and Mod is Ctrl on Linux: Ctrl (2) + Alt (1) = 3.
   await b.command("Input.dispatchKeyEvent", { type: "keyDown", modifiers: 3, key: "k", code: "KeyK", windowsVirtualKeyCode: 75 });
   await b.command("Input.dispatchKeyEvent", { type: "keyUp", modifiers: 3, key: "k", code: "KeyK", windowsVirtualKeyCode: 75 });
+  assert.ok((await b.evaluate(frame(`return w.__keys;`))).includes("k"), "the chord was pressed inside the preview frame");
   await until("the source caret at the passage near the top of the preview from the preview's shortcut", async () => /\b(Section|Paragraph) (14|15|16)\b/.test(await caretLine()), 10000);
   assert.match(await caretLine(), /\b(Section|Paragraph) (14|15|16)\b/, "Ctrl+Alt+K pressed in the preview moves the source caret to the passage at the top of the preview (Section or Paragraph 15, within one)");
 
