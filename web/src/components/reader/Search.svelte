@@ -11,7 +11,7 @@
   // the results grouped by file, and hands edits back to Reader to apply.
   let {
     files = [], // [{ id, path }], text files only
-    textOf = () => "", // (id) => current text of that file
+    textsFor = () => ({}), // () => { [id]: current text }, read once per search
     revision = 0, // changes whenever any file's text may have changed
     // False while the panel is hidden: no project-wide search runs until it is shown again.
     active = true,
@@ -20,7 +20,9 @@
     // A non-empty text also becomes the query. An empty text leaves the query as it is.
     seed = null,
     onopen, // ({ id, path, from, to }) => void
-    onreplace, // (id, edits) => void, applied synchronously
+    // (id, plan) => void | Promise<void>. plan(text) returns the edits for that file's
+    // text as it is when the write happens, so the caller plans after any wait.
+    onreplace,
   } = $props();
 
   let input = $state(null);
@@ -30,6 +32,8 @@
   let regex = $state(false);
   let replacing = $state(false);
   let replacement = $state("");
+  // True while replacements are being written; the replace buttons are off meanwhile.
+  let busy = $state(false);
   // Replaced whole on each run, never edited in place, so it is not deeply reactive.
   let results = $state.raw(null);
   // Paths of the file groups the person has collapsed. Kept across recomputes.
@@ -53,7 +57,8 @@
   // so that a replace applies the options the shown matches came from, and
   // `revision` is stamped so that `fresh` can tell when the text has changed since.
   function run(opts, snapshot) {
-    const inputs = snapshot.map((file) => ({ id: file.id, path: file.path, text: textOf(file.id) }));
+    const texts = textsFor();
+    const inputs = snapshot.map((file) => ({ id: file.id, path: file.path, text: texts[file.id] ?? "" }));
     return { ...searchProject(inputs, opts, { limit: 1000 }), options: opts, revision };
   }
 
@@ -106,26 +111,55 @@
   }
 
   function open(group, match) {
-    onopen?.({ id: group.id, path: group.path, from: match.from, to: match.to });
+    if (fresh) {
+      onopen?.({ id: group.id, path: group.path, from: match.from, to: match.to });
+      return;
+    }
+    // The shown matches are stale (the debounce after an edit), so their offsets
+    // may point at unrelated text. Search again now and go to the match in this
+    // file that is nearest the one clicked. A file with no match now is left alone.
+    recompute();
+    const matches = results?.groups?.find((entry) => entry.id === group.id)?.matches ?? [];
+    if (!matches.length) return;
+    let best = matches[0];
+    for (const candidate of matches) {
+      if (Math.abs(candidate.from - match.from) < Math.abs(best.from - match.from)) best = candidate;
+    }
+    onopen?.({ id: group.id, path: group.path, from: best.from, to: best.to });
   }
 
-  function replaceOne(group, match) {
-    if (!fresh) return;
-    onreplace?.(group.id, replacementsFor(textOf(group.id), [match], replacement, results.options));
-    recompute();
+  async function replaceOne(group, match) {
+    if (!fresh || busy) return;
+    const opts = results.options;
+    const replacementText = replacement;
+    busy = true;
+    try {
+      await onreplace?.(group.id, (text) => replacementsFor(text, [match], replacementText, opts));
+    } finally {
+      busy = false;
+      recompute();
+    }
   }
 
   // Replaces every match in the project, not only the 1,000 the list shows, so
-  // it searches again uncapped at click time over the current text.
-  function replaceAll() {
-    if (!fresh) return;
+  // it searches again uncapped at click time. Each file's edits are planned by
+  // the caller against that file's text at write time.
+  async function replaceAll() {
+    if (!fresh || busy) return;
     const opts = results.options;
-    const inputs = files.map((file) => ({ id: file.id, path: file.path, text: textOf(file.id) }));
-    const all = searchProject(inputs, opts, { limit: Infinity });
-    for (const group of all.groups) {
-      onreplace?.(group.id, replacementsFor(textOf(group.id), group.matches, replacement, opts));
+    const replacementText = replacement;
+    busy = true;
+    try {
+      const texts = textsFor();
+      const inputs = files.map((file) => ({ id: file.id, path: file.path, text: texts[file.id] ?? "" }));
+      const all = searchProject(inputs, opts, { limit: Infinity });
+      for (const group of all.groups) {
+        await onreplace?.(group.id, (text) => replacementsFor(text, group.matches, replacementText, opts));
+      }
+    } finally {
+      busy = false;
+      recompute();
     }
-    recompute();
   }
 </script>
 
@@ -164,7 +198,7 @@
           placeholder={m.search_replace_label()}
           bind:value={replacement}
         />
-        <button type="button" class="btn btn-sm lp-control-tonal" disabled={!hasResults || !fresh}
+        <button type="button" class="btn btn-sm lp-control-tonal" disabled={!hasResults || !fresh || busy}
                 onclick={replaceAll}>{m.search_replace_all()}</button>
       </div>
     {/if}
@@ -199,7 +233,7 @@
                       <span class="search-text">{match.before}<mark>{match.text}</mark>{match.after}</span>
                     </button>
                     {#if canReplace && replacing}
-                      <IconButton icon="check" label={m.search_replace_one()} disabled={!fresh} onclick={() => replaceOne(group, match)} />
+                      <IconButton icon="check" label={m.search_replace_one()} disabled={!fresh || busy} onclick={() => replaceOne(group, match)} />
                     {/if}
                   </li>
                 {/each}

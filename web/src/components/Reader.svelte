@@ -201,6 +201,8 @@
     hidden: () => hidden,
     onProject: (next) => {
       workspace.fromProject(next);
+      // A reader's Search panel searches the projection, so it searches again.
+      searchRevision += 1;
       // Readers load the project whole too, on every projection that lands.
       warmFigures();
       changeRows = readerChangeRows(next.changes);
@@ -4153,7 +4155,24 @@
   // searches again. The panel waits for typing to pause before it does.
   let searchRevision = $state(0);
   let searchSeed = $state(null);
-  const searchFiles = $derived(files.filter((file) => file.kind === "text").map((file) => ({ id: file.id, path: file.path })));
+  const searchFiles = $derived(files.filter((file) => file.kind === "text").map((file) => ({ id: file.id || file.path, path: file.path })));
+  // An editor reads the live text; somebody holding a read or comment link has
+  // no session, only the projection the server sent, keyed by path.
+  function searchTextOf(id) {
+    if (session) return String(session.textOf?.(id)?.toString?.() ?? "");
+    const path = searchFiles.find((file) => file.id === id)?.path;
+    return path ? String(projection.tree()?.texts?.[path] ?? "") : "";
+  }
+  // Every search file's text in one pass, so a search reads the projection's
+  // tree once rather than once per file.
+  function searchTexts() {
+    const texts = session ? null : projection.tree()?.texts || {};
+    const out = {};
+    for (const file of searchFiles) {
+      out[file.id] = texts ? String(texts[file.path] ?? "") : searchTextOf(file.id);
+    }
+    return out;
+  }
   // The outline can be shown with no editor open, so it also follows the typst
   // module's arrival itself.
   $effect(() => onTypstSyntax(() => { outlineRevision += 1; }));
@@ -4404,8 +4423,7 @@
   // editor is mounted before it is asked to select anything. Someone who may
   // only read has no source pane: the file is opened and that is all.
   async function openSearchResult({ id, from, to }) {
-    if (!session) return;
-    const file = files.find((entry) => entry.id === id && entry.kind === "text");
+    const file = files.find((entry) => (entry.id || entry.path) === id && entry.kind === "text");
     if (!file) return;
     rememberPlace(file.id, from);
     openTheFile(file);
@@ -4417,11 +4435,15 @@
     editor?.selectIn?.(id, from, to);
   }
 
-  async function replaceInFile(id, edits) {
+  // The edits are planned here, after the editor is ready, from the file's text
+  // as it is now: a collaborator's edit made while the editor was mounting
+  // cannot leave the offsets pointing at the wrong place.
+  async function replaceInFile(id, plan) {
     if (!mayEdit || !session) return;
     if (!editing) await startEditing();
     await tick();
-    editor?.replaceIn?.(id, edits);
+    const edits = plan(searchTextOf(id));
+    if (edits.length) editor?.replaceIn?.(id, edits);
   }
 
   // The bytes of the figure being looked at are fetched by the workspace;
@@ -5112,7 +5134,7 @@
   {#snippet searchPanel()}
     <PanelBoundary name="the search panel">
     <!-- No replace beside a figure: the editor is not mounted then, so replaceInFile would do nothing. -->
-    <Search files={searchFiles} textOf={(id) => String(session?.textOf?.(id)?.toString?.() ?? "")}
+    <Search files={searchFiles} textsFor={searchTexts}
       revision={searchRevision} active={panel === "search" && shown.comments} canReplace={mayEdit && !shownFigure} seed={searchSeed}
       onopen={openSearchResult} onreplace={replaceInFile} />
     </PanelBoundary>
