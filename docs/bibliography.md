@@ -31,4 +31,4 @@ If a document has no declaration, the first DOI or Zotero import adds one. In a 
 
 ## Agents
 
-[Agents](agents.html) add references with the `reference_from_doi` tool, which returns the entry as published rather than one the agent writes itself.
+[Agents](agents.html) add references with the `reference_from_doi` tool, which returns the entry as published rather than one the agent writes itself. For items in the user's Zotero library, they search with `reference_search_zotero` and then fetch the entry with `reference_from_zotero`. Both Zotero tools read the local Zotero desktop app.
