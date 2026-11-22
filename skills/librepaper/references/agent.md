@@ -139,6 +139,7 @@ Start with one `document_read` that combines queries: `{"kind":"manifest"}` to l
 - Keep replacements minimal and inside the asked scope. Preserve math, references, code and markup.
 - When updating an existing document, propose targeted patches over the passages that change. Never replace a whole file or section to change part of it; keep the rest of the author's text.
 - To add a reference by DOI, call `reference_from_doi` (served only by `librepaper mcp`, answered on the user's machine) and append its `bibtex` to the `.bib` with `document_propose`. Never write reference metadata yourself.
+- To add a reference from the user's Zotero library, call `reference_search_zotero` with a title, author or year, pick the candidate that clearly matches (ask the user if several could), then call `reference_from_zotero` with its `zotero_item`. Append its `bibtex` the same way. Like `reference_from_doi`, these are served only by `librepaper mcp`, answered on the user's machine from the local Zotero desktop app.
 - Keep the change ids that `document_propose` returns in `effects`. If a pass went wrong, withdraw it with those ids before proposing again. Do not try to "restore" text by proposing the old text over your own pending change.
 - Use `validation: "compile"` when the change must still build, and only claim it compiles from a matching render result. That validation needs the in-app Agent panel. With a token or connector, compile the file with `document_compile` after the change instead.
 
