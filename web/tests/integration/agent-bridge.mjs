@@ -99,10 +99,11 @@ try {
   bridge.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
 
   // The model never sees an operation key: the bridge owns identity. The
-  // bridge adds reference_from_doi, which it answers on this machine.
+  // bridge adds the reference tools (DOI and Zotero), which it answers on
+  // this machine.
   const { tools } = (await rpc("tools/list", {})).result;
   assert.deepEqual(tools.map((tool) => tool.name).sort(),
-    ["document_apply", "document_comment", "document_compile", "document_files", "document_propose", "document_read", "document_result", "document_withdraw", "reference_from_doi"]);
+    ["document_apply", "document_comment", "document_compile", "document_files", "document_propose", "document_read", "document_result", "document_withdraw", "reference_from_doi", "reference_from_zotero", "reference_search_zotero"]);
   for (const tool of tools) {
     assert.equal(tool.inputSchema.properties.operation, undefined, `${tool.name} offers no operation key`);
     assert.equal(tool.inputSchema.properties.target_operation, undefined, `${tool.name} offers no target operation`);
