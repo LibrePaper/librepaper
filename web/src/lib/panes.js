@@ -260,7 +260,9 @@ export function range(pane, state) {
 /// the screen either way.
 export function step(pane, state, forward) {
   const by = pane.fraction ? px(1.5) / Math.max(surface(state), 1) : px(1.5);
-  return clamp(pane, state, state.sizes[pane.key] + (forward ? by : -by));
+  // From where the separator is drawn, not from what is stored: a stored size
+  // out of range, or not a number, would otherwise swallow the first press.
+  return clamp(pane, state, clamp(pane, state) + (forward ? by : -by));
 }
 
 /// Which arrow key makes this pane wider, since a separator is focusable and

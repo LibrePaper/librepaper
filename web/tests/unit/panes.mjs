@@ -3,7 +3,7 @@
 // gives way to it in a split. Values are hand-computed at a 16px rem.
 import assert from "node:assert/strict";
 
-const { PANES, clamp, pixels, range } = await import("../../src/lib/panes.js");
+const { PANES, clamp, pixels, range, step } = await import("../../src/lib/panes.js");
 
 const state = (width, layout, size = 360) => ({
   width,
@@ -82,3 +82,11 @@ assert.ok(
   Number.isFinite(pixels(PANES.sidebar, state(Number.NaN, "split"))),
   "the column with a NaN width in state is finite",
 );
+{
+  const stored = state(1920, "split");
+  stored.sizes[PANES.editor.key] = Number.POSITIVE_INFINITY;
+  assert.ok(
+    step(PANES.editor, stored, false) < clamp(PANES.editor, stored),
+    "an arrow press moves the separator from where it is drawn, even when the stored share is not a number",
+  );
+}

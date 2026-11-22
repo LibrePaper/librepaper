@@ -525,8 +525,10 @@ main.reader.no-preview:not(.editing) .sidebar {
    stylesheet keeps if that arithmetic is ever wrong. Phones show one pane at a
    time and are left alone. */
 @media (min-width: 768px) {
-  main.reader.editing:not(.no-preview) .viewport:not(.away) { min-width: min(22.5rem, 40%); }
-  main.reader.editing:not(.no-preview) .latexpane { min-width: min(22.5rem, 40%); }
+  /* A zero basis, so the preview takes what the source leaves rather than
+     what its own content asks for: a long diagnostic must not move the split. */
+  main.reader.editing:not(.no-preview) .viewport:not(.away),
+  main.reader.editing:not(.no-preview) .latexpane { flex-basis: 0; min-width: min(22.5rem, 40%); }
 }
 .latexpane .notyet {
   display: flex;
