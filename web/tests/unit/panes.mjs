@@ -65,7 +65,7 @@ assert.equal(
   "a column size that is not a number takes the 22.5rem reset",
 );
 assert.equal(
-  clamp(PANES.editor, state(1920, "split", undefined)),
+  clamp(PANES.editor, (() => { const missing = state(1920, "split"); delete missing.sizes[PANES.editor.key]; return missing; })()),
   0.5,
   "a source share that is missing takes the even reset",
 );

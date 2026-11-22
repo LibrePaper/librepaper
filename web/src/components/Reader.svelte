@@ -3628,9 +3628,12 @@
   // has, so the root element is watched directly.
   $effect(() => {
     const root = document.documentElement;
+    // innerWidth, as the window binding reads, because it is what the
+    // stylesheet's media queries measure: clientWidth leaves out a scrollbar,
+    // and the two could fall on either side of the phone breakpoint.
     const watch = new ResizeObserver(() => {
-      if (root.clientWidth > 0 && root.clientWidth !== arrangement.state.width) {
-        arrangement.state.width = root.clientWidth;
+      if (innerWidth > 0 && innerWidth !== arrangement.state.width) {
+        arrangement.state.width = innerWidth;
       }
       arrangement.state.unit = measure();
     });
