@@ -138,6 +138,9 @@ impl Client {
             return Err(Error::Request("invalid Zotero item key".into()));
         }
         let response = self.get(&format!("users/0/items/{key}"), &[]).await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::Request(format!("Zotero has no item {key}; search again")));
+        }
         if !response.status().is_success() {
             return Err(classify(response.status()));
         }
