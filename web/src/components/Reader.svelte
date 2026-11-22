@@ -3622,6 +3622,24 @@
   const keyboardOpen = $derived(arrangement.state.keyboardOpen);
   const width = $derived(arrangement.state.width);
   const unit = $derived(arrangement.state.unit);
+  // The window event does not cover every change to the width the split is
+  // worked out from. A window moved between screens, or a webview that resizes
+  // without a resize event, would otherwise keep dividing a width it no longer
+  // has, so the root element is watched directly.
+  $effect(() => {
+    const root = document.documentElement;
+    // innerWidth, as the window binding reads, because it is what the
+    // stylesheet's media queries measure: clientWidth leaves out a scrollbar,
+    // and the two could fall on either side of the phone breakpoint.
+    const watch = new ResizeObserver(() => {
+      if (innerWidth > 0 && innerWidth !== arrangement.state.width) {
+        arrangement.state.width = innerWidth;
+      }
+      arrangement.state.unit = measure();
+    });
+    watch.observe(root);
+    return () => watch.disconnect();
+  });
   const compact = $derived(arrangement.compact);
   const sourceOpen = $derived(arrangement.sourceOpen);
   const activeMobileView = $derived(arrangement.activeMobileView);

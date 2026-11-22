@@ -3,7 +3,7 @@
 // gives way to it in a split. Values are hand-computed at a 16px rem.
 import assert from "node:assert/strict";
 
-const { PANES, clamp, pixels, range } = await import("../../src/lib/panes.js");
+const { PANES, clamp, pixels, range, step } = await import("../../src/lib/panes.js");
 
 const state = (width, layout, size = 360) => ({
   width,
@@ -59,3 +59,34 @@ assert.equal(
   750,
   "at a normal width the even split is untouched (room 1500, half of it)",
 );
+assert.equal(
+  clamp(PANES.sidebar, state(1440, "split", Number.NaN)),
+  360,
+  "a column size that is not a number takes the 22.5rem reset",
+);
+assert.equal(
+  clamp(PANES.editor, (() => { const missing = state(1920, "split"); delete missing.sizes[PANES.editor.key]; return missing; })()),
+  0.5,
+  "a source share that is missing takes the even reset",
+);
+assert.equal(
+  clamp(PANES.editor, state(Number.NaN, "split")),
+  0.5,
+  "a window with no width has no room to divide, so the source takes its reset",
+);
+assert.ok(
+  Number.isFinite(pixels(PANES.editor, state(Number.NaN, "split"))),
+  "pixels with a NaN width in state is finite",
+);
+assert.ok(
+  Number.isFinite(pixels(PANES.sidebar, state(Number.NaN, "split"))),
+  "the column with a NaN width in state is finite",
+);
+{
+  const stored = state(1920, "split");
+  stored.sizes[PANES.editor.key] = Number.POSITIVE_INFINITY;
+  assert.ok(
+    step(PANES.editor, stored, false) < clamp(PANES.editor, stored),
+    "an arrow press moves the separator from where it is drawn, even when the stored share is not a number",
+  );
+}
