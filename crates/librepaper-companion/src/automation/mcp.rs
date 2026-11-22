@@ -69,7 +69,7 @@ fn reference_from_doi_tool() -> Tool {
     });
     serde_json::from_value(json!({
         "name": REFERENCE_FROM_DOI,
-        "description": "Look up a DOI at doi.org from this machine and return a BibTeX entry with real metadata. Before appending, check the project's .bib for an entry with the same doi. If there is none, append `bibtex` verbatim with document_propose/document_apply. Change the key only if it collides with an existing key, by adding a letter suffix. Then cite the key. Never write reference metadata yourself.",
+        "description": "Look up a DOI at doi.org from this machine and return a BibTeX entry with real metadata. Before appending, check the bibliography file the citing document loads (if it loads none, create references.bib and register it in that document the way its format expects) for an entry with the same doi. If there is none, append `bibtex` verbatim with document_propose/document_apply. Change the key only if it collides with an existing key, by adding a letter suffix. Then cite the key. Never write reference metadata yourself.",
         "inputSchema": schema,
     }))
     .expect("reference_from_doi tool schema")
@@ -123,7 +123,7 @@ fn reference_from_zotero_tool() -> Tool {
     });
     serde_json::from_value(json!({
         "name": REFERENCE_FROM_ZOTERO,
-        "description": "Return a BibTeX entry with real metadata for one item in the user's Zotero library on this machine. Before appending, look in the project's .bib for an entry with the same x-librepaper-zotero-item or the same doi; if there is one, cite its existing key and append nothing. Otherwise append `bibtex` verbatim with document_propose/document_apply; if its key is already used by a different entry, change only the key, by adding a letter suffix that is not taken. Then cite the key. Never write reference metadata yourself.",
+        "description": "Return a BibTeX entry with real metadata for one item in the user's Zotero library on this machine. Before appending, look in the bibliography file the citing document loads (if it loads none, create references.bib and register it in that document the way its format expects) for an entry with the same x-librepaper-zotero-item or the same doi; if there is one, cite its existing key and append nothing. Otherwise append `bibtex` verbatim with document_propose/document_apply; if its key is already used by a different entry, change only the key, by adding a letter suffix that is not taken. Then cite the key. Never write reference metadata yourself.",
         "inputSchema": schema,
     }))
     .expect("reference_from_zotero tool schema")
