@@ -59,3 +59,26 @@ assert.equal(
   750,
   "at a normal width the even split is untouched (room 1500, half of it)",
 );
+assert.equal(
+  clamp(PANES.sidebar, state(1440, "split", Number.NaN)),
+  360,
+  "a column size that is not a number takes the 22.5rem reset",
+);
+assert.equal(
+  clamp(PANES.editor, state(1920, "split", undefined)),
+  0.5,
+  "a source share that is missing takes the even reset",
+);
+assert.equal(
+  clamp(PANES.editor, state(Number.NaN, "split")),
+  0.5,
+  "a window with no width has no room to divide, so the source takes its reset",
+);
+assert.ok(
+  Number.isFinite(pixels(PANES.editor, state(Number.NaN, "split"))),
+  "pixels with a NaN width in state is finite",
+);
+assert.ok(
+  Number.isFinite(pixels(PANES.sidebar, state(Number.NaN, "split"))),
+  "the column with a NaN width in state is finite",
+);

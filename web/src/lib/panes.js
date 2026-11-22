@@ -173,6 +173,9 @@ const NARROW = 1000;
 /// The source's share of the surface, within what both of them can read at.
 function clampShare(share, state) {
   const room = surface(state);
+  // A window whose width is not a number has no room to divide, so the source
+  // takes its reset rather than a share of nothing.
+  if (!Number.isFinite(room)) return PANES.editor.reset;
   if (room <= 0) return share;
   const floor = px(PANES.editor.min) / room;
   const ceiling = Math.min(PANES.editor.max, (room - px(DOCUMENT_MIN)) / room);
@@ -185,14 +188,26 @@ function clampShare(share, state) {
 /// A pane's size, clamped, in whatever unit that pane is kept in. `state.sizes`
 /// holds what the reader last chose; passing a size asks about that one instead.
 export function clamp(pane, state, size = state.sizes[pane.key]) {
+  // A size that is not a number, such as a stored value that was never
+  // written, takes the reset. It is clamped like any other size, because the
+  // reset alone can be wider than the window has room for.
+  if (!Number.isFinite(size)) return clamp(pane, state, reset(pane));
   return pane.fraction ? clampShare(size, state) : clampSidebar(size, state);
 }
 
-/// And in pixels, which is what the stylesheet is given.
+/// And in pixels, which is what the stylesheet is given. A value that still
+/// comes out as NaN or Infinity is replaced by the pane's default, because the
+/// stylesheet must never be handed one.
 export function pixels(pane, state) {
-  return pane.fraction
+  const value = pane.fraction
     ? Math.round(clamp(pane, state) * surface(state))
     : clamp(pane, state);
+  if (Number.isFinite(value)) return value;
+  if (!pane.fraction) return px(pane.reset);
+  const room = surface(state);
+  return Number.isFinite(room)
+    ? Math.round(pane.reset * Math.max(room, 0))
+    : px(PANES.editor.min);
 }
 
 /// A pointer at x, as a size for this pane, in the pane's own unit. Which edge

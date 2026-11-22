@@ -79,7 +79,9 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
 }
 
 .editorpane {
-  flex: 0 0 var(--librepaper-editor);
+  /* It may shrink, so that if the row is ever narrower than the source asks
+     for, the source gives way rather than pushing the preview out. */
+  flex: 0 1 var(--librepaper-editor);
   /* min-height: 0 is what lets a grid item be shorter than its contents, which
      is what makes the editor scroll rather than the page. */
   min-height: 0;
@@ -517,6 +519,14 @@ main.reader.no-preview:not(.editing) .sidebar {
   min-width: 0;
   overflow: auto;
   background: var(--color-shell);
+}
+/* While the preview shares a row with the source, it keeps a floor of room.
+   The split is worked out in script (lib/panes.js); this is the floor the
+   stylesheet keeps if that arithmetic is ever wrong. Phones show one pane at a
+   time and are left alone. */
+@media (min-width: 768px) {
+  main.reader.editing:not(.no-preview) .viewport:not(.away) { min-width: min(22.5rem, 40%); }
+  main.reader.editing:not(.no-preview) .latexpane { min-width: min(22.5rem, 40%); }
 }
 .latexpane .notyet {
   display: flex;
