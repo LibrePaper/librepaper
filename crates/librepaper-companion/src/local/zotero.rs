@@ -7,11 +7,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use reqwest::{redirect::Policy, StatusCode, Url};
-
-use crate::automation::doi::escape;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+
+use crate::automation::doi::escape;
 
 fn null_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
@@ -143,7 +143,9 @@ impl Client {
         }
         let response = self.get(&format!("users/0/items/{key}"), &[]).await?;
         if response.status() == StatusCode::NOT_FOUND {
-            return Err(Error::Request(format!("Zotero has no item {key}; search again")));
+            return Err(Error::Request(format!(
+                "Zotero has no item {key}; search again"
+            )));
         }
         if !response.status().is_success() {
             return Err(classify(response.status()));
@@ -596,9 +598,6 @@ mod tests {
             bib.contains(r"title = {Research \& Development 100\%}"),
             "{bib}"
         );
-        assert!(
-            bib.contains("url = {https://example.org/a_b%20c}"),
-            "{bib}"
-        );
+        assert!(bib.contains("url = {https://example.org/a_b%20c}"), "{bib}");
     }
 }

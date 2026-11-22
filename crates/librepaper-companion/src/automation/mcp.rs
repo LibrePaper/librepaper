@@ -556,7 +556,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_zotero_item_must_be_named_to_be_fetched() {
-        for args in [json!({}), json!({"zotero_item": ""}), json!({"zotero_item": 7})] {
+        for args in [
+            json!({}),
+            json!({"zotero_item": ""}),
+            json!({"zotero_item": 7}),
+        ] {
             let response = reference_from_zotero(&args).await;
             assert_eq!(response["error"]["code"], "invalid_arguments", "{args}");
         }
