@@ -32,6 +32,10 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       // so a steady-state write never has to read them back.
       let pendingBytes = 0;
       let compactScheduled = false;
+      // Set when hydration found a stored copy that cannot be joined. The
+      // next write replaces it with a snapshot of the live document.
+      let replaceStored = false;
+      const facts = { found: false, snapshotBytes: 0, rows: 0, pendingPeers: 0, discarded: false };
       // Set by close() so the final write can run after `closed` is true,
       // including the re-runs that writes and compaction chain onto themselves.
       let finishing = false;
@@ -61,7 +65,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
               mode: "update",
               ...(persistedVector ? { from: VersionVector.decode(persistedVector) } : {}),
             });
-            if (record?.version === 3 && record.snapshot) {
+            if (!replaceStored && record?.version === 3 && record.snapshot) {
               // Steady state: the snapshot record is untouched, so write only
               // the new delta row. The row count is read from the index
               // (no values), so rows other tabs added or compacted away are
@@ -90,29 +94,44 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
               requestResult(states.get(key)),
               updatesFor(transaction),
             ]);
-            const entry = { project: key, id: updateId(), update, vector: version, bytes: update.byteLength };
-            updates.add(entry);
+            const replacing = replaceStored;
             const count = pending.length + 1;
             const bytes = pending.reduce((sum, item) => sum + Number(item.bytes || item.update?.byteLength || 0), 0)
               + update.byteLength;
             let compacted = false;
-            let next = current?.version === 3 ? current : {
-              version: 3,
-              snapshot: current?.snapshot || (current instanceof Uint8Array ? current : null),
-            };
-            if (!next.snapshot || count >= COMPACT_AFTER_UPDATES || bytes >= COMPACT_AFTER_BYTES) {
-              const merging = new LoroDoc();
-              if (next.snapshot) merging.import(new Uint8Array(next.snapshot));
-              for (const item of pending) merging.import(new Uint8Array(item.update));
-              merging.import(update);
-              const snapshot = merging.export({ mode: "update" });
-              next = { ...next, version: 3, snapshot, vector: merging.oplogVersion().encode() };
+            let next;
+            if (replacing) {
+              // The discarded copy and its delta rows are dropped; the live
+              // document already holds everything they would have added.
+              next = { version: 3, snapshot: doc.export({ mode: "snapshot" }), vector: version };
               for (const item of pending) updates.delete([key, item.id]);
-              updates.delete([key, entry.id]);
               compacted = true;
+            } else {
+              const entry = { project: key, id: updateId(), update, vector: version, bytes: update.byteLength };
+              updates.add(entry);
+              next = current?.version === 3 ? current : {
+                version: 3,
+                snapshot: current?.snapshot || (current instanceof Uint8Array ? current : null),
+              };
+              if (!next.snapshot || count >= COMPACT_AFTER_UPDATES || bytes >= COMPACT_AFTER_BYTES) {
+                // Seeded with a real snapshot, never an update export: an update
+                // from a shallow document goes pending in a fresh doc. With no
+                // stored snapshot the live doc's snapshot already holds `update`.
+                const merging = new LoroDoc();
+                if (next.snapshot) merging.import(new Uint8Array(next.snapshot));
+                else merging.import(doc.export({ mode: "snapshot" }));
+                for (const item of pending) merging.import(new Uint8Array(item.update));
+                merging.import(update);
+                const snapshot = merging.export({ mode: "snapshot" });
+                next = { ...next, version: 3, snapshot, vector: merging.oplogVersion().encode() };
+                for (const item of pending) updates.delete([key, item.id]);
+                updates.delete([key, entry.id]);
+                compacted = true;
+              }
             }
             states.put(next, key);
             await done;
+            replaceStored = false;
             record = next;
             pendingBytes = compacted ? 0 : bytes;
             persistedVector = version;
@@ -155,7 +174,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
               const merging = new LoroDoc();
               merging.import(new Uint8Array(current.snapshot));
               for (const item of pending) merging.import(new Uint8Array(item.update));
-              const next = { ...current, version: 3, snapshot: merging.export({ mode: "update" }), vector: merging.oplogVersion().encode() };
+              const next = { ...current, version: 3, snapshot: merging.export({ mode: "snapshot" }), vector: merging.oplogVersion().encode() };
               for (const item of pending) updates.delete([key, item.id]);
               states.put(next, key);
               await done;
@@ -212,24 +231,47 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
           }
           if (closed) return;
           if (saved) {
-            stored = true;
-            if (saved.version === 2 || saved.version === 3) {
-              record = saved;
-              if (saved.snapshot) doc.import(new Uint8Array(saved.snapshot));
-              for (const update of saved.updates || []) doc.import(new Uint8Array(update));
-              persistedVector = saved.vector ? new Uint8Array(saved.vector) : doc.oplogVersion().encode();
-            } else {
-              // v1 records were a single full-history update. Read them once;
-              // the next transaction rewrites them in the incremental form.
-              doc.import(new Uint8Array(saved));
-              persistedVector = doc.oplogVersion().encode();
-              record = { version: 2, snapshot: new Uint8Array(saved), updates: [], bytes: saved.byteLength, vector: persistedVector };
+            facts.found = true;
+            // Everything is imported into a scratch doc first. A stored copy
+            // that leaves changes pending (an update export taken from a
+            // shallow document, say) would otherwise block the server's base
+            // in the live doc, so it is discarded and replaced on the next write.
+            const legacy = saved.version !== 2 && saved.version !== 3;
+            const scratch = new LoroDoc();
+            let unusable = false;
+            const importChecked = (bytes) => {
+              const size = scratch.import(bytes)?.pending?.size || 0;
+              facts.pendingPeers = Math.max(facts.pendingPeers, size);
+              if (size) unusable = true;
+            };
+            // v1 records were a single full-history update. Read them once;
+            // the next transaction rewrites them in the incremental form.
+            if (legacy) importChecked(new Uint8Array(saved));
+            else {
+              if (saved.snapshot) importChecked(new Uint8Array(saved.snapshot));
+              for (const update of saved.updates || []) importChecked(new Uint8Array(update));
             }
+            facts.snapshotBytes = (legacy ? saved.byteLength : saved.snapshot?.byteLength) || 0;
             const transaction = database.transaction(UPDATES, "readonly");
             const pending = await updatesFor(transaction);
-            for (const item of pending) doc.import(new Uint8Array(item.update));
-            pendingBytes = pending.reduce((sum, item) => sum + Number(item.bytes || item.update?.byteLength || 0), 0);
-            if (pending.length) persistedVector = doc.oplogVersion().encode();
+            facts.rows = pending.length;
+            for (const item of pending) importChecked(new Uint8Array(item.update));
+            if (unusable) {
+              facts.discarded = true;
+              replaceStored = true;
+            } else {
+              stored = true;
+              doc.import(scratch.export({ mode: "snapshot" }));
+              if (legacy) {
+                persistedVector = doc.oplogVersion().encode();
+                record = { version: 2, snapshot: new Uint8Array(saved), updates: [], bytes: saved.byteLength, vector: persistedVector };
+              } else {
+                record = saved;
+                persistedVector = saved.vector ? new Uint8Array(saved.vector) : doc.oplogVersion().encode();
+              }
+              pendingBytes = pending.reduce((sum, item) => sum + Number(item.bytes || item.update?.byteLength || 0), 0);
+              if (pending.length) persistedVector = doc.oplogVersion().encode();
+            }
           }
           hydrating = false;
           unsubscribe = doc.subscribe(changed);
@@ -249,6 +291,9 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
 
       return {
         hydration,
+        hydrationFacts() {
+          return { ...facts };
+        },
         async flush() {
           await hydration;
           // An explicit flush writes now, so the pending pause is not needed.

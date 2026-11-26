@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { LoroDoc, VersionVector } from "loro-crdt";
 import { forgetProject, markShellReady, rememberProject } from "../../src/lib/offline-projects.js";
 import { durableProjectPersistence } from "../../src/lib/offline-persistence.js";
 import { projectIdentity, projectIdentityKey } from "../../src/lib/project-identity.js";
@@ -107,9 +108,11 @@ function fakeStore(store, perform) {
     get: (key) => perform(() => store.rows.get(JSON.stringify(key))?.value),
     getAll: () => perform(() => rows()),
     put: (value, key) => perform(() => { store.rows.set(keyOf(value, key), { value }); }),
+    add: (value) => perform(() => { store.rows.set(keyOf(value), { value }); }),
     delete: (key) => perform(() => { store.rows.delete(JSON.stringify(key)); }),
     index: (name) => ({
       getAll: (wanted) => perform(() => rows().filter((value) => value[store.indexes.get(name)] === wanted)),
+      count: (wanted) => perform(() => rows().filter((value) => value[store.indexes.get(name)] === wanted).length),
     }),
   };
 }
@@ -233,4 +236,99 @@ function readStore(database, store, method, ...args) {
   const withOrigin = await rememberProject({ ...metadata, docs_origin: "https://docs.example.test" }, indexedDB_);
   assert.equal(withOrigin.document.docs_origin, "https://docs.example.test");
   assert.equal((await readStore(database, "projects", "get", key)).document.docs_origin, "https://docs.example.test");
+}
+
+// A browser that joined a trimmed server copy keeps working offline: its stored
+// copy reopens with the edits, and the server's shallow base still joins.
+{
+  const indexedDB_ = fakeIndexedDB();
+  const identity = projectIdentity({ server: "https://example.test", documentId: "66666666-6666-4666-8666-666666666666", slug: "trim", createdAt: "" });
+  const quiet = { writing() {}, persisted() {}, hydrated() {}, failed(error) { throw error; } };
+  const serverDoc = new LoroDoc();
+  serverDoc.setPeerId(1n);
+  const serverText = serverDoc.getText("t");
+  for (let i = 0; i < 50; i++) { serverText.insert(serverText.length, "x"); serverDoc.commit(); }
+  const base = serverDoc.export({ mode: "shallow-snapshot", frontiers: serverDoc.oplogFrontiers() });
+
+  const first = new LoroDoc();
+  first.setPeerId(2n);
+  first.import(base);
+  first.getText("t").insert(0, "hello");
+  first.commit();
+  const writer = durableProjectPersistence(identity, indexedDB_).open(first, quiet);
+  await writer.hydration;
+  await writer.flush();
+  first.getText("t").insert(0, "!");
+  first.commit();
+  await writer.flush();
+  const expected = first.getText("t").toString();
+  writer.close();
+
+  const reader = new LoroDoc();
+  reader.setPeerId(3n);
+  const reopened = durableProjectPersistence(identity, indexedDB_).open(reader, quiet);
+  await reopened.hydration;
+  assert.equal(reader.getText("t").toString(), expected);
+  assert.equal(reopened.hydrationFacts().discarded, false);
+  reader.import(base);
+  const compare = reader.oplogVersion().compare(serverDoc.oplogVersion());
+  assert.ok(compare === 0 || compare === 1, `server base did not join: ${compare}`);
+  reopened.close();
+}
+
+// A stored copy written by the old code, an update export of a shallow document
+// plus a delta row, cannot be joined. It is discarded instead of poisoning the
+// live doc, and the next flush replaces it so the session joins on reopen.
+{
+  const indexedDB_ = fakeIndexedDB();
+  const identity = projectIdentity({ server: "https://example.test", documentId: "77777777-7777-4777-8777-777777777777", slug: "poisoned", createdAt: "" });
+  const key = projectIdentityKey(identity);
+  const quiet = { writing() {}, persisted() {}, hydrated() {}, failed(error) { throw error; } };
+  const serverDoc = new LoroDoc();
+  serverDoc.setPeerId(1n);
+  const serverText = serverDoc.getText("t");
+  for (let i = 0; i < 50; i++) { serverText.insert(serverText.length, "x"); serverDoc.commit(); }
+  const base = serverDoc.export({ mode: "shallow-snapshot", frontiers: serverDoc.oplogFrontiers() });
+
+  const first = new LoroDoc();
+  first.setPeerId(2n);
+  first.import(base);
+  first.getText("t").insert(0, "hello");
+  first.commit();
+  const oldMerging = new LoroDoc();
+  oldMerging.import(first.export({ mode: "update" }));
+  const poisoned = oldMerging.export({ mode: "update" });
+  const persisted = first.oplogVersion().encode();
+  first.getText("t").insert(0, "!");
+  first.commit();
+  const row = first.export({ mode: "update", from: VersionVector.decode(persisted) });
+
+  const database = await openFake(indexedDB_);
+  const seeding = database.transaction(["states", "updates"], "readwrite");
+  const seeded = new Promise((resolve) => { seeding.oncomplete = resolve; });
+  seeding.objectStore("states").put({ version: 3, snapshot: poisoned, vector: oldMerging.oplogVersion().encode() }, key);
+  seeding.objectStore("updates").put({ project: key, id: "old:000000000001", update: row, bytes: row.byteLength, vector: first.oplogVersion().encode() });
+  await seeded;
+
+  const reader = new LoroDoc();
+  reader.setPeerId(3n);
+  const opened = durableProjectPersistence(identity, indexedDB_).open(reader, quiet);
+  await opened.hydration;
+  assert.equal(reader.getText("t").length, 0);
+  const facts = opened.hydrationFacts();
+  assert.equal(facts.discarded, true);
+  assert.ok(facts.pendingPeers > 0);
+  reader.import(base);
+  const compare = reader.oplogVersion().compare(serverDoc.oplogVersion());
+  assert.ok(compare === 0 || compare === 1, `server base did not join: ${compare}`);
+  await opened.flush();
+  opened.close();
+
+  const reopened = new LoroDoc();
+  reopened.setPeerId(4n);
+  const again = durableProjectPersistence(identity, indexedDB_).open(reopened, quiet);
+  await again.hydration;
+  assert.equal(again.hydrationFacts().discarded, false);
+  assert.equal(reopened.getText("t").toString(), reader.getText("t").toString());
+  again.close();
 }
