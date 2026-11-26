@@ -2245,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-desktop"
-version = "0.0.84"
+version = "0.0.85"
 dependencies = [
  "gtk",
  "hex",
