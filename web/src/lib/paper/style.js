@@ -98,6 +98,7 @@ export function paperStylesheet(pageCss) {
   font-size: 0.72rem;
   color: var(--lp-muted);
 }
+.cm-lp-paper .lp-paper-cell-note + .lp-paper-cell-lines { margin-left: 0.75em; }
 .cm-lp-paper .lp-paper-cell-collapsed {
   border-bottom: 1px solid var(--lp-rule);
   border-radius: 8px;

@@ -67,7 +67,11 @@ function noteOf(options) {
 function codeFoldOf(metadata, options) {
   if (options["code-fold"] !== undefined) return options["code-fold"];
   if (metadata?.["code-fold"] !== undefined) return metadata["code-fold"];
-  return metadata?.format?.html?.["code-fold"];
+  const format = metadata?.format;
+  if (format?.html && typeof format.html === "object" && format.html["code-fold"] !== undefined) return format.html["code-fold"];
+  // The front matter reader keeps two levels, so `format: html: code-fold:` arrives
+  // as format["code-fold"]. code-fold is an HTML option, so that is where it came from.
+  return format?.["code-fold"];
 }
 
 // A card is collapsed when its code is not in the document, or code-fold is true.
