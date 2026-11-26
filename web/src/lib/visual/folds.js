@@ -21,6 +21,7 @@ export const refreshFolds = StateEffect.define();
 
 /// Dispatched with true to show the source of every fold, or false to fold them
 /// again. The flag is kept in the field and is not persisted.
+/** @type {import("@codemirror/state").StateEffectType<boolean>} */
 export const showAllFolds = StateEffect.define();
 
 // Finding the folds parses the whole document, about 1.7 ms per keystroke on a
