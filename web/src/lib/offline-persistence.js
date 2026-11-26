@@ -61,7 +61,14 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
           try {
             database ||= await openOfflineDatabase(indexedDB_);
             const version = doc.oplogVersion().encode();
-            const update = doc.export({
+            // A delta row is exported from persistedVector, so that vector must
+            // cover the shallow root. If not, the row depends on trimmed history
+            // and the stored copy is replaced instead.
+            if (!replaceStored && doc.isShallow()
+                && !(persistedVector && [0, 1].includes(VersionVector.decode(persistedVector).compare(doc.shallowSinceVV())))) {
+              replaceStored = true;
+            }
+            const update = replaceStored ? null : doc.export({
               mode: "update",
               ...(persistedVector ? { from: VersionVector.decode(persistedVector) } : {}),
             });
@@ -97,7 +104,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             const replacing = replaceStored;
             const count = pending.length + 1;
             const bytes = pending.reduce((sum, item) => sum + Number(item.bytes || item.update?.byteLength || 0), 0)
-              + update.byteLength;
+              + (update?.byteLength || 0);
             let compacted = false;
             let next;
             if (replacing) {

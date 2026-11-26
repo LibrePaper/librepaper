@@ -332,3 +332,36 @@ function readStore(database, store, method, ...args) {
   assert.equal(reopened.getText("t").toString(), reader.getText("t").toString());
   again.close();
 }
+
+// A browser whose first stored copy was written while its document was still
+// empty joins a shallow base later. Its next delta would depend on trimmed
+// history, so the copy is replaced and reopens joined.
+{
+  const indexedDB_ = fakeIndexedDB();
+  const identity = projectIdentity({ server: "https://example.test", documentId: "88888888-8888-4888-8888-888888888888", slug: "empty-first", createdAt: "" });
+  const quiet = { writing() {}, persisted() {}, hydrated() {}, failed(error) { throw error; } };
+  const serverDoc = new LoroDoc();
+  serverDoc.setPeerId(1n);
+  const serverText = serverDoc.getText("t");
+  for (let i = 0; i < 50; i++) { serverText.insert(serverText.length, "x"); serverDoc.commit(); }
+  const base = serverDoc.export({ mode: "shallow-snapshot", frontiers: serverDoc.oplogFrontiers() });
+
+  const live = new LoroDoc();
+  live.setPeerId(2n);
+  const writer = durableProjectPersistence(identity, indexedDB_).open(live, quiet);
+  await writer.hydration;
+  await writer.flush();
+  live.import(base);
+  live.getText("t").insert(0, "hello");
+  live.commit();
+  await writer.flush();
+  writer.close();
+
+  const reader = new LoroDoc();
+  reader.setPeerId(3n);
+  const reopened = durableProjectPersistence(identity, indexedDB_).open(reader, quiet);
+  await reopened.hydration;
+  assert.equal(reopened.hydrationFacts().discarded, false);
+  assert.equal(reader.getText("t").toString(), live.getText("t").toString());
+  reopened.close();
+}
