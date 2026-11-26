@@ -4966,6 +4966,7 @@
   const EDIT_COMMANDS = [
     "undo", "redo", "cut", "copy", "paste", "paste-plain", "select-all", "find", "replace", "bold", "italic",
     "link", "comment", "numbered-list", "bulleted-list", "heading-1", "heading-2", "heading-3", "heading-4", "heading-5", "heading-6",
+    "visual-show-source",
   ];
   const LAYOUT_COMMANDS = ["linked", "show-in-preview", "show-in-source", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
   const TEXT_SIZE_COMMANDS = ["text-bigger", "text-smaller", "text-reset"];

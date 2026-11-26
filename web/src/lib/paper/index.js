@@ -16,7 +16,7 @@ import "../visual-markup/visual-markup.css";
 import { loadKatex } from "../katex.js";
 import { applyNumbering, displaySources, typeset, untypeset } from "../math.js";
 import { numberDisplays } from "../math-numbering.js";
-import { foldLayer, foldPill, mergeFolds, refreshFolds } from "../visual/folds.js";
+import { foldLayer, foldPill, mergeFolds, refreshFolds, showAllFolds } from "../visual/folds.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
 import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
@@ -135,9 +135,10 @@ function isTitleBlock(html) {
   return /^\s*<header class="title-block[" ]/.test(html);
 }
 
-function build(state, path, imageUrl, adapter, project, revision = () => "") {
+// `open` is the fold layer's "show all source" flag: with it, a header drawn over a preamble shows its source too.
+function build(state, path, imageUrl, adapter, project, revision = () => "", open = false) {
   const renderer = currentPaperRenderer(adapter.module);
-  if (!renderer) return { decorations: Decoration.none, rendered: [], gaps: new Set(), taken: NO_RANGES };
+  if (!renderer) return { decorations: Decoration.none, rendered: [], gaps: new Set(), taken: NO_RANGES, open };
   // A renderer that compiles in the project (Typst) is told which one before it draws.
   if (project && renderer.setProject) renderer.setProject(project());
   const text = state.doc.toString();
@@ -151,7 +152,7 @@ function build(state, path, imageUrl, adapter, project, revision = () => "") {
     }
   }
   const blocks = whole ?? adapter.splitBlocks(text);
-  if (!blocks) return { decorations: Decoration.none, rendered: [], gaps: new Set(), taken: NO_RANGES };
+  if (!blocks) return { decorations: Decoration.none, rendered: [], gaps: new Set(), taken: NO_RANGES, open };
   // Every block the renderer draws, the selected ones too, so that numbers do not move when the caret enters an equation.
   const htmls = new Map();
   // The project's texts and the open path, read once: a Typst block counts what its included files number.
@@ -178,7 +179,7 @@ function build(state, path, imageUrl, adapter, project, revision = () => "") {
   const folds = mergeFolds(text, adapter.folds(text));
   // A format whose header is not a block of its own (Typst: what the template writes before the body) offers it here.
   let header = null;
-  if (adapter.header) {
+  if (adapter.header && !open) {
     try {
       header = adapter.header(text, blocks, folds, renderer, files, openPath);
     } catch {
@@ -206,6 +207,7 @@ function build(state, path, imageUrl, adapter, project, revision = () => "") {
     if (overlapping.length) {
       const [fold] = overlapping;
       const header =
+        !open &&
         overlapping.length === 1 &&
         fold.kind === "preamble" &&
         block.from <= fold.from &&
@@ -238,19 +240,24 @@ function build(state, path, imageUrl, adapter, project, revision = () => "") {
       }
     }
   }
-  return { decorations: Decoration.set(marks, true), rendered, gaps, taken: taken.length ? taken : NO_RANGES };
+  return { decorations: Decoration.set(marks, true), rendered, gaps, taken: taken.length ? taken : NO_RANGES, open };
 }
 
 function paperField(path, imageUrl, adapter, project, revision) {
   return StateField.define({
     create: (state) => build(state, path, imageUrl, adapter, project, revision),
     update(value, transaction) {
+      // The flag is followed from the effect itself: reading the fold field here would be circular,
+      // since the fold layer reads this field's taken ranges.
+      const toggled = transaction.effects.some((effect) => effect.is(showAllFolds));
+      const open = transaction.effects.reduce((flag, effect) => (effect.is(showAllFolds) ? effect.value : flag), value.open ?? false);
       if (
+        toggled ||
         transaction.docChanged ||
         transaction.selection ||
         transaction.effects.some((effect) => effect.is(refreshPaper))
       ) {
-        return build(transaction.state, path, imageUrl, adapter, project, revision);
+        return build(transaction.state, path, imageUrl, adapter, project, revision, open);
       }
       return value;
     },

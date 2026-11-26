@@ -62,16 +62,42 @@ function noteOf(options) {
   return null;
 }
 
+// `format: html: code-fold:` read from the front matter's own lines. The front
+// matter reader keeps two levels, so it stores every format's code-fold in one
+// slot; reading the lines keeps the html branch apart from revealjs and the rest.
+function htmlCodeFoldOf(raw) {
+  const lines = String(raw || "").split(/\r?\n/);
+  let inFormat = false;
+  let htmlIndent = -1;
+  for (const line of lines) {
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    const indent = line.length - line.trimStart().length;
+    const match = /^\s*([^:#]+):\s*(.*)$/.exec(line);
+    if (indent === 0) {
+      inFormat = Boolean(match && match[1].trim() === "format" && !match[2].trim());
+      htmlIndent = -1;
+      continue;
+    }
+    if (!inFormat || !match) continue;
+    if (htmlIndent >= 0 && indent <= htmlIndent) htmlIndent = -1;
+    if (htmlIndent < 0) {
+      if (match[1].trim() === "html" && !match[2].trim()) htmlIndent = indent;
+      continue;
+    }
+    if (match[1].trim() === "code-fold") {
+      const value = match[2].trim().replace(/^["']|["']$/g, "");
+      return value === "true" ? true : value === "false" ? false : value;
+    }
+  }
+  return undefined;
+}
+
 // The code-fold in force for a chunk: its own option, else the front matter's
 // top-level key, else format.html's. A chunk's value overrides the document's.
-function codeFoldOf(metadata, options) {
+function codeFoldOf(metadata, options, raw) {
   if (options["code-fold"] !== undefined) return options["code-fold"];
   if (metadata?.["code-fold"] !== undefined) return metadata["code-fold"];
-  const format = metadata?.format;
-  if (format?.html && typeof format.html === "object" && format.html["code-fold"] !== undefined) return format.html["code-fold"];
-  // The front matter reader keeps two levels, so `format: html: code-fold:` arrives
-  // as format["code-fold"]. code-fold is an HTML option, so that is where it came from.
-  return format?.["code-fold"];
+  return htmlCodeFoldOf(raw);
 }
 
 // A card is collapsed when its code is not in the document, or code-fold is true.
@@ -81,10 +107,10 @@ function collapsedOf(options, codeFold) {
   return codeFold === true || codeFold === "true";
 }
 
-// The number of lines in the code; empty code has none.
+// The number of lines in the code. The parser joins the body without a final
+// separator, so a trailing newline is a blank last line; empty code has none.
 function lineCountOf(code) {
-  if (!code) return 0;
-  return code.replace(/\r?\n$/, "").split(/\r?\n/).length;
+  return code ? code.split(/\r?\n/).length : 0;
 }
 
 // The fence for the code: longer than any backtick run in it, so the code cannot close it.
@@ -95,11 +121,11 @@ function fenceFor(code) {
 
 // The card for one chunk: its caption bar, then the code drawn through the renderer.
 // A collapsed card is the caption bar alone, with the line count in place of the code.
-function cardHtml(cell, language, defaults, metadata, renderer) {
+function cardHtml(cell, language, defaults, metadata, raw, renderer) {
   const options = { ...defaults, ...cell.options };
   const note = noteOf(options);
   const quiet = note !== null ? " lp-paper-cell-quiet" : "";
-  const collapsed = collapsedOf(options, codeFoldOf(metadata, options));
+  const collapsed = collapsedOf(options, codeFoldOf(metadata, options, raw));
   const folded = collapsed ? " lp-paper-cell-collapsed" : "";
   let caption = `<span class="lp-paper-cell-lang">${escapeHtml(language)}</span>`;
   if (cell.label) caption += `<span class="lp-paper-cell-label">${escapeHtml(cell.label)}</span>`;
@@ -148,7 +174,7 @@ export function withCodeCells(text, blocks, renderer, path) {
       // A block that runs past the chunk's edge belongs to the chunk's neighbour; this chunk is left alone.
       if (inside.length !== touching.length) continue;
       const language = languageOf(text, range.from, cell.language);
-      const html = cardHtml(cell, language, defaults, parsed.metadata, renderer);
+      const html = cardHtml(cell, language, defaults, parsed.metadata, parsed.frontMatter?.raw, renderer);
       for (const block of inside) replaced.add(block);
       cards.push({ kind: "CodeCell", from: range.from, to: range.to, render: true, html });
     } catch {

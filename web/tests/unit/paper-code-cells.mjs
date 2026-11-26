@@ -149,3 +149,22 @@ function lineAt(text, index) {
   assert.deepEqual(blocks.map((block) => block.kind), ["Block", "CodeCell"]);
   assert.equal(text.slice(blocks[1].from, blocks[1].to), "```{r}\n#| echo: false\nx\n```");
 }
+
+// format.html's code-fold is read from its own branch: a later format's value does not override it.
+{
+  const text = "---\nformat:\n  html:\n    code-fold: true\n  revealjs:\n    code-fold: false\n---\n\n```{r}\nx\n```\n";
+  const [card] = withCodeCells(text, [], renderer, "a.qmd");
+  assert.ok(card.html.includes("lp-paper-cell-collapsed"));
+}
+{
+  const text = "---\nformat:\n  revealjs:\n    code-fold: true\n  html: default\n---\n\n```{r}\nx\n```\n";
+  const [card] = withCodeCells(text, [], renderer, "a.qmd");
+  assert.ok(!card.html.includes("lp-paper-cell-collapsed"), "revealjs's code-fold is not the html default");
+}
+
+// A blank last line of the body counts as a line.
+{
+  const text = "```{r}\n#| echo: false\nx\n\n```\n";
+  const [card] = withCodeCells(text, [], renderer, "a.qmd");
+  assert.ok(card.html.includes(m.codecells_lines({ count: 2 })));
+}
