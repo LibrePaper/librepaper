@@ -322,6 +322,12 @@ function readStore(database, store, method, ...args) {
   assert.equal(facts.discarded, true);
   assert.ok(facts.pendingPeers > 0);
   assert.ok(facts.deferredPieces > 0);
+  // A save before the session takes the rows for replay must not replace the copy.
+  await opened.flush();
+  const peek = durableProjectPersistence(identity, indexedDB_).open(new LoroDoc(), quiet);
+  await peek.hydration;
+  assert.equal(peek.hydrationFacts().deferredPieces, facts.deferredPieces, "the rows survive until replay");
+  peek.close();
   const deferred = opened.takeDeferred();
   assert.equal(deferred.length, facts.deferredPieces);
   assert.ok(deferred.every((bytes) => bytes instanceof Uint8Array));
@@ -440,8 +446,10 @@ function readStore(database, store, method, ...args) {
   const seeding = database.transaction(["states", "updates"], "readwrite");
   const seeded = new Promise((resolve) => { seeding.oncomplete = resolve; });
   seeding.objectStore("states").put({ version: 3, snapshot, vector: afterSnapshot }, key);
-  seeding.objectStore("updates").put({ project: key, id: "zzzz:000000000001", update: rowA, bytes: rowA.byteLength, vector: afterA });
+  // B is stored first: the fake returns rows in insertion order, so B (which
+  // depends on A) reaches hydration before A does.
   seeding.objectStore("updates").put({ project: key, id: "aaaa:000000000001", update: rowB, bytes: rowB.byteLength, vector: writer.oplogVersion().encode() });
+  seeding.objectStore("updates").put({ project: key, id: "zzzz:000000000001", update: rowA, bytes: rowA.byteLength, vector: afterA });
   await seeded;
 
   const reader = new LoroDoc();

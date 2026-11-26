@@ -57,6 +57,9 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
 
       async function putState() {
         if ((closed && !finishing) || writing || !dirty) return pendingFlush;
+        // A discarded copy keeps its rows until the session has taken them for
+        // replay: replacing it earlier would delete edits the join can recover.
+        if (replaceStored && deferred.length) return pendingFlush;
         dirty = false;
         writing = true;
         events.writing(1);

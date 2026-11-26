@@ -1,4 +1,4 @@
-import { VersionVector } from "loro-crdt";
+import { LoroDoc, VersionVector } from "loro-crdt";
 import assert from "node:assert/strict";
 import { createProjectSession } from "../../src/lib/project-session.js";
 import { assertSameProject, projectIdentity, sameProject } from "../../src/lib/project-identity.js";
@@ -1425,7 +1425,12 @@ const unjoinablePersistence = (discards) => ({
     assert.equal(replayed.joinTrace().deferredReplayed, "applied");
     const catchUps = sentReplay.filter((message) => message.type === "doc-update");
     assert.ok(catchUps.length >= 1, "catch-up sends the recovered offline edit");
-    assert.ok(decode(catchUps.at(-1).update).byteLength > 0);
+    // An empty Loro update is still bytes: apply the catch-up to the server's
+    // state and check the recovered edit is really in it.
+    const check = new LoroDoc();
+    check.import(base);
+    check.import(decode(catchUps.at(-1).update));
+    assert.equal(check.getMap("files").get(serverText).toString(), "hello offline");
   } finally {
     replayed.leave();
   }
