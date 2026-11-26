@@ -182,7 +182,7 @@ export function uniquePresences(states, { localClient = null, localTab = "" } = 
  * mayEdit?: boolean,
  * suggestOnly?: boolean,
  * standalone?: boolean,
- * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void, discard?: () => Promise<unknown>, hydrationFacts?: () => { found?: boolean, snapshotBytes?: number, rows?: number, pendingPeers?: number, discarded?: boolean } } | null },
+ * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void, discard?: () => Promise<unknown>, takeDeferred?: () => Uint8Array[], hydrationFacts?: () => { found?: boolean, snapshotBytes?: number, rows?: number, pendingPeers?: number, discarded?: boolean } } | null },
  * fetchReference?: (reference: string) => Promise<Uint8Array>,
  * presenceId?: () => string,
  * presenceColour?: (seed: string, taken: string[]) => string,
@@ -334,6 +334,8 @@ export function createProjectSession({
   let importPending = 0;
   // importPending at the moment the join finished.
   let pendingAfterJoin = 0;
+  // Whether a discarded offline copy was replayed after joining: "none", "applied" or "pending".
+  let deferredReplayed = "none";
   // The most recent local persistence failure's message. Kept apart from hydration.
   let persistenceError = "";
   let shortCompare = null;
@@ -416,6 +418,10 @@ export function createProjectSession({
       // now joining instead.
       if (!speaksForThisJoin(stale)) return undefined;
       if (error?.restartBaseline) {
+        // The base this join named is gone. Steps queued behind this fetch belong to the
+        // join being replaced: abandon them so they find themselves stale, rather than
+        // importing rows without their base and reporting the retry as unjoinable.
+        abandonQueuedJoins();
         const sent = /** @type {{ ok?: boolean } | undefined} */ (send(openMessage()));
         if (sent?.ok) restartOpensSent += 1;
         return undefined;
@@ -907,7 +913,6 @@ export function createProjectSession({
   /// (§6.2 step 6): finish the join only when the local graph covers the
   /// advertised server head, then announce and catch up any local work.
   function finishJoin(vector, durableVector, terminal = false) {
-    pendingAfterJoin = importPending;
     // `vector` is the head used for catch-up. Durable coverage is a separate
     // signal and may arrive out of order with this join's asynchronous work.
     mergeDurableCoverage(durableVector);
@@ -934,6 +939,20 @@ export function createProjectSession({
       if (terminal) reportUnjoinable();
       return false;
     }
+    // A copy that could not load on its own may apply now that the server's base is here.
+    const deferred = persister?.takeDeferred?.() || [];
+    if (deferred.length) {
+      // Probe on a fork first: bytes that would leave changes pending stay out of the live doc.
+      const probe = doc.fork();
+      const status = probe.importBatch(deferred);
+      if (!status?.pending?.size) {
+        noteImport(doc.importBatch(deferred));
+        // Imported changes are not local Loro updates, so count them as unsaved by hand.
+        rememberLocalTarget();
+      }
+      deferredReplayed = status?.pending?.size ? "pending" : "applied";
+    }
+    pendingAfterJoin = importPending;
     joinStage = "joined";
     shortCompare = null;
     shortMissingPeers = null;
@@ -990,7 +1009,7 @@ export function createProjectSession({
         hydration, hydrationMs,
         hydrationCaptured,
         remoteQueued: remoteDuringHydration.length,
-        importPending, pendingAfterJoin,
+        importPending, pendingAfterJoin, deferredReplayed,
         local, localError, persistenceError,
         shallow: doc.isShallow(),
         localVectorPeers: doc.oplogVersion().toJSON().size,

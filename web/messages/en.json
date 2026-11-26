@@ -2345,7 +2345,7 @@
   "reader_tracking_failed": "Track changes could not be turned on: this document is not connected for editing.",
   "reader_tracking_on": "Tracking changes",
   "reader_tracking_open": "Tracking is on. Open the Changes panel.",
-  "reader_unjoinable": "This project could not finish loading on this device. Sign out and sign in again to reset this device's copy.",
+  "reader_unjoinable": "This project could not finish loading on this device. Reload the page. If that does not help, copy the diagnostics from Settings and send them to whoever runs this server.",
   "readerb_backup_failing": "Backups are on but failing: {error}. Open Settings, then Backups.",
   "readerb_backup_lost_access": "Backups are on but the desktop app lost access to this account. Open Settings, then Backups, to reconnect.",
   "readerb_agent_waiting": "Agent is waiting for your permission",

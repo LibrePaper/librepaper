@@ -2345,7 +2345,7 @@
   "reader_tracking_failed": "Não foi possível ativar o controle de alterações: este documento não está conectado para edição.",
   "reader_tracking_on": "Controle de alterações",
   "reader_tracking_open": "O controle de alterações está ativo. Abrir o painel Alterações.",
-  "reader_unjoinable": "Este projeto não conseguiu terminar de carregar neste dispositivo. Saia e entre novamente para redefinir a cópia deste dispositivo.",
+  "reader_unjoinable": "Este projeto não conseguiu terminar de carregar neste dispositivo. Recarregue a página. Se isso não resolver, copie os diagnósticos em Configurações e envie-os a quem administra este servidor.",
   "readerb_backup_failing": "Os backups estão ativados, mas estão falhando: {error}. Abra Configurações e depois Backups.",
   "readerb_backup_lost_access": "Os backups estão ativados, mas o aplicativo de desktop perdeu o acesso a esta conta. Abra Configurações e depois Backups para reconectar.",
   "readerb_agent_waiting": "O agente está aguardando sua permissão",
