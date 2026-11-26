@@ -1355,4 +1355,80 @@ const unjoinablePersistence = (discards) => ({
   }
 }
 
+// A referenced base that has gone (restartBaseline) abandons the join that
+// asked for it. A `doc-rows` queued behind that fetch must not declare the
+// retry unjoinable: it is answering a join that no longer exists.
+{
+  const { head } = sourceLog();
+  const sentRestart = [];
+  const calls = [];
+  const restarting = createProjectSession({
+    send: (message) => sentRestart.push(message),
+    onState: () => {},
+    presenceId: () => "restart-abandons-queue",
+    onUnjoinable: (info) => calls.push(info),
+    fetchReference: async () => {
+      const error = new Error("that baseline is gone");
+      error.restartBaseline = true;
+      throw error;
+    },
+  });
+  try {
+    const startPromise = restarting.start({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()), ref: "x", digest: "d", updates: [],
+    });
+    const rowsPromise = restarting.rows({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [],
+    });
+    await Promise.all([startPromise, rowsPromise]);
+    await nextTurn();
+    assert.deepEqual(calls, [], "a queued rows step from the replaced join does not report unjoinable");
+    assert.equal(sentRestart.filter((message) => message.type === "doc-open").length, 1,
+      "the retry sends a fresh doc-open");
+  } finally {
+    restarting.leave();
+  }
+}
+
+// A copy that could not load on its own is replayed once the server's base is
+// in the document. Its changes reach the live doc and the catch-up sends them.
+{
+  const server = createProjectSession({ send: () => {}, onState: () => {}, presenceId: () => "replay-server" });
+  const serverText = server.addText("paper.md", "hello");
+  server.doc.commit();
+  const base = server.doc.export({ mode: "update" });
+  const serverVersion = server.doc.oplogVersion();
+  const fork = server.doc.fork();
+  fork.getMap("files").get(serverText).insert(5, " offline");
+  fork.commit();
+  const deferred = fork.export({ mode: "update", from: serverVersion });
+  server.leave();
+
+  const sentReplay = [];
+  const replayed = createProjectSession({
+    send: (message) => sentReplay.push(message),
+    onState: () => {},
+    presenceId: () => "replay-deferred",
+    persistence: {
+      open: () => ({ hydration: Promise.resolve(), takeDeferred: () => [deferred] }),
+    },
+  });
+  try {
+    await replayed.start({
+      protocol: "librepaper.room.v3",
+      vector: encode(serverVersion.encode()),
+      base: encode(base),
+      updates: [],
+    });
+    assert.equal(replayed.joined, true);
+    assert.equal(bodyOf(replayed), "hello offline");
+    assert.equal(replayed.joinTrace().deferredReplayed, "applied");
+    const catchUps = sentReplay.filter((message) => message.type === "doc-update");
+    assert.ok(catchUps.length >= 1, "catch-up sends the recovered offline edit");
+    assert.ok(decode(catchUps.at(-1).update).byteLength > 0);
+  } finally {
+    replayed.leave();
+  }
+}
+
 console.log("project-session: persistence, identity, swap, directory changes, protocol join shapes, doc-gap, acknowledgement boundaries, pressure retry, join cancellation, join trace and unjoinable joins passed");

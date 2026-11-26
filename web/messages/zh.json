@@ -2330,7 +2330,7 @@
   "reader_tracking_failed": "无法开启修订：此文档未连接到编辑。",
   "reader_tracking_on": "正在记录修订",
   "reader_tracking_open": "修订记录已开启。打开“修改”面板。",
-  "reader_unjoinable": "此项目无法在此设备上完成加载。请退出登录后重新登录，以重置此设备上的副本。",
+  "reader_unjoinable": "此项目无法在此设备上完成加载。请重新加载页面。如果仍无法解决，请从设置中复制诊断信息，并发送给管理此服务器的人员。",
   "readerb_backup_failing": "备份已开启但失败：{error}。请前往 设置 > 备份。",
   "readerb_backup_lost_access": "备份已开启，但桌面应用失去了对此账户的访问权限。要重新连接，请前往 设置 > 备份。",
   "readerb_agent_waiting": "智能体正在等待你的授权",

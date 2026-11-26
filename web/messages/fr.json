@@ -2345,7 +2345,7 @@
   "reader_tracking_failed": "Le suivi des modifications n’a pas pu être activé : ce document n’est pas connecté pour être modifié.",
   "reader_tracking_on": "Suivi des modifications",
   "reader_tracking_open": "Le suivi est activé. Ouvrir le panneau Modifications.",
-  "reader_unjoinable": "Ce projet n’a pas pu finir de se charger sur cet appareil. Déconnectez-vous puis reconnectez-vous pour réinitialiser la copie de cet appareil.",
+  "reader_unjoinable": "Ce projet n’a pas pu finir de se charger sur cet appareil. Rechargez la page. Si cela ne suffit pas, copiez les diagnostics depuis Paramètres et envoyez-les à la personne qui gère ce serveur.",
   "readerb_backup_failing": "Les sauvegardes sont activées, mais échouent : {error}. Ouvrez Paramètres > Sauvegardes.",
   "readerb_backup_lost_access": "Les sauvegardes sont activées, mais l’application de bureau a perdu l’accès à ce compte. Ouvrez Paramètres > Sauvegardes pour vous reconnecter.",
   "readerb_agent_waiting": "L’agent attend votre autorisation",
