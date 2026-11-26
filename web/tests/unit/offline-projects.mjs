@@ -318,9 +318,16 @@ function readStore(database, store, method, ...args) {
   const facts = opened.hydrationFacts();
   assert.equal(facts.discarded, true);
   assert.ok(facts.pendingPeers > 0);
+  assert.ok(facts.deferredPieces > 0);
+  const deferred = opened.takeDeferred();
+  assert.equal(deferred.length, facts.deferredPieces);
+  assert.ok(deferred.every((bytes) => bytes instanceof Uint8Array));
+  assert.deepEqual(opened.takeDeferred(), []);
   reader.import(base);
   const compare = reader.oplogVersion().compare(serverDoc.oplogVersion());
   assert.ok(compare === 0 || compare === 1, `server base did not join: ${compare}`);
+  reader.importBatch(deferred);
+  assert.ok(reader.getText("t").toString().startsWith("!hello"), reader.getText("t").toString());
   await opened.flush();
   opened.close();
 
@@ -400,4 +407,45 @@ function readStore(database, store, method, ...args) {
   const bare = await rememberProject({ ...metadata, can_moderate: undefined, can_see_sharing: undefined }, indexedDB_);
   assert.equal(bare.document.can_moderate, false);
   assert.equal(bare.document.can_see_sharing, false);
+}
+
+// Delta rows come back ordered by key, not by causal order. Row B depends on row
+// A but sorts first here, so it is pending when read alone. The copy is judged
+// once every piece is in, so it still loads with both edits.
+{
+  const indexedDB_ = fakeIndexedDB();
+  const identity = projectIdentity({ server: "https://example.test", documentId: "99999999-9999-4999-8999-999999999999", slug: "out-of-order", createdAt: "" });
+  const key = projectIdentityKey(identity);
+  const quiet = { writing() {}, persisted() {}, hydrated() {}, failed(error) { throw error; } };
+
+  const writer = new LoroDoc();
+  writer.setPeerId(2n);
+  writer.getText("t").insert(0, "hello");
+  writer.commit();
+  const snapshot = writer.export({ mode: "snapshot" });
+  const afterSnapshot = writer.oplogVersion().encode();
+  writer.getText("t").insert(0, "!");
+  writer.commit();
+  const rowA = writer.export({ mode: "update", from: VersionVector.decode(afterSnapshot) });
+  const afterA = writer.oplogVersion().encode();
+  writer.getText("t").insert(1, "?");
+  writer.commit();
+  const rowB = writer.export({ mode: "update", from: VersionVector.decode(afterA) });
+
+  const database = await openFake(indexedDB_);
+  const seeding = database.transaction(["states", "updates"], "readwrite");
+  const seeded = new Promise((resolve) => { seeding.oncomplete = resolve; });
+  seeding.objectStore("states").put({ version: 3, snapshot, vector: afterSnapshot }, key);
+  seeding.objectStore("updates").put({ project: key, id: "zzzz:000000000001", update: rowA, bytes: rowA.byteLength, vector: afterA });
+  seeding.objectStore("updates").put({ project: key, id: "aaaa:000000000001", update: rowB, bytes: rowB.byteLength, vector: writer.oplogVersion().encode() });
+  await seeded;
+
+  const reader = new LoroDoc();
+  reader.setPeerId(3n);
+  const opened = durableProjectPersistence(identity, indexedDB_).open(reader, quiet);
+  await opened.hydration;
+  assert.equal(opened.hydrationFacts().discarded, false);
+  assert.equal(opened.hydrationFacts().pendingPeers, 0);
+  assert.equal(reader.getText("t").toString(), writer.getText("t").toString());
+  opened.close();
 }

@@ -35,7 +35,10 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       // Set when hydration found a stored copy that cannot be joined. The
       // next write replaces it with a snapshot of the live document.
       let replaceStored = false;
-      const facts = { found: false, snapshotBytes: 0, rows: 0, pendingPeers: 0, discarded: false };
+      // The stored pieces of a copy that could not be loaded on its own, kept
+      // so the session can replay them once it has joined the server's base.
+      let deferred = [];
+      const facts = { found: false, snapshotBytes: 0, rows: 0, pendingPeers: 0, discarded: false, deferredPieces: 0 };
       // Set by close() so the final write can run after `closed` is true,
       // including the re-runs that writes and compaction chain onto themselves.
       let finishing = false;
@@ -240,32 +243,34 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
           if (saved) {
             facts.found = true;
             // Everything is imported into a scratch doc first. A stored copy
-            // that leaves changes pending (an update export taken from a
-            // shallow document, say) would otherwise block the server's base
-            // in the live doc, so it is discarded and replaced on the next write.
+            // that still leaves changes pending once every piece is in (an
+            // update export taken from a shallow document, say) would otherwise
+            // block the server's base in the live doc, so it is discarded and
+            // replaced on the next write. Pieces are judged together because
+            // delta rows arrive in key order, not causal order.
             const legacy = saved.version !== 2 && saved.version !== 3;
             const scratch = new LoroDoc();
-            let unusable = false;
-            const importChecked = (bytes) => {
-              const size = scratch.import(bytes)?.pending?.size || 0;
-              facts.pendingPeers = Math.max(facts.pendingPeers, size);
-              if (size) unusable = true;
-            };
             // v1 records were a single full-history update. Read them once;
             // the next transaction rewrites them in the incremental form.
-            if (legacy) importChecked(new Uint8Array(saved));
+            const pieces = [];
+            if (legacy) pieces.push(new Uint8Array(saved));
             else {
-              if (saved.snapshot) importChecked(new Uint8Array(saved.snapshot));
-              for (const update of saved.updates || []) importChecked(new Uint8Array(update));
+              if (saved.snapshot) pieces.push(new Uint8Array(saved.snapshot));
+              for (const update of saved.updates || []) pieces.push(new Uint8Array(update));
             }
             facts.snapshotBytes = (legacy ? saved.byteLength : saved.snapshot?.byteLength) || 0;
             const transaction = database.transaction(UPDATES, "readonly");
             const pending = await updatesFor(transaction);
             facts.rows = pending.length;
-            for (const item of pending) importChecked(new Uint8Array(item.update));
-            if (unusable) {
+            for (const item of pending) pieces.push(new Uint8Array(item.update));
+            const status = scratch.importBatch(pieces);
+            const unresolved = status.pending?.size || 0;
+            facts.pendingPeers = unresolved;
+            if (unresolved) {
               facts.discarded = true;
               replaceStored = true;
+              deferred = pieces;
+              facts.deferredPieces = pieces.length;
             } else {
               stored = true;
               doc.import(scratch.export({ mode: "snapshot" }));
@@ -300,6 +305,13 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         hydration,
         hydrationFacts() {
           return { ...facts };
+        },
+        /// The bytes of a stored copy that could not be loaded on its own. The
+        /// session replays them once it has joined; taking them hands them over once.
+        takeDeferred() {
+          const bytes = deferred;
+          deferred = [];
+          return bytes;
         },
         async flush() {
           await hydration;
