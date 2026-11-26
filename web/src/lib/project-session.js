@@ -176,12 +176,13 @@ export function uniquePresences(states, { localClient = null, localTab = "" } = 
  * send: (message: SessionMessage) => unknown,
  * onPeers?: (count: number) => void,
  * onState?: (state: SessionState) => void,
+ * onUnjoinable?: (info: { empty: boolean }) => void,
  * name?: string,
  * accountId?: string,
  * mayEdit?: boolean,
  * suggestOnly?: boolean,
  * standalone?: boolean,
- * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void } | null },
+ * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void, discard?: () => Promise<unknown> } | null },
  * fetchReference?: (reference: string) => Promise<Uint8Array>,
  * presenceId?: () => string,
  * presenceColour?: (seed: string, taken: string[]) => string,
@@ -195,6 +196,11 @@ export function createProjectSession({
   send,
   onPeers,
   onState,
+  // Told once when a join is terminally short: waiting cannot complete it.
+  // `empty` is true when this browser has applied nothing, so its offline
+  // copy has been discarded and a fresh start can succeed; false when local
+  // work exists and nothing destructive was done.
+  onUnjoinable = () => {},
   name,
   accountId = "",
   mayEdit = true,
@@ -852,10 +858,33 @@ export function createProjectSession({
     }, pressureDelay);
   }
 
+  /// A join that ended short with no frame left to complete it. Nothing else
+  /// retries, so the editor would hang with the socket open. If this browser
+  /// has applied nothing, its offline copy is the poisoned thing and is
+  /// discarded so a fresh start can succeed; otherwise local work exists and
+  /// nothing destructive is done. Reported at most once per session.
+  let unjoinableReported = false;
+  function reportUnjoinable() {
+    if (unjoinableReported) return;
+    unjoinableReported = true;
+    const empty = doc.oplogVersion().toJSON().size === 0;
+    void (async () => {
+      if (empty) {
+        try {
+          await persister?.discard?.();
+        } catch {
+          // The callback still runs: a reload is the next attempt either way.
+        }
+      }
+      if (left) return;
+      onUnjoinable({ empty });
+    })();
+  }
+
   /// What both `doc-state` and `doc-rows` do after applying their import
   /// (§6.2 step 6): finish the join only when the local graph covers the
   /// advertised server head, then announce and catch up any local work.
-  function finishJoin(vector, durableVector) {
+  function finishJoin(vector, durableVector, terminal = false) {
     // `vector` is the head used for catch-up. Durable coverage is a separate
     // signal and may arrive out of order with this join's asynchronous work.
     mergeDurableCoverage(durableVector);
@@ -876,6 +905,10 @@ export function createProjectSession({
       shortCompare = String(coverage);
       shortMissingPeers = behind;
       report();
+      // Only a short that no further frame can complete is reported. A
+      // `start` with a base or reference is followed by `doc-rows`, so its
+      // short is not terminal and waits for those rows.
+      if (terminal) reportUnjoinable();
       return false;
     }
     joinStage = "joined";
@@ -1352,7 +1385,9 @@ export function createProjectSession({
           noteImport(doc.importBatch(state.updates.map(decode)));
         }
         flushRemoteDuringHydration();
-        finishJoin(state.vector, state.durableVector);
+        // A base or reference means `doc-rows` follows, so only a state with
+        // neither can be terminally short.
+        finishJoin(state.vector, state.durableVector, !state.base && !state.ref);
       }));
     },
 
@@ -1401,7 +1436,8 @@ export function createProjectSession({
           noteImport(doc.importBatch(frame.updates.map(decode)));
         }
         flushRemoteDuringHydration();
-        finishJoin(frame.vector, frame.durableVector);
+        // `doc-rows` is the last frame of every join that reaches it.
+        finishJoin(frame.vector, frame.durableVector, true);
       }));
     },
 

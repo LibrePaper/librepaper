@@ -2345,6 +2345,7 @@
   "reader_tracking_failed": "Änderungen nachverfolgen konnte nicht aktiviert werden: Dieses Dokument ist nicht zum Bearbeiten verbunden.",
   "reader_tracking_on": "Änderungen werden nachverfolgt",
   "reader_tracking_open": "Nachverfolgung ist aktiv. Das Panel Änderungen öffnen.",
+  "reader_unjoinable": "Dieses Projekt konnte auf diesem Gerät nicht vollständig geladen werden. Melden Sie sich ab und wieder an, um die Kopie auf diesem Gerät zurückzusetzen.",
   "readerb_backup_failing": "Backups sind aktiviert, schlagen aber fehl: {error}. Öffnen Sie Einstellungen > Backups.",
   "readerb_backup_lost_access": "Backups sind aktiviert, aber die Desktop-App hat den Zugriff auf dieses Konto verloren. Öffnen Sie Einstellungen > Backups, um die Verbindung wiederherzustellen.",
   "readerb_agent_waiting": "Der Agent wartet auf Ihre Berechtigung",

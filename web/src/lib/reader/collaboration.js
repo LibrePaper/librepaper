@@ -59,6 +59,7 @@ const capability = (document_) => JSON.stringify([
  * onPeers?: (count: number) => void, onState?: (state: CollaborationState) => void,
  * onSession?: (session: ReaderSession) => void,
  * onDocumentChanged?: (reason: string) => void,
+ * onUnjoinable?: (info: { empty: boolean }) => void,
  * onFiles?: (events: DirectoryEvents, session: ReaderSession, by?: string) => void,
  * onAwareness?: (session: ReaderSession) => void,
  * sourceSync?: boolean, standalone?: boolean, retryMs?: number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout,
@@ -82,6 +83,7 @@ export function createReaderCollaboration({
   onDocumentChanged = () => {},
   onFiles = () => {},
   onAwareness = () => {},
+  onUnjoinable = () => {},
   sourceSync = true,
   // A standalone session is the demo sandbox: no room, no storage.
   standalone = false,
@@ -156,6 +158,7 @@ export function createReaderCollaboration({
       send,
       onPeers: (count) => { if (live()) onPeers(count); },
       onState: (state) => { if (live()) onState(state); },
+      onUnjoinable: (info) => { if (live()) onUnjoinable(info); },
       // Empty rather than "Anonymous": the session names them that itself,
       // and a literal here would make every unnamed reader the same person
       // as far as the colour is concerned.
