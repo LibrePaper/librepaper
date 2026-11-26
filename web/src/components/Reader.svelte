@@ -373,7 +373,7 @@
       say(m.reader_unjoinable(), { kind: "problem", id: "reader:unjoinable" });
     },
     localStorageFailed: (error) => {
-      warn(error?.message || String(error), "reader:local-storage-failed");
+      warn(String(error), "reader:local-storage-failed");
       say(m.readerc_local_storage_failed({ error }), { kind: "problem", id: "reader:local-storage-failed" });
     },
     paint: () => { paintPreview(); },

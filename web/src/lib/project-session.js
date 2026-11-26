@@ -182,7 +182,7 @@ export function uniquePresences(states, { localClient = null, localTab = "" } = 
  * mayEdit?: boolean,
  * suggestOnly?: boolean,
  * standalone?: boolean,
- * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void, discard?: () => Promise<unknown> } | null },
+ * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void, discard?: () => Promise<unknown>, hydrationFacts?: () => { found?: boolean, snapshotBytes?: number, rows?: number, pendingPeers?: number, discarded?: boolean } } | null },
  * fetchReference?: (reference: string) => Promise<Uint8Array>,
  * presenceId?: () => string,
  * presenceColour?: (seed: string, taken: string[]) => string,
@@ -416,7 +416,8 @@ export function createProjectSession({
       // now joining instead.
       if (!speaksForThisJoin(stale)) return undefined;
       if (error?.restartBaseline) {
-        if (send(openMessage())?.ok) restartOpensSent += 1;
+        const sent = /** @type {{ ok?: boolean } | undefined} */ (send(openMessage()));
+        if (sent?.ok) restartOpensSent += 1;
         return undefined;
       }
       throw error;
