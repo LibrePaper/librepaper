@@ -942,15 +942,20 @@ export function createProjectSession({
     // A copy that could not load on its own may apply now that the server's base is here.
     const deferred = persister?.takeDeferred?.() || [];
     if (deferred.length) {
-      // Probe on a fork first: bytes that would leave changes pending stay out of the live doc.
-      const probe = doc.fork();
-      const status = probe.importBatch(deferred);
-      if (!status?.pending?.size) {
-        noteImport(doc.importBatch(deferred));
-        // Imported changes are not local Loro updates, so count them as unsaved by hand.
-        rememberLocalTarget();
+      // A replay that fails must not cost the join it follows.
+      try {
+        // Probe on a fork first: bytes that would leave changes pending stay out of the live doc.
+        const probe = doc.fork();
+        const status = probe.importBatch(deferred);
+        if (!status?.pending?.size) {
+          noteImport(doc.importBatch(deferred));
+          // Imported changes are not local Loro updates, so count them as unsaved by hand.
+          rememberLocalTarget();
+        }
+        deferredReplayed = status?.pending?.size ? "pending" : "applied";
+      } catch {
+        deferredReplayed = "failed";
       }
-      deferredReplayed = status?.pending?.size ? "pending" : "applied";
     }
     pendingAfterJoin = importPending;
     joinStage = "joined";
