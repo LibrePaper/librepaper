@@ -9,7 +9,8 @@ function drawnCount(state) {
 }
 
 const doc = "preamble text here\n\nsome body text that is long enough\n";
-const fold = { from: 0, to: 18, kind: "preamble" };
+// On the third line, so the default caret at 0 does not reveal it.
+const fold = { from: 20, to: 54, kind: "comment" };
 const finder = () => [fold];
 
 // One fold is drawn; showing every source draws none; folding again draws it once more.

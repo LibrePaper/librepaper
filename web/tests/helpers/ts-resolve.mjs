@@ -12,6 +12,8 @@ registerHooks({
     try {
       return next(specifier, context);
     } catch (error) {
+      // A directory import (`./languages/latex`) means its index.ts, as Vite reads it.
+      if (error?.code === "ERR_UNSUPPORTED_DIR_IMPORT" && /^\.{1,2}\//.test(specifier)) return next(`${specifier}/index.ts`, context);
       if (error?.code !== "ERR_MODULE_NOT_FOUND" || !/^\.{1,2}\//.test(specifier) || /\.[a-z]+$/i.test(specifier)) throw error;
       return next(`${specifier}.ts`, context);
     }
