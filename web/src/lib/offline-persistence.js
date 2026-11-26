@@ -263,8 +263,12 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             const pending = await updatesFor(transaction);
             facts.rows = pending.length;
             for (const item of pending) pieces.push(new Uint8Array(item.update));
-            const status = scratch.importBatch(pieces);
-            const unresolved = status.pending?.size || 0;
+            // The first piece goes in alone: Loro loads a shallow snapshot's
+            // state only on its own into an empty doc, and drops it inside a
+            // batch. The rows after it are batched, so their order does not matter.
+            const first = pieces.length ? scratch.import(pieces[0]) : null;
+            const rest = pieces.length > 1 ? scratch.importBatch(pieces.slice(1)) : null;
+            const unresolved = Math.max(first?.pending?.size || 0, rest?.pending?.size || 0);
             facts.pendingPeers = unresolved;
             if (unresolved) {
               facts.discarded = true;

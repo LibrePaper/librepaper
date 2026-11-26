@@ -299,6 +299,9 @@ function readStore(database, store, method, ...args) {
   oldMerging.import(first.export({ mode: "update" }));
   const poisoned = oldMerging.export({ mode: "update" });
   const persisted = first.oplogVersion().encode();
+  // "hello" was typed online, so the server holds it; the old snapshot above
+  // lost it locally (it is empty), and only the later "!" row is worth replaying.
+  const helloOnServer = first.export({ mode: "update", from: serverDoc.oplogVersion() });
   first.getText("t").insert(0, "!");
   first.commit();
   const row = first.export({ mode: "update", from: VersionVector.decode(persisted) });
@@ -326,6 +329,7 @@ function readStore(database, store, method, ...args) {
   reader.import(base);
   const compare = reader.oplogVersion().compare(serverDoc.oplogVersion());
   assert.ok(compare === 0 || compare === 1, `server base did not join: ${compare}`);
+  reader.import(helloOnServer);
   reader.importBatch(deferred);
   assert.ok(reader.getText("t").toString().startsWith("!hello"), reader.getText("t").toString());
   await opened.flush();
