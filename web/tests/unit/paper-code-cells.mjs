@@ -36,9 +36,10 @@ function lineAt(text, index) {
   assert.equal(card.from, lineAt(text, 2));
   assert.equal(text.slice(card.from, card.to), "```{r}\n#| echo: false\nx <- 1\n```");
   assert.equal(card.render, true);
-  assert.ok(card.html.startsWith('<div class="code-filename lp-paper-cell-head lp-paper-cell-quiet">'));
-  assert.ok(card.html.includes('<span class="lp-paper-cell-lang">r</span><span class="lp-paper-cell-note">' + m.codecells_code_hidden() + "</span></div>"));
-  assert.ok(card.html.endsWith("<pre><code>x &lt;- 1</code></pre>"));
+  assert.ok(card.html.startsWith('<div class="code-filename lp-paper-cell-head lp-paper-cell-quiet lp-paper-cell-collapsed">'));
+  assert.ok(card.html.includes('<span class="lp-paper-cell-lang">r</span><span class="lp-paper-cell-note">' + m.codecells_code_hidden() + '</span><span class="lp-paper-cell-lines">' + m.codecells_lines({ count: 1 }) + "</span></div>"));
+  assert.ok(!card.html.includes("<pre"));
+  assert.ok(!card.html.includes("x &lt;- 1"));
   assert.ok(!card.html.includes("#|"));
   assert.ok(!card.html.includes("```"));
 }
@@ -97,6 +98,43 @@ function lineAt(text, index) {
   const text = "```{R}\n#| label: a<b>&\n#| echo: false\nx\n```\n";
   const [card] = withCodeCells(text, [], renderer, "a.qmd");
   assert.ok(card.html.includes('<span class="lp-paper-cell-lang">R</span><span class="lp-paper-cell-label">a&lt;b&gt;&amp;</span>'));
+}
+
+// A plain chunk is drawn open: its code is rendered and the card is not collapsed.
+{
+  const text = "```{r}\nx <- 1\ny <- 2\n```\n";
+  const [card] = withCodeCells(text, [], renderer, "a.qmd");
+  assert.ok(card.html.includes("<pre>"));
+  assert.ok(!card.html.includes("lp-paper-cell-collapsed"));
+  assert.ok(!card.html.includes("lp-paper-cell-lines"));
+}
+
+// code-fold: true in the front matter collapses the chunks; a chunk's code-fold: show overrides it.
+{
+  const text = "---\ncode-fold: true\n---\n\n```{r}\nx\n```\n\n```{r}\n#| code-fold: show\ny\nz\n```\n";
+  const result = withCodeCells(text, [], renderer, "a.qmd");
+  assert.equal(result.length, 2);
+  assert.ok(result[0].html.includes("lp-paper-cell-collapsed"));
+  assert.ok(!result[0].html.includes("<pre"));
+  assert.ok(result[0].html.includes('<span class="lp-paper-cell-lines">' + m.codecells_lines({ count: 1 }) + "</span>"));
+  assert.ok(!result[1].html.includes("lp-paper-cell-collapsed"));
+  assert.ok(result[1].html.includes("<pre>"));
+}
+
+// format.html.code-fold is the document default when the front matter has no top-level key.
+{
+  const text = "---\nformat:\n  html:\n    code-fold: \"true\"\n---\n\n```{r}\nx\n```\n";
+  const [card] = withCodeCells(text, [], renderer, "a.qmd");
+  assert.ok(card.html.includes("lp-paper-cell-collapsed"));
+}
+
+// eval: false alone leaves the code shown, so the card stays open.
+{
+  const text = "```{r}\n#| eval: false\nx\n```\n";
+  const [card] = withCodeCells(text, [], renderer, "a.qmd");
+  assert.ok(card.html.includes("<pre>"));
+  assert.ok(!card.html.includes("lp-paper-cell-collapsed"));
+  assert.ok(card.html.includes(m.codecells_not_run()));
 }
 
 // Null stays null; the quarto adapter draws its cards through renderedBlocks.

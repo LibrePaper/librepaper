@@ -538,6 +538,21 @@
   "codecells_not_in_output": "出力に含まれない",
   "codecells_code_hidden": "コードは出力で非表示",
   "codecells_not_run": "未実行",
+  "codecells_lines": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} 行",
+        "countPlural=*": "{count} 行"
+      }
+    }
+  ],
   "collaboration_clear_chat": "チャットをすべて削除",
   "collaboration_highlight_hint": "ハイライトするには、プレビューウィンドウでテキストを選択してください。",
   "collaboration_highlights": "ハイライト",
