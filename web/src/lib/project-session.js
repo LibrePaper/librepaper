@@ -304,6 +304,21 @@ export function createProjectSession({
   // bytes live in the CRDT itself and reconnect exports them from there.
   const unacknowledged = new Set();
   let lastAckAt = null;
+  // Where the last join got to, for the diagnostics report. Facts only.
+  const createdAt = Date.now();
+  let joinStage = "waiting";
+  let joinError = "";
+  let openSentAt = null;
+  let openVectorPeers = 0;
+  let stateFrames = 0;
+  let rowsFrames = 0;
+  let lastFrameAt = null;
+  let hydration = "none";
+  let hydrationMs = null;
+  // The most peers left with changes that cannot apply yet, across one step's imports.
+  let importPending = 0;
+  let shortCompare = null;
+  let shortMissingPeers = null;
   // The newest local state this browser needs the server to durably cover.
   // Remote imports never move this target. Keep an owned copy of each vector:
   // Loro's WASM wrappers are mutable resources, and a later import must not
@@ -396,6 +411,30 @@ export function createProjectSession({
     }
     return referenced;
   }
+  // Records where a join step failed, then rethrows: the failure still reaches
+  // the caller. Only a step that still speaks for this join records it.
+  function trackStep(stale, step) {
+    return async () => {
+      try {
+        return await step();
+      } catch (error) {
+        if (speaksForThisJoin(stale)) {
+          joinStage = "failed";
+          joinError = error?.message || String(error);
+        }
+        throw error;
+      }
+    };
+  }
+  // How many peers an ImportStatus leaves with changes that cannot apply yet.
+  function pendingPeers(status) {
+    const pending = status?.pending;
+    if (!pending) return 0;
+    return pending instanceof Map ? pending.size : Object.keys(pending).length;
+  }
+  function noteImport(status) {
+    importPending = Math.max(importPending, pendingPeers(status));
+  }
   function sequenceJoin(step) {
     const ran = joinGate.then(step, step);
     // The gate itself must never reject, or every join step queued behind a
@@ -451,7 +490,7 @@ export function createProjectSession({
     // A live update can arrive while the persistence adapter is still
     // restoring its local copy. Apply those only after the conservative local
     // target has been captured, so a peer's update cannot become this target.
-    for (const update of remoteDuringHydration.splice(0)) doc.import(decode(update));
+    for (const update of remoteDuringHydration.splice(0)) noteImport(doc.import(decode(update)));
   }
 
   function coveredByDurable() {
@@ -484,13 +523,19 @@ export function createProjectSession({
     localError,
     joined,
   });
-  const openMessage = () => ({
-    type: "doc-open",
-    vector: encode(doc.oplogVersion().encode()),
-    protocol: "librepaper.room.v3",
-    // This browser can fetch a large `doc-rows` payload by reference.
-    rowsRef: true,
-  });
+  const openMessage = () => {
+    const version = doc.oplogVersion();
+    openSentAt = Date.now();
+    // Zero means the server is asked for everything.
+    openVectorPeers = version.toJSON().size;
+    return {
+      type: "doc-open",
+      vector: encode(version.encode()),
+      protocol: "librepaper.room.v3",
+      // This browser can fetch a large `doc-rows` payload by reference.
+      rowsRef: true,
+    };
+  };
   try {
     persister = persistence?.open?.(doc, {
       hydrated() {
@@ -512,6 +557,7 @@ export function createProjectSession({
       failed(error) {
         local = false;
         localPending = 0;
+        hydration = "failed";
         localError = error?.message || String(error || m.project_session_local_persistence_failed());
         report();
       },
@@ -520,6 +566,17 @@ export function createProjectSession({
     }) || null;
   } catch (error) {
     localError = error?.message || String(error || m.project_session_local_persistence_failed());
+  }
+  if (persister?.hydration) {
+    hydration = "pending";
+    Promise.resolve(persister.hydration).then(() => {
+      // A failure the persistence reported first stays a failure.
+      if (hydration === "pending") hydration = "done";
+      hydrationMs = Date.now() - createdAt;
+    }, () => {
+      hydration = "failed";
+      hydrationMs = Date.now() - createdAt;
+    });
   }
   // Sessions without an asynchronous persistence adapter are hydrated at
   // construction. Mark that baseline before a socket can import remote data.
@@ -809,9 +866,21 @@ export function createProjectSession({
     // arrived yet. Stay unjoined until the local graph covers that advertised
     // head; rows calls finishJoin again once those operations are imported.
     if (coverage !== 0 && coverage !== 1) {
+      // Which peers the advertised head is ahead of, for the diagnostics.
+      const local = doc.oplogVersion().toJSON();
+      let behind = 0;
+      for (const [peer, counter] of advertised.toJSON()) {
+        if (Number(counter) > Number(local.get(peer) || 0)) behind += 1;
+      }
+      joinStage = "short";
+      shortCompare = String(coverage);
+      shortMissingPeers = behind;
       report();
       return false;
     }
+    joinStage = "joined";
+    shortCompare = null;
+    shortMissingPeers = null;
     joined = true;
     if (mayEdit && !standalone) startHeartbeat();
     announcePresence();
@@ -845,6 +914,21 @@ export function createProjectSession({
     /// milliseconds, or null when it never has; and how much is still waiting.
     lastAcknowledgedAt() {
       return lastAckAt;
+    },
+
+    /// Where the last join got to, for the diagnostics report. Facts only, no document text.
+    joinTrace() {
+      const now = Date.now();
+      return {
+        joinStage, joinError,
+        openSentAgoMs: openSentAt === null ? null : now - openSentAt,
+        openVectorPeers,
+        stateFrames, rowsFrames,
+        lastFrameAgoMs: lastFrameAt === null ? null : now - lastFrameAt,
+        hydration, hydrationMs,
+        importPending,
+        shortCompare, shortMissingPeers,
+      };
     },
     unacknowledgedCount() {
       return unacknowledged.size;
@@ -1211,15 +1295,19 @@ export function createProjectSession({
     /// `doc-rows` frame that lands mid-fetch waits for this to finish
     /// importing before it touches `doc` itself.
     start(state) {
+      stateFrames += 1;
+      lastFrameAt = Date.now();
       // A reconnect starts a new source hydration window. Publish that
       // synchronously so the Reader sees the room as not yet joined.
       joined = false;
       report();
       const stale = connection.mark();
-      return sequenceJoin(async () => {
+      return sequenceJoin(trackStep(stale, async () => {
         // The frame may have waited behind another join step long enough for
         // its own socket to go.
         if (!speaksForThisJoin(stale)) return;
+        joinStage = "hydrating";
+        importPending = 0;
         // Disk recovery must win the race with the room handshake. Otherwise a
         // delayed import lands after catch-up and is never offered to the
         // server (hydration is intentionally not a local Loro update).
@@ -1245,18 +1333,27 @@ export function createProjectSession({
           // same-origin marker rule A turns on, and the link key a reader
           // arrived with. Without them a document too large to send inline was
           // refused, which is what the notebook examples were doing.
+          joinStage = "fetching";
           const referenced = await fetchVerified(state, stale);
-          if (!referenced) return;
-          doc.import(referenced);
+          if (!referenced) {
+            if (speaksForThisJoin(stale)) joinStage = "abandoned";
+            return;
+          }
+          joinStage = "importing";
+          noteImport(doc.import(referenced));
         } else if (state.base) {
-          doc.import(decode(state.base));
+          joinStage = "importing";
+          noteImport(doc.import(decode(state.base)));
         }
         // Two Loro updates concatenated are not one Loro update, so each row
         // is imported as its own entry in the batch rather than joined first.
-        if (state.updates?.length) doc.importBatch(state.updates.map(decode));
+        if (state.updates?.length) {
+          joinStage = "importing";
+          noteImport(doc.importBatch(state.updates.map(decode)));
+        }
         flushRemoteDuringHydration();
         finishJoin(state.vector, state.durableVector);
-      });
+      }));
     },
 
     /// Rows the join's `doc-open` vector did not cover, sent after (or
@@ -1269,11 +1366,15 @@ export function createProjectSession({
     /// base, so the rows this frame carries are never caught up ahead of the
     /// base they build on.
     rows(frame) {
+      rowsFrames += 1;
+      lastFrameAt = Date.now();
       joined = false;
       report();
       const stale = connection.mark();
-      return sequenceJoin(async () => {
+      return sequenceJoin(trackStep(stale, async () => {
         if (!speaksForThisJoin(stale)) return;
+        joinStage = "hydrating";
+        importPending = 0;
         await persister?.hydration;
         if (left) return;
         captureHydratedTarget();
@@ -1284,14 +1385,24 @@ export function createProjectSession({
         if (frame.ref) {
           // Same fetch, authority and checks as a referenced base, and in
           // the same order: it is sequenced behind that base's import.
+          joinStage = "fetching";
           const referenced = await fetchVerified(frame, stale);
-          if (!referenced) return;
+          if (!referenced) {
+            if (speaksForThisJoin(stale)) joinStage = "abandoned";
+            return;
+          }
           const batches = unpackRows(referenced);
-          if (batches.length) doc.importBatch(batches);
-        } else if (frame.updates?.length) doc.importBatch(frame.updates.map(decode));
+          if (batches.length) {
+            joinStage = "importing";
+            noteImport(doc.importBatch(batches));
+          }
+        } else if (frame.updates?.length) {
+          joinStage = "importing";
+          noteImport(doc.importBatch(frame.updates.map(decode)));
+        }
         flushRemoteDuringHydration();
         finishJoin(frame.vector, frame.durableVector);
-      });
+      }));
     },
 
     /// The server refused a batch because its start vector was not covered
@@ -1372,6 +1483,7 @@ export function createProjectSession({
     /// CRDT state beyond the server's vector and sends it again.
     disconnected() {
       joined = false;
+      joinStage = "disconnected";
       announced = false;
       stopHeartbeat();
       // Whatever the old socket's join was still waiting on -- hydration, a
