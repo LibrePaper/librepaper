@@ -42,12 +42,11 @@ import { createGeneration } from "./generation.js";
 /** @typedef {typeof import("../collab.js")} CollaborationModule */
 /** @typedef {Parameters<NonNullable<Parameters<typeof import("../project-session.js").createProjectSession>[0]["onState"]>>[0]} CollaborationState */
 
-const capability = (document_) => JSON.stringify([
-  document_?.role ?? null,
-  document_?.can_edit ?? null,
-  document_?.can_moderate ?? null,
-  document_?.can_see_sharing ?? null,
-]);
+// Records saved before can_moderate and can_see_sharing were kept lack them;
+// a field the saved document does not have is unknown, so it cannot differ.
+const CAPABILITY_FIELDS = ["role", "can_edit", "can_moderate", "can_see_sharing"];
+const capabilityChanged = (saved, latest) => CAPABILITY_FIELDS.some((field) => saved?.[field] != null
+  && saved[field] !== latest?.[field]);
 
 /** @param {{
  * slug: string, key?: string, fetcher?: typeof fetch,
@@ -243,7 +242,7 @@ export function createReaderCollaboration({
           && document_.created_at !== latest.created_at) {
         return changed("document");
       }
-      if (capability(latest) !== capability(document_)) return changed("capability");
+      if (capabilityChanged(document_, latest)) return changed("capability");
       setDocumentCheck("ok");
       if (sourceSync) {
         opensSent += 1;

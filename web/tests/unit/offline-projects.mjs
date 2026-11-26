@@ -234,3 +234,39 @@ function readStore(database, store, method, ...args) {
   assert.equal(withOrigin.document.docs_origin, "https://docs.example.test");
   assert.equal((await readStore(database, "projects", "get", key)).document.docs_origin, "https://docs.example.test");
 }
+
+// The capability flags the server sends are kept with the project, so a cached
+// open can check them against the live document when it reconnects.
+{
+  const indexedDB_ = fakeIndexedDB();
+  const server = "https://example.test";
+  const metadata = {
+    server,
+    document_id: "66666666-6666-4666-8666-666666666666",
+    slug: "flags",
+    created_at: "",
+    role: "editor",
+    can_edit: true,
+    can_moderate: true,
+    can_see_sharing: false,
+  };
+  const key = projectIdentityKey(projectIdentity({ server, documentId: metadata.document_id, slug: "flags", createdAt: "" }));
+  const database = await openFake(indexedDB_);
+  const seeding = database.transaction(["states"], "readwrite");
+  const seeded = new Promise((resolve) => { seeding.oncomplete = resolve; });
+  seeding.objectStore("states").put({ version: 3 }, key);
+  await seeded;
+
+  const record = await rememberProject(metadata, indexedDB_);
+  assert.equal(record.document.can_moderate, true);
+  assert.equal(record.document.can_see_sharing, false);
+  assert.equal(record.document.can_edit, true);
+  const stored = await readStore(database, "projects", "get", key);
+  assert.equal(stored.document.can_moderate, true);
+  assert.equal(stored.document.can_see_sharing, false);
+
+  // Metadata without the flags stores false, not a missing value.
+  const bare = await rememberProject({ ...metadata, can_moderate: undefined, can_see_sharing: undefined }, indexedDB_);
+  assert.equal(bare.document.can_moderate, false);
+  assert.equal(bare.document.can_see_sharing, false);
+}
