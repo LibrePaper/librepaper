@@ -627,6 +627,7 @@
   "commands_text_reset": "Restablecer tamaño del texto",
   "commands_text_smaller": "Texto más pequeño",
   "commands_visual_markup": "Marcado visual",
+  "commands_visual_show_source": "Mostrar u ocultar todo el código fuente plegado",
   "commentcard_agent": "Atender el comentario con el agente",
   "commentcard_attach": "Vincular a la selección",
   "commentcard_attach_title": "Hacer que el pasaje seleccionado sea el pasaje de este comentario",

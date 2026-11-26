@@ -627,6 +627,7 @@
   "commands_text_reset": "Textgröße zurücksetzen",
   "commands_text_smaller": "Kleinerer Text",
   "commands_visual_markup": "Visuelle Auszeichnung",
+  "commands_visual_show_source": "Gesamten eingeklappten Quelltext ein- oder ausblenden",
   "commentcard_agent": "Kommentar vom Agent bearbeiten lassen",
   "commentcard_attach": "An Auswahl anhängen",
   "commentcard_attach_title": "Die ausgewählte Passage zur Passage dieses Kommentars machen",

@@ -627,6 +627,7 @@
   "commands_text_reset": "Reset text size",
   "commands_text_smaller": "Smaller text",
   "commands_visual_markup": "Visual markup",
+  "commands_visual_show_source": "Show or hide all folded source",
   "commentcard_agent": "Address comment with agent",
   "commentcard_attach": "Attach to selection",
   "commentcard_attach_title": "Make the selected passage this comment's passage",

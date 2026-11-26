@@ -627,6 +627,7 @@
   "commands_text_reset": "テキストサイズをリセット",
   "commands_text_smaller": "テキストを小さく",
   "commands_visual_markup": "ビジュアルマークアップ",
+  "commands_visual_show_source": "折りたたまれたソースをすべて表示／非表示",
   "commentcard_agent": "エージェントでコメントに対応",
   "commentcard_attach": "選択範囲に関連付け",
   "commentcard_attach_title": "選択した箇所をこのコメントの対象にします",
