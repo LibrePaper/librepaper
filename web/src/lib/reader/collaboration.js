@@ -182,8 +182,8 @@ export function createReaderCollaboration({
     // annotations. They receive the initial comment hello, but never send a
     // document open request or receive source state.
     if (sourceSync) {
-      opensSent += 1;
-      room?.send(active.open());
+      // Counted only when the socket took the open; with no room yet, nothing was sent.
+      if (room?.send(active.open())?.ok) opensSent += 1;
     }
     return active;
   }
@@ -218,10 +218,7 @@ export function createReaderCollaboration({
     if (firstOpen) {
       firstOpen = false;
       setDocumentCheck("skipped");
-      if (sourceSync) {
-        opensSent += 1;
-        room?.send(active.open());
-      }
+      if (sourceSync && room?.send(active.open())?.ok) opensSent += 1;
       onConnected(true);
       return;
     }
@@ -247,10 +244,7 @@ export function createReaderCollaboration({
       }
       if (capabilityChanged(document_, latest)) return changed("capability");
       setDocumentCheck("ok");
-      if (sourceSync) {
-        opensSent += 1;
-        room?.send(active.open());
-      }
+      if (sourceSync && room?.send(active.open())?.ok) opensSent += 1;
       onConnected(true);
     } catch (error) {
       if (disposed || stale() || session !== active) return;

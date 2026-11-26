@@ -924,7 +924,8 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
     slug: "example", fetcher: () => (++fetches === 1 ? first.promise : second.promise),
     openRoom: (_slug, options) => {
       rooms.push(options);
-      return { send: (message) => sent.push(message), sendLive: () => ({ ok: true }), close: () => {} };
+      // Like room.js, a socket send reports success as { ok: true }.
+      return { send: (message) => { sent.push(message); return { ok: true, via: "socket" }; }, sendLive: () => ({ ok: true }), close: () => {} };
     },
     collab: fake.module,
     getCanEdit: () => true,
@@ -936,6 +937,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.equal(sent.length, 0, "nothing is sent while the socket is connecting");
   await rooms[0].onConnected(true);
   assert.equal(sent.length, 1, "the initial y-open is sent when the socket opens");
+  assert.equal(collaboration.syncStatus().opensSent, 1, "a normal open reports one open sent");
   assert.equal(fetches, 0, "the first open trusts the document the boot just fetched");
   rooms[0].onConnected(false);
   const stale = rooms[0].onConnected(true);

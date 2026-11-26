@@ -314,15 +314,28 @@ export function createProjectSession({
   const createdAt = Date.now();
   let joinStage = "waiting";
   let joinError = "";
+  let joinErrorAt = null;
   let openSentAt = null;
   let openVectorPeers = 0;
   let stateFrames = 0;
   let rowsFrames = 0;
+  // Frames received since the current connection's open was built.
+  let framesSinceOpen = 0;
+  // Opens sent by a fetchVerified restartBaseline, counted only when the socket took them.
+  let restartOpensSent = 0;
   let lastFrameAt = null;
+  let lastStateShape = null;
+  let lastStateUpdates = 0;
+  let lastRowsShape = null;
+  let lastRowsUpdates = 0;
   let hydration = "none";
   let hydrationMs = null;
-  // The most peers left with changes that cannot apply yet, across one step's imports.
+  // The most peers left with changes that cannot apply yet, since the current connection's open.
   let importPending = 0;
+  // importPending at the moment the join finished.
+  let pendingAfterJoin = 0;
+  // The most recent local persistence failure's message. Kept apart from hydration.
+  let persistenceError = "";
   let shortCompare = null;
   let shortMissingPeers = null;
   // The newest local state this browser needs the server to durably cover.
@@ -403,7 +416,7 @@ export function createProjectSession({
       // now joining instead.
       if (!speaksForThisJoin(stale)) return undefined;
       if (error?.restartBaseline) {
-        send(openMessage());
+        if (send(openMessage())?.ok) restartOpensSent += 1;
         return undefined;
       }
       throw error;
@@ -427,6 +440,7 @@ export function createProjectSession({
         if (speaksForThisJoin(stale)) {
           joinStage = "failed";
           joinError = error?.message || String(error);
+          joinErrorAt = Date.now();
         }
         throw error;
       }
@@ -532,6 +546,11 @@ export function createProjectSession({
   const openMessage = () => {
     const version = doc.oplogVersion();
     openSentAt = Date.now();
+    // The open is built right before it is sent: the socket is up, and what
+    // follows is the server's answer, not a dropped connection.
+    joinStage = "opened";
+    framesSinceOpen = 0;
+    importPending = 0;
     // Zero means the server is asked for everything.
     openVectorPeers = version.toJSON().size;
     return {
@@ -563,8 +582,10 @@ export function createProjectSession({
       failed(error) {
         local = false;
         localPending = 0;
-        hydration = "failed";
-        localError = error?.message || String(error || m.project_session_local_persistence_failed());
+        // A write failing after hydration is not a hydration failure.
+        if (hydration === "pending") hydration = "failed";
+        persistenceError = error?.message || String(error || m.project_session_local_persistence_failed());
+        localError = persistenceError;
         report();
       },
       // §6.3: nothing is persisted per batch and there is no replay cursor,
@@ -885,6 +906,7 @@ export function createProjectSession({
   /// (§6.2 step 6): finish the join only when the local graph covers the
   /// advertised server head, then announce and catch up any local work.
   function finishJoin(vector, durableVector, terminal = false) {
+    pendingAfterJoin = importPending;
     // `vector` is the head used for catch-up. Durable coverage is a separate
     // signal and may arrive out of order with this join's asynchronous work.
     mergeDurableCoverage(durableVector);
@@ -896,10 +918,10 @@ export function createProjectSession({
     // head; rows calls finishJoin again once those operations are imported.
     if (coverage !== 0 && coverage !== 1) {
       // Which peers the advertised head is ahead of, for the diagnostics.
-      const local = doc.oplogVersion().toJSON();
+      const localVersion = doc.oplogVersion().toJSON();
       let behind = 0;
       for (const [peer, counter] of advertised.toJSON()) {
-        if (Number(counter) > Number(local.get(peer) || 0)) behind += 1;
+        if (Number(counter) > Number(localVersion.get(peer) || 0)) behind += 1;
       }
       joinStage = "short";
       shortCompare = String(coverage);
@@ -952,14 +974,31 @@ export function createProjectSession({
     /// Where the last join got to, for the diagnostics report. Facts only, no document text.
     joinTrace() {
       const now = Date.now();
+      // Facts only. The adapter's hydration facts are absent for sessions without one.
+      const facts = persister?.hydrationFacts?.() || {};
       return {
         joinStage, joinError,
+        joinErrorAgoMs: joinErrorAt === null ? null : now - joinErrorAt,
         openSentAgoMs: openSentAt === null ? null : now - openSentAt,
         openVectorPeers,
-        stateFrames, rowsFrames,
+        stateFrames, rowsFrames, framesSinceOpen,
+        restartOpensSent,
+        lastStateShape, lastStateUpdates,
+        lastRowsShape, lastRowsUpdates,
         lastFrameAgoMs: lastFrameAt === null ? null : now - lastFrameAt,
         hydration, hydrationMs,
-        importPending,
+        hydrationCaptured,
+        remoteQueued: remoteDuringHydration.length,
+        importPending, pendingAfterJoin,
+        local, localError, persistenceError,
+        shallow: doc.isShallow(),
+        localVectorPeers: doc.oplogVersion().toJSON().size,
+        sessionAgeMs: now - createdAt,
+        storedFound: facts.found ?? null,
+        storedSnapshotBytes: facts.snapshotBytes ?? null,
+        storedRows: facts.rows ?? null,
+        storedPendingPeers: facts.pendingPeers ?? null,
+        storedDiscarded: facts.discarded ?? null,
         shortCompare, shortMissingPeers,
       };
     },
@@ -1329,6 +1368,9 @@ export function createProjectSession({
     /// importing before it touches `doc` itself.
     start(state) {
       stateFrames += 1;
+      framesSinceOpen += 1;
+      lastStateShape = state?.ref ? "ref" : state?.base ? "base" : "inline";
+      lastStateUpdates = state?.updates?.length || 0;
       lastFrameAt = Date.now();
       // A reconnect starts a new source hydration window. Publish that
       // synchronously so the Reader sees the room as not yet joined.
@@ -1340,7 +1382,6 @@ export function createProjectSession({
         // its own socket to go.
         if (!speaksForThisJoin(stale)) return;
         joinStage = "hydrating";
-        importPending = 0;
         // Disk recovery must win the race with the room handshake. Otherwise a
         // delayed import lands after catch-up and is never offered to the
         // server (hydration is intentionally not a local Loro update).
@@ -1402,6 +1443,9 @@ export function createProjectSession({
     /// base they build on.
     rows(frame) {
       rowsFrames += 1;
+      framesSinceOpen += 1;
+      lastRowsShape = frame?.ref ? "ref" : "inline";
+      lastRowsUpdates = frame?.updates?.length || 0;
       lastFrameAt = Date.now();
       joined = false;
       report();
@@ -1409,7 +1453,6 @@ export function createProjectSession({
       return sequenceJoin(trackStep(stale, async () => {
         if (!speaksForThisJoin(stale)) return;
         joinStage = "hydrating";
-        importPending = 0;
         await persister?.hydration;
         if (left) return;
         captureHydratedTarget();

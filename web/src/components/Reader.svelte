@@ -90,7 +90,7 @@
   import { pandoc } from "../lib/pandoc/client.js";
   import Preview from "./Preview.svelte";
   import PanelBoundary from "./PanelBoundary.svelte";
-  import { report } from "../lib/crash.js";
+  import { report, warn } from "../lib/crash.js";
   import PreviewControls from "./PreviewControls.svelte";
   import { onPageZoom } from "../lib/desktop/zoom.js";
   import { agentWaitingBadge } from "../lib/agent-permission.js";
@@ -367,14 +367,18 @@
       location.reload();
     },
     onUnjoinable: ({ empty }) => {
+      // Diagnostic record only: what the reader sees below is unchanged.
+      warn(empty ? "document is empty" : "document cannot be joined", "reader:unjoinable");
       if (empty && rejoinReload()) return;
       say(m.reader_unjoinable(), { kind: "problem", id: "reader:unjoinable" });
     },
     localStorageFailed: (error) => {
+      warn(error?.message || String(error), "reader:local-storage-failed");
       say(m.readerc_local_storage_failed({ error }), { kind: "problem", id: "reader:local-storage-failed" });
     },
     paint: () => { paintPreview(); },
     openFailed: (error) => {
+      warn(error?.message || String(error), "reader:open-failed");
       say(error.message || m.reader_open_failed(), { kind: "problem", id: "reader:open-failed" });
     },
   });

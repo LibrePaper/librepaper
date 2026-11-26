@@ -1206,6 +1206,12 @@ const gate = () => {
     traced.open();
     assert.equal(typeof traced.joinTrace().openSentAgoMs, "number");
     assert.equal(traced.joinTrace().openVectorPeers, 0, "an empty document asks for everything");
+    assert.equal(traced.joinTrace().joinStage, "opened", "building the open is not a dropped socket");
+    assert.equal(traced.joinTrace().framesSinceOpen, 0);
+    assert.equal(traced.joinTrace().shallow, false);
+    assert.equal(typeof traced.joinTrace().localVectorPeers, "number");
+    assert.equal(traced.joinTrace().storedFound, null, "no persistence adapter reports no stored facts");
+    assert.equal(traced.joinTrace().persistenceError, "");
   } finally {
     traced.leave();
   }
@@ -1218,6 +1224,9 @@ const gate = () => {
     const trace = short.joinTrace();
     assert.equal(trace.joinStage, "short");
     assert.equal(trace.stateFrames, 1);
+    assert.equal(trace.framesSinceOpen, 1, "a start frame counts toward the current connection");
+    assert.equal(trace.lastStateShape, "inline");
+    assert.equal(trace.shallow, false);
     assert.ok(trace.shortMissingPeers >= 1, "the advertised head names a peer the local document lacks");
   } finally {
     short.leave();
@@ -1315,6 +1324,34 @@ const unjoinablePersistence = (discards) => ({
     assert.equal(discards.count, 0, "local work is never discarded");
   } finally {
     local.leave();
+  }
+}
+
+{
+  // A write failure after hydration is reported as a persistence error, and
+  // leaves the hydration outcome as it was.
+  let captured = null;
+  const failing = createProjectSession({
+    send: () => {},
+    onState: () => {},
+    presenceId: () => "trace-write-failure",
+    persistence: {
+      open(_doc, events) {
+        captured = events;
+        return { hydration: Promise.resolve(), close() {} };
+      },
+    },
+  });
+  try {
+    await nextTurn();
+    assert.equal(failing.joinTrace().hydration, "done");
+    captured.failed(new Error("write"));
+    const trace = failing.joinTrace();
+    assert.equal(trace.hydration, "done", "a later write failure does not change hydration");
+    assert.equal(trace.persistenceError, "write");
+    assert.equal(trace.localError, "write");
+  } finally {
+    failing.leave();
   }
 }
 
