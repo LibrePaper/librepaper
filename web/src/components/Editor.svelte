@@ -277,6 +277,7 @@
   import { isEnglishDocument } from "../lib/harper/language.js";
   import { untrack } from "svelte";
   import { visualMarkup, factsUpdate } from "../lib/visual-markup/index.js";
+  import { hasFoldLayer, toggleAllFolds } from "../lib/visual/folds.js";
   import { VISUAL_FORMATS } from "../lib/visual-markup/formats.js";
   import { applyFormat, formatState } from "../lib/visual-markup/formatting.js";
   import { documentFacts } from "../lib/visual-markup/facts.js";
@@ -1483,6 +1484,8 @@
       // reader may comment: the same question the bar over a selection asks.
       comment: Boolean(annotating) && editable && selected,
       "tab-focus": Boolean(view),
+      // The source of every fold in the visual layer, shown or folded again.
+      "visual-show-source": Boolean(view) && hasFoldLayer(view.state),
     };
   }
 
@@ -1556,6 +1559,7 @@
     else if (Object.hasOwn(structure, command)) runStructure(command);
     else if (Object.hasOwn(ORG_COMMANDS, command)) ORG_COMMANDS[command](target);
     else if (command === "tab-focus") toggleTabFocusMode(target);
+    else if (command === "visual-show-source") toggleAllFolds(target);
     else if (command === "go-to-definition") goToDefinition(target, indexContext);
     else if (command === "find-references") findReferencesCommand(indexContext)(target);
     else if (command === "rename-symbol") renameCommand(indexContext)(target);

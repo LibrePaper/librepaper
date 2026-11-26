@@ -19,6 +19,10 @@ const NONE = [];
 /// the same text. A finder that was not ready returned nothing, and nothing was kept.
 export const refreshFolds = StateEffect.define();
 
+/// Dispatched with true to show the source of every fold, or false to fold them
+/// again. The flag is kept in the field and is not persisted.
+export const showAllFolds = StateEffect.define();
+
 // Finding the folds parses the whole document, about 1.7 ms per keystroke on a
 // 1,700-line file in Chrome and several times that in the desktop app's WebKit.
 // So an edit does not find them again: the folds in place are mapped through
@@ -29,15 +33,17 @@ const REFIND_DELAY = 400;
 // folds are found when refreshFolds arrives and mapped through each edit until
 // then; a selection change, or a new set of taken ranges, only redraws.
 const foldField = StateField.define({
-  create: (state) => foldState(state, findIn(state)),
+  create: (state) => foldState(state, findIn(state), false),
   update(value, tr) {
     const refresh = tr.effects.some((effect) => effect.is(refreshFolds));
+    const toggled = tr.effects.some((effect) => effect.is(showAllFolds));
+    const open = tr.effects.reduce((flag, effect) => (effect.is(showAllFolds) ? effect.value : flag), value.open);
     const ranges = takenOf(tr.state);
-    if (!tr.docChanged && !tr.selection && !refresh && ranges === value.taken) return value;
+    if (!tr.docChanged && !tr.selection && !refresh && !toggled && ranges === value.taken) return value;
     const folds = refresh ? findIn(tr.state) : tr.docChanged ? mapFolds(tr.changes, value.folds) : value.folds;
-    const next = foldState(tr.state, folds);
+    const next = foldState(tr.state, folds, open);
     // A move that leaves the same folds drawn keeps the old set, so nothing is redrawn.
-    if (!tr.docChanged && !refresh && ranges === value.taken && sameDrawn(next.drawn, value.drawn)) return value;
+    if (!tr.docChanged && !refresh && !toggled && ranges === value.taken && sameDrawn(next.drawn, value.drawn)) return value;
     return next;
   },
   provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
@@ -112,21 +118,41 @@ const refindAfterPause = ViewPlugin.fromClass(
 // source as ordinary lines, the whole fold at once. A parked caret (the layer
 // just turned on) reveals nothing, so a file opens with its preamble folded.
 // A fold that lies inside a range another layer draws is not drawn either.
-function foldState(state, folds) {
+// With `open` every fold shows its source, so none is drawn.
+function foldState(state, folds, open) {
   const { openInclude } = state.facet(finderFacet);
   const taken = takenOf(state);
   const revealed = revealingSelection(state);
-  const drawn = folds.filter(
-    (fold) =>
-      !revealed.some((range) => range.from <= fold.to && range.to >= fold.from) &&
-      !taken.some((range) => range.from <= fold.from && fold.to <= range.to),
-  );
+  const drawn = open
+    ? []
+    : folds.filter(
+        (fold) =>
+          !revealed.some((range) => range.from <= fold.to && range.to >= fold.from) &&
+          !taken.some((range) => range.from <= fold.from && fold.to <= range.to),
+      );
   const decorations = Decoration.set(
     drawn.map((fold) =>
       Decoration.replace({ widget: new FoldWidget(fold, openInclude), block: true }).range(fold.from, fold.to),
     ),
   );
-  return { folds, drawn, decorations, taken };
+  return { folds, drawn, decorations, taken, open };
+}
+
+/// Shows the source of every fold, or folds them again: the editor command.
+/// Returns true, as a command does.
+export function toggleAllFolds(view) {
+  view.dispatch({ effects: showAllFolds.of(!foldsAllOpen(view.state)) });
+  return true;
+}
+
+/// Whether every fold's source is shown; false where the fold layer is absent.
+export function foldsAllOpen(state) {
+  return state.field(foldField, false)?.open ?? false;
+}
+
+/// Whether the state carries the fold layer, the visual layer of a format that folds.
+export function hasFoldLayer(state) {
+  return state.field(foldField, false) !== undefined;
 }
 
 function sameDrawn(a, b) {

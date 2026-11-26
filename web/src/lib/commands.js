@@ -250,6 +250,7 @@ export const COMMANDS = [
   { id: "org-todo-previous", label: m.commands_org_todo_previous(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: ["Shift+ArrowLeft"], available: (c) => Boolean(c.edit?.["org-todo-previous"]) },
   { id: "org-toggle-checkbox", label: m.commands_org_toggle_checkbox(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: [], available: (c) => Boolean(c.edit?.["org-toggle-checkbox"]) },
   { id: "org-fold", label: m.commands_org_fold(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: [], available: (c) => Boolean(c.edit?.["org-fold"]) },
+  { id: "visual-show-source", label: m.commands_visual_show_source(), category: m.commands_category_editing(), scope: "editor", owner: "editor", keys: [], available: (c) => Boolean(c.edit?.["visual-show-source"]) },
 
   // Navigation. Where the focus goes, which is the part of a workspace a
   // pointer does well and a keyboard has to be told about.

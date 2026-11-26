@@ -612,6 +612,7 @@
   "commands_text_reset": "Redefinir tamanho do texto",
   "commands_text_smaller": "Texto menor",
   "commands_visual_markup": "Marcação visual",
+  "commands_visual_show_source": "Mostrar ou ocultar todo o código-fonte recolhido",
   "commentcard_agent": "Tratar o comentário com o agente",
   "commentcard_attach": "Anexar à seleção",
   "commentcard_attach_title": "Usar o trecho selecionado como trecho deste comentário",

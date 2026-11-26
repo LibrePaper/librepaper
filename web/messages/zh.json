@@ -612,6 +612,7 @@
   "commands_text_reset": "重置文字大小",
   "commands_text_smaller": "缩小文字",
   "commands_visual_markup": "可视化标记",
+  "commands_visual_show_source": "显示或隐藏所有折叠的源码",
   "commentcard_agent": "让智能体处理批注",
   "commentcard_attach": "关联到所选内容",
   "commentcard_attach_title": "将所选段落设为此批注的段落",

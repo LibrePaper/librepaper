@@ -612,6 +612,7 @@
   "commands_text_reset": "Réinitialiser la taille du texte",
   "commands_text_smaller": "Texte plus petit",
   "commands_visual_markup": "Balisage visuel",
+  "commands_visual_show_source": "Afficher ou masquer toute la source repliée",
   "commentcard_agent": "Faire traiter par l’agent",
   "commentcard_attach": "Associer à la sélection",
   "commentcard_attach_title": "Faire du passage sélectionné le passage de ce commentaire",
