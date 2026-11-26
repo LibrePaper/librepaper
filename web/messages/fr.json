@@ -538,6 +538,21 @@
   "codecells_not_in_output": "Absent de la sortie",
   "codecells_code_hidden": "Code masqué dans la sortie",
   "codecells_not_run": "Non exécuté",
+  "codecells_lines": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} ligne",
+        "countPlural=*": "{count} lignes"
+      }
+    }
+  ],
   "collaboration_clear_chat": "Effacer le clavardage",
   "collaboration_highlight_hint": "Sélectionnez du texte dans la fenêtre d’aperçu pour le surligner.",
   "collaboration_highlights": "Surlignages",

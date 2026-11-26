@@ -538,6 +538,21 @@
   "codecells_not_in_output": "不在输出中",
   "codecells_code_hidden": "代码已在输出中隐藏",
   "codecells_not_run": "未运行",
+  "codecells_lines": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} 行",
+        "countPlural=*": "{count} 行"
+      }
+    }
+  ],
   "collaboration_clear_chat": "清除聊天",
   "collaboration_highlight_hint": "在预览窗口中选择文本即可高亮。",
   "collaboration_highlights": "高亮",

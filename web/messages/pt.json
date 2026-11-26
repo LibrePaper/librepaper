@@ -538,6 +538,21 @@
   "codecells_not_in_output": "Não está na saída",
   "codecells_code_hidden": "Código oculto na saída",
   "codecells_not_run": "Não executado",
+  "codecells_lines": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} linha",
+        "countPlural=*": "{count} linhas"
+      }
+    }
+  ],
   "collaboration_clear_chat": "Limpar chat",
   "collaboration_highlight_hint": "Selecione texto na janela de pré-visualização para destacar.",
   "collaboration_highlights": "Destaques",

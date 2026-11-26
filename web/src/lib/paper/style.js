@@ -92,6 +92,17 @@ export function paperStylesheet(pageCss) {
   text-transform: none;
   letter-spacing: normal;
 }
+.cm-lp-paper .lp-paper-cell-lines {
+  margin-left: auto;
+  font-family: var(--lp-sans);
+  font-size: 0.72rem;
+  color: var(--lp-muted);
+}
+.cm-lp-paper .lp-paper-cell-note + .lp-paper-cell-lines { margin-left: 0.75em; }
+.cm-lp-paper .lp-paper-cell-collapsed {
+  border-bottom: 1px solid var(--lp-rule);
+  border-radius: 8px;
+}
 .cm-lp-paper .lp-paper-cell-quiet,
 .cm-lp-paper .lp-paper-cell-quiet + pre { border-style: dashed; }
 `;
