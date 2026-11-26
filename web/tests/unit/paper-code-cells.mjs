@@ -168,3 +168,10 @@ function lineAt(text, index) {
   const [card] = withCodeCells(text, [], renderer, "a.qmd");
   assert.ok(card.html.includes(m.codecells_lines({ count: 2 })));
 }
+
+// The html branch's value is read as YAML: an inline comment and TRUE still mean true.
+for (const value of ["true # hide code", "TRUE"]) {
+  const text = `---\nformat:\n  html:\n    code-fold: ${value}\n---\n\n\`\`\`{r}\nx\n\`\`\`\n`;
+  const [card] = withCodeCells(text, [], renderer, "a.qmd");
+  assert.ok(card.html.includes("lp-paper-cell-collapsed"), value);
+}

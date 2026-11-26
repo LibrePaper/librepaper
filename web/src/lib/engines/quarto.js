@@ -35,7 +35,7 @@ function lineOffsets(source) {
   return offsets;
 }
 
-function scalar(value) {
+export function scalar(value) {
   const text = String(value ?? "").trim();
   if (!text) return "";
   if (/^(true|false)$/i.test(text)) return text.toLowerCase() === "true";

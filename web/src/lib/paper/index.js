@@ -16,7 +16,7 @@ import "../visual-markup/visual-markup.css";
 import { loadKatex } from "../katex.js";
 import { applyNumbering, displaySources, typeset, untypeset } from "../math.js";
 import { numberDisplays } from "../math-numbering.js";
-import { foldLayer, foldPill, mergeFolds, refreshFolds, showAllFolds } from "../visual/folds.js";
+import { foldLayer, foldPill, foldsAllOpen, mergeFolds, refreshFolds, showAllFolds } from "../visual/folds.js";
 import { currentPaperRenderer, loadPaperRenderer } from "./renderer.js";
 import { paperFormat } from "./formats.js";
 import { paperStylesheet } from "./style.js";
@@ -245,12 +245,12 @@ function build(state, path, imageUrl, adapter, project, revision = () => "", ope
 
 function paperField(path, imageUrl, adapter, project, revision) {
   return StateField.define({
-    create: (state) => build(state, path, imageUrl, adapter, project, revision),
+    create: (state) => build(state, path, imageUrl, adapter, project, revision, foldsAllOpen(state)),
     update(value, transaction) {
-      // The flag is followed from the effect itself: reading the fold field here would be circular,
-      // since the fold layer reads this field's taken ranges.
+      // The show-all flag lives in its own field, so reading it here does not cycle
+      // through the fold layer, which reads this field's taken ranges.
       const toggled = transaction.effects.some((effect) => effect.is(showAllFolds));
-      const open = transaction.effects.reduce((flag, effect) => (effect.is(showAllFolds) ? effect.value : flag), value.open ?? false);
+      const open = foldsAllOpen(transaction.state);
       if (
         toggled ||
         transaction.docChanged ||

@@ -8,7 +8,7 @@
 // in the document or `code-fold` hides it; the code itself is one click away
 // in the source.
 
-import { parseQuarto } from "../engines/quarto.js";
+import { parseQuarto, scalar } from "../engines/quarto.js";
 import { m } from "../paraglide/messages.js";
 
 /** @typedef {{ from: number, to: number, kind: string, render: boolean, html?: string }} PaperBlock */
@@ -85,8 +85,8 @@ function htmlCodeFoldOf(raw) {
       continue;
     }
     if (match[1].trim() === "code-fold") {
-      const value = match[2].trim().replace(/^["']|["']$/g, "");
-      return value === "true" ? true : value === "false" ? false : value;
+      // An inline comment is not part of the value; the engine's scalar reader handles quotes and TRUE.
+      return scalar(match[2].replace(/\s+#.*$/, ""));
     }
   }
   return undefined;

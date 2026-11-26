@@ -43,3 +43,13 @@ const finder = () => [fold];
   assert.equal(hasFoldLayer(state), false);
   assert.equal(foldsAllOpen(state), false);
 }
+
+// The flag survives a reconfiguration that rebuilds the visual layer (a theme change, say).
+{
+  const { Compartment } = await import("@codemirror/state");
+  const visual = new Compartment();
+  const open = EditorState.create({ doc, extensions: [visual.of(foldLayer(finder))] }).update({ effects: showAllFolds.of(true) }).state;
+  const rebuilt = open.update({ effects: visual.reconfigure(foldLayer(() => [fold])) }).state;
+  assert.equal(foldsAllOpen(rebuilt), true);
+  assert.equal(drawnCount(rebuilt), 0);
+}

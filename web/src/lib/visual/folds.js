@@ -24,6 +24,14 @@ export const refreshFolds = StateEffect.define();
 /** @type {import("@codemirror/state").StateEffectType<boolean>} */
 export const showAllFolds = StateEffect.define();
 
+// The show-all flag on its own, read by the fold layer and by any layer that
+// draws folds itself (the paper title block). It depends on nothing, so reading
+// it never cycles, and as one shared field it survives a reconfiguration.
+const showAllField = StateField.define({
+  create: () => false,
+  update: (open, tr) => tr.effects.reduce((flag, effect) => (effect.is(showAllFolds) ? effect.value : flag), open),
+});
+
 // Finding the folds parses the whole document, about 1.7 ms per keystroke on a
 // 1,700-line file in Chrome and several times that in the desktop app's WebKit.
 // So an edit does not find them again: the folds in place are mapped through
@@ -34,11 +42,11 @@ const REFIND_DELAY = 400;
 // folds are found when refreshFolds arrives and mapped through each edit until
 // then; a selection change, or a new set of taken ranges, only redraws.
 const foldField = StateField.define({
-  create: (state) => foldState(state, findIn(state), false),
+  create: (state) => foldState(state, findIn(state), foldsAllOpen(state)),
   update(value, tr) {
     const refresh = tr.effects.some((effect) => effect.is(refreshFolds));
     const toggled = tr.effects.some((effect) => effect.is(showAllFolds));
-    const open = tr.effects.reduce((flag, effect) => (effect.is(showAllFolds) ? effect.value : flag), value.open);
+    const open = foldsAllOpen(tr.state);
     const ranges = takenOf(tr.state);
     if (!tr.docChanged && !tr.selection && !refresh && !toggled && ranges === value.taken) return value;
     const folds = refresh ? findIn(tr.state) : tr.docChanged ? mapFolds(tr.changes, value.folds) : value.folds;
@@ -56,7 +64,7 @@ const foldField = StateField.define({
 /// such as a title block with its own pill; no fold is drawn inside them. Null,
 /// the default, takes no ranges.
 export function foldLayer(findFolds, { openInclude = null, taken = null } = {}) {
-  return [finderFacet.of({ findFolds, openInclude, taken }), foldField, refindAfterPause];
+  return [finderFacet.of({ findFolds, openInclude, taken }), showAllField, foldField, refindAfterPause];
 }
 
 // The ranges another layer draws, for a state.
@@ -148,7 +156,7 @@ export function toggleAllFolds(view) {
 
 /// Whether every fold's source is shown; false where the fold layer is absent.
 export function foldsAllOpen(state) {
-  return state.field(foldField, false)?.open ?? false;
+  return state.field(showAllField, false) ?? false;
 }
 
 /// Whether the state carries the fold layer, the visual layer of a format that folds.
