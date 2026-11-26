@@ -976,6 +976,60 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.equal(sent.filter((message) => message.type === "doc-open").length, 0);
 }
 
+// A record saved before can_moderate and can_see_sharing were kept has no
+// value for them. Those fields are unknown, so a matching server document
+// re-opens the local copy instead of reloading the page.
+{
+  const sent = [];
+  const changes = [];
+  const fake = fakeCollaboration();
+  let roomOptions;
+  const collaboration = createReaderCollaboration({
+    slug: "example",
+    fetcher: async () => ({
+      ok: true,
+      json: async () => ({ created_at: "first", role: "editor", can_edit: true, can_moderate: false, can_see_sharing: true }),
+    }),
+    openRoom: (_slug, options) => {
+      roomOptions = options;
+      return { send: (message) => sent.push(message), sendLive: () => ({ ok: true }), close: () => {} };
+    },
+    collab: fake.module,
+    getCanEdit: () => true,
+    onDocumentChanged: (reason) => changes.push(reason),
+  });
+  collaboration.start({ created_at: "first", role: "editor", can_edit: true, local_copy: true });
+  roomOptions.onConnected(false);
+  await roomOptions.onConnected(true);
+  collaboration.close();
+  assert.deepEqual(changes, [], "unknown saved flags do not count as a capability change");
+  assert.equal(sent.filter((message) => message.type === "doc-open").length, 1, "the local copy sends doc-open");
+}
+
+// A local copy whose saved role differs from the live role is a capability change.
+{
+  const sent = [];
+  const changes = [];
+  const fake = fakeCollaboration();
+  let roomOptions;
+  const collaboration = createReaderCollaboration({
+    slug: "example",
+    fetcher: async () => ({ ok: true, json: async () => ({ created_at: "first", role: "commenter", can_edit: false }) }),
+    openRoom: (_slug, options) => {
+      roomOptions = options;
+      return { send: (message) => sent.push(message), sendLive: () => ({ ok: true }), close: () => {} };
+    },
+    collab: fake.module,
+    getCanEdit: () => true,
+    onDocumentChanged: (reason) => changes.push(reason),
+  });
+  collaboration.start({ created_at: "first", role: "editor", can_edit: true, local_copy: true });
+  await roomOptions.onConnected(true);
+  collaboration.close();
+  assert.deepEqual(changes, ["capability"], "a changed role invalidates the local copy");
+  assert.equal(sent.filter((message) => message.type === "doc-open").length, 0);
+}
+
 // A recreated document or changed capability invalidates the old session and
 // never sends its state vector back to the new server.
 for (const latest of [

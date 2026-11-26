@@ -116,7 +116,9 @@ export async function rememberProject(metadata, indexedDB_ = globalThis.indexedD
       title: metadata.title || metadata.slug || (identity.version === 1 ? identity.slug : ""),
       source_format: metadata.source_format || "",
       role: metadata.role || "editor",
-      can_edit: true,
+      can_edit: metadata.can_edit ?? true,
+      can_moderate: Boolean(metadata.can_moderate),
+      can_see_sharing: Boolean(metadata.can_see_sharing),
       local_copy: true,
       // A cached open must know where the documents frame lives; a record
       // saved before this was kept has none, and the reader then refuses to
