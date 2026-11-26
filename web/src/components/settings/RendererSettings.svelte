@@ -9,10 +9,12 @@
   import { defaults, read, update } from "../../lib/build-preferences.js";
   import { m } from "../../lib/paraglide/messages.js";
 
-  let { format, userId = "anonymous", onpreferences = undefined } = $props();
+  let { format, userId = "anonymous", localBuilds = true, onpreferences = undefined } = $props();
 
   const NAMES = { latex: "LaTeX", typst: "Typst", markdown: "Markdown", quarto: "Quarto" };
-  const hasDesktop = Boolean(desktop());
+  // This computer is offered in the desktop app, where the host allows local
+  // builds. The dialog passes the host's answer down.
+  const hasDesktop = $derived(Boolean(desktop()) && localBuilds);
   const scope = () => ({ origin: globalThis.location?.origin || "", user: userId });
   /** @type {import("../../lib/reader/build-settings.svelte.js").BuildPreference} */
   let preference = $state(defaults());

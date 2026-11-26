@@ -127,6 +127,14 @@ impl Refusal {
         match error {
             CatalogError::Invalid(why) => Self::not_written(Kind::Invalid, why),
             CatalogError::Conflict(why) => Self::not_written(Kind::Conflict(Reason::Conflict), why),
+            CatalogError::Stale => Self::not_written(
+                Kind::Conflict(Reason::Conflict),
+                CatalogError::Stale.to_string(),
+            ),
+            CatalogError::Revoked => Self::not_written(
+                Kind::Conflict(Reason::Conflict),
+                CatalogError::Revoked.to_string(),
+            ),
             CatalogError::Duplicate(of) => {
                 Self::not_written(Kind::Conflict(Reason::Conflict), of.to_string())
             }

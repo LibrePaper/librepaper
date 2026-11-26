@@ -23,6 +23,7 @@ export const nav = [
       { path: "notebooks/calepin", label: "Calepin" },
     ],
   },
+  { path: "bibliography", label: "Bibliography" },
   { path: "collaborate", label: "Collaborate" },
   { path: "git", label: "Git" },
   { path: "agents", label: "Agents" },
@@ -32,7 +33,7 @@ export const nav = [
     pages: [
       { path: "host/simple", label: "Simple deployment" },
       { path: "host/advanced", label: "Advanced features" },
-      { path: "host/security", label: "Security" },
+      { path: "host/security", label: "Security recommendations" },
     ],
   },
   {
@@ -46,6 +47,7 @@ export const nav = [
       { path: "architecture/building", label: "Building from source" },
     ],
   },
+  { path: "security", label: "Security" },
   { path: "privacy", label: "Privacy and data retention" },
   { path: "terms", label: "Terms of service" },
   { path: "faq", label: "FAQ" },

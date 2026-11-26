@@ -54,9 +54,10 @@ const linkNames = { reader: m.shared_link_reader(), commenter: m.shared_link_com
 // A link may be left unnamed and is then called by what it grants.
 export const displayName = (kind, item) => item.name || (kind === "link" ? (linkNames[item.role] ?? m.shared_link_other({ role: roleLabel(item.role) })) : m.common_agent_token());
 
-// The second line of a row.
+// The second line of a row. An expired token keeps its row (the app can still
+// renew it for 30 days), so it shows "Expired" where the date would be.
 export const metaOf = (kind, item) => {
   const role = roleLabel(item.role);
-  const expiry = item.until ? dateOf(item.until) : m.shared_no_expiry();
+  const expiry = item.expired === true ? m.shared_expired() : item.until ? dateOf(item.until) : m.shared_no_expiry();
   return kind === "link" && item.anonymous ? `${role} · ${expiry} · ${m.shared_no_sign_in()}` : `${role} · ${expiry}`;
 };

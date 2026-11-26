@@ -1,6 +1,7 @@
 // The Run button of a Quarto document: not offered in a plain browser,
 // offered in the desktop app, and nothing runs until it is pressed. Pressing
-// it without a Run directory asks for one instead of running.
+// it without a Run directory asks for one instead of running. Where the host
+// has turned local builds and agents off, neither Run nor the Agent tab is offered.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -44,11 +45,13 @@ globalThis.WebSocket = class {
 const account = {name:'Tester',providers:[]};
 const params = new URLSearchParams(location.search);
 const format = params.get('format') === 'typst' ? 'typst' : 'quarto';
+// What the host's switches say: with host=off the server has turned agents and local builds off. The test can also turn them off later, as a host restarting the server would.
+const hostSwitches = () => (params.get('host') === 'off' || window.hostTurnedOff ? { agents: false, local_builds: false } : {});
 globalThis.fetch = async (url) => {
   const path = String(url);
   if (path.includes('/__lp/')) { (window.lpCalls ||= []).push(path); return Response.json({}); }
   if (path.endsWith('/me')) return Response.json(account);
-  if (path.endsWith('/config')) return Response.json({ extensions: ['.qmd', '.md', '.typ'], text_extensions: ['.qmd', '.md', '.typ'], asset_extensions: ['.png'], derived_extensions: [] });
+  if (path.endsWith('/config')) return Response.json({ extensions: ['.qmd', '.md', '.typ'], text_extensions: ['.qmd', '.md', '.typ'], asset_extensions: ['.png'], derived_extensions: [], ...hostSwitches() });
   if (path === '/api/documents/paper') return Response.json({title:'Run code',created_at:'test',role:'owner',source_format:format,docs_origin:location.origin});
   if (path.endsWith('/frame')) return Response.json({token:'frame-token',until:9999999999});
   if (path.endsWith('/chat')) return Response.json({id:'chat',token:'private'});
@@ -92,6 +95,7 @@ try {
   const runButton = `[role=group][aria-label="Run code"] button[data-tip]`;
   const runButtonExists = () => b.evaluate(`Boolean(document.querySelector('${runButton}'))`);
   const switchExists = () => b.evaluate(`Boolean(document.querySelector('button[role=switch][aria-label="Run code"]'))`);
+  const agentTabExists = () => b.evaluate(`Boolean(document.querySelector('.rail-item button[aria-label="Agent"]'))`);
   const renderCalls = () => b.evaluate(`(window.lpCalls || []).filter((path) => path.includes("/jobs")).length`);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
 
@@ -105,6 +109,8 @@ try {
   // document runs nothing.
   await b.navigate(desktopUrl);
   await until('Run button in the desktop app',runButtonExists,10000);
+  await until('Agent tab in the desktop app', agentTabExists, 10000);
+  assert.equal(await agentTabExists(), true, 'the desktop app offers the Agent tab');
   assert.equal(await switchExists(),false,'a Quarto document has no Run code switch');
   await settle();
   assert.equal(await renderCalls(),0,'opening a Quarto document runs nothing on this computer');
@@ -138,6 +144,38 @@ try {
   await until('Run directory dialog for Typst',()=>b.evaluate(`[...document.querySelectorAll('[role=dialog]')].some((d) => d.textContent.includes("Choose a Run directory"))`),5000);
   assert.equal(await renderCalls(),0,'Run on a Typst document without a folder runs nothing');
 
+  // Case 7: the host has turned agents and local builds off. The desktop app
+  // offers neither Run nor the Agent tab, even for a Typst document this
+  // computer was set to render, and nothing runs.
+  await b.navigate(`${origin}/docs/paper?desktop=1&format=typst&local=1&host=off`);
+  await until('the Typst page under a host with both switches off joined its room',()=>b.evaluate('typeof window.roomConnected === "function"'),10000);
+  await until('the rail under a host with both switches off',()=>b.evaluate(`Boolean(document.querySelector('.rail-item button'))`),10000);
+  await settle();
+  assert.equal(await runButtonExists(),false,'no Run where the host has turned local builds off');
+  assert.equal(await switchExists(),false,'and no Run code switch');
+  assert.equal(await agentTabExists(),false,'no Agent tab where the host has turned agents off');
+  assert.equal(await renderCalls(),0,'and nothing runs on this computer');
+
+  // The same for Quarto: no Run for a Quarto document either.
+  await b.navigate(`${origin}/docs/paper?desktop=1&host=off`);
+  await until('the Quarto page under a host with both switches off joined its room',()=>b.evaluate('typeof window.roomConnected === "function"'),10000);
+  await until('the rail under a host with both switches off',()=>b.evaluate(`Boolean(document.querySelector('.rail-item button'))`),10000);
+  await settle();
+  assert.equal(await runButtonExists(),false,'no Run for a Quarto document either');
+
+  // Case 8: the host turns both switches off while the page is open. When the
+  // connection comes back, as after a server restart, the page reads the rules
+  // again and stops offering Run and the Agent tab.
+  await b.evaluate('localStorage.clear()');
+  await b.navigate(desktopUrl);
+  await until('Run button before the host turns it off',runButtonExists,10000);
+  await until('Agent tab before the host turns it off',agentTabExists,10000);
+  await until('the page joined its room before the host turns it off',()=>b.evaluate('typeof window.roomConnected === "function"'),10000);
+  await settle();
+  await b.evaluate('window.hostTurnedOff = true; window.roomConnected(false); window.roomConnected(true);');
+  await until('Run gone once the page reconnected',async()=>!(await runButtonExists()),10000);
+  await until('Agent tab gone once the page reconnected',async()=>!(await agentTabExists()),10000);
+
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log("run-code-browser: not offered in a browser, offered in the desktop app, nothing runs until Run, Run asks for a folder; Typst is offered Run only when this computer renders it");
+  console.log("run-code-browser: not offered in a browser, offered in the desktop app, nothing runs until Run, Run asks for a folder; Typst is offered Run only when this computer renders it; a host with both switches off gets neither Run nor the Agent tab; a host that turns them off is obeyed when the page reconnects");
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

@@ -306,6 +306,7 @@ const preview = (values = {}) => {
     onsynctex: (parsed) => harness.synctex.push(parsed),
     send: (message) => harness.sent.push(message),
     refreshFrame: () => harness.refreshed++,
+    repaint: () => { harness.repaints = (harness.repaints || 0) + 1; },
   });
   harness.paint = () => harness.coordinator.request();
   return harness;
@@ -334,6 +335,27 @@ const preview = (values = {}) => {
   // free to start: a failure must not leave the latch held.
   assert.equal(harness.coordinator.running, false);
   assert.equal(harness.state.compiling, false);
+}
+
+// A result for another tree (an agent's compile took this job's place in the
+// queue) is neither shown nor kept: the preview asks for a fresh render.
+{
+  const harness = preview({
+    facts: { format: "latex", everPainted: true },
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
+    snapshotDigest: async () => "digest-A",
+    heading: async () => "",
+    renderers: {
+      formatOf: () => "latex", previewFormatOf: () => "latex",
+      render: async () => ({ pdf: new Uint8Array([1]), diagnostics: [], compiledTree: { main: "other.tex", texts: {} } }),
+      producesPdf: () => true,
+      failurePage: async () => "<p>failure</p>",
+    },
+  });
+  await harness.paint();
+  assert.deepEqual(harness.published, [], "another tree's PDF is not shown");
+  assert.deepEqual(harness.remembered, [], "nor kept");
+  assert.equal(harness.repaints, 1, "a fresh render is requested");
 }
 
 // HTML is every format's default output, and a render does not ask whether
@@ -452,7 +474,7 @@ console.log("reader-races: all checks passed");
     directoryChanged: (events) => !Array.isArray(events) || events.some((event) => directory.has(event.target)) };
   let targets = 0;
   const origins = [];
-  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: (options) => { changes++; origins.push(Boolean(options?.remote)); }, schedule: { scheduleTarget: () => targets++ } });
+  const ctx = context({ session: active, searchRevision: 0, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: (options) => { changes++; origins.push(Boolean(options?.remote)); }, schedule: { scheduleTarget: () => targets++ } });
   vm.runInContext(body("  function filesChanged(events, active = session, by = \"local\")", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: "cid:2@1:Text" }];
   vm.runInContext("filesChanged(events)", ctx);

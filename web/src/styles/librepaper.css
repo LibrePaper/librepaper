@@ -79,7 +79,9 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
 }
 
 .editorpane {
-  flex: 0 0 var(--librepaper-editor);
+  /* It may shrink, so that if the row is ever narrower than the source asks
+     for, the source gives way rather than pushing the preview out. */
+  flex: 0 1 var(--librepaper-editor);
   /* min-height: 0 is what lets a grid item be shorter than its contents, which
      is what makes the editor scroll rather than the page. */
   min-height: 0;
@@ -518,6 +520,16 @@ main.reader.no-preview:not(.editing) .sidebar {
   overflow: auto;
   background: var(--color-shell);
 }
+/* While the preview shares a row with the source, it keeps a floor of room.
+   The split is worked out in script (lib/panes.js); this is the floor the
+   stylesheet keeps if that arithmetic is ever wrong. Phones show one pane at a
+   time and are left alone. */
+@media (min-width: 768px) {
+  /* A zero basis, so the preview takes what the source leaves rather than
+     what its own content asks for: a long diagnostic must not move the split. */
+  main.reader.editing:not(.no-preview) .viewport:not(.away),
+  main.reader.editing:not(.no-preview) .latexpane { flex-basis: 0; min-width: min(22.5rem, 40%); }
+}
 .latexpane .notyet {
   display: flex;
   flex-direction: column;
@@ -610,6 +622,12 @@ main.reader.source-right .editorpane {
   border-right: 0;
   border-left: 1px solid var(--color-border-strong);
 }
+/* The editor's separator and its pill sit between the two panes, not outside
+   the preview. The sidebar's separator keeps its own place. */
+main.reader.source-right .grip-editor,
+main.reader.source-right .grip-pill-slot {
+  order: 2;
+}
 
 /* ------------------------------------------------------------------- grips */
 
@@ -669,6 +687,104 @@ main.reader.source-right .editorpane {
   background: var(--color-brand);
   pointer-events: none;
   z-index: 10;
+}
+
+/* The controls on a divider. The pill is a column of buttons stacked on the
+   separator, under a grab handle that drags the split. It is not inside the
+   separator: a separator's children are hidden from assistive technology, so
+   the buttons sit in a slot beside it. The slot takes no room in the row, and
+   the pill is centred on the divider by moving it left by half the grip's
+   width. */
+.grip-pill-slot {
+  position: relative;
+  flex: 0 0 0;
+  width: 0;
+  align-self: stretch;
+  z-index: 6;
+}
+.grip-pill {
+  position: absolute;
+  bottom: 14px;
+  left: -0.1875rem;
+  translate: -50% 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 2rem;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-raised);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.12);
+}
+/* Six dots in two columns: the handle that drags the split. Its hover is
+   carried up to the divider by the :has() rule below. */
+.grip-grab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  cursor: col-resize;
+  transition: background 0.15s, color 0.15s;
+}
+.grip-grab:hover {
+  background: color-mix(in srgb, var(--color-brand) 12%, transparent);
+}
+.grip-pill-rule {
+  display: block;
+  width: 12px;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--color-border);
+}
+/* The buttons the Reader puts in the pill. Round and transparent until they
+   are pointed at, when they take the brand colour. `is-on` marks a state that
+   is set, such as a locked split, by tinting the icon rather than the button. */
+.grip-pill-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.grip-pill-button svg {
+  width: 15px;
+  height: 15px;
+}
+.grip-pill-button.is-on {
+  color: var(--color-brand);
+}
+.grip-pill-button:hover,
+.grip-pill-button:focus-visible {
+  background: var(--color-brand);
+  color: #ffffff;
+  outline: none;
+}
+/* A divider is lit while its handle is under the pointer or a drag is on. */
+.grip.grip-dragging,
+.grip:has(+ .grip-pill-slot .grip-grab:hover) {
+  background: var(--color-brand);
+}
+.grip.grip-dragging::after,
+.grip:has(+ .grip-pill-slot .grip-grab:hover)::after {
+  background: transparent;
+}
+@media (prefers-reduced-motion: reduce) {
+  .grip-grab,
+  .grip-pill-button {
+    transition: none;
+  }
 }
 
 /* ---------------------------------------------------------------- the source
@@ -925,6 +1041,22 @@ main.reader.source-right .editorpane {
   from { background-color: color-mix(in srgb, var(--presence, var(--color-text-secondary)) 30%, transparent); }
   to { background-color: transparent; }
 }
+
+/* The flash over the line a jump landed on (lib/landing-flash.js): a warm
+ * tint from the theme's warning token that fades out. With reduced motion
+ * there is no fade; the editor removes the tint after the same second. */
+.cm-line.cm-landing-flash {
+  background-color: color-mix(in srgb, var(--color-warning-solid) 35%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cm-line.cm-landing-flash {
+    animation: landing-fade 0.9s ease-out forwards;
+  }
+}
+@keyframes landing-fade {
+  from { background-color: color-mix(in srgb, var(--color-warning-solid) 35%, transparent); }
+  to { background-color: transparent; }
+}
 .user-color-926500 { --presence: #926500; }
 .user-color-377395 { --presence: #377395; }
 
@@ -1073,11 +1205,13 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
     border-right: 0;
   }
   main.reader.mobile-sidebar .grip,
+  main.reader.mobile-sidebar .grip-pill-slot,
   main.reader.mobile-sidebar .editorpane,
   main.reader.mobile-sidebar .latexpane { display: none; }
   main.reader.mobile-document .sidebar,
   main.reader.mobile-document .editorpane,
-  main.reader.mobile-document .grip { display: none; }
+  main.reader.mobile-document .grip,
+  main.reader.mobile-document .grip-pill-slot { display: none; }
   main.reader.mobile-document .viewport:not(.away),
   main.reader.mobile-document .latexpane {
     display: flex;
@@ -1086,7 +1220,8 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   }
   main.reader.mobile-source .sidebar,
   main.reader.mobile-source .latexpane,
-  main.reader.mobile-source .grip { display: none; }
+  main.reader.mobile-source .grip,
+  main.reader.mobile-source .grip-pill-slot { display: none; }
   main.reader.mobile-source .editorpane {
     display: grid;
     flex: 1 1 100%;
@@ -1183,21 +1318,6 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .grip-guide.held {
   width: 3px;
   background: var(--color-brand);
-}
-
-/* The quiet sign that clicking in one pane no longer takes the other along.
-   Not a control: the toolbar is not where a preference set once belongs. */
-.grip-aside {
-  position: absolute;
-  top: --spacing(2);
-  left: 50%;
-  translate: -50% 0;
-  color: var(--color-text-secondary);
-  pointer-events: none;
-}
-.grip-aside svg {
-  width: --spacing(3);
-  height: --spacing(3);
 }
 
 /* A figure, where the editor would be. An image is shown as itself and a PDF

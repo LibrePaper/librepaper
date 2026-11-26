@@ -25,7 +25,7 @@ Providers, `publishers`, `commenters` and session length are set up in [Sign-in]
 
 ### Anonymous access
 
-A link works without sign-in only when its owner marks it "Anyone with the link" and the matching switch in `[access]` is on. All four switches are off by default.
+A link works without sign-in only when its owner marks it "Anyone with the link" and the matching switch in `[access]` is on. The four anonymous switches are off by default.
 
 ```toml
 [access]
@@ -33,11 +33,26 @@ anonymous_reads    = false  # read links may be opened without signing in
 anonymous_comments = false  # comment links may be used without signing in
 anonymous_suggests = false  # suggest links may be opened without signing in, at comment or read level
 anonymous_edits    = false  # edit links may be opened without signing in, at comment or read level
+agents             = true   # agents may reach projects at all: tokens, connectors, the desktop app's agent (on by default)
+agent_connectors   = true   # owners may connect apps and agents as connectors (on by default)
+local_builds       = true   # the desktop app may build documents and run their code on the author's computer (on by default)
 ```
 
 Links the owner did not mark anonymous still require sign-in. Turning a switch off makes its links require sign-in again.
 
+The last three switches are on by default and are not about sign-in. See [Agents and local builds](#agents-and-local-builds).
+
 Someone who is not signed in never edits or suggests. Under an anonymous comment link they can comment. Under an anonymous suggest or edit link they can comment only when `anonymous_comments` is also on, and otherwise they can only read.
+
+### Agents and local builds
+
+`agent_connectors` lets a project owner connect apps and agents to the project as connectors, and each connection still needs the owner's approval. Set it to `false` to hide the connector in the Agent panel and stop new connections; see [Connect an app or agent](../agents.html#connect-an-app-or-agent).
+
+`agents` turns every agent off when set to `false`. Nobody can create an agent token or approve a connector, and existing [agent tokens and connections](../agents.html) are refused everywhere. They are kept, and they work again when the switch is turned back on unless they have expired. The desktop app's built-in agent gets no access, and the Agent panel, its settings page and the robot buttons on comments and diagnostics are hidden. `agent_connectors` has no effect while `agents` is `false`. The switch closes the agent surface of this server only: it cannot stop someone from pasting a document into a chat app, or from pointing an agent at files they fetched with `librepaper pull`.
+
+`local_builds` stops pages from this server from building a document or running its code on the author's computer when set to `false`. **Run code**, the Run directory and **Let agents run code** are not offered, the **This computer** choice in **Settings → Rendering** is gone, and LaTeX, Typst and Markdown render only in the browser. A [Quarto](../notebooks/quarto.html) or [Calepin](../notebooks/calepin.html) document shows the browser draft and any results published earlier; its code is never run, and Quarto's PDF preview, which needs the desktop app, is not offered. Exports are still made in the browser, without running code. The switch covers every local build, not only notebooks, because running latexmk on a collaborator's source is not safe either. It is a policy switch for a healthy server. The page is what stops offering local builds, and the desktop app trusts its server, so a compromised server could offer them again. It also cannot stop anyone from running Quarto on files they fetched themselves.
+
+Both switches are read when the server starts. Restart the server after changing one. A project that was open in someone's browser reads it again when it reconnects.
 
 ### Identity providers
 

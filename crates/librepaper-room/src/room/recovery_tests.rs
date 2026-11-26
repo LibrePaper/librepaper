@@ -1078,6 +1078,7 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         None,
         Some(wrong_digest),
         None,
+        None,
     )
     .expect("a well-formed comment");
     let stale_result = room
@@ -1129,6 +1130,7 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         " a reader can quote.",
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -1206,6 +1208,7 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         " a reader can quote.",
         None,
         false,
+        None,
         None,
         None,
         None,

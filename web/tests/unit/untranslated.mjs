@@ -22,6 +22,8 @@ const SAME_EVERYWHERE = new Set([
   "LibrePaper", "LaTeX", "Typst", "Quarto", "Markdown", "HTML", "PDF", "DOCX", "Word", "Zotero", "GitHub",
   "Git", "GitHub Action", "Harper", "Pandoc", "BibTeX", "Biber", "Vim", "Emacs", "Claude Code", "Codex", "TeX Live", "KaTeX",
   "Ctrl", "Shift", "Alt", "Cmd", "Enter", "Esc", "Tab", "F2", "OK", "B", "I", "U", "i", "x", "MB", "px", "min",
+  // The search panel's option glyphs: match case and whole word.
+  "Aa", "ab",
 ]);
 const ATTRIBUTES = new Set(["title", "aria-label", "aria-description", "placeholder", "alt", "label"]);
 

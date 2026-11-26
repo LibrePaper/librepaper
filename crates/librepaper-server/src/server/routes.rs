@@ -37,6 +37,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents/{slug}/restore", post(restore))
         .route("/api/documents/{slug}/history/trim", post(history_trim))
         .route("/api/documents/{slug}/results", any(results))
+        .route("/api/documents/{slug}/compile/{id}", post(compile_reply))
         .route("/api/documents/{slug}/authors", get(document_authors))
         .route("/api/documents/{slug}/rename", post(rename))
         .route("/api/documents/{slug}/fork", post(fork))
@@ -208,6 +209,9 @@ async fn tools_list(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
+    if !server.agents {
+        return plain(404, "not found");
+    }
     let mut reply = server.handle_tools_list(request, &ctx, &slug).await;
     mcp::announce_min_skill_version(&mut reply);
     reply
@@ -219,6 +223,9 @@ async fn tool_call(
     Path((slug, name)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
+    if !server.agents {
+        return plain(404, "not found");
+    }
     let mut reply = server.handle_tool_call(request, &ctx, &slug, &name).await;
     mcp::announce_min_skill_version(&mut reply);
     reply
@@ -335,6 +342,15 @@ async fn results(
     request: Request<Body>,
 ) -> Reply {
     server.handle_results(request, &ctx, &slug).await
+}
+
+async fn compile_reply(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, id)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_compile_reply(request, &ctx, &slug, &id).await
 }
 
 async fn document_authors(
@@ -507,6 +523,9 @@ async fn chat(
     Path((slug, tail)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
+    if !server.agents {
+        return plain(404, "not found");
+    }
     let tail = tail.split('/').collect::<Vec<_>>();
     server.handle_chat(request, &ctx, &slug, &tail).await
 }
@@ -517,6 +536,9 @@ async fn chat_root(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
+    if !server.agents {
+        return plain(404, "not found");
+    }
     server.handle_chat(request, &ctx, &slug, &[]).await
 }
 
@@ -526,6 +548,9 @@ async fn assistant_capabilities(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
+    if !server.agents {
+        return plain(404, "not found");
+    }
     server
         .handle_assistant_capabilities(request.headers(), &ctx.arrival, &slug)
         .await

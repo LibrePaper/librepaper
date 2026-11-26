@@ -17,11 +17,15 @@ import { m } from "./paraglide/messages.js";
 export const TABS = [
   { id: "files", says: m.common_files(), icon: "folder", when: (who) => who.mayEdit },
   { id: "outline", says: m.common_outline(), icon: "list", when: (who) => who.mayEdit },
+  // Everyone who can see the files can search them. Replacing is limited inside
+  // the panel, to whoever may edit.
+  { id: "search", says: m.common_search(), icon: "search" },
   { id: "collaboration", says: m.common_collaboration(), icon: "comment" },
   { id: "changes", says: m.common_changes(), icon: "pencil" },
   // The agent edits the document for whoever runs it, and runs only in the
-  // desktop app: a suggester's changes are tracked, so it is not offered.
-  { id: "agent", says: m.common_agent(), icon: "bot", when: (who) => !who.suggestOnly },
+  // desktop app: a suggester's changes are tracked, so it is not offered. A
+  // host can turn agents off, and then nobody is offered it.
+  { id: "agent", says: m.common_agent(), icon: "bot", when: (who) => who.agents !== false && !who.suggestOnly },
   // History is readable by link-holders too: reviewers need the “since”
   // view even when they cannot edit or restore the live source.
   { id: "history", says: m.common_history(), icon: "history" },
@@ -39,17 +43,22 @@ export const TABS = [
 // only, and the pending changes in them. A link holder already holds every
 // source file, because the server sends the whole project to render it, so the
 // explorer hides nothing from them and a document with several files is not
-// reduced to its main one. They cannot change a file, so there is no other
-// panel they could act in. A commenter is given the same files and changes and
-// the comments, and nothing else -- not the agent, not the history, none of
-// which a comment link can touch.
+// reduced to its main one. They are offered search across those files too, which
+// reads and does not replace. They cannot change a file, so there is no other
+// panel they could act in. A commenter is given the same files, search and
+// changes and the comments, and nothing else -- not the agent, not the history,
+// none of which a comment link can touch.
 //
 // An editor and an owner are not named here: what they are offered is the
 // `when` rules alone. Neither is a role nobody has answered with yet -- the
 // document always says which one this caller holds, so no role means the
 // document has not answered, and a rail drawn then is one audience's
 // furniture put up and taken down again as soon as the reply lands.
-const ROLE_PANELS = { reader: ["files", "changes"], commenter: ["files", "collaboration", "changes"], "": [] };
+const ROLE_PANELS = {
+  reader: ["files", "search", "changes"],
+  commenter: ["files", "search", "collaboration", "changes"],
+  "": [],
+};
 
 // Every panel this browser is offered, in rail order.
 export const tabsFor = (who) => {

@@ -10,22 +10,22 @@ import { tabsFor, TABS } from "../../src/lib/panels.js";
 
 const offered = (who) => tabsFor(who).map((tab) => tab.id);
 
-// The two roles that arrive by a link. A read link is the project's files and
-// the pending changes in it, read only: link holders already hold every source
-// file, so the explorer hides nothing, and no other panel is one they could act
-// in.
+// The two roles that arrive by a link. A read link is the project's files, a
+// search across them and the pending changes in it, read only: link holders
+// already hold every source file, so the explorer and the search hide nothing,
+// and no other panel is one they could act in.
 assert.deepEqual(
   offered({ role: "reader", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }),
-  ["files", "changes"],
-  "a read link is offered the files and the changes, read only",
+  ["files", "search", "changes"],
+  "a read link is offered the files, search and the changes, read only",
 );
 
-// A comment link is the files, the comments and the changes, and only those:
+// A comment link is the files, search, the comments and the changes, and only those:
 // not the agent, not the history, none of which the link can touch.
 assert.deepEqual(
   offered({ role: "commenter", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }),
-  ["files", "collaboration", "changes"],
-  "a comment link is offered the files, the comments and the changes",
+  ["files", "search", "collaboration", "changes"],
+  "a comment link is offered the files, search, the comments and the changes",
 );
 
 // Neither of them is offered the outline or the panels that act on a source
@@ -65,6 +65,21 @@ assert.deepEqual(
   offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true }),
   webPanels,
   "and so is an owner",
+);
+
+// A host that has turned agents off offers nobody the Agent panel, not even an
+// owner. A host that says nothing about agents, or says they are on, offers it.
+assert.ok(
+  !offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true, agents: false }).includes("agent"),
+  "a host with agents off offers no Agent panel, even to an owner",
+);
+assert.ok(
+  offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true }).includes("agent"),
+  "a host that says nothing about agents still offers the Agent panel",
+);
+assert.ok(
+  offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true, agents: true }).includes("agent"),
+  "and so does a host with agents on",
 );
 
 // The conditions still apply above the role rules: a panel whose `when` is

@@ -155,6 +155,7 @@ impl Deployment {
             None,
             None,
             None,
+            None,
         )
         .expect("a well-formed comment")
     }
@@ -242,6 +243,7 @@ async fn a_remark_about_the_whole_document_needs_no_passage() {
         "",
         None,
         true,
+        None,
         None,
         None,
         None,
@@ -1034,6 +1036,7 @@ async fn a_whole_document_comment_has_no_record() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
     let comment = room
@@ -1081,6 +1084,7 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
             " of the posterior.",
             Some(0),
             whole_document,
+            None,
             None,
             None,
             None,
@@ -1191,6 +1195,7 @@ impl Deployment {
             None,
             None,
             Some(source),
+            None,
         )
         .expect("a well-formed comment")
     }

@@ -1,7 +1,7 @@
 // Browser regression check for the Agent panel. An owner gets three tabs,
-// Chat, Agent and Tasks, and opens on Agent. In a
+// Chat, Connect and Tasks, and opens on Connect. In a
 // browser the built-in agent shows the desktop-only notice and has no Run
-// buttons. The Agent tab holds the tokens: a token is made from New
+// buttons. The Connect tab holds the tokens: a token is made from New
 // token, and its connection instructions are copied from the reveal or from a
 // row, as one block with the install command and the token. A token is revoked.
 // Tasks, where each group starts closed and each instruction is copied. A viewer
@@ -47,6 +47,8 @@ const originPart = btoa(location.origin).split("+").join("-").split("/").join("_
 const existingToken = "lpt_" + originPart + ".paper.existing";
 const state = {
   links: [],
+  // Off for most of the run; the connector case turns it on.
+  connectors: false,
   tokens: [
     { id: "b000000000000001", role: "commenter", name: "Paul's assistant", since: "2026-01-01T00:00:00Z", until: "2027-03-17T00:00:00Z", budget: null },
     { id: "b000000000000002", role: "reader", name: "Ana's laptop", since: "2026-02-01T00:00:00Z", until: "2027-02-01T00:00:00Z", budget: null, token: existingToken },
@@ -57,7 +59,7 @@ window.calls = [];
 const expiryOf = (until) => (until === "never" ? "" : week());
 const answer = (created) => ({
   slug: "paper", url: "/docs/paper", can_share: true, publishers: "anyone", commenters_policy: "anyone",
-  links: state.links, tokens: state.tokens, ...(created ? { created } : {}),
+  links: state.links, tokens: state.tokens, connectors: state.connectors, ...(created ? { created } : {}),
 });
 window.fetch = async (path, options) => {
   const body = options?.body ? JSON.parse(options.body) : null;
@@ -125,7 +127,7 @@ const viewerChecks = async () => {
   await flush();
   const panel = document.querySelector(".agent-panel");
   check(tabNames() === "Chat|Tasks", "a viewer gets chat and the tasks: " + tabNames());
-  check(!document.querySelector("#agent-tab-external"), "a viewer has no Agent tab");
+  check(!document.querySelector("#agent-tab-external"), "a viewer has no Connect tab");
   check(selectedTab() === "Tasks", "a viewer opens on Tasks: " + selectedTab());
   check(!document.querySelector("[data-task-run]"), "a viewer has no Run buttons in a plain browser");
   check(!document.querySelector("[data-share-new]"), "a viewer sees no New button");
@@ -152,12 +154,12 @@ window.agentPanelCheck = async () => {
 
   /* ------------------------------------------- the tabs, and the default tab */
 
-  check(tabNames() === "Chat|Agent|Tasks", "three tabs for an owner, Chat first: " + tabNames());
-  check(selectedTab() === "Agent", "an owner opens on Agent: " + selectedTab());
+  check(tabNames() === "Chat|Connect|Tasks", "three tabs for an owner, Chat first: " + tabNames());
+  check(selectedTab() === "Connect", "an owner opens on Connect: " + selectedTab());
   check(!dialog(), "no dialog at rest");
   check(!panel.querySelector(".agent-step") && !text().includes("npx skills"), "the steps and the install command are gone");
   check(!panel.querySelector("textarea, input"), "no field is shown at rest");
-  check(panel.querySelector("details.token-other") && !panel.querySelector("details.token-other").open, "Other connection methods is there at rest, closed");
+  check(panel.querySelector("details.token-other") && !panel.querySelector("details.token-other").open, "Command line and MCP configuration is there at rest, closed");
 
   /* ------------------------------------------------------ the built-in agent */
 
@@ -169,8 +171,8 @@ window.agentPanelCheck = async () => {
   check(getComputedStyle(builtin).overflowY === "hidden", "the built-in pane is not scrolled as a whole");
   check(!document.querySelector(".chat-form"), "no chat form in a browser");
   check(!document.querySelector("[data-task-run]"), "a plain browser has no Run buttons");
-  await press(tabButton("Agent"));
-  check(selectedTab() === "Agent", "Agent can be picked again: " + selectedTab());
+  await press(tabButton("Connect"));
+  check(selectedTab() === "Connect", "Connect can be picked again: " + selectedTab());
 
   /* ---------------------------------------------------- the external agent */
 
@@ -203,6 +205,9 @@ window.agentPanelCheck = async () => {
 
   /* ------------------------------------------------------------ a new token */
 
+  const tokensTitle = document.getElementById("agent-tokens-title");
+  check(tokensTitle && tokensTitle.getClientRects().length > 0 && tokensTitle.textContent.trim() === "Tokens",
+    "the Tokens section heading is visible before a token is created");
   await press(document.querySelector("[data-share-new]"));
   const form = document.querySelector(".share-form");
   check(form && rows().length === 0, "creating shows only the form: " + text());
@@ -243,7 +248,7 @@ window.agentPanelCheck = async () => {
   const issued = window.issuedToken;
   check(issued && issued.startsWith("lpt_" + originPart + ".paper.minted"), "the mock issued a token");
   check(!dialog(), "the reveal is not a dialog");
-  check(!text().includes("Create a token, copy its instructions"), "the connect help is hidden during the reveal");
+  check(!document.getElementById("agent-tokens-title"), "the Tokens section is absent during the reveal");
   check(text().includes("Pasting a token into chat lets your model provider see it."), "the token warning shows in the reveal");
   check(rows().length === 0 && !document.querySelector("[data-share-new]"), "the reveal replaces the list and the New token button");
   check(!panel.textContent.includes(issued) && [...panel.querySelectorAll("textarea, input")].every((node) => !node.value.includes(issued)),
@@ -256,10 +261,10 @@ window.agentPanelCheck = async () => {
   check(copiedLabel(), "a copy button shows Copied afterwards");
   check(document.querySelector(".token-reveal") && rows().length === 0, "copying does not end the reveal");
 
-  // Other connection methods: copy icons only. No field, no code and no token text.
+  // Command line and MCP configuration: copy icons only. No field, no code and no token text.
   await press(panel.querySelector("summary"));
-  check(panel.querySelector("details").open, "Other connection methods opens");
-  check(text().includes("With MCP, you can avoid pasting the token into your agent's chat."), "the MCP advantage line");
+  check(panel.querySelector("details").open, "Command line and MCP configuration opens");
+  check(text().includes("Run librepaper mcp with a token so the token never goes into the chat."), "the MCP advantage line");
   check(!panel.querySelector("textarea, input, code") && !text().includes(issued), "opened, the methods show no field, no code and no token text");
   check(!text().includes("POST /api/documents") && !text().includes("Reveal token") && !text().includes("Hide token"), "no HTTP route and no reveal toggle");
   const commands = "claude mcp add librepaper --scope user -- librepaper mcp\\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude";
@@ -281,8 +286,9 @@ window.agentPanelCheck = async () => {
   check(rows().length === 3 && rows().some((row) => row.textContent.includes("Codex")), "and the token is in the list: " + text());
   check(labelled("Copy connection instructions for Codex"), "the new row has a copy button, since the next listing carries its token");
   check(document.activeElement === document.querySelector("[data-share-new]"), "focus goes to New token after Done");
-  check(panel.querySelector("details.token-other"), "Other connection methods stays after Done");
-  check(labelled("Claude Code commands"), "and it still offers the commands");
+  check(panel.querySelector("details.token-other")?.open, "Command line and MCP configuration stays open after Done");
+  check(labelled("Claude Code commands")?.getClientRects().length > 0 && labelled("MCP configuration")?.getClientRects().length > 0,
+    "and its copy buttons are visible after Done");
 
   /* ---------------------------------------------------------------- revoke */
 
@@ -401,6 +407,27 @@ window.agentPanelCheck = async () => {
   await pressKey(searchBox(), "Escape");
   check(searchBox().value === "" && shownTasks().length === 12, "Escape in the search box clears it");
 
+  /* ------------------------------------------------ the connector, switched on */
+
+  // The deployment offers connectors only when the sharing answer says so. The
+  // owner is mounted again so the Connect tab loads that answer.
+  state.connectors = true;
+  owner.$destroy();
+  owner = mount(true);
+  await flush();
+  const connector = document.querySelector(".agent-connector");
+  check(connector && connector.querySelector("#agent-connector-title"), "the connector section shows when connectors are on");
+  const steps = connector.querySelectorAll(":scope > ol > li");
+  check(steps.length === 3, "the connector has three steps: " + steps.length);
+  check(getComputedStyle(connector.querySelector("ol")).listStyleType === "decimal", "the connector steps are numbered");
+  for (const [index, step] of [...steps].entries()) {
+    check(getComputedStyle(step).display === "list-item", "connector step " + (index + 1) + " is a list item so its number shows");
+  }
+  const connectorUrl = location.origin + "/mcp/paper";
+  check(connector.querySelector(".agent-connector-url").value === connectorUrl, "the connector URL names the project: " + connector.querySelector(".agent-connector-url").value);
+  await press(connector.querySelector(".agent-connector-row button"));
+  check(window.copied === connectorUrl, "the copy button copies the connector URL: " + window.copied);
+
   return viewerChecks();
 };
 `;
@@ -445,7 +472,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("agent panel component", () => tab.evaluate("Boolean(window.agentPanelReady && window.agentPanelReady())"));
   assert.equal(await tab.evaluate("window.agentPanelCheck()"), true);
-  console.log("agent panel: three tabs, the built-in notice, token rows and reveal copy the install command with the token, revoke, manual copy and late copy; tasks open and search; viewers see the tasks alone");
+  console.log("agent panel: three tabs, the built-in notice, token rows and reveal copy the install command with the token, revoke, manual copy and late copy; tasks open and search; the connector steps and its copy; viewers see the tasks alone");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }

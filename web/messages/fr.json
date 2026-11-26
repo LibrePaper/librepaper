@@ -142,8 +142,8 @@
   "agent_sign_in_again": "Reconnectez-vous pour autoriser l’assistant local.",
   "agent_start_first": "Démarrez un agent dans l’onglet Clavardage avant d’envoyer une tâche.",
   "agent_stopping": "Arrêt en cours…",
+  "agent_tab_connect": "Connecter",
   "agent_tab_tasks": "Tâches",
-  "agent_external_intro": "Créez un jeton, copiez ses instructions et collez-les dans votre agent. Elles installent le skill LibrePaper s’il est absent, puis se connectent à ce projet.",
   "agent_tasks_intro": "Copiez une tâche et collez-la dans votre agent.",
   "agent_tasks_intro_desktop": "Exécutez une tâche dans l’agent intégré, ou copiez-la et collez-la dans un agent externe.",
   "agent_tasks_no_match": "Aucune tâche ne correspond à « {query} ».",
@@ -171,6 +171,17 @@
   "agent_view": "Afficher",
   "agent_waiting_permission": "En attente d’autorisation",
   "agent_your_agent": "votre agent",
+  "agentexternal_connect_docs": "Comment se connecter",
+  "agentexternal_connect_title": "Connecter une application",
+  "agentexternal_connect_lede": "Fonctionne dans le navigateur, sur ordinateur et sur votre téléphone, avec les assistants qui prennent en charge les connecteurs MCP, comme Claude ou ChatGPT. Quelques étapes pour chaque projet.",
+  "agentexternal_connector_copy": "Copier l’adresse du connecteur",
+  "agentexternal_connector_url_label": "Adresse du connecteur",
+  "agentexternal_rows_title": "Connectés",
+  "agentexternal_step_add": "Ajoutez-le à votre application comme connecteur.",
+  "agentexternal_step_approve": "Sur la page qui s’ouvre, choisissez ce que l’application peut faire, puis approuvez.",
+  "agentexternal_step_copy": "Copiez ce lien",
+  "agentexternal_tokens_help": "Un simple copier-coller pour les agents sur votre ordinateur, comme Claude Code, Codex ou Pi. Sert aussi à la synchronisation et aux scripts. Un jeton fonctionne comme un mot de passe pour ce projet.",
+  "agentexternal_tokens_title": "Jetons",
   "agentsettings_add": "Ajouter l’agent",
   "agentsettings_added": "Agent ajouté.",
   "agentsettings_adding": "Ajout…",
@@ -530,6 +541,7 @@
   "collaboration_clear_chat": "Effacer le clavardage",
   "collaboration_highlight_hint": "Sélectionnez du texte dans la fenêtre d’aperçu pour le surligner.",
   "collaboration_highlights": "Surlignages",
+  "collaboration_highlights_empty": "Aucun surlignage pour l’instant.",
   "collaboration_unread": "Messages non lus",
   "collaboration_views_label": "Vues de collaboration",
   "commandpalette_empty": "Aucune commande ne correspond.",
@@ -555,6 +567,7 @@
   "commands_focus_files": "Aller aux fichiers",
   "commands_focus_outline": "Aller au plan",
   "commands_focus_preview": "Aller à l’aperçu",
+  "commands_focus_search": "Rechercher dans tous les fichiers",
   "commands_go_to_definition": "Aller à la définition",
   "commands_heading_level": "Titre {level}",
   "commands_layout_cycle": "Alterner entre éditeur, aperçu et côte à côte",
@@ -562,6 +575,8 @@
   "commands_layout_source": "Afficher seulement l’éditeur",
   "commands_layout_split": "Afficher l’éditeur et l’aperçu",
   "commands_linked": "Garder en phase",
+  "commands_show_in_preview": "Afficher dans l’aperçu",
+  "commands_show_in_source": "Afficher dans la source",
   "commands_math": "Insérer une formule mathématique",
   "commands_math_template": "Insérer {label}",
   "commands_menu_edit": "Ouvrir le menu Édition",
@@ -576,6 +591,7 @@
   "commands_note_not_while_typing": "Pas pendant la saisie",
   "commands_note_outline_panel": "Panneau Plan",
   "commands_note_preview_visible": "Aperçu visible",
+  "commands_note_search_panel": "Panneau Recherche",
   "commands_note_wide_layout": "Écran large",
   "commands_org_demote": "Rétrograder le titre ou l’élément",
   "commands_org_demote_subtree": "Rétrograder la section et ses sous-titres",
@@ -643,15 +659,12 @@
   "commentcomposer_quotation": "« {exact} »",
   "commentcomposer_sign_in_rest": "pour commenter ce document.",
   "comments_clear": "Supprimer les résolus",
-  "comments_clear_all_title": "Supprimer tous les commentaires résolus",
-  "comments_clear_loaded_title": "Supprimer les commentaires résolus chargés",
-  "comments_delete_all": "Tout supprimer",
-  "comments_delete_all_title": "Supprimer tous les commentaires",
-  "comments_delete_loaded": "Supprimer les chargés",
-  "comments_delete_loaded_title": "Supprimer les commentaires chargés",
   "comments_empty": "Aucun commentaire pour l’instant.",
   "comments_export_comments_unread": "Les commentaires n’ont pas pu être lus jusqu’au bout.",
   "comments_export_replies_unread": "Les réponses n’ont pas pu être lues jusqu’au bout.",
+  "comments_filter_empty": "Rien ne correspond à ce filtre.",
+  "comments_filter_label": "Commentaires à afficher : {name}",
+  "comments_filter_unresolved": "Non résolu",
   "comments_group_all": "Tous les commentaires",
   "comments_group_loaded": "Commentaires chargés",
   "comments_hint": "Sélectionnez du texte dans la fenêtre d’aperçu pour commenter.",
@@ -676,9 +689,7 @@
   "comments_meta_total": "Ouverts : {open} · Total : {total}",
   "comments_read_only": "Accès en lecture seule. Demandez au propriétaire un lien de commentaire ou de modification pour participer.",
   "comments_resolve_all": "Tout résoudre",
-  "comments_resolve_all_title": "Résoudre tous les commentaires ouverts",
   "comments_resolve_loaded": "Résoudre les chargés",
-  "comments_resolve_loaded_title": "Résoudre les commentaires ouverts chargés",
   "comments_show_changes": "Afficher les modifications depuis…",
   "common_account_storage": "Stockage du compte",
   "common_activity": "Activité",
@@ -822,6 +833,7 @@
   "common_save": "Enregistrer",
   "common_saved": "Enregistré",
   "common_saving": "Enregistrement…",
+  "common_search": "Rechercher",
   "common_search_symbols": "Rechercher des symboles",
   "common_section": "Section",
   "common_select_all": "Tout sélectionner",
@@ -880,6 +892,16 @@
   "compactpanelmenu_home": "Accueil",
   "compactpanelmenu_menu": "Menu",
   "compactpanelmenu_menu_marked": "Menu, {name}",
+  "connect_approve_failed": "La connexion n’a pas pu être approuvée.",
+  "connect_expiry": "L’accès dure 30 jours et se renouvelle tant que l’application l’utilise. Vous pouvez le révoquer à tout moment dans le panneau Agent du projet.",
+  "connect_heading": "{client} veut travailler sur {project}",
+  "connect_load_failed": "Cette demande de connexion n’a pas pu être chargée.",
+  "connect_owner_only": "Seul le propriétaire du projet peut y connecter une application.",
+  "connect_redirect": "Après approbation, vous serez renvoyé vers {host}.",
+  "connect_role_comment_help": "Lit le projet et y ajoute des commentaires.",
+  "connect_role_edit_help": "Modifie directement les fichiers, et peut lire l'historique du projet et synchroniser ses fichiers.",
+  "connect_role_read_help": "Lit le projet.",
+  "connect_role_suggest_help": "Propose des modifications suivies que vous pouvez accepter ou refuser.",
   "connectionmethods_choose_token": "Jeton à utiliser",
   "connectionmethods_no_token": "Créez un jeton pour copier sa configuration MCP.",
   "datatable_resize_column": "Redimensionner la colonne {column}",
@@ -949,6 +971,7 @@
   "downloads_selection_incomplete": "Impossible de télécharger tous les fichiers sélectionnés.",
   "editor_aria_label_of": "Éditeur de {path}",
   "editor_bibliography_unavailable": "Bibliographie indisponible : {reason}",
+  "editor_bibliography_not_bibtex": "La bibliographie de ce document n'est pas un fichier BibTeX. Ajoutez un fichier .bib à sa bibliographie pour importer des références.",
   "editor_cut_changed": "La source a changé avant la fin de l’action « Couper ». Sélectionnez à nouveau le texte.",
   "editor_parser_not_loaded": "l’analyseur n’a pas pu être chargé",
   "editor_paste_blocked": "Le navigateur n’autorise pas LibrePaper à lire le presse-papiers ici.",
@@ -966,10 +989,10 @@
         "warningsPlural"
       ],
       "match": {
-        "errorsPlural=one warningsPlural=one": "{errors} erreur, {warnings} avertissement dans ce fichier",
-        "errorsPlural=one warningsPlural=*": "{errors} erreur, {warnings} avertissements dans ce fichier",
-        "errorsPlural=* warningsPlural=one": "{errors} erreurs, {warnings} avertissement dans ce fichier",
-        "errorsPlural=* warningsPlural=*": "{errors} erreurs, {warnings} avertissements dans ce fichier"
+        "errorsPlural=one, warningsPlural=one": "{errors} erreur, {warnings} avertissement dans ce fichier",
+        "errorsPlural=one, warningsPlural=*": "{errors} erreur, {warnings} avertissements dans ce fichier",
+        "errorsPlural=*, warningsPlural=one": "{errors} erreurs, {warnings} avertissement dans ce fichier",
+        "errorsPlural=*, warningsPlural=*": "{errors} erreurs, {warnings} avertissements dans ce fichier"
       }
     }
   ],
@@ -1007,6 +1030,10 @@
   "editor_type_font_custom": "Autre police",
   "editor_type_font_system_sans": "Système sans empattement",
   "editor_type_font_system_serif": "Système avec empattement",
+  "editor_doi_invalid": "Ce n’est pas un DOI. Un DOI commence par 10. suivi d’une barre oblique, comme 10.1038/nature12373.",
+  "editor_doi_not_found": "doi.org n’a aucune notice pour ce DOI.",
+  "editor_doi_unreachable": "Impossible de joindre doi.org. Vérifiez votre connexion et réessayez.",
+  "editor_doi_needs_file": "Ouvrez un fichier modifiable avant d’ajouter une référence par DOI.",
   "editor_zotero_changed": "Le document a changé pendant la réponse de Zotero. Réessayez.",
   "editor_zotero_needs_file": "Ouvrez un fichier modifiable avant d’importer depuis Zotero.",
   "editorsettings_brackets_description": "Saisir un crochet ouvrant ajoute le crochet fermant.",
@@ -1523,6 +1550,12 @@
   "insertmenu_bibtex_no_bibliography": "BibTeX (aucune bibliographie)",
   "insertmenu_caption": "Légende",
   "insertmenu_citation_style": "Style de citation",
+  "insertmenu_doi": "DOI",
+  "insertmenu_doi_placeholder": "10.1038/nature12373 ou https://doi.org/…",
+  "insertmenu_doi_looking_up": "Recherche…",
+  "insertmenu_doi_items_group": "Entrées DOI",
+  "insertmenu_doi_import_failed": "Les entrées DOI n’ont pas pu être ajoutées à la bibliographie.",
+  "insertmenu_doi_lookup_failed": "Ce DOI n’a pas pu être trouvé.",
   "insertmenu_document_changed": "Le document a changé. Fermez cette boîte de dialogue et choisissez à nouveau l’emplacement d’insertion.",
   "insertmenu_environment_choose": "Choisir un environnement défini…",
   "insertmenu_environments_label": "Environnements définis",
@@ -1550,6 +1583,7 @@
   "insertmenu_reference_choose": "Choisir un titre, une figure, un tableau ou une équation…",
   "insertmenu_search_label": "Rechercher dans la bibliographie",
   "insertmenu_search_placeholder": "Rechercher un auteur, un titre, une année ou une clé",
+  "insertmenu_bib_target": "Ajouter à",
   "insertmenu_source": "Source",
   "insertmenu_style_narrative": "Narratif / textuel",
   "insertmenu_style_parenthetical": "Entre parenthèses",
@@ -2130,6 +2164,7 @@
   "outline_filter_open_todos": "TODO ouverts",
   "outline_filter_tag": "Étiquette : {tag}",
   "outline_no_headings": "Aucun titre dans ce fichier.",
+  "panelboundary_failed": "Cette partie de la page a cessé de fonctionner. Le reste de LibrePaper fonctionne normalement.",
   "panels_git": "Git",
   "panels_shared": "Partagés avec moi",
   "panels_trash": "Corbeille",
@@ -2198,7 +2233,6 @@
   "previewcontrols_page_view": "Affichage des pages",
   "previewcontrols_present": "Présenter",
   "previewcontrols_previous_match": "Résultat précédent",
-  "previewcontrols_search": "Rechercher",
   "previewcontrols_search_document": "Rechercher dans le document",
   "previewcontrols_select_text": "Sélectionner le texte",
   "previewcontrols_spread": "Deux pages côte à côte",
@@ -2361,6 +2395,7 @@
   "readerb_version_download_failed": "Cette version n’a pas pu être téléchargée.",
   "readerb_version_history": "Historique des versions",
   "readerc_cells_not_run": "Les cellules de code n’ont pas été exécutées. Pour inclure leurs résultats, exportez depuis l’application de bureau LibrePaper avec un dossier d’exécution défini.",
+  "readerc_cells_not_run_host_off": "Les cellules de code n’ont pas été exécutées. Ce serveur a désactivé « Exécuter le code ».",
   "readerc_comments_export_failed": "Les commentaires n’ont pas pu être exportés.",
   "readerc_comments_preparing": "Préparation des commentaires.",
   "readerc_demo_no_uploads": "Les images et autres téléversements ne sont pas disponibles dans la démo.",
@@ -2570,13 +2605,102 @@
   "renderers_quarto_failed": "L’aperçu Quarto n’a pas pu être affiché.",
   "renderersettings_aria": "Rendu de {name} dans",
   "renderersettings_description": "Les documents {name} sont produits dans ce navigateur, ou sur cet ordinateur lorsque « Exécuter le code » est activé.",
+  "renderersettings_description_browser_only": "Les documents {name} sont produits dans ce navigateur. Ce serveur a désactivé la production sur cet ordinateur.",
   "renderersettings_note": "L’outil peut lui-même télécharger des paquets.",
   "renderersettings_title": "Rendu dans",
   "room_submission_failed": "L’envoi du commentaire a échoué",
   "room_submission_failed_status": "L’envoi du commentaire a échoué ({status})",
+  "search_capped": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Affichage du premier résultat. Affinez la recherche pour voir les autres.",
+        "countPlural=*": "Affichage des {count} premiers résultats. Affinez la recherche pour voir les autres."
+      }
+    }
+  ],
+  "search_clear": "Effacer la recherche",
+  "search_collapse_all": "Tout réduire",
+  "search_expand_all": "Tout développer",
+  "search_file_matches": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} occurrence",
+        "countPlural=*": "{count} occurrences"
+      }
+    }
+  ],
+  "search_hide_replace": "Masquer le remplacement",
+  "search_input_label": "Rechercher dans tous les fichiers",
+  "search_invalid_regex": "Cette expression régulière n’est pas valide.",
+  "search_match_case": "Respecter la casse",
+  "search_match_whole_word": "Mot entier",
+  "search_no_results": "Aucun résultat trouvé",
+  "search_replace_all": "Tout remplacer",
+  "search_replace_all_capped": "Remplacer toutes les occurrences du projet, y compris celles qui ne sont pas affichées",
+  "search_replace_all_scope": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "Remplacer {count} occurrence dans {files} fichier",
+        "countPlural=one, filesPlural=*": "Remplacer {count} occurrence dans {files} fichiers",
+        "countPlural=*, filesPlural=one": "Remplacer {count} occurrences dans {files} fichier",
+        "countPlural=*, filesPlural=*": "Remplacer {count} occurrences dans {files} fichiers"
+      }
+    }
+  ],
+  "search_replace_label": "Remplacer par",
+  "search_replace_line": "Remplacer les occurrences de cette ligne",
+  "search_searching": "Recherche en cours…",
+  "search_section_label": "Rechercher dans tous les fichiers du projet",
+  "search_show_replace": "Afficher le remplacement",
+  "search_summary": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "{count} résultat dans {files} fichier",
+        "countPlural=one, filesPlural=*": "{count} résultat dans {files} fichiers",
+        "countPlural=*, filesPlural=one": "{count} résultats dans {files} fichier",
+        "countPlural=*, filesPlural=*": "{count} résultats dans {files} fichiers"
+      }
+    }
+  ],
+  "search_use_regex": "Utiliser une expression régulière",
   "settingsdialog_categories_label": "Catégories des paramètres",
   "settingsdialog_nothing_matches": "Aucun résultat.",
   "settingsdialog_quarto_note": "Dans le navigateur, les documents Quarto produisent un brouillon. Appuyez sur « Exécuter le code » pour exécuter leur code sur cet ordinateur.",
+  "settingsdialog_quarto_note_browser_only": "Dans le navigateur, les documents Quarto produisent un brouillon. Ce serveur a désactivé « Exécuter le code ».",
   "settingsdialog_search": "Rechercher",
   "settingsdialog_version": "Version {version} · Cet ordinateur",
   "share_copy_manual_label": "Texte à copier manuellement",
@@ -2594,6 +2718,7 @@
   "share_revoke_token_title": "Révoquer le jeton?",
   "share_tab_links": "Liens",
   "share_tab_tokens": "Agents",
+  "shared_expired": "Expiré",
   "shared_expiry_180d": "6 mois",
   "shared_expiry_1d": "1 jour",
   "shared_expiry_30d": "30 jours",
@@ -2802,8 +2927,8 @@
   "tokenreveal_copy_connect": "Copier les instructions de connexion",
   "tokenreveal_copy_failed": "Copie impossible",
   "tokenreveal_copy_token": "Copier le jeton",
-  "tokenreveal_mcp_advantage": "Avec MCP, vous pouvez éviter de coller le jeton dans le clavardage de votre agent.",
-  "tokenreveal_other_ways": "Autres méthodes de connexion",
+  "tokenreveal_mcp_advantage": "Lancez librepaper mcp avec un jeton pour que le jeton n’entre jamais dans le clavardage.",
+  "tokenreveal_other_ways": "Ligne de commande et configuration MCP",
   "tokenreveal_token": "Jeton",
   "toolcommand_aria_command": "{title} pour {format}",
   "toolcommand_aria_result": "Fichier de résultat pour {format} {output}",
@@ -2993,6 +3118,8 @@
   "rundirectorycontrol_choose_a_folder": "Choisir un dossier",
   "rundirectorycontrol_share_results": "Publier les résultats",
   "rundirectorycontrol_share_hint": "Les collaborateurs voient le résultat de votre dernière exécution, même sans vos données.",
+  "rundirectorycontrol_agents_run": "Laisser les agents exécuter du code",
+  "rundirectorycontrol_agents_run_hint": "Les agents connectés à ce projet peuvent exécuter ses blocs de code dans votre dossier d’exécution tant que cette fenêtre est ouverte.",
   "rundirectorycontrol_shared": "Résultats publiés · {size}",
   "rundirectorycontrol_shared_figures": [
     {
@@ -3019,6 +3146,8 @@
   "runbutton_directory_named": "Dossier d’exécution : {name}",
   "runbutton_choose_directory": "Choisir un dossier d’exécution…",
   "runbutton_view_last_run": "Voir la sortie de la dernière exécution",
+  "runbutton_refresh_cache": "Exécuter sans cache",
+  "runbutton_refresh_cache_hint": "Exécuter à nouveau et recalculer les cellules que Quarto a mises en cache, lorsque les données ont changé hors du document",
   "runbutton_last_run": "Dernière exécution : {time}",
   "runbutton_failed": "La dernière exécution a échoué",
   "runbutton_running_in": "Exécution du code dans {name}…",

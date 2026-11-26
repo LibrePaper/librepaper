@@ -18,7 +18,7 @@ In a suggest link, track changes is always on and cannot be switched off. The ed
 
 A document can have several links for each role. Give each a name. Only the owner sees the names. The Links tab lists every live link. Copy puts its URL on the clipboard. The trash button revokes it after you confirm, and the link stops working at once. Expired links are not listed.
 
-For an agent you start yourself, on any machine, use an agent token instead. Make it in the Agent panel's Agent tab. See [Agent tokens](agents.html#agent-tokens).
+For an agent you start yourself, on any machine, use an agent token instead. Make it in the Agent panel's Connect tab. See [Agent tokens](agents.html#agent-tokens).
 
 ## Preview
 

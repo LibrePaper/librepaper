@@ -10,6 +10,7 @@
   import { loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
   import { keymap } from "@codemirror/view";
   import { mode, onMode } from "../lib/theme.js";
+  import { searchMarks } from "../lib/search-marks.js";
 
   // The keys the editor answers to: Vim's, Emacs's, or nothing extra. One
   // compartment, whichever is chosen, so switching swaps one for the other.
@@ -39,6 +40,8 @@
   // The visual layer is drawn only for LaTeX, Typst and Markdown, and its colours follow
   // the page's mode, so it is brought into line when a file or the mode changes.
   const visualCompartment = new Compartment();
+  // The matches of the project search, marked while its panel is open.
+  const searchCompartment = new Compartment();
   // The line numbers, active-line highlight and fold gutter are source-code chrome. They are left
   // off where the visual layer draws the file, so the page reads as a document rather than code.
   const chromeCompartment = new Compartment();
@@ -239,7 +242,8 @@
   import { pastesPlainAt } from "../lib/paste-context.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
-  import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
+  import { cslText, cslToBibtex, cslYear, fetchDoi, normaliseDoi } from "../lib/doi.js";
+  import { bibliographyCache, bibliographyTargets, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planDoiImport, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
   import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, completionWake, formatOfPath } from "../lib/completion/index.js";
   import { createLiveIndex } from "../lib/document-index/live.js";
@@ -255,7 +259,7 @@
   import { commentMarks, setCommentMarks as setCommentMarksEffect } from "../lib/source-comment-marks.js";
   import { authorshipRuns, summarize, markSpans } from "../lib/authorship.js";
   import { authorshipMarks, setAuthorshipMarks } from "../lib/authorship-marks.js";
-  import { CHANGES, PRUNE_ORIGIN, planEdits, plannedWrite, writePlanned, writtenState, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, PRUNE_ORIGIN, planEdits, plannedWrite, writePlanned, writtenState, resolveFile, resolveFileCached, adoptResolved, shiftResolved, trackedSplices, untrackedSplices, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory, projectPaths } from "../lib/projection.js";
@@ -265,6 +269,7 @@
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
   import { FLASH_MS, flashPresence, presenceFlash } from "../lib/presence-flash.js";
+  import { LANDING_FLASH_MS, flashLanding, landingFlash } from "../lib/landing-flash.js";
   import { formatOf as documentFormat, sourceFormatOf } from "../lib/formats.js";
   import { spellcheckExtension } from "../lib/spellcheck/extension.js";
   import { harperExtension } from "../lib/harper/extension.js";
@@ -277,6 +282,7 @@
   import { documentFacts } from "../lib/visual-markup/facts.js";
   import { paperVisual } from "../lib/paper/index.js";
   import { m } from "../lib/paraglide/messages.js";
+  import { report } from "../lib/crash.js";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import { retargetElementAttributes } from "./element-attributes.js";
@@ -291,12 +297,14 @@
   // `me` is who the tracked edits belong to, `{who, author}`. `selectedChange`
   // is the id of the change the reviewer is looking at.
   /** @type {{ me?: { who: string, author: string }, [key: string]: any }} */
-  let { session, format = "", file = "", keys = "default", editable = true,
+  let { session, format = "", file = "", keys = "default", editable = true, onshowinpreview = null,
     completion = true, brackets = true, latexAssist = true, proofing = "browser", dialect = "american", check = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     // A suggester's typing is always tracked: tracking starts on and cannot be stopped.
     suggestOnly = false,
     visual = false, imageUrl = null,
+    // { query, caseSensitive, wholeWord, regex } | null: the search whose matches are marked.
+    searchQuery = null,
     // A getter for the files of the last run (or null); figures that are not project files are drawn from them.
     resultsFiles = null,
     // Names which run those files are of; when it changes, figure widgets draw again.
@@ -670,21 +678,30 @@
   /// committed before the records are written, so the commit that carries the
   /// text keeps its origin and stays in the undo history.
   function writeText(fileId, text, from, to, insert) {
-    insert = toLf(insert);
+    writeTexts(fileId, text, [{ from, to, insert }]);
+  }
+
+  /// Writes several edits to a file that is not on screen, in one pass: one
+  /// read of the text, one commit of the splices and one anchor record. `edits`
+  /// are { from, to, insert } in the coordinates of `text`, not overlapping, in
+  /// any order. The splices run from the end of the file back, so each offset
+  /// is still valid when it is used. The anchor index takes the edits in
+  /// ascending order, as its Edit contract requires.
+  function writeTexts(fileId, text, edits) {
     const doc = session.doc;
+    const ascending = edits.map(({ from, to, insert }) => ({ from, to, insert: toLf(insert) })).sort((a, b) => a.from - b.from);
     const before = text.toString();
     session.anchors.get(fileId);
     const known = new Set(doc.getMap(CHANGES).size ? resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.map((f) => f.id)) : []);
-    if (tracked) trackedSplice(doc, fileId, from, to, insert, me);
-    else untrackedSplice(doc, fileId, from, to, insert);
+    if (tracked) trackedSplices(doc, fileId, ascending, me);
+    else untrackedSplices(doc, fileId, ascending);
     doc.commit();
-    const edits = [{ from, to, insert }];
     let fragments = [];
-    if (to > from && doc.getMap(CHANGES).size) {
+    if (ascending.some((edit) => edit.to > edit.from) && doc.getMap(CHANGES).size) {
       const created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
-      fragments = fragmentRangesFor(before, edits, created);
+      fragments = fragmentRangesFor(before, ascending, created);
     }
-    session.anchors.record([{ fileId, edits, fragments }], session.anchorMemory);
+    session.anchors.record([{ fileId, edits: ascending, fragments }], session.anchorMemory);
     doc.commit({ origin: ANCHORS_ORIGIN });
   }
 
@@ -899,20 +916,19 @@
     return zoteroEntries(await searchZotero(query));
   }
 
-  // Writes an imported item's BibTeX and its bibliography registration. The
-  // registration is written here only when it belongs to another file.
-  // importZoteroItems dispatches it through the view when it belongs to the file on screen.
-  function writeZoteroImport(doc, activeFile, activePath, fetched, zoteroItemKey) {
+  // Writes an imported entry's BibTeX and its bibliography registration. makePlan
+  // receives { source, targetPath, texts, format } and returns the import plan.
+  // The registration is written here only when it belongs to another file.
+  // The import functions dispatch it through the view when it belongs to the file on screen.
+  // makePlan runs before anything is written, so a plan that throws leaves the project untouched.
+  function writeBibliographyImport(doc, activeFile, activePath, makePlan) {
     const tree = treeForDoc(doc);
     // The bibliography is registered in the preview's file when it shares the citing file's format family, else in the citing file.
     const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath) && Boolean(textIdForPath(doc, entry));
     const regPath = sameFamily ? entry : activePath;
     const regId = sameFamily ? textIdForPath(doc, entry) : activeFile;
     const reg = getTextFromDoc(regId);
-    const plan = planZoteroImport({
-      source: reg?.toString() || "", targetPath: regPath, texts: tree.texts,
-      item: { ...fetched, zotero_item: zoteroItemKey }, format: formatOf(regPath),
-    });
+    const plan = makePlan({ source: reg?.toString() || "", targetPath: regPath, texts: tree.texts, format: formatOf(regPath), chapterPath: activePath, chapterText: getTextFromDoc(activeFile)?.toString() || "", entryPath: entry || "", entryText: (entry && tree.texts[entry]) || "" });
     const bibId = textIdForPath(doc, plan.path);
     const bib = bibId ? getTextFromDoc(bibId) : null;
     if (bib) {
@@ -927,8 +943,26 @@
     return { plan, regId };
   }
 
+  /// The .bib files the Insert > Citation dialog can import into: { files, declared }. No files when no editable file is showing.
+  export function bibliographyImportTargets() {
+    if (!editable || !session || !showing || !view) return { files: [], declared: false };
+    const doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
+    const tree = treeForDoc(doc);
+    const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath) && Boolean(textIdForPath(doc, entry));
+    const regPath = sameFamily ? entry : activePath;
+    const reg = getTextFromDoc(sameFamily ? textIdForPath(doc, entry) : activeFile);
+    try {
+      return bibliographyTargets({ source: reg?.toString() || "", targetPath: regPath, texts: tree.texts, format: formatOf(regPath), chapterPath: activePath, chapterText: getTextFromDoc(activeFile)?.toString() || "", entryPath: entry || "", entryText: (entry && tree.texts[entry]) || "" });
+    } catch { return { files: [], declared: false }; }
+  }
+
+  // The plan throws this code when the document's bibliography is not a BibTeX file.
+  function importError(error) {
+    return error?.code === "bibliography_not_bibtex" ? new Error(m.editor_bibliography_not_bibtex()) : error;
+  }
+
   /// Imports several Zotero items for the Insert > Citation dialog. Errors throw to the caller. It returns the citation key of each item, in order.
-  export async function importZoteroItems(items) {
+  export async function importZoteroItems(items, bibPath) {
     if (!editable || !session || !showing || !view) throw new Error(m.editor_zotero_needs_file());
     const activeSession = session, doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
     const fetchedItems = await Promise.all(items.map((item) => zoteroItem(item.zotero_item)));
@@ -937,15 +971,55 @@
     }
     const keys = [];
     for (let index = 0; index < items.length; index++) {
-      const { plan, regId } = writeZoteroImport(doc, activeFile, activePath, fetchedItems[index], items[index].zotero_item);
-      keys.push(plan.key);
-      // The file on screen goes through the view, because writeText would bypass the editor for it.
-      // A caret where frontmatter is inserted at the top moves past it, so the citation lands in the body.
-      // A caret where a bibliography is inserted lower down stays before it.
-      if (plan.registration && regId === activeFile) {
-        const changes = view.state.changes(plan.registration);
-        view.dispatch({ changes, selection: view.state.selection.map(changes, plan.registration.from === 0 ? 1 : -1) });
-      }
+      let written;
+      try {
+        written = writeBibliographyImport(doc, activeFile, activePath, (target) => planZoteroImport({
+          ...target, bibPath, item: { ...fetchedItems[index], zotero_item: items[index].zotero_item },
+        }));
+      } catch (error) { throw importError(error); }
+      keys.push(written.plan.key);
+      registerImport(written.plan, written.regId, activeFile);
+    }
+    if (tracked) prune(doc);
+    doc.commit();
+    scheduleBibliography();
+    return keys;
+  }
+
+  // The file on screen goes through the view, because writeText would bypass the editor for it.
+  // A caret where frontmatter is inserted at the top moves past it, so the citation lands in the body.
+  // A caret where a bibliography is inserted lower down stays before it.
+  function registerImport(plan, regId, activeFile) {
+    if (plan.registration && regId === activeFile) {
+      const changes = view.state.changes(plan.registration);
+      view.dispatch({ changes, selection: view.state.selection.map(changes, plan.registration.from === 0 ? 1 : -1) });
+    }
+  }
+
+  /// Looks a DOI up on doi.org for the Insert > Citation dialog. It throws an Error with a message for the person.
+  export async function lookupDoi(text) {
+    const doi = normaliseDoi(text);
+    if (!doi) throw new Error(m.editor_doi_invalid());
+    let csl;
+    try { csl = await fetchDoi(doi); }
+    catch (error) { throw new Error(error?.code === "not_found" ? m.editor_doi_not_found() : m.editor_doi_unreachable()); }
+    const { key, bibtex } = cslToBibtex(csl, doi);
+    const authors = (Array.isArray(csl?.author) ? csl.author : []).map((author) => cslText(author?.family || author?.literal)).filter(Boolean);
+    const year = cslYear(csl);
+    return { doi, key, bibtex, title: cslText(csl?.title), authors, year: year ? Number(year) : "", type: cslText(csl?.type) };
+  }
+
+  /// Adds looked-up DOI entries ({ doi, key, bibtex }) to the project's .bib for the Insert > Citation dialog. It returns the citation key of each entry, in order.
+  export async function importDoiEntries(entries, bibPath) {
+    if (!editable || !session || !showing || !view) throw new Error(m.editor_doi_needs_file());
+    const doc = session.doc, activeFile = showing, activePath = pathOfDoc(doc, showing);
+    const keys = [];
+    for (const doiEntry of entries) {
+      let written;
+      try { written = writeBibliographyImport(doc, activeFile, activePath, (target) => planDoiImport({ ...target, bibPath, entry: doiEntry })); }
+      catch (error) { throw importError(error); }
+      keys.push(written.plan.key);
+      registerImport(written.plan, written.regId, activeFile);
     }
     if (tracked) prune(doc);
     doc.commit();
@@ -1111,22 +1185,61 @@
   /// has to happen before the caret moves -- an offset means nothing until the
   /// view is showing the text it is an offset into -- which is why this is one
   /// function and not the caller doing both.
-  export function goToIn(id, at) {
+  export function goToIn(id, at, options = {}) {
     if (!view || !id) return;
-    show(id);
-    goTo(at);
+    show(id, { focus: options.focus ?? true });
+    goTo(at, options);
   }
 
   /// Opens a file and puts the caret on a line in it. What choosing a
   /// diagnostic in the panel does, and what the badge does when the next one
   /// is in another chapter.
-  export function openAt(id, line, column = 1) {
+  export function openAt(id, line, column = 1, options = {}) {
     if (!view || !id) return;
-    show(id);
+    show(id, { focus: options.focus ?? true });
     // The state has just been swapped, so the coordinates are this file's.
     const doc = view.state.doc;
     const at = doc.line(Math.min(Math.max(line, 1), doc.lines));
-    goTo(Math.min(at.from + Math.max(column - 1, 0), at.to));
+    goTo(Math.min(at.from + Math.max(column - 1, 0), at.to), options);
+  }
+
+  /// Opens a file and selects a range in it, scrolled to the middle of the
+  /// view. What choosing a result in the Search panel does. The editor takes
+  /// focus unless `focus` is false, so Enter in the search box can keep stepping.
+  export function selectIn(id, from, to, { focus = true } = {}) {
+    if (!view || !id) return;
+    show(id);
+    const length = view.state.doc.length;
+    const clamp = (at) => Math.min(Math.max(Number(at) || 0, 0), length);
+    const anchor = clamp(from);
+    const head = clamp(to);
+    view.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: "center" }) });
+    if (focus) view.focus();
+  }
+
+  /// Replaces ranges in one file for the Search panel. `edits` are
+  /// { from, to, insert } in that file's current text and do not overlap.
+  /// The file on screen goes through the view, so the replacement is one undo
+  /// step and is tracked like typing. Any other file goes through writeText,
+  /// which records a tracked change when tracking is on.
+  export function replaceIn(id, edits) {
+    if (!editable || !session || !view || !id || !edits?.length) return false;
+    // CodeMirror changes all refer to the document as it was, and out-of-order
+    // specs are composed one by one, which is quadratic. So ascending.
+    const sorted = [...edits].sort((a, b) => a.from - b.from);
+    if (id === showing) {
+      view.dispatch({ changes: sorted.map(({ from, to, insert }) => ({ from, to, insert })) });
+      return true;
+    }
+    const text = session.textOf(id);
+    if (!text) return false;
+    writeTexts(id, text, sorted);
+    // As importDoiEntries does: prune drops the records of files that are gone,
+    // empty records that have stayed empty, and stale cursors that have stayed
+    // stale. The edits above can leave such records behind.
+    if (tracked) prune(session.doc);
+    session.doc.commit();
+    return true;
   }
 
   /// The panel CodeMirror provides, for the document with nine errors. The
@@ -1184,19 +1297,32 @@
     }, FLASH_MS);
   }
 
+  let landingTimer = 0;
   /// Puts the caret at an offset and scrolls it into the middle of the view:
   /// what a click in the document does when the two are kept in step. With
   /// `focus: false` the caret and the view move but the keyboard stays where
-  /// it is, which is what a click in the preview needs.
-  export function goTo(at, { focus = true } = {}) {
+  /// it is, which is what a click in the preview needs. With `flash: true` the
+  /// line the caret lands on is tinted for about a second, so the person can
+  /// see where a jump went.
+  export function goTo(at, { focus = true, flash = false } = {}) {
     if (!view) return;
     // A place remembered earlier may lie past the end of a file that has
     // shrunk since, and CodeMirror throws on a selection outside the text.
     const place = Math.min(Math.max(Number(at) || 0, 0), view.state.doc.length);
     view.dispatch({
       selection: { anchor: place },
-      effects: EditorView.scrollIntoView(place, { y: "center" }),
+      effects: [
+        EditorView.scrollIntoView(place, { y: "center" }),
+        ...(flash ? [flashLanding.of(place)] : []),
+      ],
     });
+    if (flash) {
+      clearTimeout(landingTimer);
+      landingTimer = setTimeout(() => {
+        landingTimer = 0;
+        view?.dispatch({ effects: flashLanding.of(null) });
+      }, LANDING_FLASH_MS);
+    }
     if (focus) view.focus();
   }
 
@@ -1301,16 +1427,26 @@
 
   // Shown at once from what the editor knows, then again once the clipboard
   // probe has answered, so Paste is never offered on a stale answer.
+  // Show in preview is offered exactly when the host hands the editor a way to show it.
+  const previewAvailable = () => ({ "show-in-preview": typeof onshowinpreview === "function" });
+  // The menu's groups without the items this editor cannot offer; an emptied group goes too.
+  const sourceMenu = $derived(SOURCE_MENU
+    .map((group) => group.filter((command) => command !== "show-in-preview" || typeof onshowinpreview === "function"))
+    .filter((group) => group.length));
   async function openSourceMenu() {
-    sourceMenuAvailable = editAvailability();
+    sourceMenuAvailable = { ...editAvailability(), ...previewAvailable() };
     await probeClipboard();
-    sourceMenuAvailable = editAvailability();
+    sourceMenuAvailable = { ...editAvailability(), ...previewAvailable() };
   }
 
   // Runs a source-menu item. Zag hands focus back to the trigger as the menu
   // closes, so the command waits a tick and then the editor takes the focus
   // itself. A refused clipboard read greys Paste (editCommand turns it off).
   function runSourceMenu(command) {
+    if (command === "show-in-preview") {
+      setTimeout(() => onshowinpreview?.(), 0);
+      return;
+    }
     setTimeout(() => { void editCommand(command).catch(() => {}); }, 0);
   }
 
@@ -1715,11 +1851,14 @@
         // the check is on.
         checkCompartment.of(checkOn(untrack(() => check), citationKeys, indexChecks)),
         visualCompartment.of(visualOn(untrack(() => visual), path)),
+        searchCompartment.of(searchMarks(untrack(() => searchQuery))),
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
         // The flash over a collaborator's place after a click on their avatar.
         presenceFlash,
+        // The tint over the line a jump landed on (goTo with flash).
+        landingFlash,
         // The bar over a selection, offering the annotating verbs.
         commentBar,
         // A right click outside the selection moves the caret there, before the source menu opens.
@@ -1927,6 +2066,11 @@
     if (id) openAt(id, 1);
   }
 
+  // Cached per-file states keep their old search marks, so each show redraws them.
+  function syncSearch(target) {
+    target?.dispatch({ effects: searchCompartment.reconfigure(searchMarks(untrack(() => searchQuery))) });
+  }
+
   // Reconfigures the live view's visual layer for the file it shows.
   function syncVisual(target, id = showing) {
     if (!target) return;
@@ -2119,6 +2263,14 @@
 
   function show(id, { focus = true } = {}) {
     if (!view || !id || id === showing) return;
+    // A flash still running belongs to the outgoing file. Clear it before its
+    // state is cached, or the timer would clear the incoming file's state instead
+    // and the old flash would come back later.
+    if (landingTimer) {
+      clearTimeout(landingTimer);
+      landingTimer = 0;
+      view.dispatch({ effects: flashLanding.of(null) });
+    }
     if (showing && activeDocument) {
       stateMap(activeDocument).set(showing, view.state);
       topMap(activeDocument).set(showing, scrollPlace());
@@ -2143,6 +2295,7 @@
     syncFeatures(view, id);
     syncTheme(view);
     syncVisual(view, id);
+    syncSearch(view);
     showing = id;
     announced = "";
     // A file this browser has open is where its caret is, which is what the
@@ -2289,10 +2442,17 @@
   });
 
   // Draw the pending changes again when the selection or the viewer changes.
+  // This effect is not inside a panel's markup, so a throw from the drawing
+  // is caught here: the marks stay as they were rather than the editor going.
   $effect(() => {
     void selectedChange;
     void me;
-    if (view) drawChanges();
+    if (!view) return;
+    try {
+      drawChanges();
+    } catch (error) {
+      report(error, "tracked changes");
+    }
   });
 
   // Turning the Authors view on or off, or isolating one author, redraws the
@@ -2344,6 +2504,12 @@
     }
   });
 
+  // The search marks follow the panel's query.
+  $effect(() => {
+    void searchQuery;
+    if (view) untrack(() => syncSearch(view));
+  });
+
   // The visual layer switch works the same way, and redraws nothing else.
   $effect(() => {
     void visual;
@@ -2389,7 +2555,7 @@
     {/snippet}
   </Menu.ContextTrigger>
   <ExplorerMenu>
-    {#each SOURCE_MENU as group, index}
+    {#each sourceMenu as group, index}
       {#if index}<hr class="hr my-1" />{/if}
       {#each group as command (command)}
         <Menu.Item value={command} class="menuitem" disabled={!sourceMenuAvailable[command]} data-tip={command === "paste" && !pasteReadable ? m.editor_paste_blocked() : undefined} data-tip-place="right">

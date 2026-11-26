@@ -51,7 +51,7 @@ window.setupInsert = async (format, source = null) => {
   menu = createClassComponent({component:InsertMenu,target:document.getElementById('menu'),props:{
     getContext:()=>({...component.getInsertContext(),bibliography:entries,files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers},author={Smith, Jane},year={2020}}'},{path:'images/river.png',url:'data:image/png;base64,preview'}]}),
     oninsert:(result,context)=>{ const ok=component.applyInsertResult(result,context); if(!ok) throw Error('Insertion target changed'); return ok; },
-    onupload:async()=> 'images/upload.png',onpalette:id=>window.paletteRequests.push(id),onfocus:()=>component.focus(),oncancel:context=>component.releaseInsertContext(context)
+    ...(window.extraMenuProps||{}),onupload:async()=> 'images/upload.png',onpalette:id=>window.paletteRequests.push(id),onfocus:()=>component.focus(),oncancel:context=>component.releaseInsertContext(context)
   }});
   await tick();
 };
@@ -197,6 +197,72 @@ try {
   await field("Search bibliography","Rivers");await checkCitation("smith2020");
   await field("Search bibliography","");await checkCitation("jones2021");await field("Citation style","narrative");await confirm();
   assert.match((await evaluate("insertState()")).text,/\[?@smith2020; @jones2021\]?/,"citation inserts both selected references in narrative form");
+
+  // The citation source is remembered, a DOI lookup adds an entry, and storage failures fall back to BibTeX.
+  const sourceValue=()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] select.select').value`);
+  const sourceOptions=()=>evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] select.select')[0].options].map(o=>o.value)`);
+  const doiProps="window.extraMenuProps={ondoilookup:async(t)=>({doi:t.replace(/^https?:\\/\\/doi.org\\//,''),key:'doe2024',bibtex:'@article{doe2024}',title:'A Long Title',authors:['Jane Doe'],year:2024,type:'article'}),ondoiimport:async(e)=>e.map(x=>x.key)}";
+  await evaluate("setupInsert('markdown','Before AFTER')");
+  await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  assert.deepEqual(await sourceOptions(),["bibtex","zotero"],"the DOI source is hidden without ondoilookup");
+  await cancel();
+  await evaluate(doiProps);await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");
+  await evaluate("localStorage.removeItem('librepaper.insert.citationSource')");
+  await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  assert.equal(await sourceValue(),"bibtex","the source starts as BibTeX");
+  await evaluate(`(()=>{const s=document.querySelector('[role="dialog"][data-state="open"] select.select');s.value='doi';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await until("DOI source",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] input[type="search"]').placeholder.startsWith('10.')`),5000);
+  assert.equal(await evaluate("localStorage.getItem('librepaper.insert.citationSource')"),"doi","the chosen source is remembered");
+  await evaluate(`(()=>{const i=document.querySelector('[role="dialog"][data-state="open"] input[type="search"]');i.value='10.1000/xyz';i.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await until("DOI row",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"] input[type="checkbox"][value="10.1000/xyz"]:checked'))`),5000);
+  await confirm();
+  assert.match((await evaluate("insertState()")).text,/@doe2024/,"a DOI lookup and insert cites the key returned by ondoiimport");
+  await evaluate("selectInsert(insertState().text.indexOf('Before') + 7)");await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  assert.equal(await sourceValue(),"doi","the remembered source is restored when the dialog opens");
+  await cancel();
+  // With two candidate .bib files a labelled select picks the target, and the choice is remembered.
+  await evaluate("window.extraMenuProps={...window.extraMenuProps,ontargets:()=>({files:['a.bib','b.bib'],declared:false}),ondoiimport:async(e,b)=>{window.__bibArgs=b;return e.map(x=>x.key)}};localStorage.removeItem('librepaper.insert.bibTarget');window.__bibArgs='unset';0");
+  await evaluate("setupInsert('markdown','Before AFTER')");
+  await evaluate("selectInsert(insertState().text.indexOf('Before') + 7)");await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  const targetSelect=`[...document.querySelectorAll('[role="dialog"][data-state="open"] select.select')].find(s=>[...s.options].some(o=>o.value==='a.bib'))`;
+  await until("target select",()=>evaluate(`Boolean(${targetSelect})`),5000);
+  assert.equal(await evaluate(`${targetSelect}.value`),"a.bib","the first file is selected by default");
+  await evaluate(`(()=>{const s=${targetSelect};s.value='b.bib';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await evaluate(`(()=>{const i=document.querySelector('[role="dialog"][data-state="open"] input[type="search"]');i.value='10.1000/abc';i.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await until("DOI row",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"] input[type="checkbox"][value="10.1000/abc"]:checked'))`),5000);
+  await confirm();
+  assert.equal(await evaluate("window.__bibArgs"),"b.bib","ondoiimport receives the chosen file");
+  await evaluate("selectInsert(insertState().text.indexOf('Before') + 7)");await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  await until("target select",()=>evaluate(`Boolean(${targetSelect})`),5000);
+  assert.equal(await evaluate(`${targetSelect}.value`),"b.bib","the chosen file is pre-selected on reopening");
+  await cancel();
+  await evaluate("window.extraMenuProps={ondoilookup:window.extraMenuProps.ondoilookup,ondoiimport:window.extraMenuProps.ondoiimport};0");
+  await evaluate("Object.defineProperty(window,'localStorage',{get(){throw new Error('blocked')},configurable:true});0");
+  await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  assert.equal(await sourceValue(),"bibtex","a storage failure falls back to BibTeX");
+  await cancel();
+  await evaluate("delete window.localStorage;delete window.extraMenuProps");
+
+  // The citation dialog is resizable; other dialogs are not, and a dragged size
+  // is remembered for the next citation dialog only. This harness loads no
+  // stylesheet, so computed `resize` and width cannot be asserted: only the
+  // inline-style behaviour is checked.
+  await page.resize(1280,900);
+  const card=`(()=>{const d=document.querySelector('[role="dialog"][data-state="open"]');return d.classList.contains('card')?d:d.querySelector('.card')})()`;
+  const cardStyle=()=>evaluate(`(()=>{const c=${card};return {width:c.style.width,height:c.style.height,resizable:c.classList.contains('modal-resizable')}})()`);
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");
+  await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  assert.equal((await cardStyle()).resizable,true,"the citation card is resizable");
+  await evaluate(`(()=>{const c=${card};c.style.width='1100px';c.style.height='700px';})()`);
+  await cancel();
+  await choose("table");await until("table dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Table'`),5000);
+  const table=await cardStyle();
+  assert.equal(table.resizable,false,"the table card is not resizable");
+  assert.deepEqual([table.width,table.height],["",""],"a dragged citation size does not leak into the table dialog");
+  await cancel();
+  await choose("citation");await until("citation dialog",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);
+  await until("dragged width restored",async()=>(await cardStyle()).width==="1100px",5000);
+  await cancel();
 
   // Cross-reference and label dialogs use actual gathered target ids.
   await evaluate(`setupInsert('markdown',${JSON.stringify("# Intro\n\nBefore AFTER")})`);await evaluate("selectInsert(15)");

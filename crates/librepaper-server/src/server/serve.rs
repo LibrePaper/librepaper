@@ -53,6 +53,12 @@ pub struct ServeOptions {
     pub commenters: Policy,
     /// Which link roles may be held without signing in.
     pub anonymous: librepaper_base::role::AnonymousAccess,
+    /// Whether agents may reach projects at all: agent tokens, connectors and the desktop app's own agent.
+    pub agents: bool,
+    /// Whether apps and agents may connect to a project as a remote MCP connector.
+    pub agent_connectors: bool,
+    /// Whether the desktop app may build documents and run their code on the author's computer.
+    pub local_builds: bool,
     /// Write each new account's starter project as though it had been
     /// typed over this many days, so the history panel has something in it on a
     /// demonstration deployment. The operations are real; only the clock is
@@ -606,6 +612,9 @@ pub async fn serve(options: ServeOptions) {
     instance.oidc = options.oidc;
     instance.bound_sessions(options.session_lifetime);
     instance.anonymous = options.anonymous;
+    instance.agents = options.agents;
+    instance.agent_connectors = options.agent_connectors;
+    instance.local_builds = options.local_builds;
     instance.simulate_activity = options.simulate_activity;
     instance.origins = origins.clone();
     instance.paths = Some(deployment_paths.clone());

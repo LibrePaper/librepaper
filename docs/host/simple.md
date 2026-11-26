@@ -137,6 +137,9 @@ database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepape
 # anonymous_comments = false  # comment links may be used without signing in
 # anonymous_suggests = false  # reserved: suggest links always need sign-in for now
 # anonymous_edits    = false  # reserved: edit links always need sign-in for now
+# agents             = true   # agents may reach projects at all: tokens, connectors and the desktop app's agent
+# agent_connectors   = true   # apps and agents may connect to a project as a remote MCP connector
+# local_builds       = true   # the desktop app may build documents and run their code on the author's computer
 
 # Matches the edge network in compose.yaml; do not widen.
 [proxy]

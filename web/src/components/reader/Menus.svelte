@@ -115,6 +115,12 @@
   <Menu.Item value="linked" class="menuitem">
     <span class="menuitem-check">{view.linked ? "✓" : ""}</span><span class="menuitem-label">{labelOf("linked")}</span>{#if keys.linked}<span class="menuitem-keys">{keys.linked}</span>{/if}
   </Menu.Item>
+  <Menu.Item value="show-in-preview" class="menuitem" disabled={!can["show-in-preview"]}>
+    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("show-in-preview")}</span>{#if keys["show-in-preview"]}<span class="menuitem-keys">{keys["show-in-preview"]}</span>{/if}
+  </Menu.Item>
+  <Menu.Item value="show-in-source" class="menuitem" disabled={!can["show-in-source"]}>
+    <span class="menuitem-check"></span><span class="menuitem-label">{labelOf("show-in-source")}</span>{#if keys["show-in-source"]}<span class="menuitem-keys">{keys["show-in-source"]}</span>{/if}
+  </Menu.Item>
   <Menu.Item value="visual-markup" class="menuitem">
     <span class="menuitem-check">{view.visual ? "✓" : ""}</span><span class="menuitem-label">{labelOf("visual-markup")}</span>{#if keys["visual-markup"]}<span class="menuitem-keys">{keys["visual-markup"]}</span>{/if}
   </Menu.Item>

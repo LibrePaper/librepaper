@@ -6,11 +6,13 @@ An **agent token** gives one agent access to one project on one server, at the r
 
 The project lives on the LibrePaper server, and the token names the server and the project. You do not need a local folder, a clone or a project path, so never ask for one. Do not open or control a browser unless the user explicitly asks you to. Do this now, before you reply:
 
-1. If `mcp__librepaper__*` tools are available, use them, following [The tools directly](#the-tools-directly).
+1. If LibrePaper tools are available, use them directly, following [The tools directly](#the-tools-directly). They may come from `librepaper mcp` (`mcp__librepaper__*`) or from a connector, where the names are such as `document_read`, possibly with a prefix. As with `librepaper mcp`, the operation identity is added for you on writes.
 2. Otherwise set `H` to the helper and run `connect`, as [Step 1b](#step-1b-http-helper) shows. Then run the commands exactly as `connect` prints them.
 3. Tell the user which project you reached, and ask what they want done. If they already said, do it.
 
 If a step is blocked, say exactly what to allow, as [If a sandbox blocks you](#if-a-sandbox-blocks-you) explains.
+
+If the user gives a project link instead of a token, and is not the owner, the helper cannot use it: `scripts/lp` works only with an `lpt_` token. Tell them the two options. Either they run `librepaper login` and register `librepaper mcp --link '<share link>'` with their client, then start a new session, or they ask the owner for a token. [agent-setup.md](agent-setup.md) has the steps.
 
 ## Doing the task
 
@@ -32,11 +34,14 @@ lp withdraw 3f9c… 7a1e…
 |---|---|---|
 | Explain, summarize, outline, answer a question | `read`, then answer in chat | Read |
 | Review | `comment` | Comment |
+| See the comments already there | `call document_read` with a `thread` query, shown below | Read |
+| Check that a file builds, read its errors | `call document_compile`, see the next section | Read |
 | Proofread, tighten, rewrite | `suggest` (tracked change) | Suggest |
 | Add text | `insert` (tracked insertion) | Suggest |
 | New file, when the user asks for it | `create` (untracked) | Edit |
 
 - Use `lp read <path> [--lines A-B]` to get exact source. Then do the write.
+- To see existing comments, run `lp call document_read '{"queries":[{"kind":"thread","include":"unresolved"}]}'`. Each comment comes back with its `anchor`: the file, the passage as it reads now, and a `range_id` for it. Use `"include":"all"` to see resolved comments too, and `{"kind":"thread","id":"<comment id>"}` for one thread with its replies. Answering or resolving a comment goes through [The tools directly](#the-tools-directly).
 - The text given to `--on`, `--find`, `--after` or `--before` must match the source exactly and appear once. If it does not, the helper says so, lists the lines and changes nothing. Retry with a longer excerpt.
 - `insert` uses the text verbatim, so include any blank lines the text needs.
 - For long text, pass `--text-file -`, `--replace-file -` or `--body-file -` to read it from stdin, or give a path.
@@ -49,12 +54,21 @@ lp withdraw 3f9c… 7a1e…
 - A write that fails with a network error makes the helper print the `lp result` command to check it. Run that. Never resend the write.
 - For replies, resolving threads, direct edits and compile validation, use [The tools directly](#the-tools-directly).
 
+## Builds, compile errors and running code
+
+- To see whether a file builds, or to read its errors, compile it: `lp call document_compile '{"path":"main.tex"}'`. Every role can. Nothing compiles on the server: the owner's open editor tab does the work, and the answer has a `status`, the `diagnostics` (each with a `file` and a `line`) and the end of the compiler log. The fields, the statuses and what to do with a `pending` answer are in [agent-tools.md](agent-tools.md).
+- `renderer_unavailable` from `document_compile` means the owner has no tab open on the project. Ask the user to open it in a browser signed in as its owner, then compile again. If they cannot, ask them to paste the error from the editor's build log, or read the source and reason about the error. Say which of the two you did.
+- `validation: "compile"` on a proposal and the render queries are a different route. They use the in-app Agent panel's own renderer, so an agent connected by token or connector gets `renderer_unavailable` for them whatever is open. Do not create no-op candidates to probe for errors. Make the change, then compile the file with `document_compile`.
+- In Quarto and Calepin projects, code runs on the user's computer, in their Run directory, not on the server. The project holds the `.qmd`, `.bib`, images and `_quarto.yml`. Code cannot read project files, so data and scripts stay in the Run directory. Never upload data, scripts, prompts or other files that code reads to fix a "file not found" or "cannot open the connection" error; it will not help. Ask the user for their Run directory path.
+- `document_compile` with `"run": true` runs the code, and only when all of these hold: an Edit token, the desktop app, a Run directory, and the owner's "Let agents run code" setting for the project. A token below Edit is refused with `forbidden`, and when one of the others is missing the answer is `run_unavailable`. Nothing else a token does runs code. If you have a shell, Quarto and the user's Run directory, you can also render a local copy yourself: read the files with the helper, write them to a scratch folder, and run `quarto render <file>.qmd --execute-dir <run directory>`. Report the results. Never write into the Run directory without asking.
+- For the full model, see `docs/notebooks/quarto.md`.
+
 ## The token
 
 - Format: `lpt_<base64url origin>.<slug>.<key>`. Split at the first and last dot. The first part decodes to the server origin (for example `https://app.librepaper.org`). The slug is the project in that server's address bar.
-- The owner makes one in the project's Agent panel (robot icon in the sidebar), Agent tab, New. The owner can copy it again from the token's row: the copy icon there copies connection instructions that include the token.
-- It works only on two routes for its own project: `GET` and `POST /api/documents/<slug>/tools[/<name>]`. Nothing else accepts it.
-- It cannot upload images, publish, share or run code. Comments carry the token's name. Each token has an hourly comment budget (`budget_exceeded` when spent). Edit tokens expire after one day by default.
+- The owner makes one in the project's Agent panel (robot icon in the sidebar), Connect tab, New token. The owner can copy it again from the token's row: the copy icon there copies connection instructions that include the token.
+- For its own project, a token works on the document tools (`GET` and `POST /api/documents/<slug>/tools[/<name>]`) and on the remote MCP endpoint `/mcp/<slug>`. An Edit token also reaches the sync routes that `librepaper pull` and `push` use, under `/api/documents/<slug>`: `GET /history`, `GET /history/<id>`, `GET /project`, `PUT|POST /assets`, `GET|HEAD /assets/<name>` and `POST /source-change`. So an Edit token can upload files through `librepaper push`. No other route accepts it.
+- The document tools cannot upload images, publish, share or run code. Comments carry the token's name. Each token has an hourly comment budget (`budget_exceeded` when spent). Edit tokens expire after one day by default.
 - It is a credential. Never print it whole, write it into a repo, a config file or a commit, or send it anywhere but its own origin. When echoing it, show `lpt_…` plus the last four characters. A user who pastes it into chat has made their own decision about that; it does not relax this rule for you.
 
 ## Step 1: Pick the connection
@@ -92,6 +106,7 @@ printf %s 'lpt_...' | python3 "$H" connect --model '<your model name>'
 - A request that fails with a network error is most likely the sandbox. A read can be retried once access is allowed. Treat a failed write as having an unknown outcome, even if you suspect the sandbox: do not resend it, and ask `document_result` as in Step 4.
 - Tell the user exactly what to allow. For Codex: approve running the command outside the sandbox when asked, or start Codex with `codex -c sandbox_workspace_write.network_access=true`. The alternative is the MCP route in [agent-setup.md](agent-setup.md), which needs a new session.
 - For Claude Code: approval prompts are normal for shell calls. The user can allow the helper command for the session.
+- In claude.ai and Claude Desktop chats, the code sandbox reaches only allowed domains. Either the user adds the server's domain under Settings → Capabilities (on Team or Enterprise, an admin does this under Organization settings; the Free plan cannot), or, better, the owner connects the project as a connector (in Claude Code, `claude mcp add --transport http librepaper <URL>`). See [agent-setup.md](agent-setup.md).
 
 ## The tools directly
 
@@ -102,6 +117,7 @@ You need this only for replies, resolving threads, direct edits, compile validat
 Start with one `document_read` that combines queries: `{"kind":"manifest"}` to list files, then `context`, `source` or `outline` for the file in scope. Every read returns a `view_id`, `range_id` handles, effective permissions, limits and `operation_epoch`.
 
 - `context`, `source` and `section` need `path`. There is no main file, so read the manifest when unsure.
+- To see the comments already on the project, add `{"kind":"thread","include":"unresolved"}` to the same read. Each one carries its `anchor`, with a `range_id` you can reply or propose on.
 - Follow `next_cursor` against the same `view_id` until done. Never call a partial read a review of the whole document.
 - Reuse handles. Never rebuild source text or compute hashes yourself.
 - Query kinds and fields are in [agent-tools.md](agent-tools.md).
@@ -115,14 +131,17 @@ Start with one `document_read` that combines queries: `{"kind":"manifest"}` to l
 | Proofread, tighten, rewrite | `document_propose` with `publish: "suggestions"`: tracked changes an editor accepts or rejects | Suggest |
 | Direct edit, no tracking | `document_propose` with `publish: "private"`, then `document_apply` on the candidate | Edit, and the user said "edit directly" |
 | New, renamed or deleted text file | `document_files` (untracked). Rename (`lp rename`) rather than delete and create, so comments stay attached | Edit, and the user asked for it |
+| Check that a file compiles, read its errors | `document_compile` on the file path; read `diagnostics` (see [agent-tools.md](agent-tools.md)) | Read |
 
 - A request to proofread or rewrite is not permission for untracked edits. Default to tracked suggestions.
 - With Comment access you cannot change text. With Suggest access you can only propose tracked changes. Say so and suggest the owner issue a Suggest token, or an Edit token for direct edits.
 - You cannot accept tracked changes or reject anyone else's; that is the editor's act. You can withdraw your own pending changes with `document_withdraw` (or `lp withdraw`).
 - Keep replacements minimal and inside the asked scope. Preserve math, references, code and markup.
 - When updating an existing document, propose targeted patches over the passages that change. Never replace a whole file or section to change part of it; keep the rest of the author's text.
+- To add a reference by DOI, call `reference_from_doi` (served only by `librepaper mcp`, answered on the user's machine) and append its `bibtex` with `document_propose` to the bibliography file the citing document loads (if it loads none, create references.bib and register it in that document the way its format expects). Never write reference metadata yourself.
+- To add a reference from the user's Zotero library, call `reference_search_zotero` with a title, author or year, pick the candidate that clearly matches (ask the user if several could), then call `reference_from_zotero` with its `zotero_item`. Before appending its `bibtex`, reuse an existing entry in the bibliography file the citing document loads (if it loads none, create references.bib and register it in that document the way its format expects) with the same `x-librepaper-zotero-item` or doi (cite its key and append nothing); otherwise append it the same way. Like `reference_from_doi`, these are served only by `librepaper mcp`, answered on the user's machine from the local Zotero desktop app.
 - Keep the change ids that `document_propose` returns in `effects`. If a pass went wrong, withdraw it with those ids before proposing again. Do not try to "restore" text by proposing the old text over your own pending change.
-- Use `validation: "compile"` when the change must still build, and only claim it compiles from a matching render result.
+- Use `validation: "compile"` when the change must still build, and only claim it compiles from a matching render result. That validation needs the in-app Agent panel. With a token or connector, compile the file with `document_compile` after the change instead.
 
 ### Step 4: Writes and recovery
 

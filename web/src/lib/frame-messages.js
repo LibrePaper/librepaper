@@ -7,6 +7,8 @@ const MAX_READY_TEXT = 16_000_000;
 const MAX_SELECTION_TEXT = 1_000_000;
 const MAX_CONTEXT_TEXT = 4096;
 const MAX_ID = 256;
+const MAX_HINT_PATH = 1024;
+const MAX_HINT_COPIES = 1000;
 const MAX_COORDINATE = 10_000_000;
 const MAX_SCROLL = 100_000_000;
 
@@ -28,6 +30,24 @@ function rectangle(value) {
   return { top: value.top, left: value.left, right: value.right, bottom: value.bottom };
 }
 
+// The source lines a selection came from, as the preview reported them. A
+// malformed hint is dropped rather than failing the selection it came with.
+function sourceHint(value) {
+  if (!plainObject(value) || !boundedString(value.path, MAX_HINT_PATH) || !value.path.length
+      || !Number.isSafeInteger(value.from_line) || value.from_line < 1
+      || !Number.isSafeInteger(value.to_line) || value.to_line < value.from_line) return null;
+  const hint = { path: value.path, from_line: value.from_line, to_line: value.to_line };
+  // Which copy of repeated words was selected. Both fields or neither: when
+  // either is missing or out of range, the lines are kept and the pair dropped.
+  const { occurrence, count } = value;
+  if (Number.isSafeInteger(occurrence) && Number.isSafeInteger(count)
+      && occurrence >= 0 && occurrence < count && count <= MAX_HINT_COPIES) {
+    hint.occurrence = occurrence;
+    hint.count = count;
+  }
+  return hint;
+}
+
 function selector(value) {
   if (value === null) return null;
   if (!plainObject(value) || !boundedString(value.exact, MAX_SELECTION_TEXT)
@@ -37,6 +57,10 @@ function selector(value) {
   if (value.position !== undefined) {
     if (!Number.isSafeInteger(value.position) || value.position < 0 || value.position > MAX_READY_TEXT) return undefined;
     result.position = value.position;
+  }
+  if (value.hint !== undefined) {
+    const hint = sourceHint(value.hint);
+    if (hint) result.hint = hint;
   }
   return result;
 }
@@ -119,14 +143,32 @@ export function validateFrameMessage(input) {
       return { type: input.type };
     case "focus":
       return boundedString(input.id, MAX_ID) && input.id.length ? { type: "focus", id: input.id } : null;
+    case "shortcut": {
+      // A keystroke the frame saw with Mod+Alt held, passed on so the Reader
+      // can run its own shortcut. The key must be present; the code may be
+      // missing. Modifier flags are only true when sent as true.
+      if (!boundedString(input.key, 32) || !input.key.length) return null;
+      if (input.code !== undefined && input.code !== null && !boundedString(input.code, 32)) return null;
+      return {
+        type: "shortcut",
+        key: input.key,
+        code: typeof input.code === "string" ? input.code : "",
+        ctrlKey: input.ctrlKey === true,
+        metaKey: input.metaKey === true,
+        altKey: input.altKey === true,
+        shiftKey: input.shiftKey === true,
+      };
+    }
     case "reading-position": {
       // The text offset is null when the frame found no text under the probe
       // point; the PDF point is optional and dropped when it is invalid. A
-      // reply with neither says nothing the reader can use.
+      // reply with neither is still accepted, as an empty reply: the reader
+      // asked for a position and needs every answer, even an empty one, to
+      // settle that request. Otherwise a Show in source that got no answer
+      // would stay pending and hijack the next automatic reading position.
       const start = input.start;
       if (start !== null && (!Number.isSafeInteger(start) || start < 0 || start > MAX_READY_TEXT)) return null;
       const pdf = pdfPoint(input.pdf);
-      if (start === null && !pdf) return null;
       return { type: "reading-position", start, pdf };
     }
     case "scroll": {

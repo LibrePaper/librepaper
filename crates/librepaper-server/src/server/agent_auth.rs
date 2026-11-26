@@ -18,6 +18,9 @@ pub(super) async fn issue(
     if request.method() != Method::POST {
         return plain(405, "method not allowed");
     }
+    if !server.agents {
+        return write_json(403, &json!({"error": AGENTS_OFF}));
+    }
     let headers = request.headers();
     if cross_site_refused(headers, &context.arrival)
         || headers.get(header::ORIGIN).is_none()

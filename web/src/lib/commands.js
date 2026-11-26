@@ -256,6 +256,7 @@ export const COMMANDS = [
   { id: "palette", label: m.common_command_palette(), category: m.commands_category_navigation(), scope: "workspace", menu: "help", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
   { id: "focus-files", label: m.commands_focus_files(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+E"], available: panel("files"), note: m.commands_note_files_panel() },
   { id: "focus-outline", label: m.commands_focus_outline(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+O"], available: panel("outline"), note: m.commands_note_outline_panel() },
+  { id: "focus-search", label: m.commands_focus_search(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Shift+F"], available: panel("search"), note: m.commands_note_search_panel() },
   { id: "focus-comments", label: m.commands_focus_comments(), category: m.commands_category_navigation(), scope: "workspace", keys: [], available: panel("collaboration"), note: m.commands_note_comments_panel() },
   { id: "focus-preview", label: m.commands_focus_preview(), category: m.commands_category_navigation(), scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: m.commands_note_preview_visible() },
 
@@ -289,6 +290,8 @@ export const COMMANDS = [
   // together. The two that had shortcuts before this file existed keep them.
   { id: "layout-cycle", label: m.commands_layout_cycle(), category: m.commands_category_workspace(), scope: "workspace", keys: ["Mod+\\"], available: (c) => Boolean(c.editing) },
   { id: "linked", label: m.commands_linked(), category: m.commands_category_workspace(), scope: "workspace", menu: "view", keys: ["Mod+Alt+L"], available: (c) => Boolean(c.editing) },
+  { id: "show-in-preview", label: m.commands_show_in_preview(), category: m.commands_category_workspace(), scope: "workspace", menu: "view", keys: ["Mod+Alt+J"], available: (c) => Boolean(c.linkable) },
+  { id: "show-in-source", label: m.commands_show_in_source(), category: m.commands_category_workspace(), scope: "workspace", menu: "view", keys: ["Mod+Alt+K"], available: (c) => Boolean(c.linkable) },
   { id: "visual-markup", label: m.commands_visual_markup(), category: m.commands_category_workspace(), scope: "workspace", menu: "view", keys: [], available: (c) => Boolean(c.editing) },
   // The browser's zoom keys, taken only while the focus is in the source: there
   // they size the source like a pinch, and everywhere else the browser keeps

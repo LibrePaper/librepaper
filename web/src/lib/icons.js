@@ -53,6 +53,9 @@ export const ICONS = {
   "chevron-down": [["path", "m6 9 6 6 6-6"]],
   "chevron-up": [["path", "m18 15-6-6-6 6"]],
   "list-filter": [["path", "M3 6h18"], ["path", "M7 12h10"], ["path", "M10 18h4"]],
+  // Lucide's funnel, which it called "filter" until it renamed it: which of a
+  // list's entries are showing.
+  filter: [["path", "M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"]],
   // Lucide's arrow-up-down, for the phone's sort control.
   "arrow-up-down": [["path", "m21 16-4 4-4-4"], ["path", "M17 20V4"], ["path", "m3 8 4-4 4 4"], ["path", "M7 4v16"]],
   // Lucide's diff, for "compare since this label" in the timeline.
@@ -246,6 +249,17 @@ export const ICONS = {
     ["path", "M12 3v12"],
   ],
   search: [["circle", { cx: 11, cy: 11, r: 8 }], ["path", "m21 21-4.3-4.3"]],
+  replace: [
+    ["path", "M14 4a1 1 0 0 1 1-1"],
+    ["path", "M15 10a1 1 0 0 1-1-1"],
+    ["path", "M21 4a1 1 0 0 0-1-1"],
+    ["path", "M21 9a1 1 0 0 1-1 1"],
+    ["path", "m3 7 3 3 3-3"],
+    ["path", "M6 10V5a2 2 0 0 1 2-2h2"],
+    ["rect", { x: 3, y: 14, width: 7, height: 7, rx: 1 }],
+  ],
+  // Lucide's command icon, for the command palette.
+  command: [["path", "M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"]],
   // Lucide's list icon, from https://github.com/lucide-icons/lucide/blob/main/icons/list.svg.
   list: [
     ["path", "M3 12h.01"], ["path", "M3 18h.01"], ["path", "M3 6h.01"],

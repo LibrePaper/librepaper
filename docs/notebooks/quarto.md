@@ -22,6 +22,8 @@ Code in a cell is part of the document. Code in a script stays in your Run direc
 2. Open your Quarto document and press **Run code** at the top of the editor. The first time, LibrePaper asks for a Run directory: the suggested `~/LibrePaper/<project>`, or a folder you already have. Your code runs there.
 3. Put your data and scripts in the Run directory, and write paths relative to it, such as `read.csv("data/survey.csv")`.
 
+A host can [turn **Run code** off](../host/advanced.html#agents-and-local-builds) for a whole server; the button is then not shown.
+
 Each press of **Run code** runs the whole document once. **Stop** ends a run. Nothing runs when a document opens or while you type. To change the folder, open the menu beside **Run code** and choose **Run directory**, which shows the current folder's name.
 
 You can preview HTML, RevealJS slides or PDF. Word (DOCX) is download only. LibrePaper previews one document, not whole websites or books.
@@ -100,6 +102,8 @@ Published results count against the document owner's storage. To delete them, go
 **Code only sees the Run directory.** Code cannot read the project's files, and LibrePaper says so when a run fails for that reason. An image that code reads, such as one loaded with `knitr::include_graphics()`, must be in the Run directory. Markdown can use a project image with `![](img/logo.png)`. When the same path is in both places, Markdown uses the project copy and code uses the Run directory copy, and LibrePaper tells you. Identical copies are not reported.
 
 **A file is not found.** Paths in code are relative to the top of the Run directory, not to the `.qmd`. Markdown paths are relative to the `.qmd`, as usual. Hidden files and folders, `_quarto.yml`, and folders Quarto generates (`*_files`, `*_cache`, `_freeze`, `_site`) are not linked into the project copy, so Markdown cannot use them.
+
+**Output is stale after data changed.** With `cache: true`, Quarto reuses a cell's output until its code changes, and does not notice a data file that changed. Choose **Run without cache** in the menu beside **Run code** to recompute every cached cell once. With R (knitr), make the cache follow the file by adding `#| cache.extra: !expr tools::md5sum("data/survey.csv")` to the cell.
 
 **Including a file your code writes.** Quarto reads `{{< include >}}` before code runs, so the included file is picked up from the next run.
 

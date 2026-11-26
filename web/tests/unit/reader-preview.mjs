@@ -71,7 +71,7 @@ assert.match(offlineSource, /request\.onblocked = \(\) => \{[\s\S]*?blocked = tr
 assert.match(persistenceSource, /pendingFlush\.catch\(\(\) => \{\}\)\.finally/);
 assert.match(editorSource, /states = new WeakMap\(\);\s*undoManager = null;\s*undoManagerDoc = null/);
 assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && markdownOutput === "pdf"[\s\S]*?\? "pdf"/);
-assert.match(readerSource, /const quartoPdfOffered = \$derived\(hasDesktop \|\| displayedFormat !== "quarto"\)/);
+assert.match(readerSource, /const quartoPdfOffered = \$derived\(buildsHere \|\| displayedFormat !== "quarto"\)/);
 assert.match(readerSource, /const markdownOutput = \$derived\(quartoPdfOffered && buildPreferences\.output === "pdf"/);
 assert.match(readerSource, /const frameLoaded = \(\) => \{[\s\S]*?framePreview\.markReady\(\)[\s\S]*?replayPreview\(\)/);
 assert.match(readerSource, /<Preview[\s\S]*?onload=\{frameLoaded\}/);
@@ -89,7 +89,7 @@ assert.doesNotMatch(readerSource, /granted\(|local-execution\.js|localExecutionC
 // Turning the switch changes who renders, so what was in flight stops and the
 // pane is drawn again. Quarto has no switch: it runs on an explicit Run.
 assert.match(readerSource, /function toggleLocalExecution\(\) \{\s*localExecution = !localExecution;\s*stopRendering\(\);\s*void paintPreview\(\);/);
-assert.match(readerSource, /async function runCode\(\) \{[\s\S]*?if \(!runDir\.usable\) \{\s*pendingRun = true;\s*runDirPageOpen = true;[\s\S]*?backend: "local", output: toPdf \? "pdf" : "html"/);
+assert.match(readerSource, /async function runCode\([^)]*\) \{[\s\S]*?if \(!runDir\.usable\) \{\s*pendingRun = \{ refreshCache \};\s*runDirPageOpen = true;[\s\S]*?backend: "local", output: toPdf \? "pdf" : "html"/);
 // Switching Run code on opens the Run directory dialog. The navbar and the
 // phone strip no longer show the folder; Settings > Tools does.
 assert.doesNotMatch(readerSource, /RunDirectoryControl|run-directory-strip|runStrip/);
@@ -103,7 +103,7 @@ assert.doesNotMatch(previewSource, /livePreviewOwnsPane/i);
 assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?<RunButton phase=\{runPhase\}[\s\S]*?onrun=\{runCode\}[\s\S]*?\{:else if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
 // The switch is offered in the desktop app, for every document this person may
 // edit outright (not only suggest) whose format is set to this computer.
-assert.match(readerSource, /const runCodeOffered = \$derived\(mayEdit && !suggestOnly && hasDesktop && buildPreferences\.backend === "local"\)/);
+assert.match(readerSource, /const runCodeOffered = \$derived\(mayEdit && !suggestOnly && buildsHere && buildPreferences\.backend === "local"\)/);
 // There is no confirmation dialog any more.
 assert.doesNotMatch(readerSource, /Run code on this computer/);
 // The browser makes Markdown and Quarto PDFs itself, so no card sends the

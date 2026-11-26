@@ -17,12 +17,14 @@
   import { createWebGit } from "../lib/reader/web-git.svelte.js";
   import { createWebConnection } from "../lib/reader/web-connection.svelte.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
+  import { createCompileResponder, errorReply, compileReply, parseCompileRequest } from "../lib/agent-compile.js";
   import { passageContext, sourcePassage } from "../lib/assistant.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
   import { parse as parseSynctex, lineAt as synctexLineAt, offsetOfLine as synctexOffsetOfLine } from "../lib/synctex.js";
   import * as localQuarto from "../lib/desktop/client.js";
+  import { agentsAllowed, localBuildsAllowed } from "../lib/host-switches.js";
   import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
   import { basename } from "../lib/file-manager.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
@@ -87,6 +89,8 @@
   import { exportAvailability, exportFile, unrunCells } from "../lib/reader/exports.js";
   import { pandoc } from "../lib/pandoc/client.js";
   import Preview from "./Preview.svelte";
+  import PanelBoundary from "./PanelBoundary.svelte";
+  import { report } from "../lib/crash.js";
   import PreviewControls from "./PreviewControls.svelte";
   import { onPageZoom } from "../lib/desktop/zoom.js";
   import { agentWaitingBadge } from "../lib/agent-permission.js";
@@ -96,7 +100,7 @@
     import RunDirectoryPrompt from "./reader/RunDirectoryPrompt.svelte";
   import { leaf } from "../lib/reader/run-directory.js";
   import { createRunDirectory } from "../lib/reader/run-directory-state.svelte.js";
-  import { buildPreferenceUser, readLiveCompile, readShareResults, writeShareResults, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import { buildPreferenceUser, readDefaultPreview, readLiveCompile, readShareResults, writeShareResults, readAgentRun, writeAgentRun, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import { locale } from "../lib/locale.js";
   import { createSharedResults, publishProblem } from "../lib/reader/shared-results.svelte.js";
   import { splitResults, staleCells, tagCells } from "../lib/quarto-results.js";
@@ -141,6 +145,7 @@
   import { watchKeyboard } from "../lib/mobile/keyboard.js";
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
+  import Search from "./reader/Search.svelte";
   import WordCount from "./reader/WordCount.svelte";
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
@@ -196,6 +201,8 @@
     hidden: () => hidden,
     onProject: (next) => {
       workspace.fromProject(next);
+      // A reader's Search panel searches the projection, so it searches again.
+      searchRevision += 1;
       // Readers load the project whole too, on every projection that lands.
       warmFigures();
       changeRows = readerChangeRows(next.changes);
@@ -311,6 +318,12 @@
       // Shared results changed or deleted while the socket was down were
       // announced to nobody either.
       if (up && runsExplicitly) void refreshResults();
+      // A server that came back may have new rules, the host's switches among
+      // them, so they are read again. The first connection is not one,
+      // loadRules has already run for it, unless the rules in hand are the
+      // ones remembered from a page that opened offline.
+      if (up && (connectedBefore || rulesRemembered)) loadRules();
+      if (up) connectedBefore = true;
     },
     onSession: (active) => {
       changesUnsubscribe?.();
@@ -427,6 +440,14 @@
   let preview = $state(null);
   // The desktop app is there or it is not; this page never changes its mind.
   const hasDesktop = Boolean(localQuarto.desktop());
+  // What this server's host allows (lib/host-switches.js): agents at all, and
+  // builds on this computer. The answer kept from the last visit stands until
+  // loadRules has this visit's.
+  let hostAgents = $state(agentsAllowed());
+  let hostLocalBuilds = $state(localBuildsAllowed());
+  // Whether a build may be sent to this computer: in the desktop app, on a
+  // server whose host allows it.
+  const buildsHere = $derived(hasDesktop && hostLocalBuilds);
 
   /// Which document this browser tab is about, as far as the desktop app is
   /// concerned. It picks up whatever binding the client already remembers for
@@ -479,15 +500,18 @@
   // never runs on this computer until Run is pressed and a folder is set.
   let runDirectory = $state("");
   const runDirectoryReady = $derived(runDirectory !== "");
-  // Run was pressed before a folder was set: choosing one carries on with it.
-  let pendingRun = false;
+  // Run was pressed before a folder was set: choosing one carries on with it,
+  // as the same kind of run (Run without cache stays one).
+  /** @type {{ refreshCache: boolean } | null} */
+  let pendingRun = null;
   function setRunDirectory(path) {
     const next = path || "";
     if (next === runDirectory) return;
     runDirectory = next;
     if (next && pendingRun && !readerDisposed) {
-      pendingRun = false;
-      void runCode();
+      const options = pendingRun;
+      pendingRun = null;
+      void runCode(options);
     }
   }
   // The Run button's menu and the Run directory dialog share this state.
@@ -605,7 +629,14 @@
         selected: String(comment.id) === String(selectedAnnotation),
       });
     }
-    untrack(() => editor.setCommentMarks(list));
+    // This runs on every keystroke and dispatches into CodeMirror, and it
+    // sits in the Reader itself, past every panel boundary. A throw is caught
+    // here and the marks are left as they were.
+    try {
+      untrack(() => editor.setCommentMarks(list));
+    } catch (error) {
+      report(error, "comment marks");
+    }
   }
   $effect(() => {
     void comments;
@@ -797,13 +828,23 @@
         followDocumentClick(Number(message.offset) || 0, message.pdf);
         break;
       case "pdf-caret":
-        followPdfClick(message.pdf);
+        // A double-click on a PDF region with no text: the SyncTeX point is
+        // the only place to go, so it takes the same path as a text double-click.
+        void jumpToSource(null, message.pdf);
         break;
       case "click":
         followPreviewClick(message.offset, message.pdf);
         break;
       case "reading-position":
-        followReadingPosition(message.start, message.pdf);
+        if (sourceAsked) {
+          sourceAsked = false;
+          void jumpToSource(message.start, message.pdf);
+        } else {
+          followReadingPosition(message.start, message.pdf);
+        }
+        break;
+      case "shortcut":
+        runFrameShortcut(message);
         break;
       case "focus":
         void focusAnnotation(message.id);
@@ -861,6 +902,7 @@
       prefix: String(selector.prefix || ""),
       suffix: String(selector.suffix || ""),
       position: Number.isInteger(selector.position) && selector.position >= 0 ? selector.position : null,
+      ...(selector.hint ? { hint: selector.hint } : {}),
     };
     pending.render_digest = mayEdit ? "" : renderedProjectDigest;
     placeBar(rect);
@@ -934,6 +976,93 @@
     return previewCandidate({ request, tree, render: renderers.render,
       title: headingOf, digest: renderers.snapshotDigest });
   }
+
+  // An agent asked this tab, the owner's, to compile a file. The reply is
+  // posted to the server, which holds the agent's call open. Only the current
+  // tree is compiled, with this browser's renderer unless the agent asks for a
+  // run, which needs the desktop app, a Run directory and the owner's opt-in.
+  async function compileForAgent(request) {
+    const live = liveTreeNow();
+    if (!(request.path in (live.texts || {}))) return errorReply("failed", "no such file");
+    const format = renderers.formatOf(request.path) || "";
+    if (!format) return errorReply("no_renderer", "This file type cannot be compiled.");
+    // The saved choices below belong to the file being previewed; another
+    // format falls back to its own saved default.
+    const sameFormat = format === (renderers.formatOf(previewPath) || "");
+    const wantsPdf = request.output
+      ? request.output === "pdf"
+      : !sameFormat ? readDefaultPreview(buildScope(), format) === "pdf"
+        : format === "typst" ? typstOutput !== "html"
+          : format === "latex" ? latexOutput !== "html"
+            : markdownOutput === "pdf";
+    const output = wantsPdf ? "pdf" : "html";
+    if (request.run) {
+      if (!runCodeOffered || !runDir.usable || !["quarto", "typst"].includes(format)) {
+        return errorReply("run_unavailable", "Running code needs the desktop app with a Run directory and a Quarto or Typst file.");
+      }
+      // Read the opt-in now: another tab may have turned it off since this one loaded.
+      if (!readAgentRun(buildScope(), SLUG)) return errorReply("run_disabled", "The owner has not enabled \"Let agents run code\" for this project.");
+      // A run is of the file the preview shows.
+      if (request.path !== previewPath) return errorReply("run_unavailable", "Open this file in the editor before running it.");
+      if (runPhase === "running") return errorReply("busy", "A run is already in progress.");
+      // No await between the check, the capture and the start, so the run and
+      // the reply describe the same file.
+      const tree = capturePreviewTree(treeNow());
+      const started = runCode({ output, tree, allowed: () => readAgentRun(buildScope(), SLUG) });
+      const digest = renderers.snapshotDigest({ ...tree, main: "" });
+      const outcome = await started;
+      const revision = await digest;
+      if (outcome.reason === "run_disabled") return errorReply("run_disabled", "The owner has not enabled \"Let agents run code\" for this project.");
+      if (outcome.cancelled) return errorReply("failed", "The run was stopped.");
+      const diagnostics = [...outcome.diagnostics, ...missingFigureWarnings(outcome.missing)].map((item) => diagnosticContext(item, tree, revision));
+      return compileReply({
+        ok: outcome.ok, diagnostics, log: outcome.log, provenance: { renderer: "local" },
+        ...(outcome.output === "pdf" ? { pdf: { byteLength: 1 } } : outcome.output === "html" ? { html: "" } : {}),
+      }, revision, request.output);
+    }
+    const tree = capturePreviewTree({ ...live, main: request.path });
+    let missingFigures = [];
+    if (Object.keys(tree.digests || {}).length) {
+      const { held, missing } = await gatherFigures(tree.digests);
+      missingFigures = missing;
+      tree.assets = held.assets;
+      tree.urls = { ...(tree.urls || {}), ...held.urls };
+    }
+    const heading = await headingOf(tree);
+    const options = format === "markdown" || format === "quarto"
+      ? { buildPreferences: { ...buildPreferences, backend: "browser", output } }
+      : { buildPreferences: { ...buildPreferences, backend: "browser" }, format: output };
+    const rendered = await renderers.render(tree, heading, { ...options, project: SLUG });
+    // The preview queue may have merged this job with a newer one, so the
+    // result can describe another tree than the one asked for.
+    if (rendered?.compiledTree && rendered.compiledTree !== tree) return errorReply("busy", "A newer preview replaced this compile. Try again.");
+    const revision = await renderers.snapshotDigest({ ...tree, main: "" });
+    const diagnostics = [...(rendered?.diagnostics || []), ...missingFigureWarnings(missingFigures)].map((item) => diagnosticContext(item, tree, revision));
+    return compileReply({ ...rendered, diagnostics }, revision, request.output);
+  }
+  // A figure that could not be fetched leaves the compile without it; the
+  // agent is told so the result does not look complete.
+  function missingFigureWarnings(paths) {
+    return (paths || []).map((path) => ({
+      severity: "warning", file: path, message: "This figure could not be loaded, so the compile ran without it.",
+    }));
+  }
+  async function postCompileReply(id, body) {
+    try {
+      const send = (payload) => fetch(`/api/documents/${SLUG}/compile/${id}`, {
+        method: "POST", credentials: "same-origin",
+        headers: authHeaders(KEY, "application/json"), body: JSON.stringify(payload),
+      });
+      const response = await send(body);
+      // The server refused the reply (too large, say): tell the agent so
+      // rather than leave its call to time out. 404 means it gave up already.
+      if (!response.ok && response.status !== 404) {
+        await send(errorReply("failed", `The server refused the compile reply (HTTP ${response.status}).`));
+      }
+    } catch (error) { console.warn("compile reply failed", error); }
+  }
+  // Made on the first request, one per tab, so it serializes that tab's compiles.
+  let compileResponder;
 
   // A task's tracked changes are reviewed in the Changes panel, narrowed to
   // the ids the task returned. Separate runs of one task all stay on show.
@@ -1110,8 +1239,21 @@
       pending,
     };
     collaborationTab = "comments";
+    // A draft started in the source keeps the source on screen when the
+    // column opens beside it on a tight split; one started in the preview
+    // keeps the preview.
+    arrangement.focusPane(pending.source ? "source" : "document");
     if (panel !== "collaboration") void arrangement.showPanel("collaboration");
     if (compact) arrangement.showMobileView("sidebar");
+  }
+
+  // A press or a focus inside a pane makes it the one a tight split keeps.
+  // A phone has no split: its face is the one the person chose, and Back
+  // returns to it, so a press or a focus there changes nothing.
+  function keepPane(event) {
+    if (compact) return;
+    if (event.target.closest?.("#reader-source")) arrangement.focusPane("source");
+    else if (event.target.closest?.("#reader-document")) arrangement.focusPane("document");
   }
 
   // A verb chosen on the bar over the selection. Highlighting is the one that
@@ -1538,6 +1680,14 @@
     }
 
     if (lifecycle.receive(event)) return;
+    if (event.type === "compile_request") {
+      const request = parseCompileRequest(event);
+      if (request) {
+        compileResponder ??= createCompileResponder({ compile: compileForAgent, post: postCompileReply });
+        void compileResponder.handle(request);
+      }
+      return;
+    }
     if (event.type === "results-changed") {
       if (runsExplicitly) void refreshResults();
       return;
@@ -1657,7 +1807,8 @@
   const aloneSet = $derived(target.state.alone);
 
   let participants = $state([]);
-  let linked = $state(read(LINKED, false) === true);
+  // Keep in step is on unless the reader turned it off, on desktop and phone alike.
+  let linked = $state(read(LINKED, true) !== false);
   // The formatting at the caret, from the Editor while visual mode is on.
   let formatActive = $state(null);
 
@@ -1792,6 +1943,8 @@
   // found the project by one of its files. Honoured once the directory has
   // arrived, and once only.
   const ARRIVED_FILE = new URLSearchParams(location.search).get("file") || "";
+  // The New project page asks for the editor, so a project just made opens on its source.
+  const ARRIVED_TO_EDIT = new URLSearchParams(location.search).get("edit") === "1";
 
   const loadHistory = () => timeline.load();
 
@@ -1931,6 +2084,21 @@
         if (readerDisposed) return;
         editor?.restorePlace(saved.openFile, saved);
       })();
+    });
+  });
+  // The flag is set once the arrival is honoured; the parameter is then removed
+  // so a reload or a shared link does not open the source again.
+  let arrivedToEdit = false;
+  $effect(() => {
+    if (arrivedToEdit || !ARRIVED_TO_EDIT || !editing || !editor || !ws.files.length) return;
+    untrack(() => {
+      arrivedToEdit = true;
+      // A phone shows one face; a tight split keeps the preferred pane.
+      if (compact) arrangement.showMobileView("source");
+      else arrangement.focusPane("source");
+      const url = new URL(location.href);
+      url.searchParams.delete("edit");
+      window.history.replaceState(window.history.state, "", url);
     });
   });
 
@@ -2127,16 +2295,22 @@
     const path = toolbarPath;
     return renderers.formatOf(path) || (path && path === previewPath ? sourceFormat : "");
   });
+  // These deriveds run in the Reader itself, which no panel boundary catches,
+  // so a throw here would take the whole page. A count that throws is shown
+  // as empty and the error is noted.
+  const guarded = (where, fallback, compute) => {
+    try { return compute(); } catch (error) { report(error, where); return fallback; }
+  };
   // The outline of the open file. Typst reads the typst module's tree, which
   // is empty until the module loads; the revision brings the outline back then.
   const outlineHeadings = $derived.by(() => {
     void outlineRevision;
     if (panel !== "outline" || !mayEdit) return [];
-    return extractOutline(outlineSource, outlineFormat);
+    return guarded("outline", [], () => extractOutline(outlineSource, outlineFormat));
   });
   // Word counts for each heading in the Outline panel.
   const outlineSections = $derived.by(() => panel === "outline" && mayEdit
-    ? sectionWords(outlineSource, outlineFormat, outlineHeadings) : []);
+    ? guarded("outline", [], () => sectionWords(outlineSource, outlineFormat, outlineHeadings)) : []);
   // The Word count dialog: the open file's document with its includes, and
   // the selection in the open file. A preview lock does not change the count.
   // Nothing is counted while the dialog is shut.
@@ -2147,10 +2321,10 @@
     const texts = liveTreeNow().texts;
     const root = previewTarget({ open: toolbarPath, locked: null, texts }).path || toolbarPath;
     const range = editor?.selection?.();
-    return {
+    return guarded("word count", null, () => ({
       document: documentWords(root, texts),
       selection: range && range.file === openFile ? countWordsIn(editor.text(), outlineFormat, range.from, range.to) : null,
-    };
+    }));
   });
   // What the last compile said. When it is painted is `diagnostics.js`'s
   // rule, and the wait it counts is from the keystroke rather than from the
@@ -2274,7 +2448,7 @@
   // the document's `format: pdf` options and shows no code output. Only the
   // desktop app, which can run Quarto itself, offers it for Quarto. Plain
   // Markdown keeps PDF everywhere. The stored preference is left alone.
-  const quartoPdfOffered = $derived(hasDesktop || displayedFormat !== "quarto");
+  const quartoPdfOffered = $derived(buildsHere || displayedFormat !== "quarto");
   // This browser-only choice affects the pane and is never published. It is
   // not conditioned on the source pane being open: the output starts on the
   // person's default preview for this format (HTML unless they chose PDF in
@@ -2356,8 +2530,9 @@
   });
   const buildPreferences = $derived(buildSettings.state.preferences);
   // Where the toggle is offered: in the desktop app, for every editable
-  // document whose format is set to this computer.
-  const runCodeOffered = $derived(mayEdit && !suggestOnly && hasDesktop && buildPreferences.backend === "local");
+  // document whose format is set to this computer. Not on a server whose host
+  // has turned local builds off.
+  const runCodeOffered = $derived(mayEdit && !suggestOnly && buildsHere && buildPreferences.backend === "local");
   // The Run directory is read whenever a Quarto or Typst document's code may
   // be run here; reading it only asks the desktop app for the setting.
   $effect(() => {
@@ -2384,7 +2559,7 @@
   }
   // Dismissing the dialog gives up a Run that was waiting for a folder.
   function dismissRunDir() {
-    pendingRun = false;
+    pendingRun = null;
     runDirPageOpen = false;
   }
   const latexOutput = $derived(buildSettings.state.latexOutput);
@@ -2398,6 +2573,13 @@
       && readLiveCompile(buildScope(), "latex") && (renderers.latexHtmlLastSeconds() ?? 0) <= 3;
   }
   const markdownOutput = $derived(quartoPdfOffered && buildPreferences.output === "pdf" ? "pdf" : "html");
+  // What the preview renders with. A stored PDF choice for Quarto previews as
+  // HTML where its PDF is not offered, so the render agrees with the frame.
+  const previewPreferences = $derived(
+    markdownOutput === "html" && buildPreferences.output === "pdf" && ["markdown", "quarto"].includes(displayedFormat)
+      ? { ...buildPreferences, output: "html" }
+      : buildPreferences,
+  );
   const buildScope = () => buildSettings.scopeFor(buildUserId);
   $effect(() => {
     const format = sourceFormat;
@@ -2415,6 +2597,20 @@
     void buildUserId;
     untrack(() => { shareResults = readShareResults(buildScope(), SLUG); });
   });
+  let agentRunAllowed = $state(false);
+  $effect(() => {
+    void buildUserId;
+    untrack(() => { agentRunAllowed = readAgentRun(buildScope(), SLUG); });
+  });
+  // Another tab may change the opt-in; keep the checkbox honest.
+  $effect(() => {
+    const refresh = () => { agentRunAllowed = readAgentRun(buildScope(), SLUG); };
+    window.addEventListener("storage", refresh);
+    return () => window.removeEventListener("storage", refresh);
+  });
+  function setAgentRun(on) {
+    agentRunAllowed = writeAgentRun(buildScope(), SLUG, on);
+  }
   function setShareResults(on) {
     shareResults = writeShareResults(buildScope(), SLUG, on);
   }
@@ -2519,21 +2715,27 @@
   // makes is not the preview: its cell outputs are split out and spliced under
   // the draft's cells. For Typst, Calepin's stored files are kept instead, and
   // the browser's draft reads them back, so the preview stays the draft.
-  async function runCode() {
-    if (runPhase === "running" || readerDisposed) return;
+  async function runCode({ refreshCache = false, output = "", tree: given = null, allowed = null } = {}) {
+    const none = (reason, cancelled = false, log = "") => ({ ok: false, cancelled, output: "none", diagnostics: [], log, reason, missing: [] });
+    if (runPhase === "running" || readerDisposed) return none("busy");
     if (!runDir.usable) {
-      pendingRun = true;
+      pendingRun = { refreshCache };
       runDirPageOpen = true;
-      return;
+      return none("no_run_directory");
     }
     runPhase = "running";
     runStartedAt = Date.now();
+    // The document's format as the run starts: the reader may move to another
+    // file while figures are gathered, and the run is still this one's.
+    const format = sourceFormat;
     const mine = ++runGeneration;
     // What the run was started against: the unmatched fallback page is only
     // shown if the reader is still looking at the same document.
     const navigation = target.navigation;
     const source = schedule.generation;
     const gone = () => mine !== runGeneration || readerDisposed;
+    let done = (ok) => none(ok ? "" : "failed");
+    let missingFigures = [];
     const controller = new AbortController();
     runAbort = controller;
     // The run's own page replaces the draft, unless the reader moved to
@@ -2550,33 +2752,50 @@
       }
     };
     try {
-      const tree = capturePreviewTree(treeNow());
+      const tree = given || capturePreviewTree(treeNow());
       if (Object.keys(tree.digests || {}).length) {
-        const { held } = await gatherFigures(tree.digests);
-        if (gone()) return;
+        const { held, missing } = await gatherFigures(tree.digests);
+        if (gone()) return none("stopped", true);
+        missingFigures = missing;
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
       }
       const heading = await headingOf(tree);
-      if (gone()) return;
-      const typst = sourceFormat === "typst";
+      if (gone()) return none("stopped", true);
+      const typst = format === "typst";
       // Typst keeps its own output choice; Markdown and Quarto share theirs.
-      const toPdf = typst ? typstOutput !== "html" : buildPreferences.output === "pdf";
+      const toPdf = output ? output === "pdf" : typst ? typstOutput !== "html" : buildPreferences.output === "pdf";
       // Quarto HTML runs carry cell tags, so each output finds its cell even
       // when Quarto wrote no div for it. The tags are not in the stored record.
-      const runTree = sourceFormat === "quarto" && !toPdf ? tagCells(tree) : tree;
+      const runTree = format === "quarto" && !toPdf ? tagCells(tree) : tree;
       // Figures the document shows that are not project files: the app reads
       // them from the Run directory after the run.
       await figureSyntaxReady(tree);
       const wanted = wantedPaths(referencedFigures(tree), tree);
+      // Consent is read again just before the job goes out: it may have been
+      // withdrawn while the figures and heading were gathered.
+      if (allowed && !allowed()) {
+        runPhase = "idle";
+        return none("run_disabled");
+      }
       const rendered = await renderers.render(runTree, heading, {
         buildPreferences: { ...buildPreferences, backend: "local", output: toPdf ? "pdf" : "html" },
         project: SLUG,
         wanted,
         ...(typst ? { format: toPdf ? "pdf" : "html" } : {}),
+        ...(format === "quarto" && refreshCache ? { refreshCache: true } : {}),
         signal: controller.signal,
       });
-      if (gone()) return;
+      if (gone()) return none("stopped", true);
+      done = (ok) => ({
+        ok,
+        cancelled: false,
+        output: toPdf ? (rendered?.pdf?.byteLength ? "pdf" : "none") : (typeof rendered?.html === "string" ? "html" : "none"),
+        diagnostics: rendered?.diagnostics || [],
+        log: rendered?.log || rendered?.failure?.message || "",
+        reason: ok ? "" : "failed",
+        missing: missingFigures,
+      });
       // The run's log is what Diagnostics shows, whether it worked or not.
       runLog = rendered?.log || rendered?.failure?.message || "";
       runDiagnostics = rendered?.diagnostics || [];
@@ -2584,13 +2803,13 @@
         const page = toPdf ? rendered?.pdf : rendered?.html;
         if (rendered?.ok === false || !page) {
           runPhase = "failed";
-          return;
+          return done(false);
         }
         const record = calepinRecordOf(rendered.results, tree.main);
         if (record) {
           // The run's own page is kept whether or not the draft shows it.
           const recordDigest = toPdf ? await renderers.snapshotDigest(tree) : "";
-          if (gone()) return;
+          if (gone()) return none("stopped", true);
           lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: recordDigest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
           // The files Calepin stored go into the browser's own draft, PDF or
           // HTML, so the preview stays the draft between runs.
@@ -2601,30 +2820,30 @@
           if (shareResults && mayEdit) {
             void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
           }
-          return;
+          return done(true);
         }
         // The command stored no results (an edited command, say), so there
         // is nothing for the draft to read: show the run's own page until the
         // next edit.
         sharedResults.skip("none");
         const digest = toPdf ? await renderers.snapshotDigest(tree) : "";
-        if (gone()) return;
+        if (gone()) return none("stopped", true);
         lastRunPage = { path: tree.main, page: toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html } };
         runPhase = "idle";
         lastPdfRunAt = new Date().toISOString();
         showRunPage(tree, toPdf ? { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } : { kind: "html", html: rendered.html });
-        return;
+        return done(true);
       }
       if (toPdf) {
         if (rendered?.ok === false || !rendered?.pdf) {
           runPhase = "failed";
-          return;
+          return done(false);
         }
         // The PDF is the run's page as it came, with the code's output in it;
         // there is nothing to split. The next edit repaints the browser PDF
         // draft as usual, which is intended: the draft cannot show outputs.
         const digest = await renderers.snapshotDigest(tree);
-        if (gone()) return;
+        if (gone()) return none("stopped", true);
         lastRunPage = { path: tree.main, page: { kind: "pdf", sha: digest, bytes: new Uint8Array(rendered.pdf).slice() } };
         // The run's figures are published with the cell outputs of the last
         // HTML run of this file, which a PDF run cannot split out.
@@ -2636,11 +2855,11 @@
         if (shareResults && mayEdit) {
           void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
         }
-        return;
+        return done(true);
       }
       if (rendered?.ok === false || typeof rendered?.html !== "string") {
         runPhase = "failed";
-        return;
+        return done(false);
       }
       // Inline values sit in the prose, which the draft can only show when
       // every one of them came back from the run. Otherwise the run's own page
@@ -2649,7 +2868,7 @@
       // Split Quarto's page as it came: the preview copy carries the house
       // caption labels, which the draft would then add a second time.
       const split = await splitResults(rendered.exportHtml ?? rendered.html, tree.texts[tree.main] ?? "", { path: tree.main, files: tree.texts });
-      if (gone()) return;
+      if (gone()) return none("stopped", true);
       lastRunPage = { path: tree.main, page: { kind: "html", html: rendered.html } };
       if (split.ok) {
         const held = split.record.inlines ?? [];
@@ -2669,7 +2888,7 @@
         if (shareResults && mayEdit) {
           void sharedResults.upload(record, () => !readerDisposed && shareResults && mayEdit).catch(() => sharedResults.skip("unmatched"));
         }
-        return;
+        return done(true);
       }
       runPhase = "idle";
       if (split.reason === "no-cells") {
@@ -2699,20 +2918,22 @@
           } else sharedResults.skip("none");
         }
         showRunPage(tree, { kind: "html", html: rendered.html });
-        return;
+        return done(true);
       }
       // The output could not be matched to the cells, so it cannot be spliced
       // into the draft: show the run's own page instead.
       sharedResults.skip("unmatched");
       showRunPage(tree, { kind: "html", html: rendered.html });
       say(m.readerb_run_unmatched());
+      return done(true);
     } catch (error) {
       // A run that threw (the desktop app went away, say) leaves its reason
       // where the failure message sends the reader, in place of an older log.
-      if (gone()) return;
+      if (gone()) return none("stopped", true);
       runPhase = "failed";
       runLog = error?.message || String(error);
       runDiagnostics = [];
+      return none("failed", false, runLog);
     } finally {
       if (runAbort === controller) runAbort = null;
     }
@@ -2763,6 +2984,8 @@
     share: shareResults,
     onshare: setShareResults,
     shareStatus: sharedResults.state.status,
+    agents: agentRunAllowed,
+    onagents: buildsHere && hostAgents ? setAgentRun : undefined,
   });
   const stopLatex = () => buildSettings.stopLatex();
 
@@ -3011,7 +3234,7 @@
       paintsTheFrame,
       latexOutput,
       typstOutput,
-      buildPreferences,
+      buildPreferences: previewPreferences,
       localExecution,
       runDirectory,
       runResults,
@@ -3034,6 +3257,7 @@
       schedule.cancel();
     },
     refreshFrame: () => refreshFramedPage(),
+    repaint: () => { void paintPreview(); },
     debug: (...parts) => {
       try {
         if (localStorage.getItem("librepaper-latex-debug")) console.debug(...parts);
@@ -3139,8 +3363,9 @@
   }
 
   // Shows the document at the place the caret is in the source, whether or not
-  // the two are kept in step.
-  function showCaretInDocument() {
+  // the two are kept in step. The caret-following path does not flash; the
+  // Show in preview command does, so the reader can see where it landed.
+  function showCaretInDocument({ flash = false } = {}) {
     if (!editing || docText === null || !editor) return;
     // The format of the file being edited, which is not always the
     // document's: a .bib beside a .tex has comments of its own kind, and
@@ -3157,44 +3382,93 @@
     }
     const place = sync.documentPlaceFor(editor.text(), editor.caret(), docText, format);
     if (place) {
-      tell({ type: "locate", start: place.at, length: place.length });
+      tell({ type: "locate", start: place.at, length: place.length, flash });
       return;
     }
   }
 
+  // Set just before a phone is switched to the source by a jump from the
+  // preview, so the reading-position effect does not move the source back to
+  // where the preview was. The effect clears it when it sees it.
+  let skipReadingPosition = false;
+
+  // A double-click in the preview: the source goes to the place the words or
+  // the PDF point name, whether or not the two are kept in step.
   function followDocumentClick(offset, pdfPoint = null) {
-    if (!linked || !editing || docText === null || !editor) return;
-    // The words double-clicked in the document may belong to any file: a reader
-    // double-clicking a paragraph of chapter three is asking for chapter three, not
-    // for the file that happens to be on screen. So the whole directory is
-    // searched, and the file the words are in is opened.
-    const tree = treeNow();
-    if (followPdfClick(pdfPoint)) return;
-    const found = sync.sourcePlaceInTree(docText, offset, tree, {
-      open: session?.paths?.get(openFile) || "",
-      formatOf: renderers.previewFormatOf,
-    });
-    if (!found) return;
-    const id = session.idOf(found.path);
-    rememberPlace(id, found.at);
-    if (id) {
-      ws.openFile = id;
-      editor.goToIn(id, found.at);
-    } else {
-      editor.goTo(found.at);
+    void jumpToSource(offset, pdfPoint);
+  }
+
+  // The one move from the preview to the source. A PDF point goes through
+  // SyncTeX first; otherwise the words are searched for across the directory,
+  // since they may belong to any file, and the file they are in is opened.
+  // Both Show in source and a double-click come here, so they reach the source
+  // the same way. The destination is worked out before any pane moves: a click
+  // that has nowhere to go (a figure, say) must not hide the preview and show
+  // the old caret. Only then does a phone show the source pane and reach the
+  // place once it is laid out, or a desktop whose split is too narrow for the
+  // source to be on screen switch to the split and bring the source forward.
+  // Focus stays out of it on a phone so the keyboard does not open.
+  async function jumpToSource(offset, pdfPoint = null) {
+    if (!editing || docText === null || !editor) return;
+    if ((offset === null || offset === undefined) && !pdfPoint) return;
+    const synctex = pdfTarget(pdfPoint);
+    let text = null;
+    if (!synctex && offset !== null && offset !== undefined) {
+      const found = sync.sourcePlaceInTree(docText, offset, treeNow(), {
+        open: session?.paths?.get(openFile) || "",
+        formatOf: renderers.previewFormatOf,
+      });
+      if (found) text = { id: session.idOf(found.path), at: found.at };
+    }
+    if (!synctex && !text) return;
+    const focus = !compact;
+    if (compact) {
+      skipReadingPosition = true;
+      arrangement.showMobileView("source");
+      await tick();
+      skipReadingPosition = false;
+      // The source pane has only just been shown, so it is laid out next frame.
+      await new Promise((done) => requestAnimationFrame(() => done()));
+      if (!editor) return;
+    } else if (!shown.source) {
+      if (arrangement.state.layout !== "split") arrangement.state.layout = "split";
+      arrangement.focusPane("source");
+      await tick();
+    }
+    // The move below is the reader's jump, not a caret the preview should
+    // follow: with Keep in step on, the echo of this move must not scroll the
+    // preview back to where the caret now is.
+    clearTimeout(stepTimer);
+    previewPlacing = true;
+    try {
+      if (synctex) {
+        rememberPlace(synctex.id);
+        ws.openFile = synctex.id;
+        editor.openAt(synctex.id, synctex.line, 1, { focus, flash: true });
+      } else {
+        rememberPlace(text.id, text.at);
+        if (text.id) {
+          ws.openFile = text.id;
+          editor.goToIn(text.id, text.at, { focus, flash: true });
+        } else {
+          editor.goTo(text.at, { focus, flash: true });
+        }
+      }
+    } finally {
+      previewPlacing = false;
     }
   }
 
-  function followPdfClick(pdfPoint) {
-    if (!linked || !editing || !editor || sourceFormat !== "latex" ||
-        !painted.synctex || !pdfPoint) return false;
+  // Where a PDF point lands in the source, as { id, line }, or null when
+  // SyncTeX cannot place it in a file the reader has open to edit. It only
+  // reads state, so jumpToSource can ask before it moves anything.
+  function pdfTarget(pdfPoint) {
+    if (!editing || !editor || sourceFormat !== "latex" ||
+        !painted.synctex || !pdfPoint) return null;
     const precise = painted.synctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
     const id = precise && session.idOf(precise.path);
-    if (!id) return false;
-    rememberPlace(id);
-    ws.openFile = id;
-    editor.openAt(id, precise.line, 1);
-    return true;
+    if (!id) return null;
+    return { id, line: precise.line };
   }
 
   // The source offset that matches a place in the preview, or null when there
@@ -3244,7 +3518,14 @@
   // Set when the reader switches from the preview to the source on a phone, so
   // that only the reply to that request moves the source.
   let positionAsked = false;
+  // Set by Show in source: the reply names the place to show in the source, and
+  // jumpToSource moves there rather than the reply moving the source in place.
+  // Set while the preview is still on screen, so it can be measured. Only one
+  // of the two is pending at a time: each request clears the other, so a reply
+  // to one can never be taken for the answer to the other.
+  let sourceAsked = false;
   function askReadingPosition() {
+    sourceAsked = false;
     positionAsked = true;
     tell({ type: "reading-position" });
   }
@@ -3268,6 +3549,37 @@
         previewPlacing = false;
       }
     });
+  }
+
+  // Show in preview: the document shows the place the caret is in, with a
+  // flash. A phone shows the document pane; a desktop with no preview on screen
+  // gets the split first, so there is a preview to show it in.
+  async function showInPreview() {
+    if (!editing || !editor || docText === null || ws.figure || !previewUsable) return;
+    clearTimeout(stepTimer);
+    if (compact) {
+      arrangement.showMobileView("document");
+      await tick();
+    } else if (!shown.document) {
+      // A too-narrow split shows one pane only: bring the document forward so
+      // the flash lands on a document the reader can see.
+      if (arrangement.state.layout !== "split") arrangement.state.layout = "split";
+      arrangement.focusPane("document");
+      await tick();
+    }
+    showCaretInDocument({ flash: true });
+  }
+
+  // Show in source: the source goes to the place the reader is looking at in
+  // the preview. The preview stays on screen while it is asked, so its reading
+  // position can be measured; the reply then goes to jumpToSource, which shows
+  // the source (on a phone, or on a desktop whose split is too narrow for it)
+  // and moves it there. The same path serves every layout.
+  function showInSource() {
+    if (!editing || !editor || docText === null || ws.figure || !previewUsable) return;
+    positionAsked = false;
+    sourceAsked = true;
+    tell({ type: "reading-position" });
   }
 
   function setLinked(on) {
@@ -3310,6 +3622,24 @@
   const keyboardOpen = $derived(arrangement.state.keyboardOpen);
   const width = $derived(arrangement.state.width);
   const unit = $derived(arrangement.state.unit);
+  // The window event does not cover every change to the width the split is
+  // worked out from. A window moved between screens, or a webview that resizes
+  // without a resize event, would otherwise keep dividing a width it no longer
+  // has, so the root element is watched directly.
+  $effect(() => {
+    const root = document.documentElement;
+    // innerWidth, as the window binding reads, because it is what the
+    // stylesheet's media queries measure: clientWidth leaves out a scrollbar,
+    // and the two could fall on either side of the phone breakpoint.
+    const watch = new ResizeObserver(() => {
+      if (innerWidth > 0 && innerWidth !== arrangement.state.width) {
+        arrangement.state.width = innerWidth;
+      }
+      arrangement.state.unit = measure();
+    });
+    watch.observe(root);
+    return () => watch.disconnect();
+  });
   const compact = $derived(arrangement.compact);
   const sourceOpen = $derived(arrangement.sourceOpen);
   const activeMobileView = $derived(arrangement.activeMobileView);
@@ -3338,6 +3668,11 @@
     return () => document.removeEventListener("pointerdown", clear);
   });
   const sourceSide = $derived(prefs.sourceSide);
+  // The divider's direction buttons: the arrow points to the pane it shows in,
+  // so the preview arrow points away from the source.
+  const previewArrow = $derived(sourceSide === "right" ? "arrow-left" : "arrow-right");
+  const sourceArrow = $derived(sourceSide === "right" ? "arrow-right" : "arrow-left");
+  const pillTipPlace = $derived(sourceSide === "right" ? "left" : "right");
   const keys = $derived(prefs.keys);
   const completion = $derived(prefs.completion);
   const brackets = $derived(prefs.brackets);
@@ -3414,11 +3749,12 @@
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
   const tabs = $derived(
-    tabsFor({ role: doc.role, mayEdit, suggestOnly, editing, canSeeSharing: DEMO || canSeeSharing, canPublish, desktop: hasDesktop })
+    tabsFor({ role: doc.role, mayEdit, suggestOnly, editing, canSeeSharing: DEMO || canSeeSharing, canPublish, desktop: hasDesktop, agents: hostAgents })
       .map((tab) => (DEMO && DEMO_OFF.includes(tab.id) ? { ...tab, disabled: true } : tab)),
   );
   // The robot buttons hand work to the agent. The agent runs only in the
-  // desktop app, so in a browser they say so rather than disappear.
+  // desktop app, so in a browser they say so rather than disappear. Where the
+  // host has turned agents off there is no agent tab, so they are gone.
   const agentOffered = $derived(!DEMO && tabs.some((tab) => tab.id === "agent"));
   // Where the column goes back to when what it showed is taken away: the
   // files, for every role that is offered them, which is every role that has
@@ -3534,6 +3870,14 @@
     return () => { overlays?.dispose(); overlays = null; };
   });
   $effect(() => { overlays?.sync(overlayDepth); });
+  // A resize to a phone makes the face it shows the one Back returns to. On a
+  // wider window a press in either pane moves the preferred pane without
+  // moving the phone's face, and the two must agree once there is only one.
+  $effect(() => {
+    if (!compact) return;
+    const face = untrack(() => arrangement.state.mobileView);
+    if (face !== "sidebar") arrangement.state.preferredPane = face;
+  });
   // A resize to desktop must not leave a hidden overlay behind it.
   $effect(() => {
     if (compact) return;
@@ -3650,6 +3994,8 @@
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
     if (what.startsWith("ratio-")) return setSize(PANES.editor, Number(what.slice(6)));
     if (what === "linked") return setLinked(!linked);
+    if (what === "show-in-preview") return void showInPreview();
+    if (what === "show-in-source") return void showInSource();
     if (what === "visual-markup") return setVisual(!visual);
     if (TEXT_SIZE_COMMANDS.includes(what)) return changeTextSize(what);
   }
@@ -3705,7 +4051,7 @@
   // A Quarto or Typst export is itself an explicit request to run the code, so
   // it needs no switch, only a folder to run in.
   const exportsLocally = $derived(
-    hasDesktop && mayEdit && !suggestOnly && buildPreferences.backend === "local"
+    buildsHere && mayEdit && !suggestOnly && buildPreferences.backend === "local"
       && (runsExplicitly ? runDirectoryReady : localExecution),
   );
 
@@ -3776,7 +4122,7 @@
       const placeholders = unfetched + (file.missing?.length ?? 0);
       if (placeholders > 0) say(m.readerc_figures_placeholder({ count: placeholders }), { kind: "problem", id: "reader:export-figures" });
       if (!local && unrunCells(format, tree) > 0) {
-        say(m.readerc_cells_not_run(), { id });
+        say(hostLocalBuilds ? m.readerc_cells_not_run() : m.readerc_cells_not_run_host_off(), { id });
       } else {
         toaster.dismiss(id);
       }
@@ -3929,6 +4275,30 @@
   const isDisplayableImage = (path) => /\.(?:png|jpg|jpeg|gif|svg|webp)$/i.test(path);
   let outlineActiveFrom = $state(null);
   let outlineRevision = $state(0);
+  // Bumped on every change to the project's files, so the Search panel
+  // searches again. The panel waits for typing to pause before it does.
+  let searchRevision = $state(0);
+  let searchSeed = $state(null);
+  // The options of the search whose matches the source editor marks.
+  let searchMarksQuery = $state(null);
+  const searchFiles = $derived(files.filter((file) => file.kind === "text").map((file) => ({ id: file.id || file.path, path: file.path })));
+  // An editor reads the live text; somebody holding a read or comment link has
+  // no session, only the projection the server sent, keyed by path.
+  function searchTextOf(id) {
+    if (session) return String(session.textOf?.(id)?.toString?.() ?? "");
+    const path = searchFiles.find((file) => file.id === id)?.path;
+    return path ? String(projection.tree()?.texts?.[path] ?? "") : "";
+  }
+  // Every search file's text in one pass, so a search reads the projection's
+  // tree once rather than once per file.
+  function searchTexts() {
+    const texts = session ? null : projection.tree()?.texts || {};
+    const out = {};
+    for (const file of searchFiles) {
+      out[file.id] = texts ? String(texts[file.path] ?? "") : searchTextOf(file.id);
+    }
+    return out;
+  }
   // The outline can be shown with no editor open, so it also follows the typst
   // module's arrival itself.
   $effect(() => onTypstSyntax(() => { outlineRevision += 1; }));
@@ -3974,10 +4344,18 @@
   // last visit stand in until then, and are applied once rather than on every
   // try.
   let configRetry = null;
+  // Whether this page has been connected before: the next connection is then
+  // a reconnection, and the server may have been restarted with other rules.
+  let connectedBefore = false;
   let rulesRemembered = false;
   function loadRules() {
+    // One retry at a time: a load asked for on reconnect replaces a pending one.
+    clearTimeout(configRetry);
     configOrRemembered()
       .then(({ config: answer, remembered }) => {
+        // api.js has already handed this answer to lib/host-switches.js.
+        hostAgents = agentsAllowed();
+        hostLocalBuilds = localBuildsAllowed();
         if (remembered) configRetry = setTimeout(loadRules, 30_000);
         if (remembered && rulesRemembered) return;
         rulesRemembered = remembered;
@@ -4046,6 +4424,7 @@
   // it can alter the render of whichever file the preview is drawing.
   function filesChanged(events, active = session, by = "local") {
     if (!active || active !== session) return;
+    searchRevision += 1;
     // Nested text edits change the preview, but not the file list. Which
     // events are the directory's is the session's to say: the list moves with
     // four maps, not one.
@@ -4070,6 +4449,11 @@
   // A failure is reported once the render has settled as failed. One that a
   // retry is already superseding is not.
   const failedBeforeRender = $derived(renderState.failure && !painted.state.shown && !compiling);
+  // Whether the preview frame holds the document now on show. When a card
+  // stands in its place (a file with no preview, a failed render, a sign-in),
+  // the frame keeps the previous document, so a jump would read or show the
+  // wrong one.
+  const previewUsable = $derived(!(documentNeedsSignIn || heldFile || noCompiler || failedBeforeRender || projection.state.unreadable || previewCard));
   // The one waiting display. It stands in for the pane until the page for the
   // current target is drawn, whatever the format. A stand-in page from the
   // cache is drawn like any other, so a recompile under one never lands here.
@@ -4163,6 +4547,35 @@
         || !outlineHeadings.some((item) => item.from === heading.from)) return;
     if (editor.goToIn) editor.goToIn(id, heading.from);
     else editor.openAt?.(id, heading.line, 1);
+  }
+
+  // A search result is a place in the source. Like an outline entry, it may be
+  // the first source command in a document-only or compact view, so the lazy
+  // editor is mounted before it is asked to select anything. Someone who may
+  // only read has no source pane: the file is opened and that is all. `focus`
+  // false leaves the cursor in the search box, for stepping with Enter.
+  async function openSearchResult({ id, from, to, focus = true }) {
+    const file = files.find((entry) => (entry.id || entry.path) === id && entry.kind === "text");
+    if (!file) return;
+    rememberPlace(file.id, from);
+    openTheFile(file);
+    if (!mayEdit) return;
+    if (!editing) await startEditing();
+    if (readerDisposed) return;
+    arrangement.showMobileView("source");
+    await tick();
+    editor?.selectIn?.(id, from, to, { focus });
+  }
+
+  // The edits are planned here, after the editor is ready, from the file's text
+  // as it is now: a collaborator's edit made while the editor was mounting
+  // cannot leave the offsets pointing at the wrong place.
+  async function replaceInFile(id, plan) {
+    if (!mayEdit || !session) return;
+    if (!editing) await startEditing();
+    await tick();
+    const edits = plan(searchTextOf(id));
+    if (edits.length) editor?.replaceIn?.(id, edits);
   }
 
   // The bytes of the figure being looked at are fetched by the workspace;
@@ -4446,6 +4859,10 @@
     edit: editAvailability,
     canClearChat: chatState.canClear,
     canComment: mayChat,
+    // The jumps need a source caret and a preview of the document on show.
+    // While an image or figure is shown where the editor would be, or a card
+    // where the preview would be, one side is missing, so they are off.
+    linkable: Boolean(editing && editor && !ws.figure && docText !== null && previewUsable),
     // In Vim or Emacs mode Alt is the editor's, so the Alt menu chords stand down in the source.
     modalEditor: keys === "vim" || keys === "emacs",
   });
@@ -4482,6 +4899,16 @@
     if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
+    if (id === "focus-search") {
+      // A selection on one line fills the search, as in other editors. Opening the
+      // panel only: the Search panel's seed effect focuses its input, even with
+      // nothing selected. focusPanel would race that and land on the tab header.
+      const selected = editor?.selection?.();
+      const selectedText = selected ? String(session?.textOf?.(selected.file)?.toString?.() ?? "").slice(selected.from, selected.to) : "";
+      const text = selectedText && !selectedText.includes("\n") ? selectedText : "";
+      searchSeed = { text, n: (searchSeed?.n || 0) + 1 };
+      return openPanel("search");
+    }
     if (id === "symbols" || id === "math") return openPalette(id);
     // A template command opens the Math overlay on its template.
     if (id.startsWith("math-")) return openPalette("math", id.slice("math-".length));
@@ -4509,7 +4936,7 @@
     "undo", "redo", "cut", "copy", "paste", "paste-plain", "select-all", "find", "replace", "bold", "italic",
     "link", "comment", "numbered-list", "bulleted-list", "heading-1", "heading-2", "heading-3", "heading-4", "heading-5", "heading-6",
   ];
-  const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
+  const LAYOUT_COMMANDS = ["linked", "show-in-preview", "show-in-source", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
   const TEXT_SIZE_COMMANDS = ["text-bigger", "text-smaller", "text-reset"];
 
   // The count reads the source, so the dialog is offered only where the source is open.
@@ -4572,6 +4999,26 @@
     preview?.focus();
   }
 
+  // The commands a keystroke in the preview may start. The document in the
+  // preview is untrusted and could fake keystrokes, so only commands that move
+  // or link the panes may be started from it -- never downloads, sharing or
+  // anything that changes the project.
+  const FRAME_COMMANDS = ["show-in-preview", "show-in-source", "linked"];
+
+  // A chord pressed inside the preview arrives as a message, not as a window
+  // keydown. It is read against the same registry as a keystroke in the
+  // workspace, with the preview as the target, and runs only when it names one
+  // of FRAME_COMMANDS. The frame has not cancelled it, so nothing is undone here.
+  function runFrameShortcut(message) {
+    const event = {
+      key: message.key, code: message.code, ctrlKey: message.ctrlKey, metaKey: message.metaKey,
+      altKey: message.altKey, shiftKey: message.shiftKey, target: document.body,
+    };
+    const command = commandFor(event, commandContext);
+    if (!command || !FRAME_COMMANDS.includes(command.id)) return;
+    void runCommand(command.id);
+  }
+
   function shortcut(event) {
     // One Escape, one thing: the swatches, then the bar. Nothing here
     // touches a dialog -- those close themselves -- and nothing happens when
@@ -4626,14 +5073,21 @@
   });
 
   // Asks the preview where the reader is when they switch from it to the
-  // source on a phone, so the source can be moved to match. Only compact and
-  // the pane itself are tracked; the rest is read untracked.
+  // source on a phone, so the source can be moved to match. Only with Keep in
+  // step on: otherwise the source moves only when asked for. A jump from the
+  // preview sets skipReadingPosition, because the place it jumps to is the
+  // one to keep. Only compact and the pane itself are tracked; the rest is read
+  // untracked.
   let previousMobileView = null;
   $effect(() => {
     const view = activeMobileView;
     const previous = previousMobileView;
     previousMobileView = view;
     if (!compact || previous !== "document" || view !== "source") return;
+    if (skipReadingPosition) {
+      skipReadingPosition = false;
+      return;
+    }
     untrack(() => {
       if (linked && editing && comparing === "") askReadingPosition();
     });
@@ -4676,6 +5130,7 @@
 {#snippet localExecutionControl()}
   {#if runCodeOffered && runsExplicitly}
     <RunButton phase={runPhase} stale={staleCount} {lastRunAt} onrun={runCode} onstop={stopRun}
+      canRefresh={sourceFormat === "quarto"} onrefresh={() => runCode({ refreshCache: true })}
       share={shareResults} onshare={setShareResults}
       directoryName={runDir.status?.path ? leaf(runDir.status.path) : ""}
       directoryPath={runDir.status?.path ? runDir.shorten(runDir.status.path) : ""}
@@ -4753,7 +5208,7 @@
       onview={chooseViewCommand}
       onhelp={(id) => void runCommand(id)}>
       {#snippet insert()}
-        <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() && !suggestOnly ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={suggestOnly ? undefined : (items) => editor?.importZoteroItems?.(items)} disabled={!mayEdit || !editor} demo={DEMO} />
+        <InsertMenu bind:this={insertMenu} getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} onzoterosearch={localQuarto.desktop() && !suggestOnly ? (query) => editor?.zoteroSearch?.(query) : null} onzoteroimport={suggestOnly ? undefined : (items, bibPath) => editor?.importZoteroItems?.(items, bibPath)} ontargets={() => editor?.bibliographyImportTargets?.() ?? { files: [], declared: false }} ondoilookup={suggestOnly ? null : (text) => editor?.lookupDoi?.(text)} ondoiimport={suggestOnly ? undefined : (entries, bibPath) => editor?.importDoiEntries?.(entries, bibPath)} disabled={!mayEdit || !editor} demo={DEMO} />
       {/snippet}
     </Menus>
   {/snippet}
@@ -4786,7 +5241,11 @@
   <ModeSwitch mode={shown.source ? "source" : "document"} collapsed={barHidden} onchange={(view) => arrangement.showMobileView(view)} />
 {/if}
 
+<!-- The pane the reader last worked in is the one a tight split keeps. The
+     handler is on the page because the preview is a component that takes no
+     event handlers of its own. -->
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
+      onpointerdown={keepPane} onfocusin={keepPane}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact} class:phone-tabs={tabsShown} class:bar-hidden={barHidden && !compact}
@@ -4799,6 +5258,7 @@
        of these its rail has selected; none of it travels through the column
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
+    <PanelBoundary name="the files panel">
     <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewPath} locked={lockedPath}
       mayEdit={mayEdit && !suggestOnly} {rules} onopen={(file) => openTheFile(file, { fromList: true })} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
@@ -4806,6 +5266,7 @@
       onfigure={addFigure} ontext={addDroppedText} demo={DEMO}
       ondownload={downloadTree} ondownloaditem={downloadEntry}
       previewable={(path) => aloneSet.has(path)} onlock={(entry) => lockPreview(entry.id)} onunlock={unlockPreview} />
+    </PanelBoundary>
   {/snippet}
 
   <!-- The figure being looked at: wherever it is shown, it is shown this way. -->
@@ -4828,10 +5289,23 @@
   {/snippet}
 
   {#snippet outlinePanel()}
+    <PanelBoundary name="the outline">
     <Outline headings={outlineHeadings} counts={outlineSections} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
+    </PanelBoundary>
+  {/snippet}
+
+  {#snippet searchPanel()}
+    <PanelBoundary name="the search panel">
+    <!-- No replace beside a figure: the editor is not mounted then, so replaceInFile would do nothing. -->
+    <Search files={searchFiles} textsFor={searchTexts}
+      revision={searchRevision} active={panel === "search" && shown.comments} canReplace={mayEdit && !shownFigure} seed={searchSeed}
+      onopen={openSearchResult} onreplace={replaceInFile}
+      onquery={(options) => (searchMarksQuery = options)} />
+    </PanelBoundary>
   {/snippet}
 
   {#snippet agentPanel()}
+    <PanelBoundary name="the agent panel">
     {#if lazy.agent.component}
     {@const Agent = lazy.agent.component}
     <Agent open={panel === "agent" && shown.comments} slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
@@ -4841,9 +5315,11 @@
       onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || m.common_you()}
       bind:waiting={agentWaiting} />
     {/if}
+    </PanelBoundary>
   {/snippet}
 
   {#snippet collaborationPanel()}
+    <PanelBoundary name="the comments panel">
     {#if compact}<Presence {participants} onjump={jumpToPerson} />{/if}
     <Collaboration messages={chatState.messages} more={chatState.more} loadingOlder={chatState.loadingOlder}
       loadError={chatState.loadError} canClear={chatState.canClear} onloadolder={liveChat.loadOlder}
@@ -4861,31 +5337,39 @@
       onloadreplies={(comment) => void annotations.loadReplies(comment)}
       oncommentsend={sendDraft} oncommentcancel={cancelDraft} oncommentdocument={commentOnDocument} />
     {@render pendingRecovery("collaboration")}
+    </PanelBoundary>
   {/snippet}
 
   {#snippet changesPanel()}
+    <PanelBoundary name="the changes panel">
     <Changes changes={changeRows} {files} {identity} tracking={tracking || suggestOnly} canTrack={mayEdit && editing}
       canReview={mayEdit} {suggestOnly} ownKey={ownWho} selected={selectedChange} ids={changesIds}
       ontracking={setTracking} onaccept={acceptChange} onreject={rejectChange} onrejectmany={rejectChanges} onreveal={revealChange} />
     {@render pendingRecovery("changes")}
+    </PanelBoundary>
   {/snippet}
 
   {#snippet sharePanel()}
+    <PanelBoundary name="the share panel">
     <Share open={panel === "share" && shown.comments} inline slug={SLUG}
       canShare={doc.role === "owner"}
       onclose={() => arrangement.showPanel("")} />
+    </PanelBoundary>
   {/snippet}
 
   {#snippet gitPanel()}
+    <PanelBoundary name="the git panel">
     {#if lazy.git.component}
     {@const Git = lazy.git.component}
     <Git open={panel === "git" && shown.comments}
       web={webGit} slug={SLUG} linkKey={KEY} desktop={hasDesktop}
       connection={webConnection} onhistory={() => void openPanel("history")} />
     {/if}
+    </PanelBoundary>
   {/snippet}
 
   {#snippet diagnosticsPanel()}
+    <PanelBoundary name="the diagnostics panel">
     <Diagnostics {diagnostics}
       entry={previewPath}
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
@@ -4894,9 +5378,11 @@
       onagent={agentOffered ? askDiagnostic : undefined}
       log={runsExplicitly && runLog ? runLog : renderState.lastLatexResult?.log || renderState.lastLog || ""}
       logOpen={renderState.lastLatexResult ? undefined : false} />
+    </PanelBoundary>
   {/snippet}
 
   {#snippet historyPanel()}
+    <PanelBoundary name="the history panel">
     {#if lazy.history.component}
     {@const History = lazy.history.component}
     <History {labels} viewing={historySelectedSha} older={historySource.older} newer={historySource.newer} canEdit={mayEdit && !suggestOnly}
@@ -4922,6 +5408,7 @@
       onauthorsview={(on) => (authorsView = on)}
       onisolate={(key) => (authorsOnly = key)} />
     {/if}
+    </PanelBoundary>
   {/snippet}
 
   <!-- Annotations the server has not acknowledged, offered back wherever
@@ -4939,7 +5426,7 @@
   <Sidebar
     {shown} {tabs} {panel} {settled} {compact} mounted={mountedPanels} {badges}
     label={m.common_document()}
-    panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
+    panels={{ files: filesPanel, outline: outlinePanel, search: searchPanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
               share: sharePanel, git: gitPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
@@ -4988,15 +5475,17 @@
           <FormatToolbar active={formatActive} {modalEditor} available={can} onformat={(id) => editor?.formatSelection?.(id)} oninsert={(id) => insertMenu?.insertAction?.(id)} oncommand={(id) => void runCommand(id)}
                          onmenuselect={() => setTimeout(() => { if (!document.activeElement?.closest?.("#composer")) editor?.focus?.(); }, 60)} collapsed={compact && barHidden} />
         {/if}
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
+        <PanelBoundary name="the source editor">
+        <Editor bind:this={editor} searchQuery={searchMarksQuery} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {latexAssist} {proofing} {dialect} {check} {visual} imageUrl={figureUrlFor} resultsFiles={() => resultsFilesFor(previewPath)} resultsRevision={runResults && runResults.path === previewPath ? `${runResults.path}|${runResults.updatedAt}` : ""} {rules} tracking={tracking || suggestOnly} {suggestOnly} me={trackingMe} {selectedChange} editable={mayEdit}
                   annotating={mayEdit && mayChat} onannotate={annotateSource}
-                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
+                  onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone} onshowinpreview={can["show-in-preview"] ? () => void showInPreview() : null}
                   oncomment={(id) => focusAnnotation(comments.find((item) => String(item.id) === String(id))?.id, { focus: false })}
                   onchangeselect={selectChangeFromSource}
                   onformatstate={(state) => { formatActive = state; refreshEditAvailability(); }}
                   authorship={authorsActive && authorsMap ? { authors: authorsMap, only: authorsOnly } : null}
                   onauthorship={(summary) => (authorsSummary = summary)}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
+        </PanelBoundary>
       {/if}
     </section>
   {/if}
@@ -5008,8 +5497,21 @@
           onsize={(size) => setSize(PANES.editor, size)}
           onguide={(where) => (guide = where)}
           ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}>
-      {#snippet aside()}
-        {#if !linked}<Icon name="unlock" />{/if}
+      {#snippet pill()}
+        {#if !linked}
+          <button type="button" class="grip-pill-button" aria-label={m.commands_show_in_preview()} data-tip={m.commands_show_in_preview()} data-tip-place={pillTipPlace} disabled={!can["show-in-preview"]} onclick={() => void showInPreview()}>
+            <Icon name={previewArrow} />
+          </button>
+          <button type="button" class="grip-pill-button" aria-label={m.commands_show_in_source()} data-tip={m.commands_show_in_source()} data-tip-place={pillTipPlace} disabled={!can["show-in-source"]} onclick={() => void showInSource()}>
+            <Icon name={sourceArrow} />
+          </button>
+          <span class="grip-pill-rule"></span>
+        {/if}
+        <!-- One toggle, always rendered, so keyboard focus stays on it when the
+             direction buttons come and go with the lock state. -->
+        <button type="button" class="grip-pill-button" class:is-on={linked} aria-label={m.commands_linked()} aria-pressed={linked ? "true" : "false"} data-tip={m.commands_linked()} data-tip-place={pillTipPlace} onclick={() => setLinked(!linked)}>
+          <Icon name={linked ? "lock" : "unlock"} />
+        </button>
       {/snippet}
     </Grip>
   {/if}
@@ -5182,6 +5684,7 @@
   {#snippet previewNotice()}
     <span class="notice-chip"><span>{m.readerd_shown_inside({ name: basename(toolbarPath), path: previewPath })}</span></span>
   {/snippet}
+  <PanelBoundary name="the preview">
   <Preview bind:this={preview} id="reader-document" role={compact && modeSwitchShown ? "tabpanel" : undefined}
            labelledby={compact && modeSwitchShown ? "mode-tab-document" : undefined}
            src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
@@ -5193,6 +5696,7 @@
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
            away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || (noCompiler || failedBeforeRender) || Boolean(projection.state.unreadable) || Boolean(previewCard)} />
+  </PanelBoundary>
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
@@ -5316,7 +5820,9 @@
 <Modal bind:open={wordCountOpen} title={m.common_word_count()}
   confirm={{ label: m.common_close(), cancel: false, onclick: () => (wordCountOpen = false) }}>
   {#snippet children()}
-    <WordCount count={wordCount} />
+    <PanelBoundary name="the word count">
+      <WordCount count={wordCount} />
+    </PanelBoundary>
   {/snippet}
 </Modal>
 

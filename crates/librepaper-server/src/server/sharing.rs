@@ -150,7 +150,7 @@ pub(super) fn provider_of(id: &str) -> String {
 }
 
 /// The bearer string for an agent token on the deployment at `origin`.
-fn agent_token_text(origin: &str, slug: &str, key: &LinkKey) -> Result<String, String> {
+pub(super) fn agent_token_text(origin: &str, slug: &str, key: &LinkKey) -> Result<String, String> {
     let slug = slug.parse().map_err(|_| "not a project slug".to_string())?;
     Ok(ids::AgentToken {
         origin: origin.to_string(),
@@ -494,6 +494,9 @@ impl Server {
                 json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{}", key.expose())})
             }
             "token" => {
+                if !self.agents {
+                    return Err(AGENTS_OFF.to_string());
+                }
                 let role = wanted
                     .role
                     .parse::<Role>()
@@ -527,6 +530,9 @@ impl Server {
         wanted: &ReplaceRequest,
         owner: &Viewer,
     ) -> Result<(LinkGrant, Value), String> {
+        if existing.kind == LinkKind::Agent && !self.agents {
+            return Err(AGENTS_OFF.to_string());
+        }
         let key = LinkKey::mint();
         let mut grant = existing.clone();
         grant.hash = key.digest().to_hex();
@@ -565,8 +571,19 @@ impl Server {
         let now = librepaper_base::util::now_unix();
         let mut links = Vec::new();
         let mut tokens = Vec::new();
-        // An expired row admits nobody, so the panel is not shown it.
-        for row in entry.links.iter().filter(|row| row.live_at(now)) {
+        // An expired link admits nobody, so the panel is not shown it. An
+        // expired connection can still be renewed with its refresh token until
+        // the grace runs out, so the owner keeps seeing it, to revoke it. A
+        // row a replayed code killed can never be used or renewed again, so
+        // it is not shown at all.
+        let renewable_since = now - super::connector::REFRESH_GRACE_SECONDS;
+        for row in entry.links.iter().filter(|row| {
+            row.owner_generation != super::connector::SPENT_GENERATION
+                && (row.live_at(now)
+                    || (row.kind == LinkKind::Agent
+                        && librepaper_base::util::parse_timestamp(&row.until)
+                            .is_some_and(|until| until > renewable_since)))
+        }) {
             match row.kind {
                 LinkKind::Link => {
                     // The key itself, from the sealed copy the catalogue keeps.
@@ -607,6 +624,7 @@ impl Server {
                         "since": row.since,
                         "until": row.until,
                         "budget": row.budget,
+                        "expired": !row.live_at(now),
                     });
                     if let Some(token) = token {
                         shown["token"] = json!(token);
@@ -655,6 +673,10 @@ impl Server {
                 "suggests": self.anonymous.suggests,
                 "edits": self.anonymous.edits,
             },
+            // Whether this deployment allows agents at all.
+            "agents": self.agents,
+            // Whether the Agent panel offers the chat-app connector block.
+            "connectors": self.connectors_open(),
         })
     }
 }

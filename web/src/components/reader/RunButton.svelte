@@ -1,11 +1,12 @@
 <script>
   // The Run control for a Quarto document: one split button. The main half
   // runs the document, or stops a run that is going. The chevron opens the
-  // rarer actions (Stop, Share results, the Run directory) and the state of
-  // the last run, so the top bar keeps a single control whatever happened. Once
-  // a run has made its own page, the chevron also offers to view that page. The
-  // two halves share one border, with a divider between them, so they read as
-  // one button.
+  // rarer actions (Stop, Run without cache, Share results, the Run directory)
+  // and the state of the last run, so the top bar keeps a single control
+  // whatever happened. Run without cache is a Quarto run that recomputes every
+  // cached cell once. Once a run has made its own page, the chevron also
+  // offers to view that page. The two halves share one border, with a divider
+  // between them, so they read as one button.
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import Icon from "../Icon.svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
@@ -15,7 +16,7 @@
   let {
     phase = "idle", stale = 0, lastRunAt = "", onrun = () => {}, onstop = () => {}, ondirectory = () => {},
     share = true, onshare = () => {}, directoryName = "", directoryPath = "", directoryMissing = false,
-    canViewLast = false, onviewlast = () => {},
+    canViewLast = false, onviewlast = () => {}, canRefresh = false, onrefresh = () => {},
   } = $props();
 
   const running = $derived(phase === "running");
@@ -30,6 +31,7 @@
     if (item.value === "stop") onstop();
     else if (item.value === "directory") ondirectory();
     else if (item.value === "view-last") onviewlast();
+    else if (item.value === "refresh") onrefresh();
   }
 </script>
 
@@ -59,6 +61,13 @@
           <span class="menuitem-check" aria-hidden="true"></span>
           <span class="menuitem-label">{m.runbutton_stop()}</span>
         </Menu.Item>
+      {/if}
+      {#if canRefresh && !running}
+        <Menu.Item value="refresh" class="menuitem" data-tip={m.runbutton_refresh_cache_hint()} data-tip-place="left">
+          <span class="menuitem-check" aria-hidden="true"><Icon name="refresh-cw" size="0.875rem" /></span>
+          <span class="menuitem-label">{m.runbutton_refresh_cache()}</span>
+        </Menu.Item>
+        <Menu.Separator class="hr my-1" />
       {/if}
       {#if running}<Menu.Separator class="hr my-1" />{/if}
       {#if canViewLast}

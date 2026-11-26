@@ -99,6 +99,13 @@ export function createReaderCollaboration({
   // may have been replaced meanwhile), and any drop clears it: later opens
   // are genuine reconnects.
   let firstOpen = true;
+  // Diagnostics for the report: whether the open came from a saved local copy,
+  // what the reconnect document check is doing, and how many opens were sent.
+  let openedLocally = false;
+  let documentCheck = "none";
+  let documentCheckAt = null;
+  let documentCheckFailures = 0;
+  let opensSent = 0;
   const reconnects = createGeneration();
   // Which session is the current one. A session that has been replaced or
   // left can still have work in flight -- a persistence write completing, a
@@ -172,13 +179,23 @@ export function createReaderCollaboration({
     // Reader/commenter sessions use this socket only for rendered
     // annotations. They receive the initial comment hello, but never send a
     // document open request or receive source state.
-    if (sourceSync) room?.send(active.open());
+    if (sourceSync) {
+      opensSent += 1;
+      room?.send(active.open());
+    }
     return active;
+  }
+
+  /** @param {string} value */
+  function setDocumentCheck(value) {
+    documentCheck = value;
+    documentCheckAt = Date.now();
   }
 
   /** @param {string} reason */
   function changed(reason) {
     clearRetry();
+    setDocumentCheck(`changed:${reason}`);
     onDocumentChanged(reason);
   }
 
@@ -198,11 +215,16 @@ export function createReaderCollaboration({
     active?.disconnected();
     if (firstOpen) {
       firstOpen = false;
-      if (sourceSync) room?.send(active.open());
+      setDocumentCheck("skipped");
+      if (sourceSync) {
+        opensSent += 1;
+        room?.send(active.open());
+      }
       onConnected(true);
       return;
     }
     try {
+      setDocumentCheck("pending");
       const response = await fetcher(`/api/documents/${slug}`, { headers: keyHeaders(key) });
       if (disposed || stale() || session !== active) return;
       if (!response.ok) return changed("document");
@@ -222,10 +244,16 @@ export function createReaderCollaboration({
         return changed("document");
       }
       if (capability(latest) !== capability(document_)) return changed("capability");
-      if (sourceSync) room?.send(active.open());
+      setDocumentCheck("ok");
+      if (sourceSync) {
+        opensSent += 1;
+        room?.send(active.open());
+      }
       onConnected(true);
     } catch (error) {
       if (disposed || stale() || session !== active) return;
+      documentCheckFailures += 1;
+      setDocumentCheck("failed");
       clearRetry();
       retryTimer = setTimer(() => {
         retryTimer = null;
@@ -239,6 +267,7 @@ export function createReaderCollaboration({
     if (disposed) return null;
     if (session) return session;
     document_ = nextDocument;
+    openedLocally = Boolean(nextDocument.local_copy);
     firstOpen = !nextDocument.local_copy;
     return join(nextDocument);
   }
@@ -286,7 +315,16 @@ export function createReaderCollaboration({
     /// Socket and acknowledgement facts for the diagnostics report.
     syncStatus() {
       const at = session?.lastAcknowledgedAt?.() ?? null;
-      return { ...room?.status?.(), lastAckAgoMs: at === null ? null : Date.now() - at };
+      return {
+        ...room?.status?.(),
+        lastAckAgoMs: at === null ? null : Date.now() - at,
+        openedLocally,
+        documentCheck,
+        documentCheckAgoMs: documentCheckAt === null ? null : Date.now() - documentCheckAt,
+        documentCheckFailures,
+        opensSent,
+        ...session?.joinTrace?.(),
+      };
     },
     sendLive(message) {
       return room?.sendLive?.(message) || { ok: false, error: new Error("room is closed") };

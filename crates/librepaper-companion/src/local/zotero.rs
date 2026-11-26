@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
+use crate::automation::doi::escape;
+
 fn null_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
@@ -56,6 +58,8 @@ pub struct ItemData {
     pub date: String,
     #[serde(default, deserialize_with = "null_string")]
     pub bundle_title: String,
+    #[serde(default, deserialize_with = "null_string")]
+    pub publication_title: String,
     #[serde(default, deserialize_with = "null_string")]
     pub proceedings_title: String,
     #[serde(default, deserialize_with = "null_string")]
@@ -138,6 +142,11 @@ impl Client {
             return Err(Error::Request("invalid Zotero item key".into()));
         }
         let response = self.get(&format!("users/0/items/{key}"), &[]).await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::Request(format!(
+                "Zotero has no item {key}; search again"
+            )));
+        }
         if !response.status().is_success() {
             return Err(classify(response.status()));
         }
@@ -245,7 +254,7 @@ fn author_names(values: &[Creator]) -> Vec<String> {
         .collect()
 }
 
-fn fragment(value: &str) -> String {
+pub(crate) fn fragment(value: &str) -> String {
     let ascii: String = value
         .nfkd()
         .filter(|c| !is_combining_mark(*c) && c.is_ascii_alphabetic())
@@ -385,53 +394,73 @@ fn bib_type(item_type: &str) -> &'static str {
     }
 }
 
+/// Strips braces, then escapes TeX special characters. For prose fields.
+fn tex_text(value: &str) -> String {
+    escape(&value.replace(['{', '}'], ""))
+}
+
+/// Strips braces only. For fields whose values are identifiers or URLs, where
+/// escaping would corrupt the value (for example `_` or `%` in a URL).
+fn tex_raw(value: &str) -> String {
+    value.replace(['{', '}'], "")
+}
+
 fn bib_entry(item: &Item) -> (String, String) {
     let data = &item.data;
     let authors = creators(data)
         .map(|creator| {
             if !creator.name.is_empty() {
-                format!("{{{}}}", creator.name)
+                format!("{{{}}}", tex_text(&creator.name))
             } else {
-                format!("{}, {}", creator.last_name, creator.first_name)
+                format!(
+                    "{}, {}",
+                    tex_text(&creator.last_name),
+                    tex_text(&creator.first_name)
+                )
             }
         })
         .collect::<Vec<_>>()
         .join(" and ");
+    let journal = if data.publication_title.is_empty() {
+        &data.bundle_title
+    } else {
+        &data.publication_title
+    };
     let mut fields = Vec::new();
-    let mut add = |name: &str, value: &str| {
+    let mut add = |name: &str, value: String| {
         if !value.is_empty() {
-            fields.push(format!("  {name} = {{{}}}", value.replace(['{', '}'], "")));
+            fields.push(format!("  {name} = {{{value}}}"));
         }
     };
-    add("author", &authors);
-    add("title", &data.title);
+    add("author", authors);
+    add("title", tex_text(&data.title));
     add(
         "year",
-        &issued_year(&data.date)
+        issued_year(&data.date)
             .map(|v| v.to_string())
             .unwrap_or_default(),
     );
-    add("journal", &data.bundle_title);
+    add("journal", tex_text(journal));
     add(
         "booktitle",
-        if data.proceedings_title.is_empty() {
+        tex_text(if data.proceedings_title.is_empty() {
             &data.book_title
         } else {
             &data.proceedings_title
-        },
+        }),
     );
-    add("volume", &data.volume);
-    add("number", &data.issue);
-    add("pages", &data.pages);
-    add("publisher", &data.publisher);
-    add("address", &data.place);
-    add("doi", &data.doi);
-    add("isbn", &data.isbn);
-    add("issn", &data.issn);
-    add("url", &data.url);
-    add("abstract", &data.abstract_note);
-    add("x-librepaper-zotero-library", "0");
-    add("x-librepaper-zotero-item", &item.key);
+    add("volume", tex_text(&data.volume));
+    add("number", tex_text(&data.issue));
+    add("pages", tex_text(&data.pages));
+    add("publisher", tex_text(&data.publisher));
+    add("address", tex_text(&data.place));
+    add("doi", tex_raw(&data.doi));
+    add("isbn", tex_raw(&data.isbn));
+    add("issn", tex_raw(&data.issn));
+    add("url", tex_raw(&data.url));
+    add("abstract", tex_text(&data.abstract_note));
+    add("x-librepaper-zotero-library", "0".to_owned());
+    add("x-librepaper-zotero-item", tex_raw(&item.key));
     (data.item_type.clone(), fields.join(",\n") + "\n")
 }
 
@@ -527,5 +556,48 @@ mod tests {
         assert_eq!(item.data.doi, "");
         assert_eq!(item.data.creators[0].name, "");
         assert_eq!(base_key(&item.data), "PagND");
+    }
+
+    #[test]
+    fn publication_title_is_read_from_zotero_json() {
+        let item: Item = serde_json::from_str(
+            r#"{"key":"ABC","data":{"itemType":"journalArticle","title":"T","publicationTitle":"Nature"}}"#,
+        )
+        .unwrap();
+        assert_eq!(item.data.publication_title, "Nature");
+    }
+
+    #[test]
+    fn journal_comes_from_publication_title() {
+        let item = Item {
+            key: "ABC".into(),
+            data: ItemData {
+                item_type: "journalArticle".into(),
+                title: "T".into(),
+                publication_title: "Nature".into(),
+                ..Default::default()
+            },
+        };
+        let bib = bibliography(&[item], &BTreeMap::new());
+        assert!(bib.contains("journal = {Nature}"), "{bib}");
+    }
+
+    #[test]
+    fn prose_fields_are_escaped_but_urls_are_not() {
+        let item = Item {
+            key: "ABC".into(),
+            data: ItemData {
+                item_type: "journalArticle".into(),
+                title: "Research & Development 100%".into(),
+                url: "https://example.org/a_b%20c".into(),
+                ..Default::default()
+            },
+        };
+        let bib = bibliography(&[item], &BTreeMap::new());
+        assert!(
+            bib.contains(r"title = {Research \& Development 100\%}"),
+            "{bib}"
+        );
+        assert!(bib.contains("url = {https://example.org/a_b%20c}"), "{bib}");
     }
 }

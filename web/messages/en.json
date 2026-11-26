@@ -142,8 +142,8 @@
   "agent_sign_in_again": "Sign in again to authorize the local assistant.",
   "agent_start_first": "Start an agent in the Chat tab before sending a task.",
   "agent_stopping": "Stopping…",
+  "agent_tab_connect": "Connect",
   "agent_tab_tasks": "Tasks",
-  "agent_external_intro": "Create a token, copy its instructions, and paste them into your agent. They install the LibrePaper skill if it is missing, then connect to this project.",
   "agent_tasks_intro": "Copy a task and paste it into your agent.",
   "agent_tasks_intro_desktop": "Run a task in the built-in agent, or copy it and paste it into an external agent.",
   "agent_tasks_no_match": "No tasks match \"{query}\".",
@@ -171,6 +171,17 @@
   "agent_view": "View",
   "agent_waiting_permission": "Waiting for permission",
   "agent_your_agent": "your agent",
+  "agentexternal_connect_docs": "How to connect",
+  "agentexternal_connect_title": "Connect an app",
+  "agentexternal_connect_lede": "Works in the browser, on the desktop and on your phone, with assistants that support MCP connectors, such as Claude or ChatGPT. A few steps for each project.",
+  "agentexternal_connector_copy": "Copy connector URL",
+  "agentexternal_connector_url_label": "Connector URL",
+  "agentexternal_rows_title": "Connected",
+  "agentexternal_step_add": "Add it to your app as a connector.",
+  "agentexternal_step_approve": "On the page that opens, choose what the app may do, then approve.",
+  "agentexternal_step_copy": "Copy this link",
+  "agentexternal_tokens_help": "One copy and paste for agents on your computer, such as Claude Code, Codex or Pi. Also for sync and scripts. A token works like a password for this project.",
+  "agentexternal_tokens_title": "Tokens",
   "agentsettings_add": "Add agent",
   "agentsettings_added": "Agent added.",
   "agentsettings_adding": "Adding…",
@@ -530,6 +541,7 @@
   "collaboration_clear_chat": "Clear chat",
   "collaboration_highlight_hint": "Select text in the preview window to highlight.",
   "collaboration_highlights": "Highlights",
+  "collaboration_highlights_empty": "No highlights yet.",
   "collaboration_unread": "Unread messages",
   "collaboration_views_label": "Collaboration views",
   "commandpalette_empty": "No command matches that.",
@@ -555,6 +567,7 @@
   "commands_focus_files": "Focus Files",
   "commands_focus_outline": "Focus Outline",
   "commands_focus_preview": "Focus Preview",
+  "commands_focus_search": "Search all files",
   "commands_go_to_definition": "Go to definition",
   "commands_heading_level": "Heading {level}",
   "commands_layout_cycle": "Toggle editor / preview / split",
@@ -562,6 +575,8 @@
   "commands_layout_source": "Show editor only",
   "commands_layout_split": "Show editor and preview",
   "commands_linked": "Keep in step",
+  "commands_show_in_preview": "Show in preview",
+  "commands_show_in_source": "Show in source",
   "commands_math": "Insert math",
   "commands_math_template": "Insert {label}",
   "commands_menu_edit": "Open Edit menu",
@@ -576,6 +591,7 @@
   "commands_note_not_while_typing": "Not while typing",
   "commands_note_outline_panel": "Outline panel",
   "commands_note_preview_visible": "Preview visible",
+  "commands_note_search_panel": "Search panel",
   "commands_note_wide_layout": "Wide layout",
   "commands_org_demote": "Demote heading or item",
   "commands_org_demote_subtree": "Demote subtree",
@@ -643,15 +659,12 @@
   "commentcomposer_quotation": "“{exact}”",
   "commentcomposer_sign_in_rest": "to comment on this document.",
   "comments_clear": "Delete resolved",
-  "comments_clear_all_title": "Delete every resolved comment",
-  "comments_clear_loaded_title": "Delete every resolved comment that is loaded",
-  "comments_delete_all": "Delete all",
-  "comments_delete_all_title": "Delete every comment",
-  "comments_delete_loaded": "Delete loaded",
-  "comments_delete_loaded_title": "Delete every comment that is loaded",
   "comments_empty": "No comments yet.",
   "comments_export_comments_unread": "The comments could not be read to the end.",
   "comments_export_replies_unread": "The replies could not be read to the end.",
+  "comments_filter_empty": "Nothing matches this filter.",
+  "comments_filter_label": "Which comments to show: {name}",
+  "comments_filter_unresolved": "Unresolved",
   "comments_group_all": "All comments",
   "comments_group_loaded": "Loaded comments",
   "comments_hint": "Select text in the preview window to comment.",
@@ -676,9 +689,7 @@
   "comments_meta_total": "{open} open · {total} total",
   "comments_read_only": "Read-only access. Ask the owner for a Comment or Edit link to participate.",
   "comments_resolve_all": "Resolve all",
-  "comments_resolve_all_title": "Resolve every open comment",
   "comments_resolve_loaded": "Resolve loaded",
-  "comments_resolve_loaded_title": "Resolve every open comment that is loaded",
   "comments_show_changes": "Show changes since…",
   "common_account_storage": "Account storage",
   "common_activity": "Activity",
@@ -822,6 +833,7 @@
   "common_save": "Save",
   "common_saved": "Saved",
   "common_saving": "Saving…",
+  "common_search": "Search",
   "common_search_symbols": "Search symbols",
   "common_section": "Section",
   "common_select_all": "Select all",
@@ -880,6 +892,16 @@
   "compactpanelmenu_home": "Home",
   "compactpanelmenu_menu": "Menu",
   "compactpanelmenu_menu_marked": "Menu, {name}",
+  "connect_approve_failed": "The connection could not be approved.",
+  "connect_expiry": "Access lasts 30 days and renews while the app uses it. You can revoke it any time in the project's Agent panel.",
+  "connect_heading": "{client} wants to work on {project}",
+  "connect_load_failed": "This connection request could not be loaded.",
+  "connect_owner_only": "Only the project's owner can connect an app to it.",
+  "connect_redirect": "You will be sent back to {host} once you approve.",
+  "connect_role_comment_help": "Reads and comments.",
+  "connect_role_edit_help": "Changes files directly, and can read the project's history and sync its files.",
+  "connect_role_read_help": "Reads the project.",
+  "connect_role_suggest_help": "Proposes tracked changes you accept or reject.",
   "connectionmethods_choose_token": "Token to use",
   "connectionmethods_no_token": "Create a token to copy its MCP configuration.",
   "datatable_resize_column": "Resize the {column} column",
@@ -949,6 +971,7 @@
   "downloads_selection_incomplete": "Could not download all selected files.",
   "editor_aria_label_of": "Editor of {path}",
   "editor_bibliography_unavailable": "Bibliography unavailable: {reason}",
+  "editor_bibliography_not_bibtex": "This document's bibliography is not a BibTeX file. Add a .bib file to its bibliography to import references.",
   "editor_cut_changed": "The source changed before Cut finished. Select the text again.",
   "editor_parser_not_loaded": "the parser could not be loaded",
   "editor_paste_blocked": "The browser will not let LibrePaper read the clipboard here.",
@@ -966,10 +989,10 @@
         "warningsPlural"
       ],
       "match": {
-        "errorsPlural=one warningsPlural=one": "{errors} error, {warnings} warning in this file",
-        "errorsPlural=one warningsPlural=*": "{errors} error, {warnings} warnings in this file",
-        "errorsPlural=* warningsPlural=one": "{errors} errors, {warnings} warning in this file",
-        "errorsPlural=* warningsPlural=*": "{errors} errors, {warnings} warnings in this file"
+        "errorsPlural=one, warningsPlural=one": "{errors} error, {warnings} warning in this file",
+        "errorsPlural=one, warningsPlural=*": "{errors} error, {warnings} warnings in this file",
+        "errorsPlural=*, warningsPlural=one": "{errors} errors, {warnings} warning in this file",
+        "errorsPlural=*, warningsPlural=*": "{errors} errors, {warnings} warnings in this file"
       }
     }
   ],
@@ -1007,6 +1030,10 @@
   "editor_type_font_custom": "Another font",
   "editor_type_font_system_sans": "System sans serif",
   "editor_type_font_system_serif": "System serif",
+  "editor_doi_invalid": "That is not a DOI. A DOI starts with 10. followed by a slash, like 10.1038/nature12373.",
+  "editor_doi_not_found": "doi.org has no record for this DOI.",
+  "editor_doi_unreachable": "Could not reach doi.org. Check your connection and try again.",
+  "editor_doi_needs_file": "Open a file that can be edited before adding a reference by DOI.",
   "editor_zotero_changed": "The document changed while Zotero answered. Try again.",
   "editor_zotero_needs_file": "Open a file that can be edited before importing from Zotero.",
   "editorsettings_brackets_description": "Typing an opening bracket adds the closing one.",
@@ -1523,6 +1550,12 @@
   "insertmenu_bibtex_no_bibliography": "BibTeX (no bibliography)",
   "insertmenu_caption": "Caption",
   "insertmenu_citation_style": "Citation style",
+  "insertmenu_doi": "DOI",
+  "insertmenu_doi_placeholder": "10.1038/nature12373 or https://doi.org/…",
+  "insertmenu_doi_looking_up": "Looking up…",
+  "insertmenu_doi_items_group": "DOI entries",
+  "insertmenu_doi_import_failed": "Could not add the DOI entries to the bibliography.",
+  "insertmenu_doi_lookup_failed": "Could not look up that DOI.",
   "insertmenu_document_changed": "The document changed. Close this dialog and choose the insertion point again.",
   "insertmenu_environment_choose": "Choose a defined environment…",
   "insertmenu_environments_label": "Defined environments",
@@ -1550,6 +1583,7 @@
   "insertmenu_reference_choose": "Choose a heading, figure, table, or equation…",
   "insertmenu_search_label": "Search bibliography",
   "insertmenu_search_placeholder": "Search author, title, year, or key",
+  "insertmenu_bib_target": "Add to",
   "insertmenu_source": "Source",
   "insertmenu_style_narrative": "Narrative / textual",
   "insertmenu_style_parenthetical": "Parenthetical",
@@ -2130,6 +2164,7 @@
   "outline_filter_open_todos": "Open TODOs",
   "outline_filter_tag": "Tag: {tag}",
   "outline_no_headings": "No headings in this file.",
+  "panelboundary_failed": "This part of the page stopped working. The rest of LibrePaper is fine.",
   "panels_git": "Git",
   "panels_shared": "Shared with me",
   "panels_trash": "Trash",
@@ -2198,7 +2233,6 @@
   "previewcontrols_page_view": "Page view",
   "previewcontrols_present": "Present",
   "previewcontrols_previous_match": "Previous match",
-  "previewcontrols_search": "Search",
   "previewcontrols_search_document": "Search the document",
   "previewcontrols_select_text": "Select text",
   "previewcontrols_spread": "Two pages side by side",
@@ -2361,6 +2395,7 @@
   "readerb_version_download_failed": "That version could not be downloaded.",
   "readerb_version_history": "Version history",
   "readerc_cells_not_run": "Code cells were not run. To include their results, export from the LibrePaper desktop app with a Run directory set.",
+  "readerc_cells_not_run_host_off": "Code cells were not run. This server has turned off Run code.",
   "readerc_comments_export_failed": "The comments could not be exported.",
   "readerc_comments_preparing": "Preparing the comments.",
   "readerc_demo_no_uploads": "Images and other uploads are not available in the demo.",
@@ -2570,13 +2605,102 @@
   "renderers_quarto_failed": "The Quarto preview could not be drawn.",
   "renderersettings_aria": "{name} renders in",
   "renderersettings_description": "{name} documents render in this browser, or on this computer while Run code is on.",
+  "renderersettings_description_browser_only": "{name} documents render in this browser. This server has turned off building on this computer.",
   "renderersettings_note": "The tool may download packages on its own.",
   "renderersettings_title": "Renders in",
   "room_submission_failed": "comment submission failed",
   "room_submission_failed_status": "comment submission failed ({status})",
+  "search_capped": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Showing the first {count} result. Narrow the search to see the rest.",
+        "countPlural=*": "Showing the first {count} results. Narrow the search to see the rest."
+      }
+    }
+  ],
+  "search_clear": "Clear search",
+  "search_collapse_all": "Collapse all",
+  "search_expand_all": "Expand all",
+  "search_file_matches": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count} match",
+        "countPlural=*": "{count} matches"
+      }
+    }
+  ],
+  "search_hide_replace": "Hide replace",
+  "search_input_label": "Search all files",
+  "search_invalid_regex": "This regular expression is not valid.",
+  "search_match_case": "Match case",
+  "search_match_whole_word": "Match whole word",
+  "search_no_results": "No results found",
+  "search_replace_all": "Replace all",
+  "search_replace_all_capped": "Replace every match in the project, including those not shown",
+  "search_replace_all_scope": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "Replace {count} match in {files} file",
+        "countPlural=one, filesPlural=*": "Replace {count} match in {files} files",
+        "countPlural=*, filesPlural=one": "Replace {count} matches in {files} file",
+        "countPlural=*, filesPlural=*": "Replace {count} matches in {files} files"
+      }
+    }
+  ],
+  "search_replace_label": "Replace with",
+  "search_replace_line": "Replace the matches on this line",
+  "search_searching": "Searching…",
+  "search_section_label": "Search all project files",
+  "search_show_replace": "Show replace",
+  "search_summary": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "{count} result in {files} file",
+        "countPlural=one, filesPlural=*": "{count} result in {files} files",
+        "countPlural=*, filesPlural=one": "{count} results in {files} file",
+        "countPlural=*, filesPlural=*": "{count} results in {files} files"
+      }
+    }
+  ],
+  "search_use_regex": "Use regular expression",
   "settingsdialog_categories_label": "Settings categories",
   "settingsdialog_nothing_matches": "Nothing matches.",
   "settingsdialog_quarto_note": "Quarto documents render a draft in the browser. Press Run code to run their code on this computer.",
+  "settingsdialog_quarto_note_browser_only": "Quarto documents render a draft in the browser. This server has turned off Run code.",
   "settingsdialog_search": "Search settings",
   "settingsdialog_version": "Version {version} · This computer",
   "share_copy_manual_label": "Text to copy manually",
@@ -2594,6 +2718,7 @@
   "share_revoke_token_title": "Revoke token?",
   "share_tab_links": "Links",
   "share_tab_tokens": "Agents",
+  "shared_expired": "Expired",
   "shared_expiry_180d": "6 months",
   "shared_expiry_1d": "1 day",
   "shared_expiry_30d": "30 days",
@@ -2802,8 +2927,8 @@
   "tokenreveal_copy_connect": "Copy connection instructions",
   "tokenreveal_copy_failed": "Could not copy",
   "tokenreveal_copy_token": "Copy token",
-  "tokenreveal_mcp_advantage": "With MCP, you can avoid pasting the token into your agent's chat.",
-  "tokenreveal_other_ways": "Other connection methods",
+  "tokenreveal_mcp_advantage": "Run librepaper mcp with a token so the token never goes into the chat.",
+  "tokenreveal_other_ways": "Command line and MCP configuration",
   "tokenreveal_token": "Token",
   "toolcommand_aria_command": "{title} for {format}",
   "toolcommand_aria_result": "Result file for {format} {output}",
@@ -2993,6 +3118,8 @@
   "rundirectorycontrol_choose_a_folder": "Choose a folder",
   "rundirectorycontrol_share_results": "Publish results",
   "rundirectorycontrol_share_hint": "Collaborators see the output of your last run, even without your data.",
+  "rundirectorycontrol_agents_run": "Let agents run code",
+  "rundirectorycontrol_agents_run_hint": "Agents connected to this project can run its code chunks in your Run directory while this window is open.",
   "rundirectorycontrol_shared": "Results published · {size}",
   "rundirectorycontrol_shared_figures": [
     {
@@ -3019,6 +3146,8 @@
   "runbutton_directory_named": "Run directory: {name}",
   "runbutton_choose_directory": "Choose a Run directory…",
   "runbutton_view_last_run": "View last run's output",
+  "runbutton_refresh_cache": "Run without cache",
+  "runbutton_refresh_cache_hint": "Run again and recompute cells Quarto cached, for when data changed outside the document",
   "runbutton_last_run": "Last run {time}",
   "runbutton_failed": "The last run failed",
   "runbutton_running_in": "Running code in {name}…",

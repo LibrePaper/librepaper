@@ -31,6 +31,7 @@ import { logMissesAFile, runDirectoryDiagnostics } from "./reader/run-directory.
 import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
+import { localBuildsAllowed } from "./host-switches.js";
 import { m } from "./paraglide/messages.js";
 import { houseStyleCss, latexmlWithHouseStyle, quartoWithHouseStyle, typstWithHouseStyle, withHouseStyle } from "./house-style.js";
 
@@ -212,20 +213,21 @@ async function localHtml(format, artifact) {
 /// An optional `signal` stops a render on this computer: one already aborted
 /// when the job would start throws an `AbortError` without starting it, and
 /// one that fires later cancels the job in flight.
-export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "", signal = null, wanted = [] } = {}) {
+export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "", signal = null, wanted = [], refreshCache = false } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = previewFormatOf(tree.main);
   // A format set to this computer renders there, through the command Settings
   // holds for its output. The caller has already turned that off while Run
-  // code is off, so a document never runs without consent.
+  // code is off, so a document never runs without consent. Where the host has
+  // turned local builds off, nothing renders there and the browser renders instead.
   const output = localOutput(format, buildPreferences, requestedFormat);
-  if (output && buildPreferences?.backend === "local") {
+  if (output && buildPreferences?.backend === "local" && localBuildsAllowed()) {
     localBridge.configure({ project, origin: globalThis.location?.origin || "" });
     const digest = await snapshotDigest(tree);
     // Stop pressed while the snapshot was being hashed: nothing has started,
     // so the job in flight (if any) is not another render's to cancel.
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    const job = { snapshot: digest, generation: Date.now(), wanted };
+    const job = { snapshot: digest, generation: Date.now(), wanted, ...(refreshCache ? { refreshCache: true } : {}) };
     activeLocalAbort?.abort();
     const abort = new AbortController();
     signal?.addEventListener("abort", () => abort.abort(), { once: true });
@@ -295,7 +297,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
       return result?.html ? { ...result, html: latexmlWithHouseStyle(result.html, css) } : result;
     }
     latex.ensureProject(project);
-    const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok } = await latex.compile(tree, { manual });
+    const { pdf, synctex, diagnostics, seconds, log, attempts, provenance, failure, job, ok, compiledTree } = await latex.compile(tree, { manual });
     // Keep the output channels explicit. In particular, a failed LaTeX
     // compile has no HTML page; `undefined` would look like a page to callers
     // that use a null check and could replace a previously good preview.
@@ -314,6 +316,8 @@ export async function render(tree, title, { manual = false, format: requestedFor
       failure,
       job,
       ok,
+      // The tree that actually compiled; a queued job may merge with a newer one.
+      compiledTree,
     };
   }
   const capturedSettings = configuration && Object.prototype.hasOwnProperty.call(configuration, "settings")
@@ -343,10 +347,19 @@ export async function render(tree, title, { manual = false, format: requestedFor
   }
   const module = format === "markdown" && needsBibliography({ source }) ? "citations" : format;
   const renderable = format === "org" ? expandOrgIncludes(tree) : tree;
-  return housed(await request(module, "render", {
+  const page = housed(await request(module, "render", {
     tree: renderTree(renderable, capturedSettings),
     title,
   }, capturedModules));
+  // Plain Markdown through citations.wasm still renders the main file as it
+  // is, so its positions are that file's lines too.
+  return format === "markdown" ? withMainSource(page, tree.main) : page;
+}
+
+// Untagged `data-sourcepos` positions name lines of the main file, so a page
+// that carries them names that file as its one source (tag 0).
+function withMainSource(page, main) {
+  return typeof page?.html === "string" ? { ...page, sources: [main] } : page;
 }
 
 // The wasm renderers' pages carry no house stylesheet of their own: the app
@@ -375,11 +388,18 @@ async function renderQuarto(tree, title, moduleUrls, settings, source) {
       tree: renderTree(draftTree(tree, drafted.markdown), settings),
       title,
     }, moduleUrls);
+    // citations.wasm rendered the draft, so its positions count draft lines;
+    // they are put back on the .qmd lines before the page is housed.
+    const positioned = typeof result?.html === "string"
+      ? { ...result, html: quarto.mapDraftSourcepos(result.html, drafted.line_map) }
+      : result;
     const mapped = quarto.mapDraftDiagnostics(result?.diagnostics || [], drafted.line_map, tree.main);
-    return housed({ ...result, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] });
+    return withMainSource(housed({ ...positioned, diagnostics: [...quarto.translateQuartoDiagnostics(drafted.diagnostics), ...mapped] }), tree.main);
   }
   const result = await request("markdown", "render", { tree: renderTree(withSidecar, settings), title }, moduleUrls);
-  return result ? housed({ ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) }) : result;
+  // Rendered from the .qmd itself, so its positions are that file's lines.
+  // The citations path above maps its draft positions back onto those lines.
+  return result ? withMainSource(housed({ ...result, diagnostics: quarto.translateQuartoDiagnostics(result.diagnostics) }), tree.main) : result;
 }
 
 // The module's Quarto draft of a tree, as Markdown with its line map.

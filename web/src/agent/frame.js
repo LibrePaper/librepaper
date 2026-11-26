@@ -14,6 +14,7 @@ import { createKatexCache, createKatexLoader, createMathTypesetter, typesetDetac
 import { createDiagramCache, createDiagramRenderer, createMermaidLoader } from "../lib/mermaid.js";
 import { perfEnd, perfStart } from "../lib/perf-marks.js";
 import { shiftAnnotationRanges } from "../lib/shift-annotation-ranges.js";
+import { parseSourcepos } from "../lib/sourcepos.js";
 import { watchPinch } from "../lib/pinch.js";
 import { morphChildren } from "./morph.js";
 
@@ -67,6 +68,9 @@ import { morphChildren } from "./morph.js";
   // The reader's own surface colours ({ paper, ink }), or null for the house
   // defaults. They override the house variables on both :root and .lp-dark.
   let surface = null;
+  // The `sources` the current preview's data-sourcepos tags name (project
+  // paths, or null for a bundled package), or null when the render gave none.
+  let previewSources = null;
   function setSurface(next) {
     const ok = (value) => typeof value === "string" && value.length > 0 && value.length < 200;
     const wanted = next && ok(next.paper) && ok(next.ink) ? { paper: next.paper, ink: next.ink } : null;
@@ -206,6 +210,12 @@ import { morphChildren } from "./morph.js";
   const markStyle = document.createElement("style");
   markStyle.dataset.librepaperMarks = "1";
   markStyle.textContent = `
+    /* The span a jump from the source has just landed on, painted for about a
+       second by flashLanding. The Custom Highlight API draws it where it is
+       supported; elsewhere nothing is drawn. */
+    ::highlight(librepaper-landing) {
+      background-color: rgb(230 159 0 / 0.35);
+    }
     /* The annotation the sidebar has singled out: a ring around every piece
        of its passage, so that it stands out from the wash the others sit
        under. */
@@ -381,6 +391,29 @@ import { morphChildren } from "./morph.js";
       if (to > from) pieces.push({ node: table.nodes[i], from, to, end: nodeStart + to });
     }
     return pieces;
+  }
+
+  // The tint over text a jump from the source has just landed on: every
+  // piece of it, not only the first, for about a second. A browser without the
+  // Custom Highlight API gets nothing extra; the scroll is the whole effect.
+  // The next correction a long locate has queued (see the "locate" message).
+  let locateSettle = 0;
+
+  let landingTimer = 0;
+  function flashLanding(pieces) {
+    if (!globalThis.CSS?.highlights || typeof Highlight !== "function") return;
+    const ranges = pieces.map((piece) => {
+      const range = document.createRange();
+      range.setStart(piece.node, piece.from);
+      range.setEnd(piece.node, piece.to);
+      return range;
+    });
+    CSS.highlights.set("librepaper-landing", new Highlight(...ranges));
+    clearTimeout(landingTimer);
+    landingTimer = setTimeout(() => {
+      landingTimer = 0;
+      CSS.highlights.delete("librepaper-landing");
+    }, 1000);
   }
 
   // Paint, from a list of {id, start, end, resolved} the sidebar worked out.
@@ -602,6 +635,79 @@ import { morphChildren } from "./morph.js";
     return table.starts[index] + point.offset;
   }
 
+  // Which source lines a selection came from, when the preview says: the
+  // data-sourcepos attributes on the elements at either end of the range. It
+  // is only a hint that narrows the server's search, so anything unclear, or
+  // too broad to help, gives none.
+  const SOURCE_HINT_MAX_LINES = 200;
+  const OCCURRENCE_MAX_COUNT = 1000;
+  function sourceHint(range, exact, selectedStart) {
+    const sources = previewSources;
+    if (!sources) return null;
+    const startElement = sourcedElementAt(range.startContainer);
+    const endElement = sourcedElementAt(range.endContainer);
+    const start = parseSourcepos(startElement?.getAttribute("data-sourcepos"));
+    const end = parseSourcepos(endElement?.getAttribute("data-sourcepos"));
+    if (!start || !end || start.tag !== end.tag) return null;
+    const path = sources[start.tag];
+    if (typeof path !== "string" || !path) return null;
+    const from_line = Math.min(start.from, end.from);
+    const to_line = Math.max(start.to, end.to);
+    if (to_line - from_line > SOURCE_HINT_MAX_LINES) return null;
+    const hint = { path, from_line, to_line };
+    // Both ends in one element: its lines are the hint's lines, so the copy of
+    // the words the selection is can be named as well.
+    if (startElement && startElement === endElement) {
+      const copy = copyOf(startElement, exact, selectedStart);
+      if (copy) Object.assign(hint, copy);
+    }
+    return hint;
+  }
+
+  function sourcedElementAt(node) {
+    const element = node?.nodeType === 3 ? node.parentElement : node;
+    return element?.closest?.("[data-sourcepos]") ?? null;
+  }
+
+  // The stretch of the text table an element's own text fills, from its first
+  // text node to its last, or null when the table keeps none of it. Scripts
+  // and styles are not in the table, so they are not in the span.
+  function textSpanOf(element) {
+    let first = -1;
+    let last = -1;
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const index = table.index.get(node);
+      if (index === undefined) continue;
+      if (first < 0) first = index;
+      last = index;
+    }
+    if (first < 0) return null;
+    return { from: table.starts[first], to: table.starts[last] + table.nodes[last].data.length };
+  }
+
+  // Which copy of the selected words the selection is, among the copies inside
+  // its element: how many start before it, and how many there are. Counted in
+  // the same text the selection's offset is in, so the copy the selection
+  // starts at is the one the offset names. If no copy starts there, the two
+  // text models disagree and nothing is said. A single copy needs no index.
+  function copyOf(element, exact, selectedStart) {
+    const span = textSpanOf(element);
+    if (!span) return null;
+    const elementText = text().slice(span.from, span.to);
+    const before = selectedStart - span.from;
+    let count = 0;
+    let occurrence = -1;
+    for (let at = elementText.indexOf(exact); at !== -1; at = elementText.indexOf(exact, at + 1)) {
+      if (at === before) occurrence = count;
+      count++;
+      if (count > OCCURRENCE_MAX_COUNT) return null;
+    }
+    if (occurrence < 0 || count < 2) return null;
+    return { occurrence, count };
+  }
+
   function captureSelection() {
     const selection = document.getSelection();
     if (!selection || selection.isCollapsed) {
@@ -645,6 +751,7 @@ import { morphChildren } from "./morph.js";
     if (!exact) return;
 
     const box = range.getBoundingClientRect();
+    const hint = sourceHint(range, exact, start);
     post({
       type: "selection",
       selector: {
@@ -655,6 +762,7 @@ import { morphChildren } from "./morph.js";
         // authority; this only says which copy was meant when a document
         // repeats itself and the context cannot tell them apart.
         position: start,
+        ...(hint ? { hint } : {}),
       },
       // Viewport coordinates inside the frame; the sidebar adds the frame's
       // own offset to place its button.
@@ -748,6 +856,10 @@ import { morphChildren } from "./morph.js";
     //
     // innerHTML does not run scripts, so a preview never executes anything.
     if (message.type === "preview") {
+      cancelAnimationFrame(locateSettle);
+      // The sources the page's data-sourcepos tags name. Kept for the next
+      // selection; a page without them clears the ones from the last page.
+      previewSources = Array.isArray(message.sources) ? message.sources : null;
       // A LaTeX document arrives as PDF bytes rather than as HTML, and the
       // page it arrives on -- the PDF viewer -- draws
       // it itself into a text layer of ordinary spans. Nothing below applies
@@ -837,16 +949,39 @@ import { morphChildren } from "./morph.js";
     // the editor works out which offset a caret in the source corresponds to,
     // and this end knows which node holds it.
     if (message.type === "locate") {
+      // A newer jump, or a new page, ends the corrections an earlier long jump
+      // still has queued, so they cannot pull the preview back to its passage.
+      cancelAnimationFrame(locateSettle);
       const start = Number(message.start) || 0;
-      const [piece] = piecesFor(start, start + Math.max(1, Number(message.length) || 1));
+      const pieces = piecesFor(start, start + Math.max(1, Number(message.length) || 1));
+      const [piece] = pieces;
       if (!piece) return;
+      if (message.flash) flashLanding(pieces);
       const range = document.createRange();
       range.setStart(piece.node, piece.from);
       range.setEnd(piece.node, piece.to);
-      const box = range.getBoundingClientRect();
       // Scrolled to a third of the way down rather than to the very top: a
       // line pinned to the edge of the frame reads as cut off.
-      scrollTo({ top: scrollY + box.top - innerHeight / 3, behavior: "smooth" });
+      const target = () => scrollY + range.getBoundingClientRect().top - innerHeight / 3;
+      const top = target();
+      if (Math.abs(top - scrollY) <= innerHeight * 1.5) {
+        scrollTo({ top, behavior: "smooth" });
+        return;
+      }
+      // The live preview lays out blocks far off screen at an estimated height
+      // until they are drawn (content-visibility in document.css). A long smooth
+      // scroll draws every block it passes, the page shrinks under it, and it
+      // lands well past the passage. A long jump goes there at once instead,
+      // then corrects for the blocks drawn on arrival until the place holds.
+      scrollTo({ top, behavior: "instant" });
+      let corrections = 0;
+      const settle = () => {
+        const next = target();
+        if (Math.abs(next - scrollY) <= 2 || corrections++ >= 5) return;
+        scrollTo({ top: next, behavior: "instant" });
+        locateSettle = requestAnimationFrame(settle);
+      };
+      locateSettle = requestAnimationFrame(settle);
       return;
     }
     if (message.type === "reading-position") {
@@ -1035,9 +1170,23 @@ import { morphChildren } from "./morph.js";
   // the passage in hand, Escape for the mode the sidebar armed -- so neither
   // takes a key away from a document that wants one.
   document.addEventListener("keydown", (event) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target instanceof Element ? event.target : null;
-    if (target && ((target instanceof HTMLElement && target.isContentEditable) || target.closest("input,textarea,select,[contenteditable]"))) return;
+    const editable = target && ((target instanceof HTMLElement && target.isContentEditable) || target.closest("input,textarea,select,[contenteditable]"));
+    // Only Mod+Alt chords travel to the Reader. Those are the workspace's own
+    // shortcuts, and no document or browser default wants them; copy, paste
+    // and the rest stay with the frame. The frame does not preventDefault,
+    // since it cannot know whether the Reader will claim the chord.
+    if ((event.ctrlKey || event.metaKey) && event.altKey) {
+      // Pressing the modifiers themselves names no chord yet.
+      if (editable || ["Control", "Meta", "Alt", "Shift"].includes(event.key)) return;
+      post({
+        type: "shortcut", key: event.key, code: event.code,
+        ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey,
+      });
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (editable) return;
     if (event.key === "Escape") {
       post({ type: "disarm" });
       return;

@@ -1193,4 +1193,50 @@ const gate = () => {
   }
 }
 
-console.log("project-session: persistence, identity, swap, directory changes, protocol join shapes, doc-gap, acknowledgement boundaries, pressure retry and join cancellation passed");
+// The join trace says where a join stopped: a fresh session has not joined,
+// an open is timed and sized, a short advertised head is named, and a
+// complete join clears the short facts.
+{
+  const traced = createProjectSession({ send: () => {}, onState: () => {}, presenceId: () => "trace-fresh" });
+  try {
+    const fresh = traced.joinTrace();
+    assert.equal(fresh.joinStage, "waiting");
+    assert.equal(fresh.stateFrames, 0);
+    assert.equal(fresh.openSentAgoMs, null);
+    traced.open();
+    assert.equal(typeof traced.joinTrace().openSentAgoMs, "number");
+    assert.equal(traced.joinTrace().openVectorPeers, 0, "an empty document asks for everything");
+  } finally {
+    traced.leave();
+  }
+}
+{
+  const { base, row1, row2, head } = sourceLog();
+  const short = createProjectSession({ send: () => {}, onState: () => {}, presenceId: () => "trace-short" });
+  try {
+    await short.start({ protocol: "librepaper.room.v3", vector: encode(head.encode()), base: "", updates: [] });
+    const trace = short.joinTrace();
+    assert.equal(trace.joinStage, "short");
+    assert.equal(trace.stateFrames, 1);
+    assert.ok(trace.shortMissingPeers >= 1, "the advertised head names a peer the local document lacks");
+  } finally {
+    short.leave();
+  }
+  const complete = createProjectSession({ send: () => {}, onState: () => {}, presenceId: () => "trace-joined" });
+  try {
+    await complete.start({
+      protocol: "librepaper.room.v3",
+      vector: encode(head.encode()),
+      base: encode(base),
+      updates: [encode(row1), encode(row2)],
+    });
+    const trace = complete.joinTrace();
+    assert.equal(trace.joinStage, "joined");
+    assert.equal(trace.shortCompare, null);
+    assert.equal(trace.shortMissingPeers, null);
+  } finally {
+    complete.leave();
+  }
+}
+
+console.log("project-session: persistence, identity, swap, directory changes, protocol join shapes, doc-gap, acknowledgement boundaries, pressure retry, join cancellation and join trace passed");

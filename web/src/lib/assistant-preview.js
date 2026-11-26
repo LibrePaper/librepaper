@@ -88,7 +88,7 @@ export function candidateTree(candidate) {
 // The server always sends a candidate reference (`request.candidate`): a
 // manifest plus the source files the agent client fetched over authenticated
 // same-origin requests, never inline edits carried in the chat frame itself.
-/** @param {{request: {candidate?: {main?: string, files?: Record<string, {kind: "asset"|"text", sha: string, size: number}>, texts?: Record<string, string>, settings?: Record<string, unknown>, base_revision?: string, revision?: string, dependency_hash?: string, settings_hash?: string}, base_revision?: string, revision?: string}, tree?: {main?: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, digests?: Record<string, string>, files?: Record<string, {sha?: string}>}, render: (tree: object, title: string) => Promise<{html?: string|null, pdf?: Uint8Array|null, diagnostics?: {severity: string, message: string, file?: string, line?: number, column?: number}[], provenance?: {engine?: string}, ok?: boolean}>, title?: (tree: object) => Promise<string>, digest?: (tree: object) => Promise<string>}} options */
+/** @param {{request: {candidate?: {main?: string, files?: Record<string, {kind: "asset"|"text", sha: string, size: number}>, texts?: Record<string, string>, settings?: Record<string, unknown>, base_revision?: string, revision?: string, dependency_hash?: string, settings_hash?: string}, base_revision?: string, revision?: string}, tree?: {main?: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array>, urls?: Record<string, string>, digests?: Record<string, string>, files?: Record<string, {sha?: string}>}, render: (tree: object, title: string) => Promise<{html?: string|null, pdf?: Uint8Array|null, diagnostics?: {severity: string, message: string, file?: string, line?: number, column?: number}[], provenance?: {engine?: string}, ok?: boolean, compiledTree?: object}>, title?: (tree: object) => Promise<string>, digest?: (tree: object) => Promise<string>}} options */
 export async function previewCandidate({ request, tree: sourceTree, render, title = async (_tree) => "", digest = snapshotDigest }) {
   const referenced = request?.candidate;
   if (!referenced) throw new Error("Candidate reference is required.");
@@ -116,6 +116,24 @@ export async function previewCandidate({ request, tree: sourceTree, render, titl
   const candidateRevision = await digest({ ...tree, main: "" });
   if (candidateRevision !== revision) throw new Error("The candidate revision does not match its source files.");
   const rendered = await render(tree, await title(tree));
+  // The shared LaTeX queue may have merged this job with a newer one, so the
+  // result can describe another tree than the one asked for.
+  if (rendered?.compiledTree && rendered.compiledTree !== tree) {
+    return {
+      revision: candidateRevision,
+      base_revision: baseRevision,
+      ok: false,
+      diagnostics: [{ severity: "error", message: "A newer preview replaced this verification. Try again." }],
+      provenance: {
+        renderer: "browser",
+        engine: formatOf(tree.main) || "markdown",
+        implementation: globalThis.__LIBREPAPER_RENDERER_BUILD__ || "web-renderer",
+        dependency_hash: referenced.dependency_hash || null,
+        settings_hash: referenced.settings_hash || null,
+      },
+      output: "none",
+    };
+  }
   const diagnostics = (rendered.diagnostics || []).map((item) => diagnosticContext(item, tree, candidateRevision));
   const hasOutput = typeof rendered.html === "string" || Boolean(rendered.pdf?.byteLength);
   const format = formatOf(tree.main) || "markdown";

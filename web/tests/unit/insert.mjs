@@ -162,3 +162,19 @@ assert.ok(theoremNoAnchor.notes.some(note=>note.includes('\\newtheorem')));
 }
 
 console.log('insert: all format adapters, nondefault options, dependencies, validation, syntax contexts and target discovery passed');
+
+// A chapter cites through the bibliography its entry file or _quarto.yml declares, even with several bibliography files.
+{
+  const two=[{path:'a.bib',text:'@article{a,title={A}}'},{path:'b.bib',text:'@article{b,title={B}}'}];
+  const chapter=(format,files,entryText='# Home\n')=>({format,path:format==='quarto'?'ch.qmd':'ch.md',text:'# Chapter\n',entryPath:format==='quarto'?'index.qmd':'index.md',entryText,selection:{from:10,to:10,text:''},files,bibliography:[{key:'a'}]});
+  const entry='---\nbibliography: a.bib\n---\n\n# Home\n';
+  for(const format of ['markdown','quarto']){
+    const viaEntry=buildInsertion('citation',{keys:['a']},chapter(format,two,entry));
+    assert.ok(!viaEntry.additionalEdits?.length,'entry declaration: no metadata added');
+    assert.throws(()=>buildInsertion('citation',{keys:['a']},chapter(format,two)),/bibliograph/i);
+    const one=buildInsertion('citation',{keys:['a']},chapter(format,[two[0]]));
+    assert.match(JSON.stringify(one.additionalEdits),/bibliography/);
+  }
+  const viaQuarto=buildInsertion('citation',{keys:['a']},chapter('quarto',[...two,{path:'_quarto.yml',text:'bibliography: a.bib\n'}]));
+  assert.ok(!viaQuarto.additionalEdits?.length,'_quarto.yml declaration: no metadata added');
+}

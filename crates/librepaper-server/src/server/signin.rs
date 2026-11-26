@@ -598,7 +598,12 @@ impl Server {
             // 30 MB mistake before it is sent rather than after.
             "/api/config" => Some(write_json(
                 200,
-                &config_body(&self.config, self.latex.as_deref()),
+                &config_body(
+                    &self.config,
+                    self.latex.as_deref(),
+                    self.agents,
+                    self.local_builds,
+                ),
             )),
             // The rest of the sign-in routes name their provider in the path.
             other => {
@@ -816,12 +821,17 @@ impl Server {
 fn config_body(
     config: &librepaper_base::config::Configuration,
     latex: Option<&str>,
+    agents: bool,
+    local_builds: bool,
 ) -> serde_json::Value {
     let mut body = json!(config);
     if let Some(fields) = body.as_object_mut() {
         fields.insert("latex".to_string(), json!(latex.is_some()));
         // The pinned release directory URL, not the mirror root.
         fields.insert("latexMirror".to_string(), json!(latex));
+        // The host's two switches, so the page offers nothing that would be refused.
+        fields.insert("agents".to_string(), json!(agents));
+        fields.insert("local_builds".to_string(), json!(local_builds));
         // The server version, so a diagnostics report can name the build.
         fields.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
     }

@@ -1,6 +1,7 @@
 // Matching and cache policy for bibliography completion. Parsing itself lives
 // in the engine WASM module; these helpers are also usable by check scripts.
 import { m } from "./paraglide/messages.js";
+import { normaliseDoi } from "./doi.js";
 
 const WORD = /[-\p{L}\p{N}_:.+]/u;
 const KEY = /^[-\p{L}\p{N}_:.+]*$/u;
@@ -201,18 +202,26 @@ export function bibliographyTrigger(format) {
 export function selectedBibliographyFiles(source, format) {
   const names = [];
   if (format === "markdown" || format === "quarto") {
-    const lines = string(source).split(/\r?\n/);
+    // Only the leading front matter declares a bibliography; a "Bibliography:"
+    // line and bullet list in the body are prose.
+    const all = string(source).replace(/^\uFEFF/, "").split(/\r?\n/);
+    const close = all[0]?.trim() === "---" ? all.findIndex((line, index) => index > 0 && /^(?:---|\.\.\.)\s*$/.test(line)) : -1;
+    const lines = close > 0 ? all.slice(1, close) : [];
     for (let i = 0; i < lines.length; i++) {
       const match = lines[i].match(/^\s*bibliography\s*:\s*(.*?)\s*$/i);
       if (!match) continue;
       names.push(...match[1].replace(/[\[\]"']/g, "").split(",").map((name) => name.trim()).filter(Boolean));
       for (let j = i + 1; j < lines.length; j++) {
-        const item = lines[j].match(/^\s*-\s*["']?([^"']+\.bib)["']?\s*$/i);
-        if (item) names.push(item[1].trim()); else if (lines[j].trim()) break;
+        const item = lines[j].match(/^\s*-\s+["']?(.*?)["']?\s*$/);
+        if (item) { if (item[1].trim()) names.push(item[1].trim()); } else if (lines[j].trim()) break;
       }
     }
   } else if (format === "typst") {
-    for (const match of string(source).matchAll(/#bibliography\s*\(([^)]*)\)/g)) names.push(...[...match[1].matchAll(/["']([^"']+\.bib)["']/gi)].map((item) => item[1]));
+    // The call's sources are its positional argument: a string or an array of strings. Named arguments (style, title) are dropped first.
+    for (const match of string(source).matchAll(/#bibliography\s*\(((?:[^()]|\([^()]*\))*)\)/g)) {
+      const positional = match[1].replace(/[A-Za-z][\w-]*\s*:\s*(?:"[^"]*"|[^,)]*)/g, "");
+      names.push(...[...positional.matchAll(/"([^"]+)"/g)].map((item) => item[1].trim()).filter(Boolean));
+    }
   } else if (format === "latex" || format === "tex") {
     for (const match of string(source).matchAll(/\\(?:addbibresource|bibliography)\s*(?:\[[^]]*\])?\{([^}]+)\}/g)) names.push(...match[1].split(",").map((name) => name.trim()).filter(Boolean));
   } else if (format === "org") {
@@ -352,23 +361,137 @@ function projectBibliographyPath(filePath, reference) {
   return parts.join("/");
 }
 
-export function planZoteroImport({ source, targetPath, texts, item, format = "markdown" }) {
-  const configured = selectedBibliographyFiles(format === "latex" || format === "tex" ? latexMasked(string(source)) : source, format);
-  const configuredPaths = configured.map((path) => projectBibliographyPath(targetPath, path)).filter(Boolean)
+// Where a Markdown or Quarto document's bibliography is declared: its own front
+// matter, else the preview's entry file, else (Quarto) the nearest _quarto.yml.
+// files are project-relative paths, resolved against the declaring file.
+export function declaredBibliography({ format = "", chapterPath = "", chapterText = "", entryPath = "", entryText = "", texts = {} } = {}) {
+  const resolve = (from, source, kind) => selectedBibliographyFiles(source, kind).map((name) => projectBibliographyPath(from, name)).filter(Boolean);
+  const none = { files: [], owner: null, ownerPath: null };
+  const inChapter = resolve(chapterPath, chapterText, format);
+  if (inChapter.length) return { files: inChapter, owner: "chapter", ownerPath: chapterPath || null };
+  if (format !== "markdown" && format !== "quarto") return none;
+  if (entryPath && entryPath !== chapterPath && /\.(?:md|qmd|rmd|markdown)$/i.test(entryPath)) {
+    const inEntry = resolve(entryPath, entryText, format);
+    if (inEntry.length) return { files: inEntry, owner: "entry", ownerPath: entryPath };
+  }
+  if (format === "quarto") {
+    const dirs = String(chapterPath || "").split("/").slice(0, -1);
+    for (let depth = dirs.length; depth >= 0; depth--) {
+      const prefix = dirs.slice(0, depth).join("/");
+      for (const name of ["_quarto.yml", "_quarto.yaml"]) {
+        const path = prefix ? `${prefix}/${name}` : name;
+        if (!Object.hasOwn(texts, path)) continue;
+        const files = resolve(path, `---\n${string(texts[path])}\n---\n`, "quarto");
+        if (files.length) return { files, owner: "quarto", ownerPath: path };
+      }
+    }
+  }
+  return none;
+}
+
+// The part of an import plan the two sources share: which .bib the entry goes
+// into, its text so far, and the registration the citing file may need.
+/**
+ * @typedef {{ source: string, targetPath: string, texts: Record<string, string>, format: string,
+ *   chapterPath?: string, chapterText?: string, entryPath?: string, entryText?: string }} ImportWhere
+ */
+
+// The declared (or, failing that, existing) .bib files an import can go into.
+/** @param {ImportWhere} where */
+function resolveTargets({ source, targetPath, texts, format, chapterPath, chapterText, entryPath, entryText }) {
+  const project = (format === "markdown" || format === "quarto") && chapterPath !== undefined;
+  const declared = project ? declaredBibliography({ format, chapterPath, chapterText, entryPath, entryText, texts }) : null;
+  const configured = declared ? declared.files : selectedBibliographyFiles(format === "latex" || format === "tex" ? latexMasked(string(source)) : source, format);
+  const configuredPaths = (declared ? configured : configured.map((path) => projectBibliographyPath(targetPath, path))).filter(Boolean)
     .map((path) => (format === "latex" || format === "tex") && !/\.bib$/i.test(path) ? `${path}.bib` : path);
   const existing = bibliographyFiles({ texts });
-  const path = configuredPaths.find((name) => Object.hasOwn(texts, name)) || configuredPaths[0] || existing[0] || "references.bib";
-  const previous = string(texts[path]);
-  const key = zoteroCitationKey(previous, item.zotero_item, item.citation_key);
-  const already = new RegExp(`x-librepaper-zotero-item\\s*=\\s*[{"]${String(item.zotero_item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[}"]`, "i").test(previous);
-  const addition = already ? "" : (previous.trim() ? "\n" : "") + replaceBibtexKey(item.bibtex, key);
-  const bibtex = already ? previous : previous.replace(/\s*$/, "") + addition;
-  let registration = null;
-  if (!configured.length) {
+  // BibTeX is only ever appended to a .bib file, never to a CSL-JSON or YAML bibliography.
+  const bibPaths = configuredPaths.filter((name) => /\.bib$/i.test(name));
+  if (configuredPaths.length && !bibPaths.length) throw Object.assign(new Error("bibliography_not_bibtex"), { code: "bibliography_not_bibtex" });
+  return { configured, configuredPaths, existing, bibPaths };
+}
+
+/**
+ * The .bib files an import can add to, sorted, and whether the document declares them.
+ * Takes the same inputs as the import planners.
+ * @param {ImportWhere} where
+ * @returns {{ files: string[], declared: boolean }}
+ */
+export function bibliographyTargets(where) {
+  let resolved;
+  try { resolved = resolveTargets(where); }
+  catch (error) { if (error?.code === "bibliography_not_bibtex") return { files: [], declared: true }; throw error; }
+  if (resolved.configuredPaths.length) return { files: [...new Set(resolved.bibPaths)].sort(), declared: true };
+  return { files: resolved.existing, declared: false };
+}
+
+/** @param {ImportWhere & { bibPath?: string }} where */
+function importTarget({ bibPath, ...where }) {
+  const { source, targetPath, format } = where;
+  const { configured, existing, bibPaths } = resolveTargets(where);
+  const candidates = configured.length ? bibPaths : existing;
+  const chosen = bibPath && candidates.includes(bibPath) ? bibPath : null;
+  const path = chosen || bibPaths.find((name) => Object.hasOwn(where.texts, name)) || bibPaths[0] || existing[0] || "references.bib";
+  const previous = string(where.texts[path]);
+  const registration = () => {
+    if (configured.length) return null;
     const depth = String(targetPath || "").split("/").slice(0, -1).length;
-    registration = bibliographyRegistration(source, "../".repeat(depth) + path, format);
+    return bibliographyRegistration(source, "../".repeat(depth) + path, format);
+  };
+  return { path, previous, registration, bibPaths };
+}
+
+function importPlan({ texts, path, previous, registration }, key, entryText, already) {
+  const addition = already ? "" : (previous.trim() ? "\n" : "") + replaceBibtexKey(entryText, key);
+  const bibtex = already ? previous : previous.replace(/\s*$/, "") + addition;
+  return { key, path, bibtex, addition, create: !Object.hasOwn(texts, path), registration: registration(), already };
+}
+
+export function planZoteroImport({ source, targetPath, texts, item, format = "markdown", ...where }) {
+  const target = importTarget({ source, targetPath, texts, format, ...where });
+  const already = new RegExp(`x-librepaper-zotero-item\\s*=\\s*[{"]${String(item.zotero_item).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[}"]`, "i").test(target.previous);
+  // An item already in the target keeps its key; a new one avoids the keys of every .bib.
+  let key;
+  if (already) key = zoteroCitationKey(target.previous, item.zotero_item, item.citation_key);
+  else {
+    const used = new Set([target.previous, ...bibliographyFiles({ texts }).map((name) => string(texts[name]))]
+      .flatMap((text) => [...text.matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)]).map((match) => match[1].toLocaleLowerCase()));
+    key = item.citation_key;
+    for (let index = 1; used.has(key.toLocaleLowerCase()); index++) key = item.citation_key + collisionSuffix(index);
   }
-  return { key, path, bibtex, addition, create: !Object.hasOwn(texts, path), registration, already };
+  return importPlan({ ...target, texts }, key, item.bibtex, already);
+}
+
+// The key of the entry in a .bib whose doi field equals `doi`, or null.
+function doiEntryKey(bibtex, doi) {
+  const same = (text) => (normaliseDoi(text) ?? String(text).trim()).toLocaleLowerCase();
+  const wanted = same(doi);
+  const field = /(?<=^|[\s,{])doi\s*=\s*(?:\{([^}]*)\}|"([^"]*)")/gim;
+  for (const found of string(bibtex).matchAll(field)) {
+    const lineStart = string(bibtex).lastIndexOf("\n", found.index - 1) + 1;
+    if (string(bibtex).slice(lineStart, found.index).trimStart().startsWith("%")) continue;
+    if (same(found[1] ?? found[2]) !== wanted) continue;
+    const headers = [...string(bibtex).slice(0, found.index).matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)];
+    if (headers.length) return headers.at(-1)[1];
+  }
+  return null;
+}
+
+// Plans adding a reference fetched by DOI. entry is { doi, key, bibtex }. A DOI a loaded .bib
+// already holds is reused under its own key; otherwise the key is de-duplicated like Zotero's.
+export function planDoiImport({ source, targetPath, texts, entry, format = "markdown", ...where }) {
+  const target = importTarget({ source, targetPath, texts, format, ...where });
+  const bibTexts = bibliographyFiles({ texts }).map((name) => string(texts[name]));
+  // A DOI is reused only from a bibliography the document loads; every .bib still counts for collisions.
+  const loaded = (target.bibPaths.length ? target.bibPaths : [target.path]).map((name) => string(texts[name]));
+  for (const text of loaded) {
+    const existingKey = doiEntryKey(text, entry.doi);
+    if (existingKey) return importPlan({ ...target, texts }, existingKey, entry.bibtex, true);
+  }
+  const used = new Set([target.previous, ...bibTexts].flatMap((text) => [...text.matchAll(/@[A-Za-z]+\s*\{\s*([^,\s]+)\s*,/g)]).map((match) => match[1].toLocaleLowerCase()));
+  let key = entry.key;
+  for (let index = 1; used.has(key.toLocaleLowerCase()); index++) key = entry.key + collisionSuffix(index);
+  return importPlan({ ...target, texts }, key, entry.bibtex, false);
 }
 export class BibliographyCache {
   constructor(limit = 4) { this.limit = limit; this.values = new Map(); }

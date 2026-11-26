@@ -11,6 +11,7 @@
 //! mint their own id; getting either wrong was the most common failure, so
 //! the bridge now remembers the epoch itself and mints the id.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -27,7 +28,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::assistant::journal as runner_journal;
+use crate::automation::doi;
 use crate::automation::peer::AutomationPeer;
+use crate::local::zotero;
 
 /// The tools every assistant session needs. A Reader is served only these; a
 /// Commenter also gets `document_comment`, and an Editor `document_propose`,
@@ -43,6 +46,147 @@ const MUTATING_TOOLS: [&str; 5] = [
     "document_comment",
     "document_withdraw",
 ];
+
+/// Answered by the relay itself, from this machine, never forwarded.
+const REFERENCE_FROM_DOI: &str = "reference_from_doi";
+const REFERENCE_SEARCH_ZOTERO: &str = "reference_search_zotero";
+const REFERENCE_FROM_ZOTERO: &str = "reference_from_zotero";
+
+/// Every tool the relay answers itself. Each one is journaled like a document
+/// call and never reaches the server.
+const LOCAL_TOOLS: [&str; 3] = [
+    REFERENCE_FROM_DOI,
+    REFERENCE_SEARCH_ZOTERO,
+    REFERENCE_FROM_ZOTERO,
+];
+
+fn reference_from_doi_tool() -> Tool {
+    let schema = json!({
+        "type": "object",
+        "properties": {"doi": {"type": "string", "description": "A DOI, a doi: form or a doi.org link."}},
+        "required": ["doi"],
+        "additionalProperties": false,
+    });
+    serde_json::from_value(json!({
+        "name": REFERENCE_FROM_DOI,
+        "description": "Look up a DOI at doi.org from this machine and return a BibTeX entry with real metadata. Before appending, check the bibliography file the citing document loads (if it loads none, create references.bib and register it in that document the way its format expects) for an entry with the same doi. If there is none, append `bibtex` verbatim with document_propose/document_apply. Change the key only if it collides with an existing key, by adding a letter suffix. Then cite the key. Never write reference metadata yourself.",
+        "inputSchema": schema,
+    }))
+    .expect("reference_from_doi tool schema")
+}
+
+/// Look a DOI up and shape the structured response the model sees.
+async fn reference_from_doi(args: &Value) -> Value {
+    let Some(doi) = args
+        .get("doi")
+        .and_then(Value::as_str)
+        .and_then(doi::normalise)
+    else {
+        return json!({"error": {
+            "code": "invalid_doi",
+            "message": "that is not a DOI; expected something like 10.1038/nature12373"
+        }});
+    };
+    match doi::fetch(&doi).await {
+        Ok(csl) => {
+            let converted = doi::convert(&csl, &doi);
+            json!({"result": {"doi": doi, "key": converted.key, "bibtex": converted.bibtex}})
+        }
+        Err(message) => json!({"error": {"code": "lookup_failed", "message": message}}),
+    }
+}
+
+fn reference_search_zotero_tool() -> Tool {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Words from the title, an author's name or a year."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 25, "default": 10, "description": "How many candidates to return."},
+        },
+        "required": ["query"],
+        "additionalProperties": false,
+    });
+    serde_json::from_value(json!({
+        "name": REFERENCE_SEARCH_ZOTERO,
+        "description": "Search the user's Zotero library on this machine by title, author or year. Returns candidates with a zotero_item id; pick only an item that clearly matches what the user asked for, and ask the user if several could. Then call reference_from_zotero.",
+        "inputSchema": schema,
+    }))
+    .expect("reference_search_zotero tool schema")
+}
+
+fn reference_from_zotero_tool() -> Tool {
+    let schema = json!({
+        "type": "object",
+        "properties": {"zotero_item": {"type": "string", "description": "The zotero_item id from reference_search_zotero."}},
+        "required": ["zotero_item"],
+        "additionalProperties": false,
+    });
+    serde_json::from_value(json!({
+        "name": REFERENCE_FROM_ZOTERO,
+        "description": "Return a BibTeX entry with real metadata for one item in the user's Zotero library on this machine. Before appending, look in the bibliography file the citing document loads (if it loads none, create references.bib and register it in that document the way its format expects) for an entry with the same x-librepaper-zotero-item or the same doi; if there is one, cite its existing key and append nothing. Otherwise append `bibtex` verbatim with document_propose/document_apply; if its key is already used by a different entry, change only the key, by adding a letter suffix that is not taken. Then cite the key. Never write reference metadata yourself.",
+        "inputSchema": schema,
+    }))
+    .expect("reference_from_zotero tool schema")
+}
+
+fn invalid_arguments(message: &str) -> Value {
+    json!({"error": {"code": "invalid_arguments", "message": message}})
+}
+
+/// Map a Zotero client failure to the model-facing error. Unreachable, disabled
+/// and incompatible all mean the local Zotero cannot be used right now.
+fn zotero_error(error: zotero::Error) -> Value {
+    let code = match error {
+        zotero::Error::Unreachable | zotero::Error::Disabled | zotero::Error::Incompatible => {
+            "zotero_unavailable"
+        }
+        zotero::Error::Request(_) => "zotero_failed",
+    };
+    json!({"error": {"code": code, "message": error.to_string()}})
+}
+
+/// Search the user's local Zotero library and return candidate items.
+async fn reference_search_zotero(args: &Value) -> Value {
+    let Some(query) = args
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+    else {
+        return invalid_arguments("query must be a non-empty string");
+    };
+    let limit = match args.get("limit") {
+        None | Some(Value::Null) => 10,
+        Some(value) => match value.as_u64() {
+            Some(limit @ 1..=25) => limit as usize,
+            _ => return invalid_arguments("limit must be an integer from 1 to 25"),
+        },
+    };
+    match zotero::Client::local().search(query, limit).await {
+        Ok(items) => json!({"result": {"items": items}}),
+        Err(error) => zotero_error(error),
+    }
+}
+
+/// Fetch one local Zotero item and build its BibTeX entry.
+async fn reference_from_zotero(args: &Value) -> Value {
+    let Some(key) = args
+        .get("zotero_item")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    else {
+        return invalid_arguments("zotero_item must be a non-empty string");
+    };
+    match zotero::Client::local().item(key).await {
+        Ok(item) => {
+            let bibtex = zotero::bibliography(std::slice::from_ref(&item), &BTreeMap::new());
+            let key = zotero::preferred_key(&item.data);
+            json!({"result": {"zotero_item": item.key, "key": key, "bibtex": bibtex}})
+        }
+        Err(error) => zotero_error(error),
+    }
+}
 
 fn missing_assistant_tools<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<&'static str> {
     let names = names.into_iter().collect::<std::collections::HashSet<_>>();
@@ -93,8 +237,12 @@ impl Bridge {
                 missing.join(", ")
             ));
         }
-        let served_tools: Vec<Tool> = serde_json::from_value(Value::Array(response.tools))
+        let mut served_tools: Vec<Tool> = serde_json::from_value(Value::Array(response.tools))
             .map_err(|error| format!("invalid document tool schema: {error}"))?;
+        // Public metadata only, so every role gets it.
+        served_tools.push(reference_from_doi_tool());
+        served_tools.push(reference_search_zotero_tool());
+        served_tools.push(reference_from_zotero_tool());
         Ok(Self {
             peer,
             instructions: response.instructions,
@@ -209,6 +357,25 @@ impl ServerHandler for Bridge {
             .arguments
             .map(Value::Object)
             .unwrap_or_else(|| json!({}));
+        if LOCAL_TOOLS.contains(&tool.as_str()) {
+            let journal_path = journal_path();
+            let task_id = active_task_id();
+            if let Some(path) = journal_path.as_deref() {
+                runner_journal::record_tool_call(path, &task_id, &tool, &args)
+                    .map_err(internal_error)?;
+            }
+            let response = match tool.as_str() {
+                REFERENCE_FROM_DOI => reference_from_doi(&args).await,
+                REFERENCE_SEARCH_ZOTERO => reference_search_zotero(&args).await,
+                // Every other name in LOCAL_TOOLS is handled above.
+                _ => reference_from_zotero(&args).await,
+            };
+            if let Some(path) = journal_path.as_deref() {
+                runner_journal::record_tool_result(path, &task_id, &tool, &args, &response)
+                    .map_err(internal_error)?;
+            }
+            return Ok(result_from_response(&response).into());
+        }
         if let Err(error) = self.inject_operation(&tool, &mut args) {
             return Ok(CallToolResult::structured_error(json!({
                 "error": {"code": "read_required", "message": error.message}
@@ -355,6 +522,64 @@ mod tests {
             missing_assistant_tools(["document_read"]),
             ["document_result"]
         );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_doi_is_refused_locally() {
+        let response = reference_from_doi(&json!({"doi": "not a doi"})).await;
+        assert_eq!(response["error"]["code"], "invalid_doi");
+        let response = reference_from_doi(&json!({})).await;
+        assert_eq!(response["error"]["code"], "invalid_doi");
+    }
+
+    #[test]
+    fn the_doi_tool_is_described_for_agents() {
+        let tool = reference_from_doi_tool();
+        assert_eq!(tool.name, REFERENCE_FROM_DOI);
+        assert!(!MUTATING_TOOLS.contains(&REFERENCE_FROM_DOI));
+    }
+
+    #[tokio::test]
+    async fn an_empty_zotero_search_is_refused_locally() {
+        for args in [
+            json!({}),
+            json!({"query": ""}),
+            json!({"query": "   "}),
+            json!({"query": 7}),
+            json!({"query": "smith", "limit": 0}),
+            json!({"query": "smith", "limit": 26}),
+        ] {
+            let response = reference_search_zotero(&args).await;
+            assert_eq!(response["error"]["code"], "invalid_arguments", "{args}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_zotero_item_must_be_named_to_be_fetched() {
+        for args in [
+            json!({}),
+            json!({"zotero_item": ""}),
+            json!({"zotero_item": 7}),
+        ] {
+            let response = reference_from_zotero(&args).await;
+            assert_eq!(response["error"]["code"], "invalid_arguments", "{args}");
+        }
+    }
+
+    #[test]
+    fn the_zotero_tools_are_described_for_agents() {
+        let search = serde_json::to_value(reference_search_zotero_tool()).unwrap();
+        assert_eq!(search["name"], REFERENCE_SEARCH_ZOTERO);
+        assert_eq!(search["inputSchema"]["required"], json!(["query"]));
+        assert_eq!(search["inputSchema"]["additionalProperties"], false);
+        let fetch = serde_json::to_value(reference_from_zotero_tool()).unwrap();
+        assert_eq!(fetch["name"], REFERENCE_FROM_ZOTERO);
+        assert_eq!(fetch["inputSchema"]["required"], json!(["zotero_item"]));
+        assert_eq!(fetch["inputSchema"]["additionalProperties"], false);
+        for name in [REFERENCE_SEARCH_ZOTERO, REFERENCE_FROM_ZOTERO] {
+            assert!(LOCAL_TOOLS.contains(&name));
+            assert!(!MUTATING_TOOLS.contains(&name));
+        }
     }
 
     #[test]
@@ -556,6 +781,30 @@ mod tests {
         assert_eq!(
             response["result"]["structuredContent"]["status"],
             "committed"
+        );
+
+        // The DOI tool is listed and an invalid DOI never reaches the server
+        // (the fake peer above accepts no further connection).
+        let list = json!({"jsonrpc":"2.0","id":4,"method":"tools/list"});
+        input
+            .write_all(format!("{list}\n").as_bytes())
+            .await
+            .unwrap();
+        let response = read_response(&mut output, &mut buffered).await;
+        assert!(response["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "reference_from_doi"));
+        let invalid = json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"reference_from_doi","arguments":{"doi":"nope"}}});
+        input
+            .write_all(format!("{invalid}\n").as_bytes())
+            .await
+            .unwrap();
+        let response = read_response(&mut output, &mut buffered).await;
+        assert_eq!(
+            response["result"]["structuredContent"]["error"]["code"],
+            "invalid_doi"
         );
 
         drop(input);

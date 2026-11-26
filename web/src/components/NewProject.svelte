@@ -1,11 +1,12 @@
 <script>
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import { m } from "../lib/paraglide/messages.js";
-  // The New project page: three ways to begin, one name. Blank starts empty,
-  // From Template starts from a catalog, Upload Files from what the person
-  // already has. The desktop app adds a fourth, From a Link, which opens a
-  // project someone shared rather than creating one. Nothing here creates a
+  // The New project page: three ways to begin, one name. Blank starts from an
+  // empty document in the chosen format, From Template starts from a catalog,
+  // Upload Files from what the person already has. The desktop app adds a
+  // fourth, From a Link, which opens a project someone shared rather than
+  // creating one. Nothing here creates a
   // project until Create project is pressed; switching tabs and picking a
   // template only change what the button would make.
   //
@@ -83,6 +84,20 @@
   let nameTouched = $state(false);
   let error = $state("");
   let busy = $state(false);
+  let blankFormat = $state(untrack(() => (FORMATS.some((f) => f.id === initialFormat) ? initialFormat : rememberedFormat() || "latex")));
+  // A page that opens on Blank has the name selected, so typing replaces the
+  // suggestion. Moving to Blank later leaves focus on the tab strip.
+  let focusedOnce = untrack(() => tab !== "blank");
+  $effect(() => {
+    if (tab !== "blank" || focusedOnce) return;
+    focusedOnce = true;
+    // After a tick, once the suggested name is in the field to be selected.
+    void tick().then(() => {
+      const input = /** @type {HTMLInputElement | null} */ (document.getElementById("new-project-name"));
+      input?.focus();
+      input?.select();
+    });
+  });
 
   function changeTab(id) {
     if (id === tab) return;
@@ -256,7 +271,14 @@
     return fresh;
   });
   $effect(() => {
-    if (!nameTouched) name = suggestion;
+    if (nameTouched) return;
+    name = suggestion;
+    // A suggestion that changes under the selected name (the project list
+    // arrived late) stays selected, so typing still replaces it.
+    void tick().then(() => {
+      const input = /** @type {HTMLInputElement | null} */ (document.getElementById("new-project-name"));
+      if (input && document.activeElement === input && !nameTouched) input.select();
+    });
   });
 
   /* ------------------------------------------------------------- create */
@@ -266,14 +288,21 @@
     if (focusId) document.getElementById(focusId)?.focus();
   }
 
-  async function finish(response) {
+  async function finish(response, editing) {
     if (!response.ok) {
       error = (await response.json().catch(() => ({}))).error || m.newproject_create_failed();
       return false;
     }
     const doc = await response.json();
     // Straight into the project: the point of making one is to work in it.
-    location.href = doc.url;
+    // A new blank or template project opens in the source editor on phones.
+    if (editing) {
+      const url = new URL(doc.url, location.href);
+      url.searchParams.set("edit", "1");
+      location.href = url.href;
+    } else {
+      location.href = doc.url;
+    }
     return true;
   }
 
@@ -290,20 +319,21 @@
   async function create(event) {
     event.preventDefault();
     if (busy) return;
+    // The tab pressed, not whichever one is showing when the request returns.
+    const from = tab;
     const title = name.trim();
     if (!title) return refuse(m.common_give_project_name(), "new-project-name");
-    if (tab === "template" && !selected) return refuse(m.newproject_template_required());
-    if (tab === "upload" && !hasDocument) return refuse(m.newproject_document_required());
+    if (from === "template" && !selected) return refuse(m.newproject_template_required());
+    if (from === "upload" && !hasDocument) return refuse(m.newproject_document_required());
     busy = true;
     error = "";
     let navigated = false;
     try {
       let response;
-      if (tab === "blank") {
-        const form = new FormData();
-        form.append("title", title);
-        response = await upload(form);
-      } else if (tab === "template") {
+      if (from === "blank") {
+        remember(blankFormat);
+        response = await publishBuiltIn("blank", blankFormat, title);
+      } else if (from === "template") {
         if (selected.custom) {
           response = await fetch(`/api/documents/${selected.id}/fork`, {
             method: "POST",
@@ -321,7 +351,7 @@
         progress = { loaded: 0, total: 0 };
         response = await upload(form, { onprogress: (loaded, total) => (progress = { loaded, total }) });
       }
-      navigated = await finish(response);
+      navigated = await finish(response, from !== "upload");
     } catch (failure) {
       error = failure?.message || m.newproject_create_failed();
     } finally {
@@ -401,6 +431,12 @@
       {#if tab === "blank"}
         <form id="new-project-form" class="np-form" onsubmit={create}>
           {@render nameField()}
+          <label class="np-field" for="new-project-blank-format">
+            <span class="np-label">{m.newproject_format_label()}</span>
+            <select id="new-project-blank-format" class="select" bind:value={blankFormat}>
+              {#each FORMATS as format}<option value={format.id}>{format.name}</option>{/each}
+            </select>
+          </label>
           {@render problem()}
           <div class="np-actions">
             <button type="submit" class="btn btn-sm new-project-create lp-control-brand" disabled={busy}>{busy ? m.newproject_creating() : m.newproject_create()}</button>

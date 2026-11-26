@@ -85,6 +85,10 @@ pub struct ManifestEntry {
 pub struct JobOptions {
     #[serde(default = "default_deadline")]
     pub deadline_seconds: u64,
+    /// Re-execute cells Quarto cached (`quarto render --cache-refresh`). Only
+    /// Quarto jobs read it. Older pages send none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refresh_cache: bool,
 }
 
 fn default_deadline() -> u64 {
@@ -95,6 +99,7 @@ impl Default for JobOptions {
     fn default() -> Self {
         JobOptions {
             deadline_seconds: DEFAULT_DEADLINE_SECONDS,
+            refresh_cache: false,
         }
     }
 }
@@ -378,6 +383,16 @@ mod tests {
     fn job_options_default_when_absent() {
         let request = JobRequest::decode(job_json(3)).expect("parses");
         assert_eq!(request.options.deadline_seconds, DEFAULT_DEADLINE_SECONDS);
+    }
+
+    #[test]
+    fn a_job_options_refresh_cache_flag_decodes_and_defaults_false() {
+        let mut raw = job_json(3);
+        raw["options"] = serde_json::json!({"deadline_seconds": 10, "refresh_cache": true});
+        let request = JobRequest::decode(raw).expect("parses");
+        assert!(request.options.refresh_cache);
+        let request = JobRequest::decode(job_json(3)).expect("parses");
+        assert!(!request.options.refresh_cache);
     }
 
     #[test]

@@ -112,3 +112,16 @@ const assetResult = await previewCandidate({
 });
 assert.equal(assetResult.ok, true);
 console.log("assistant candidate preview checks passed");
+
+{
+  const stale = await previewCandidate({
+    request: { candidate: referenced, base_revision, revision: referenced.revision },
+    tree,
+    render: async () => ({ pdf: new Uint8Array(4), diagnostics: [], compiledTree: { main: "other.md", texts: {} } }),
+  });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.output, "none");
+  assert.equal(stale.diagnostics.length, 1);
+  assert.equal(stale.diagnostics[0].severity, "error");
+  assert.match(stale.diagnostics[0].message, /newer preview replaced this verification/);
+}

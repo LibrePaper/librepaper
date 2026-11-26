@@ -71,7 +71,7 @@ client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs/bad-1/files/log")) return response(200, {}, log);
   throw new Error(`unexpected failed-job request ${url}`);
 } });
-const failed = await client.runRender({ job: {}, tree, format: "typst", output: "pdf" });
+const failed = await client.runRender({ job: {}, tree, format: "latex", output: "pdf" });
 assert.equal(failed.ok, false);
 assert.equal(failed.artifact, null);
 assert.equal(failed.synctex, null);
@@ -93,7 +93,7 @@ client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs/empty-1")) return response(200, { id: "empty-1", status: "done", exit: 0, outputs: {} });
   throw new Error(`unexpected empty-job request ${url}`);
 } });
-assert.equal((await client.runRender({ job: {}, tree, format: "typst", output: "pdf" })).ok, false);
+assert.equal((await client.runRender({ job: {}, tree, format: "latex", output: "pdf" })).ok, false);
 
 // An output that does not match the digest the status announced is refused.
 client._testing.inject({ fetch: async (url, init = {}) => {

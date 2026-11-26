@@ -142,8 +142,8 @@
   "agent_sign_in_again": "ローカルのアシスタントを承認するには、もう一度サインインしてください。",
   "agent_start_first": "タスクを送信する前に、チャットタブでエージェントを起動してください。",
   "agent_stopping": "停止中…",
+  "agent_tab_connect": "接続",
   "agent_tab_tasks": "タスク",
-  "agent_external_intro": "トークンを作成し、その手順をコピーしてエージェントに貼り付けてください。LibrePaperスキルがない場合はインストールされ、その後このプロジェクトに接続されます。",
   "agent_tasks_intro": "タスクをコピーして、エージェントに貼り付けてください。",
   "agent_tasks_intro_desktop": "内蔵エージェントでタスクを実行するか、コピーして外部エージェントに貼り付けてください。",
   "agent_tasks_no_match": "「{query}」に一致するタスクはありません。",
@@ -171,6 +171,17 @@
   "agent_view": "表示",
   "agent_waiting_permission": "権限を待機中",
   "agent_your_agent": "お使いのエージェント",
+  "agentexternal_connect_docs": "接続方法",
+  "agentexternal_connect_title": "アプリを接続",
+  "agentexternal_connect_lede": "Claude や ChatGPT など、MCP コネクタに対応したアシスタントで、ブラウザ、デスクトップ、スマートフォンから使えます。プロジェクトごとに数ステップの設定が必要です。",
+  "agentexternal_connector_copy": "コネクタのURLをコピー",
+  "agentexternal_connector_url_label": "コネクタのURL",
+  "agentexternal_rows_title": "接続済み",
+  "agentexternal_step_add": "アプリにコネクタとして追加します。",
+  "agentexternal_step_approve": "開いたページで、アプリができることを選んでから承認します。",
+  "agentexternal_step_copy": "このリンクをコピー",
+  "agentexternal_tokens_help": "Claude Code、Codex、Pi など、お使いのコンピューター上のエージェント向けに、コピーして貼り付けるだけです。同期やスクリプトにも使えます。トークンはこのプロジェクトのパスワードのように機能します。",
+  "agentexternal_tokens_title": "トークン",
   "agentsettings_add": "エージェントを追加",
   "agentsettings_added": "エージェントを追加しました。",
   "agentsettings_adding": "追加中…",
@@ -530,6 +541,7 @@
   "collaboration_clear_chat": "チャットをすべて削除",
   "collaboration_highlight_hint": "ハイライトするには、プレビューウィンドウでテキストを選択してください。",
   "collaboration_highlights": "ハイライト",
+  "collaboration_highlights_empty": "ハイライトはまだありません。",
   "collaboration_unread": "未読メッセージ",
   "collaboration_views_label": "共同編集ビュー",
   "commandpalette_empty": "一致するコマンドはありません。",
@@ -555,6 +567,7 @@
   "commands_focus_files": "ファイルにフォーカス",
   "commands_focus_outline": "アウトラインにフォーカス",
   "commands_focus_preview": "プレビューにフォーカス",
+  "commands_focus_search": "すべてのファイルを検索",
   "commands_go_to_definition": "定義へ移動",
   "commands_heading_level": "見出し {level}",
   "commands_layout_cycle": "エディター / プレビュー / 分割を切り替え",
@@ -562,6 +575,8 @@
   "commands_layout_source": "エディターのみ表示",
   "commands_layout_split": "エディターとプレビューを表示",
   "commands_linked": "同期を保つ",
+  "commands_show_in_preview": "プレビューに表示",
+  "commands_show_in_source": "ソースに表示",
   "commands_math": "数式を挿入",
   "commands_math_template": "{label}を挿入",
   "commands_menu_edit": "編集メニューを開く",
@@ -576,6 +591,7 @@
   "commands_note_not_while_typing": "入力中は無効",
   "commands_note_outline_panel": "アウトラインパネル",
   "commands_note_preview_visible": "プレビュー表示中",
+  "commands_note_search_panel": "検索パネル",
   "commands_note_wide_layout": "ワイドレイアウト",
   "commands_org_demote": "見出しまたは項目を下げる",
   "commands_org_demote_subtree": "セクションとその下位の見出しを下げる",
@@ -643,15 +659,12 @@
   "commentcomposer_quotation": "「{exact}」",
   "commentcomposer_sign_in_rest": "すると、このドキュメントにコメントできます。",
   "comments_clear": "解決済みを削除",
-  "comments_clear_all_title": "解決済みのコメントをすべて削除",
-  "comments_clear_loaded_title": "読み込み済みの解決済みコメントをすべて削除",
-  "comments_delete_all": "すべて削除",
-  "comments_delete_all_title": "コメントをすべて削除",
-  "comments_delete_loaded": "読み込み済みを削除",
-  "comments_delete_loaded_title": "読み込み済みのコメントをすべて削除",
   "comments_empty": "コメントはまだありません。",
   "comments_export_comments_unread": "コメントを最後まで読み込めませんでした。",
   "comments_export_replies_unread": "返信を最後まで読み込めませんでした。",
+  "comments_filter_empty": "このフィルターに一致するものはありません。",
+  "comments_filter_label": "表示するコメント：{name}",
+  "comments_filter_unresolved": "未解決",
   "comments_group_all": "すべてのコメント",
   "comments_group_loaded": "読み込み済みのコメント",
   "comments_hint": "プレビューウィンドウでテキストを選択するとコメントできます。",
@@ -676,9 +689,7 @@
   "comments_meta_total": "未解決{open}件 · 全{total}件",
   "comments_read_only": "閲覧のみのアクセスです。参加するには、所有者にコメントまたは編集用のリンクを依頼してください。",
   "comments_resolve_all": "すべて解決",
-  "comments_resolve_all_title": "未解決のコメントをすべて解決",
   "comments_resolve_loaded": "読み込み済みを解決",
-  "comments_resolve_loaded_title": "読み込み済みの未解決コメントをすべて解決",
   "comments_show_changes": "以降の変更を表示…",
   "common_account_storage": "アカウントのストレージ",
   "common_activity": "アクティビティ",
@@ -822,6 +833,7 @@
   "common_save": "保存",
   "common_saved": "保存しました",
   "common_saving": "保存中…",
+  "common_search": "検索",
   "common_search_symbols": "記号を検索",
   "common_section": "セクション",
   "common_select_all": "すべて選択",
@@ -880,6 +892,16 @@
   "compactpanelmenu_home": "ホーム",
   "compactpanelmenu_menu": "メニュー",
   "compactpanelmenu_menu_marked": "メニュー、{name}",
+  "connect_approve_failed": "接続を承認できませんでした。",
+  "connect_expiry": "アクセスは30日間有効で、アプリが使っている間は更新されます。プロジェクトのエージェントパネルからいつでも取り消せます。",
+  "connect_heading": "{client}が{project}で作業したいと考えています",
+  "connect_load_failed": "この接続リクエストを読み込めませんでした。",
+  "connect_owner_only": "このプロジェクトにアプリを接続できるのはプロジェクトの所有者だけです。",
+  "connect_redirect": "承認すると{host}に戻ります。",
+  "connect_role_comment_help": "プロジェクトを読み取り、コメントします。",
+  "connect_role_edit_help": "ファイルを直接変更し、プロジェクトの履歴を読み取り、ファイルを同期できます。",
+  "connect_role_read_help": "プロジェクトを読み取ります。",
+  "connect_role_suggest_help": "変更履歴付きで提案し、あなたが承諾または却下できます。",
   "connectionmethods_choose_token": "使用するトークン",
   "connectionmethods_no_token": "MCP 設定をコピーするには、トークンを作成してください。",
   "datatable_resize_column": "{column}列の幅を変更",
@@ -949,6 +971,7 @@
   "downloads_selection_incomplete": "選択したファイルをすべてダウンロードできませんでした。",
   "editor_aria_label_of": "{path}のエディター",
   "editor_bibliography_unavailable": "参考文献を利用できません：{reason}",
+  "editor_bibliography_not_bibtex": "このドキュメントの参考文献はBibTeXファイルではありません。参考文献を取り込むには、.bibファイルを追加してください。",
   "editor_cut_changed": "切り取りが完了する前にソースが変更されました。もう一度テキストを選択してください。",
   "editor_parser_not_loaded": "パーサーを読み込めませんでした",
   "editor_paste_blocked": "このブラウザーでは、LibrePaperがここでクリップボードを読み取ることはできません。",
@@ -966,10 +989,10 @@
         "warningsPlural"
       ],
       "match": {
-        "errorsPlural=one warningsPlural=one": "このファイルにエラー{errors}件、警告{warnings}件",
-        "errorsPlural=one warningsPlural=*": "このファイルにエラー{errors}件、警告{warnings}件",
-        "errorsPlural=* warningsPlural=one": "このファイルにエラー{errors}件、警告{warnings}件",
-        "errorsPlural=* warningsPlural=*": "このファイルにエラー{errors}件、警告{warnings}件"
+        "errorsPlural=one, warningsPlural=one": "このファイルにエラー{errors}件、警告{warnings}件",
+        "errorsPlural=one, warningsPlural=*": "このファイルにエラー{errors}件、警告{warnings}件",
+        "errorsPlural=*, warningsPlural=one": "このファイルにエラー{errors}件、警告{warnings}件",
+        "errorsPlural=*, warningsPlural=*": "このファイルにエラー{errors}件、警告{warnings}件"
       }
     }
   ],
@@ -1007,6 +1030,10 @@
   "editor_type_font_custom": "その他のフォント",
   "editor_type_font_system_sans": "システムのサンセリフ",
   "editor_type_font_system_serif": "システムのセリフ",
+  "editor_doi_invalid": "これはDOIではありません。DOIは「10.」で始まり、スラッシュが続きます（例: 10.1038/nature12373）。",
+  "editor_doi_not_found": "doi.orgにこのDOIの記録がありません。",
+  "editor_doi_unreachable": "doi.orgに接続できませんでした。接続を確認して、もう一度お試しください。",
+  "editor_doi_needs_file": "DOIで参考文献を追加する前に、編集可能なファイルを開いてください。",
   "editor_zotero_changed": "Zoteroの応答中にドキュメントが変更されました。もう一度お試しください。",
   "editor_zotero_needs_file": "Zoteroからインポートする前に、編集可能なファイルを開いてください。",
   "editorsettings_brackets_description": "開き括弧を入力すると、閉じ括弧が自動で追加されます。",
@@ -1508,6 +1535,12 @@
   "insertmenu_bibtex_no_bibliography": "BibTeX（参考文献なし）",
   "insertmenu_caption": "キャプション",
   "insertmenu_citation_style": "引用スタイル",
+  "insertmenu_doi": "DOI",
+  "insertmenu_doi_placeholder": "10.1038/nature12373 または https://doi.org/…",
+  "insertmenu_doi_looking_up": "検索中…",
+  "insertmenu_doi_items_group": "DOI のエントリ",
+  "insertmenu_doi_import_failed": "DOI のエントリを文献リストに追加できませんでした。",
+  "insertmenu_doi_lookup_failed": "その DOI を検索できませんでした。",
   "insertmenu_document_changed": "ドキュメントが変更されました。このダイアログを閉じて、挿入位置を選び直してください。",
   "insertmenu_environment_choose": "定義済みの環境を選択…",
   "insertmenu_environments_label": "定義済みの環境",
@@ -1535,6 +1568,7 @@
   "insertmenu_reference_choose": "見出し、図、表、数式を選択…",
   "insertmenu_search_label": "参考文献を検索",
   "insertmenu_search_placeholder": "著者、タイトル、年、キーで検索",
+  "insertmenu_bib_target": "追加先",
   "insertmenu_source": "ソース",
   "insertmenu_style_narrative": "文中形式",
   "insertmenu_style_parenthetical": "括弧形式",
@@ -2115,6 +2149,7 @@
   "outline_filter_open_todos": "未完了のTODO",
   "outline_filter_tag": "タグ: {tag}",
   "outline_no_headings": "このファイルに見出しはありません。",
+  "panelboundary_failed": "ページのこの部分は動作を停止しました。LibrePaperの残りの部分は正常です。",
   "panels_git": "Git",
   "panels_shared": "共有されたもの",
   "panels_trash": "ごみ箱",
@@ -2183,7 +2218,6 @@
   "previewcontrols_page_view": "ページ表示",
   "previewcontrols_present": "プレゼンテーション",
   "previewcontrols_previous_match": "前の一致",
-  "previewcontrols_search": "検索",
   "previewcontrols_search_document": "ドキュメント内を検索",
   "previewcontrols_select_text": "テキストを選択",
   "previewcontrols_spread": "2ページを並べて表示",
@@ -2346,6 +2380,7 @@
   "readerb_version_download_failed": "そのバージョンをダウンロードできませんでした。",
   "readerb_version_history": "バージョン履歴",
   "readerc_cells_not_run": "コードセルは実行されませんでした。結果を含めるには、実行フォルダーを設定した状態でLibrePaperデスクトップアプリから書き出してください。",
+  "readerc_cells_not_run_host_off": "コードセルは実行されませんでした。このサーバーは「コードを実行」をオフにしています。",
   "readerc_comments_export_failed": "コメントをエクスポートできませんでした。",
   "readerc_comments_preparing": "コメントを準備中です。",
   "readerc_demo_no_uploads": "画像などのアップロードはデモでは利用できません。",
@@ -2555,13 +2590,102 @@
   "renderers_quarto_failed": "Quarto のプレビューを表示できませんでした。",
   "renderersettings_aria": "{name}のレンダリング先",
   "renderersettings_description": "{name}ドキュメントは、このブラウザーで、または「コードを実行」がオンの間はこのコンピューターでレンダリングされます。",
+  "renderersettings_description_browser_only": "{name}ドキュメントは、このブラウザーでレンダリングされます。このサーバーは、このコンピューターでのレンダリングをオフにしています。",
   "renderersettings_note": "ツールが自動的にパッケージをダウンロードすることがあります。",
   "renderersettings_title": "レンダリング先",
   "room_submission_failed": "コメントを送信できませんでした",
   "room_submission_failed_status": "コメントを送信できませんでした（{status}）",
+  "search_capped": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "最初の{count}件の結果を表示しています。検索範囲を絞ると残りの結果を表示できます。",
+        "countPlural=*": "最初の{count}件の結果を表示しています。検索範囲を絞ると残りの結果を表示できます。"
+      }
+    }
+  ],
+  "search_clear": "検索をクリア",
+  "search_collapse_all": "すべて折りたたむ",
+  "search_expand_all": "すべて展開",
+  "search_file_matches": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "{count}件の一致",
+        "countPlural=*": "{count}件の一致"
+      }
+    }
+  ],
+  "search_hide_replace": "置換を非表示",
+  "search_input_label": "すべてのファイルを検索",
+  "search_invalid_regex": "この正規表現は無効です。",
+  "search_match_case": "大文字と小文字を区別",
+  "search_match_whole_word": "単語単位",
+  "search_no_results": "結果が見つかりません",
+  "search_replace_all": "すべて置換",
+  "search_replace_all_capped": "表示されていないものも含め、プロジェクト内のすべての一致を置換",
+  "search_replace_all_scope": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "{files}個のファイルで{count}件の一致を置換",
+        "countPlural=one, filesPlural=*": "{files}個のファイルで{count}件の一致を置換",
+        "countPlural=*, filesPlural=one": "{files}個のファイルで{count}件の一致を置換",
+        "countPlural=*, filesPlural=*": "{files}個のファイルで{count}件の一致を置換"
+      }
+    }
+  ],
+  "search_replace_label": "置換後の文字列",
+  "search_replace_line": "この行の一致を置換",
+  "search_searching": "検索中…",
+  "search_section_label": "プロジェクト内のすべてのファイルを検索",
+  "search_show_replace": "置換を表示",
+  "search_summary": [
+    {
+      "declarations": [
+        "input count",
+        "input files",
+        "local countPlural = count: plural",
+        "local filesPlural = files: plural"
+      ],
+      "selectors": [
+        "countPlural",
+        "filesPlural"
+      ],
+      "match": {
+        "countPlural=one, filesPlural=one": "{files}個のファイルで{count}件の結果",
+        "countPlural=one, filesPlural=*": "{files}個のファイルで{count}件の結果",
+        "countPlural=*, filesPlural=one": "{files}個のファイルで{count}件の結果",
+        "countPlural=*, filesPlural=*": "{files}個のファイルで{count}件の結果"
+      }
+    }
+  ],
+  "search_use_regex": "正規表現を使用",
   "settingsdialog_categories_label": "設定のカテゴリー",
   "settingsdialog_nothing_matches": "一致する項目がありません。",
   "settingsdialog_quarto_note": "Quartoドキュメントは、ブラウザーで下書きをレンダリングします。「コードを実行」を押すと、このコンピューターでコードを実行します。",
+  "settingsdialog_quarto_note_browser_only": "Quartoドキュメントは、ブラウザーで下書きをレンダリングします。このサーバーは「コードを実行」をオフにしています。",
   "settingsdialog_search": "検索",
   "settingsdialog_version": "バージョン{version} · このコンピューター",
   "share_copy_manual_label": "手動でコピーするテキスト",
@@ -2579,6 +2703,7 @@
   "share_revoke_token_title": "トークンを取り消しますか？",
   "share_tab_links": "リンク",
   "share_tab_tokens": "エージェント",
+  "shared_expired": "期限切れ",
   "shared_expiry_180d": "6か月",
   "shared_expiry_1d": "1日",
   "shared_expiry_30d": "30日",
@@ -2787,8 +2912,8 @@
   "tokenreveal_copy_connect": "接続手順をコピー",
   "tokenreveal_copy_failed": "コピーできませんでした",
   "tokenreveal_copy_token": "トークンをコピー",
-  "tokenreveal_mcp_advantage": "MCPを使えば、トークンをエージェントのチャットに貼り付けずに済みます。",
-  "tokenreveal_other_ways": "その他の接続方法",
+  "tokenreveal_mcp_advantage": "トークンを指定して librepaper mcp を実行すれば、トークンがチャットに入ることはありません。",
+  "tokenreveal_other_ways": "コマンドラインとMCP設定",
   "tokenreveal_token": "トークン",
   "toolcommand_aria_command": "{format}の{title}",
   "toolcommand_aria_result": "{format}の{output}の結果ファイル",
@@ -2978,6 +3103,8 @@
   "rundirectorycontrol_choose_a_folder": "フォルダーを選択",
   "rundirectorycontrol_share_results": "結果を公開",
   "rundirectorycontrol_share_hint": "共同編集者は、データがなくても最後の実行結果を確認できます。",
+  "rundirectorycontrol_agents_run": "エージェントにコードの実行を許可する",
+  "rundirectorycontrol_agents_run_hint": "このプロジェクトに接続されたエージェントは、このウィンドウが開いている間、実行フォルダーでコードチャンクを実行できます。",
   "rundirectorycontrol_shared": "結果を公開済み · {size}",
   "rundirectorycontrol_shared_figures": [
     {
@@ -3004,6 +3131,8 @@
   "runbutton_directory_named": "実行フォルダー: {name}",
   "runbutton_choose_directory": "実行フォルダーを選択…",
   "runbutton_view_last_run": "前回の実行の出力を表示",
+  "runbutton_refresh_cache": "キャッシュを使わずに実行",
+  "runbutton_refresh_cache_hint": "もう一度実行し、Quarto がキャッシュしたセルを再計算します。ドキュメントの外でデータが変わったときに使います",
   "runbutton_last_run": "前回の実行：{time}",
   "runbutton_failed": "前回の実行は失敗しました",
   "runbutton_running_in": "{name} でコードを実行中…",

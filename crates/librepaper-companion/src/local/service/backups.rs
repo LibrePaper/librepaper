@@ -899,7 +899,17 @@ impl BackupManager {
         let previous_frequency = config.frequency_minutes;
         config.enabled = enabled;
         config.frequency_minutes = frequency_minutes;
-        if enabled && config.error_is_identity() {
+        // Verification just passed, so an identity error is out of date.
+        // Moving the switch retires the last run's error too: off has no
+        // schedule to report on, and on starts a run that reports its own.
+        // A login error outlives turning backups off, so that turning them
+        // on again signs in first.
+        let retired = if enabled {
+            !previous_enabled || config.error_is_identity()
+        } else {
+            previous_enabled && !config.error_is_login()
+        };
+        if retired {
             config.clear_error();
         }
         if previous_enabled != enabled || previous_frequency != frequency_minutes {
@@ -1904,6 +1914,103 @@ mod tests {
         assert_eq!(status["frequency_minutes"], 15);
         assert_eq!(status["error"], run_error);
         fixture_task.abort();
+    }
+
+    #[tokio::test]
+    async fn moving_the_switch_clears_the_last_run_error() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        let (origin, fixture_task) = start_backup_fixture(account_id.clone()).await;
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        configure_scheduled_backup(&inner, &origin, &account_id, destination.path()).await;
+        let run_error = "backup completed with 1 project failure(s): project: snapshot unavailable";
+        {
+            let key = BackupConfig::key(&origin, &account_id);
+            let mut state = inner.backups.state.lock().await;
+            state
+                .configs
+                .get_mut(&key)
+                .unwrap()
+                .set_error_text(run_error, BackupErrorKind::Other);
+            inner.backups.persist(&state).await.unwrap();
+        }
+
+        inner
+            .backups
+            .configure(&inner, &origin, &account_id, false, 5)
+            .await
+            .unwrap();
+        let status = inner.backups.status(&inner, &origin, &account_id).await;
+        assert_eq!(status["enabled"], false);
+        assert_eq!(status["error"], Value::Null);
+
+        {
+            let key = BackupConfig::key(&origin, &account_id);
+            let mut state = inner.backups.state.lock().await;
+            state
+                .configs
+                .get_mut(&key)
+                .unwrap()
+                .set_error_text(run_error, BackupErrorKind::Other);
+            inner.backups.persist(&state).await.unwrap();
+        }
+        inner
+            .backups
+            .configure(&inner, &origin, &account_id, true, 5)
+            .await
+            .unwrap();
+        let status = inner.backups.status(&inner, &origin, &account_id).await;
+        assert_eq!(status["enabled"], true);
+        assert_ne!(
+            status["error"], run_error,
+            "turning backups on must not show the old run's error"
+        );
+        fixture_task.abort();
+    }
+
+    #[tokio::test]
+    async fn turning_backups_off_keeps_a_login_error() {
+        let account_id = uuid::Uuid::now_v7().to_string();
+        // A server that rejects the cached token.
+        let app = Router::new().route(
+            "/api/me",
+            get(|| async { axum::http::StatusCode::UNAUTHORIZED }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server_task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let inner = test_inner(state_home.path(), cache_home.path()).await;
+        configure_scheduled_backup(&inner, &origin, &account_id, destination.path()).await;
+        {
+            let key = BackupConfig::key(&origin, &account_id);
+            let mut state = inner.backups.state.lock().await;
+            state
+                .configs
+                .get_mut(&key)
+                .unwrap()
+                .set_error(&BackupError::LoginRejected);
+            inner.backups.persist(&state).await.unwrap();
+        }
+
+        inner
+            .backups
+            .configure(&inner, &origin, &account_id, false, 5)
+            .await
+            .unwrap();
+        let status = inner.backups.status(&inner, &origin, &account_id).await;
+        assert_eq!(status["enabled"], false);
+        assert_eq!(
+            status["needs_login"], true,
+            "turning backups on again must sign in first"
+        );
+        server_task.abort();
     }
 
     #[test]

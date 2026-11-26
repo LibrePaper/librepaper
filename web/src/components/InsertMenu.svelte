@@ -1,6 +1,6 @@
 <script>
   import { Menu } from "@skeletonlabs/skeleton-svelte";
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import MenubarMenu from "./MenubarMenu.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import Icon from "./Icon.svelte";
@@ -17,6 +17,7 @@
   /** @typedef {import("../lib/insert.js").FinalInsertion} FinalInsertion */
   /** @typedef {{key?: string; [field: string]: unknown}} InsertBibliographyEntry */
   /** @typedef {InsertBibliographyEntry & {zotero_item: string}} ZoteroEntry */
+  /** @typedef {{doi: string, key: string, bibtex: string, title: string, authors: string[], year: number | "", type: string}} DoiEntry */
   /** @typedef {InsertContext & {bibliography?: InsertBibliographyEntry[] | {entries: InsertBibliographyEntry[]}; targetId?: string}} InsertMenuContext */
   /** @typedef {{
    * getContext?: () => InsertMenuContext | null;
@@ -27,13 +28,16 @@
    * onfocus?: () => void;
    * oncancel?: (context: InsertMenuContext | null) => void;
    * onzoterosearch?: ((query: string) => Promise<ZoteroEntry[]>) | null;
-   * onzoteroimport?: (items: ZoteroEntry[]) => Promise<string[]>;
+   * onzoteroimport?: (items: ZoteroEntry[], bibPath?: string) => Promise<string[]>;
+   * ondoilookup?: ((text: string) => Promise<DoiEntry>) | null;
+   * ondoiimport?: (entries: DoiEntry[], bibPath?: string) => Promise<string[]>;
+   * ontargets?: () => { files: string[], declared: boolean };
    * keys?: Record<string, string>;
    * disabled?: boolean;
    * demo?: boolean;
    * }} InsertMenuProps */
   /** @type {InsertMenuProps} */
-  let { getContext, oninsert, onupload, onpreview, onpalette, onfocus, oncancel, onzoterosearch = null, onzoteroimport, keys = {}, disabled = false, demo = false } = $props();
+  let { getContext, oninsert, onupload, onpreview, onpalette, onfocus, oncancel, onzoterosearch = null, onzoteroimport, ondoilookup = null, ondoiimport, ontargets, keys = {}, disabled = false, demo = false } = $props();
 
   /** @type {string | null} */
   let dialog = $state(null);
@@ -45,6 +49,7 @@
 
   onDestroy(() => {
     clearTimeout(zoteroTimer);
+    clearTimeout(doiTimer);
     if (menuContext) oncancel?.(menuContext);
     if (dialogOpen && captured && captured !== menuContext) oncancel?.(captured);
   });
@@ -55,7 +60,37 @@
   let error = $state("");
   let preview = $state(null);
   let dialogGeneration = 0;
-  let source = $state(/** @type {"bibtex" | "zotero"} */ ("bibtex"));
+  let source = $state(/** @type {"bibtex" | "zotero" | "doi"} */ ("bibtex"));
+  const SOURCE_KEY = "librepaper.insert.citationSource";
+  /** @returns {string} */
+  function rememberedSource() {
+    try { return localStorage.getItem(SOURCE_KEY) || ""; } catch { return ""; }
+  }
+  /** @param {string} value */
+  function rememberSource(value) {
+    try { localStorage.setItem(SOURCE_KEY, value); } catch { /* storage is a convenience */ }
+  }
+  const TARGET_KEY = "librepaper.insert.bibTarget";
+  /** @returns {string} */
+  function rememberedTarget() {
+    try { return localStorage.getItem(TARGET_KEY) || ""; } catch { return ""; }
+  }
+  /** @type {string[]} */
+  let bibFiles = $state([]);
+  let bibTarget = $state("");
+  /** @param {string} value */
+  function chooseTarget(value) {
+    bibTarget = value;
+    try { localStorage.setItem(TARGET_KEY, value); } catch { /* storage is a convenience */ }
+  }
+  /** @type {DoiEntry[]} */
+  let doiEntries = $state([]);
+  /** @type {DoiEntry[]} */
+  let doiSelected = $state([]);
+  let doiLooking = $state(false);
+  let doiError = $state("");
+  let doiLookupCount = 0;
+  let doiTimer = 0;
   /** @type {ZoteroEntry[]} */
   let zoteroEntries = $state([]);
   /** @type {ZoteroEntry[]} */
@@ -101,6 +136,7 @@
   function closeDialog() {
     const target = captured;
     clearTimeout(zoteroTimer);
+    clearTimeout(doiTimer);
     dialogGeneration += 1;
     busy = false;
     dialogOpen = false;
@@ -133,6 +169,14 @@
     zoteroReady = false;
     zoteroError = "";
     clearTimeout(zoteroTimer);
+    clearTimeout(doiTimer);
+    doiEntries = [];
+    doiSelected = [];
+    doiLooking = false;
+    doiError = "";
+    doiLookupCount += 1;
+    const remembered = id === "citation" ? rememberedSource() : "";
+    if (remembered === "doi" && ondoilookup) source = "doi";
     // Skeleton closes the menu after dispatching onSelect. Opening the modal
     // on the next task avoids that close event immediately dismissing it.
     setTimeout(() => {
@@ -140,7 +184,7 @@
       dialog = id;
       dialogOpen = true;
       preview = safeBuild(id, insertionOptions(), context);
-      if (id === "citation" && onzoterosearch) void openZotero(generation);
+      if (id === "citation" && onzoterosearch) void openZotero(generation, remembered);
     }, 0);
   }
   // The same context handling as the bar's menu opening, for the phone's
@@ -219,7 +263,8 @@
   }
   async function submit() {
     if (!dialog || !captured || busy) return;
-    if (dialog === "citation" && source === "zotero") return submitZotero();
+    if (dialog === "citation" && source === "zotero") return submitImport(() => onzoteroimport?.(zoteroSelected, targetChoice), m.insertmenu_zotero_import_failed());
+    if (dialog === "citation" && source === "doi") return submitImport(() => ondoiimport?.(doiSelected, targetChoice), m.insertmenu_doi_import_failed());
     busy = true;
     try { await insert(dialog, insertionOptions(), captured); }
     catch (cause) { error = errorMessage(cause, m.insertmenu_generate_failed()); }
@@ -227,12 +272,13 @@
   }
   // Importing writes the items into the project bibliography, so the context
   // captured when the dialog opened is stale afterwards. A fresh one is taken.
-  async function submitZotero() {
+  /** @param {() => Promise<string[]> | undefined} importItems @param {string} failed */
+  async function submitImport(importItems, failed) {
     const generation = dialogGeneration;
     busy = true;
     error = "";
     try {
-      const keys = await onzoteroimport?.(zoteroSelected);
+      const keys = await importItems();
       if (generation !== dialogGeneration) return;
       const stale = captured;
       oncancel?.(stale);
@@ -244,7 +290,7 @@
       }
       insert("citation", { ...insertionOptions(), keys }, captured);
     }
-    catch (cause) { error = errorMessage(cause, m.insertmenu_zotero_import_failed()); }
+    catch (cause) { error = errorMessage(cause, failed); }
     finally { busy = false; }
   }
   /** @param {Event & {currentTarget: HTMLInputElement}} event */
@@ -271,13 +317,26 @@
   const environments = $derived(gatherInsertEnvironments(captured || {}));
   /** @param {string | null} id */
   const needsText = (id) => ["heading", "link"].includes(id || "");
-  const zoteroMode = $derived(dialog === "citation" && source === "zotero");
-  // Zotero mode needs a selection. The preview may be empty until the import.
-  const insertReady = $derived(zoteroMode ? zoteroSelected.length > 0 : Boolean(preview?.text || preview?.additionalEdits?.length));
+  const zoteroMode = $derived(dialog === "citation" && (source === "zotero" || source === "doi"));
+  // The .bib the import goes into: only offered when the project has a choice.
+  const targetChoice = $derived(zoteroMode && bibFiles.length >= 2 ? (bibFiles.includes(bibTarget) ? bibTarget : bibFiles[0]) : undefined);
+  $effect(() => {
+    if (!zoteroMode) return;
+    untrack(() => {
+      let files = [];
+      try { files = ontargets?.()?.files ?? []; } catch { files = []; }
+      bibFiles = files;
+      const remembered = rememberedTarget();
+      bibTarget = files.includes(remembered) ? remembered : files[0] ?? "";
+    });
+  });
+  const importSelected = $derived(source === "doi" ? doiSelected : zoteroSelected);
+  // Zotero and DOI modes need a selection. The preview may be empty until the import.
+  const insertReady = $derived(zoteroMode ? importSelected.length > 0 : Boolean(preview?.text || preview?.additionalEdits?.length));
   /** @returns {InsertionResult | null} */
   function zoteroPreview() {
-    if (!zoteroSelected.length || !captured) return null;
-    try { return buildInsertion("citation", { ...insertionOptions(), keys: zoteroSelected.map((item) => item.key) }, captured); }
+    if (!importSelected.length || !captured) return null;
+    try { return buildInsertion("citation", { ...insertionOptions(), keys: importSelected.map((item) => item.key) }, captured); }
     catch { return null; }
   }
   /** @returns {string} */
@@ -306,15 +365,17 @@
     zoteroEntries = found || [];
   }
   /** @param {number} generation */
-  async function openZotero(generation) {
+  async function openZotero(generation, remembered = "") {
     await searchZotero("");
-    if (generation !== dialogGeneration || entries().length || !zoteroReady) return;
+    if (generation !== dialogGeneration || !zoteroReady || source === "doi") return;
+    if (remembered !== "zotero" && entries().length) return;
     source = "zotero";
     error = "";
   }
   // Typing in Zotero mode searches after a pause, so each keystroke does not
   // ask Zotero a question.
   function scheduleZotero() {
+    if (source === "doi") return scheduleDoi();
     if (source !== "zotero") return;
     clearTimeout(zoteroTimer);
     const generation = dialogGeneration;
@@ -323,9 +384,70 @@
   }
   /** @param {string} value */
   function chooseSource(value) {
-    source = value === "zotero" ? "zotero" : "bibtex";
+    source = value === "zotero" ? "zotero" : value === "doi" && ondoilookup ? "doi" : "bibtex";
+    rememberSource(source);
     error = "";
+    if (source !== "doi") {
+      doiLookupCount += 1;
+      clearTimeout(doiTimer);
+      doiLooking = false;
+    }
     if (source === "zotero") scheduleZotero();
+  }
+  // A DOI is looked up on Enter or after a pause in typing. A newer lookup
+  // or a closed dialog makes an older answer stale.
+  function scheduleDoi() {
+    clearTimeout(doiTimer);
+    doiLookupCount += 1;
+    doiLooking = false;
+    const generation = dialogGeneration;
+    const text = query;
+    if (!text.trim()) { doiError = ""; return; }
+    doiTimer = setTimeout(() => { if (generation === dialogGeneration) void lookupDoi(text); }, 400);
+  }
+  /** @param {string} text */
+  async function lookupDoi(text) {
+    clearTimeout(doiTimer);
+    if (!text.trim() || !ondoilookup) return;
+    const generation = dialogGeneration;
+    const lookup = ++doiLookupCount;
+    doiLooking = true;
+    doiError = "";
+    let found;
+    try { found = await ondoilookup(text.trim()); }
+    catch (cause) {
+      if (generation === dialogGeneration && lookup === doiLookupCount && source === "doi") {
+        doiLooking = false;
+        doiError = errorMessage(cause, m.insertmenu_doi_lookup_failed());
+      }
+      return;
+    }
+    if (generation !== dialogGeneration || lookup !== doiLookupCount || source !== "doi") return;
+    doiLooking = false;
+    const same = (/** @type {DoiEntry} */ item) => item.doi.toLowerCase() === found.doi.toLowerCase();
+    if (!doiEntries.some(same)) doiEntries = [...doiEntries, found];
+    if (!doiSelected.some(same)) doiSelected = [...doiSelected, found];
+    if (query === text) query = "";
+  }
+  /** @param {KeyboardEvent} event */
+  function queryKeydown(event) {
+    if (source !== "doi" || event.key !== "Enter" || !query.trim()) return;
+    event.preventDefault();
+    void lookupDoi(query);
+  }
+  /** @param {DoiEntry} entry @param {boolean} selected */
+  function toggleDoi(entry, selected) {
+    const others = doiSelected.filter((item) => item.doi.toLowerCase() !== entry.doi.toLowerCase());
+    doiSelected = selected ? [...others, entry] : others;
+  }
+  /** @param {InsertBibliographyEntry} entry @returns {{author: string, year: string, title: string}} */
+  function rowParts(entry) {
+    const raw = entry.authors;
+    const display = (/** @type {any} */ author) => author && typeof author === "object" ? String(author.name || author.family || [author.given, author.last].filter(Boolean).join(" ")) : String(author ?? "");
+    const list = (Array.isArray(raw) ? raw : raw ? [raw] : []).map(display).filter(Boolean);
+    const first = (list[0] || "").trim();
+    const surname = (first.includes(",") ? first.split(",", 1)[0] : first.split(/\s+/).at(-1) || first).replace(/^[{(]+|[})]+$/g, "");
+    return { author: list.length > 1 ? m.bibliography_et_al({ author: surname }) : surname, year: entry.year ? String(entry.year) : "", title: entry.title ? String(entry.title) : "" };
   }
   /** @param {ZoteroEntry} entry @param {boolean} selected */
   function toggleZotero(entry, selected) {
@@ -385,7 +507,12 @@
   </div>
 </MenubarMenu>
 
-<Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : m.common_insert()} description={captured?.format ? m.insertmenu_generated_for({ format: captured.format }) : null} onclose={closeDialog} wide
+{#snippet row(/** @type {InsertBibliographyEntry} */ entry)}
+  {@const part = rowParts(entry)}
+  <strong class="insert-key">{entry.key}</strong><span class="insert-who">{part.author}</span><span class="insert-year">{part.year}</span><span class="insert-title">{part.title}</span>
+{/snippet}
+
+<Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : m.common_insert()} description={captured?.format ? m.insertmenu_generated_for({ format: captured.format }) : null} onclose={closeDialog} wide resizable={dialog === "citation"}
   confirm={{
     form: "insert-dialog",
     label: m.common_insert(),
@@ -395,24 +522,39 @@
   }}>
   <!-- A form, so Enter in any of these fields inserts, the way Enter in the
        name field of the rename dialog renames. -->
-  <form id="insert-dialog" class="flex min-h-0 flex-col gap-3" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
+  <form id="insert-dialog" class="flex flex-col gap-3" class:min-h-0={dialog !== "citation"} class:flex-1={dialog === "citation"} onsubmit={(event) => { event.preventDefault(); void submit(); }}>
   {#if dialog === "citation"}
     <label class="label">{m.insertmenu_source()}
       <select class="select" value={source} onchange={(event) => chooseSource(event.currentTarget.value)}>
         <option value="bibtex" disabled={!entries().length}>{entries().length ? "BibTeX" : m.insertmenu_bibtex_no_bibliography()}</option>
         <option value="zotero" disabled={!zoteroReady}>{zoteroReason() ? m.insertmenu_zotero_unavailable({ reason: zoteroReason() }) : "Zotero"}</option>
+        {#if ondoilookup}<option value="doi">{m.insertmenu_doi()}</option>{/if}
       </select>
     </label>
-    <input class="input" type="search" placeholder={m.insertmenu_search_placeholder()} aria-label={m.insertmenu_search_label()} value={query}
+    {#if targetChoice}
+      <label class="label">{m.insertmenu_bib_target()}
+        <select class="select" value={targetChoice} onchange={(event) => chooseTarget(event.currentTarget.value)}>
+          {#each bibFiles as file (file)}<option value={file}>{file}</option>{/each}
+        </select>
+      </label>
+    {/if}
+    <input class="input" type="search" placeholder={source === "doi" ? m.insertmenu_doi_placeholder() : m.insertmenu_search_placeholder()} aria-label={source === "doi" ? m.insertmenu_doi() : m.insertmenu_search_label()} value={query}
+           onkeydown={queryKeydown}
            oninput={(event) => { query = event.currentTarget.value; scheduleZotero(); }} />
-    <div class="insert-results" role="group" aria-label={source === "zotero" ? m.insertmenu_zotero_items_group() : m.insertmenu_bibliography_group()}>
+    <div class="insert-results" role="group" aria-label={source === "zotero" ? m.insertmenu_zotero_items_group() : source === "doi" ? m.insertmenu_doi_items_group() : m.insertmenu_bibliography_group()}>
       {#if source === "zotero"}
         {#each zoteroEntries as entry}
-          <label class="insert-result"><input type="checkbox" value={entry.zotero_item} checked={zoteroSelected.some((item) => item.zotero_item === entry.zotero_item)} onchange={(event) => toggleZotero(entry, event.currentTarget.checked)} /><span><strong>{entry.key}</strong> {entryLabel(entry)}</span></label>
+          <label class="insert-result" data-tip={entryLabel(entry)}><input type="checkbox" value={entry.zotero_item} checked={zoteroSelected.some((item) => item.zotero_item === entry.zotero_item)} onchange={(event) => toggleZotero(entry, event.currentTarget.checked)} />{@render row(entry)}</label>
         {:else}<p class="panel-muted">{m.insertmenu_zotero_no_match()}</p>{/each}
+      {:else if source === "doi"}
+        {#each doiEntries as entry}
+          <label class="insert-result" data-tip={entryLabel(entry)}><input type="checkbox" value={entry.doi} checked={doiSelected.some((item) => item.doi.toLowerCase() === entry.doi.toLowerCase())} onchange={(event) => toggleDoi(entry, event.currentTarget.checked)} />{@render row(entry)}</label>
+        {/each}
+        {#if doiLooking}<p class="panel-muted" role="status">{m.insertmenu_doi_looking_up()}</p>{/if}
+        {#if doiError && !doiLooking}<p class="insert-error-text" role="alert">{doiError}</p>{/if}
       {:else}
         {#each filteredEntries as entry}
-          <label class="insert-result"><input type="checkbox" value={entry.key} bind:group={draft.keys} /><span><strong>{entry.key}</strong> {entryLabel(entry)}</span></label>
+          <label class="insert-result" data-tip={entryLabel(entry)}><input type="checkbox" value={entry.key} bind:group={draft.keys} />{@render row(entry)}</label>
         {:else}<p class="panel-muted">{m.insertmenu_bibliography_no_match()}</p>{/each}
       {/if}
     </div>
@@ -466,8 +608,16 @@
   .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
   .menu-separator { height: 1px; margin: .2rem .4rem; background: var(--color-divider); }
   .insert-reason { flex: 0 0 auto; margin-left: auto; max-width: 9rem; overflow: hidden; color: var(--color-text-secondary); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
-  .insert-results { max-height: 16rem; overflow-y: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }
-  .insert-result { display: flex; gap: .6rem; padding: .55rem .7rem; cursor: pointer; }
+  .insert-results { flex: 1 1 16rem; min-height: 6rem; overflow: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }
+  .insert-result { display: flex; align-items: baseline; gap: .6rem; padding: .3rem .7rem; font-size: .85rem; cursor: pointer; white-space: nowrap; }
+  .insert-result input { flex: none; align-self: center; }
+  .insert-key { flex: 0 1 auto; min-width: 0; max-width: 10rem; overflow: hidden; text-overflow: ellipsis; }
+  .insert-who { flex: 0 1 auto; min-width: 0; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; color: var(--color-text-secondary); }
+  @media (max-width: 479px) { .insert-key, .insert-who { max-width: 7rem; } }
+  .insert-year { flex: none; color: var(--color-text-secondary); }
+  .insert-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .insert-error-text { padding: .5rem .7rem; color: var(--color-error-text); font-size: .85rem; }
+  .insert-results > p { padding: .5rem .7rem; }
   .insert-result:hover { background: var(--color-subtle); }
   .insert-error { padding: .7rem 1rem; color: var(--color-error-text); background: var(--color-raised); border: 1px solid var(--color-error-solid); border-radius: var(--radius-base); box-shadow: var(--shadow-xl); }
   .insert-preview { margin-top: .4rem; border-top: 1px solid var(--color-divider); padding-top: .6rem; }

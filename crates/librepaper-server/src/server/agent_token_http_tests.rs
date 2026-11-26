@@ -53,6 +53,15 @@ async fn serve_with(
     slug: &str,
     anonymous: librepaper_base::role::AnonymousAccess,
 ) -> Option<Served> {
+    serve_configured(slug, anonymous, true).await
+}
+
+/// The same, with the host's `agents` switch as well.
+async fn serve_configured(
+    slug: &str,
+    anonymous: librepaper_base::role::AnonymousAccess,
+    agents: bool,
+) -> Option<Served> {
     let mut deployment = http_deployment(
         DocumentInput {
             slug: slug.into(),
@@ -77,6 +86,7 @@ async fn serve_with(
         .to_owned();
     deployment.server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
     deployment.server.anonymous = anonymous;
+    deployment.server.agents = agents;
     let Deployment {
         server,
         catalog,
@@ -648,6 +658,74 @@ async fn a_token_works_only_on_its_documents_tools() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn with_agents_off_no_token_is_created() {
+    let Some(served) = serve_configured("agents-off-create", Default::default(), false).await
+    else {
+        return;
+    };
+    let (status, body) = served
+        .share(json!({"create": {"kind": "token", "role": "read", "name": "Agent", "until": "1d"}}))
+        .await;
+    assert_ne!(status, 200, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("turned off agent access")),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn with_agents_off_a_token_is_refused_on_its_own_tools() {
+    let Some(served) = serve_configured("agents-off-tools", Default::default(), false).await else {
+        return;
+    };
+    let token = agent_token_string(READER, &served.slug, &"0".repeat(64));
+    assert_eq!(served.tools(&token).await.0, 403);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn with_agents_off_the_tool_routes_are_not_found() {
+    let Some(served) = serve_configured("agents-off-routes", Default::default(), false).await
+    else {
+        return;
+    };
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{}/api/documents/{}/tools",
+            served.base, served.slug
+        ))
+        .header("host", "paper.example")
+        .header("authorization", &served.owner)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 404);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_config_reports_the_host_switches() {
+    let Some(served) = serve_configured("agents-off-config", Default::default(), false).await
+    else {
+        return;
+    };
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/config", served.base))
+        .header("host", "paper.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["agents"], false, "{body}");
+    assert_eq!(body["local_builds"], true, "{body}");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn the_tools_route_tells_a_direct_caller_what_a_write_needs() {
     let Some(served) = serve("tools-direct").await else {
         return;
@@ -674,6 +752,10 @@ async fn the_tools_route_tells_a_direct_caller_what_a_write_needs() {
         .as_str()
         .unwrap()
         .contains("identified automatically"));
+    assert!(default["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("there is no main file"));
 
     // `?schema=full` is the direct caller's view: every write names its
     // operation, and the instructions say how to build it.
@@ -691,6 +773,7 @@ async fn the_tools_route_tells_a_direct_caller_what_a_write_needs() {
         .contains(&json!("operation")));
     let instructions = direct["instructions"].as_str().unwrap();
     assert!(instructions.contains("operation_epoch"));
+    assert!(instructions.contains("there is no main file"));
     assert!(!instructions.contains("identified automatically"));
 
     // A commenter gets the full schema too, but still not the editor's tools.
@@ -779,7 +862,10 @@ async fn a_read_token_only_reads_and_a_comment_token_cannot_propose() {
 
     let (status, tools) = served.tools(&read_token).await;
     assert_eq!(status, 200);
-    assert_eq!(tools, ["document_read", "document_result"]);
+    assert_eq!(
+        tools,
+        ["document_read", "document_compile", "document_result"]
+    );
     let (_, tools) = served.tools(&comment).await;
     assert!(!tools.contains(&"document_propose".to_string()));
     assert!(!tools.contains(&"document_apply".to_string()));
@@ -893,13 +979,15 @@ async fn revoked_expired_and_stale_tokens_answer_401() {
     .unwrap();
     assert_eq!(served.tools(&expired).await.0, 401);
     let listed = served.sharing().await;
+    // An expired token stays listed, marked expired, for the window in which a
+    // connector could still renew it, so the owner can revoke it.
     assert!(
-        !listed["tokens"]
+        listed["tokens"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|token| token["id"] == expired_id.as_str()),
-        "an expired token is not listed: {listed}"
+            .any(|token| token["id"] == expired_id.as_str() && token["expired"] == true),
+        "an expired token is listed as expired: {listed}"
     );
 
     assert_eq!(served.tools(&stale).await.0, 200);
@@ -1337,4 +1425,132 @@ async fn a_token_may_last_a_year() {
         .share(json!({"create": {"kind": "token", "role": "edit", "name": "CI", "until": "365d"}}))
         .await;
     assert_eq!(status, 200, "{created}");
+}
+
+impl Served {
+    /// The thread query's first comment as `token` reads it, with the view
+    /// and epoch of that same read.
+    async fn first_thread(&self, token: &str) -> (Value, String, String) {
+        let (status, response) = self
+            .call(
+                token,
+                "document_read",
+                json!({"queries": [{"kind": "thread"}]}),
+            )
+            .await;
+        assert_eq!(status, 200, "{response}");
+        let value = &response["result"];
+        (
+            value["results"][0]["threads"][0].clone(),
+            value["view_id"].as_str().unwrap().to_string(),
+            value["operation_epoch"].as_str().unwrap().to_string(),
+        )
+    }
+
+    /// Replaces the whole text of `paper.md` as an editor's update would.
+    async fn rewrite_paper(&self, text: &str) {
+        let room = self.server.documents.rooms.get(&self.slug).await.unwrap();
+        let (vector, edited) = room
+            .log()
+            .with_head(|doc| {
+                (
+                    librepaper_document::document::session::encode_vector(doc),
+                    doc.fork(),
+                )
+            })
+            .await
+            .unwrap();
+        librepaper_document::document::session::put_text(&edited, "paper.md", text);
+        let update = librepaper_document::document::session::encode_diff(&edited, &vector).unwrap();
+        let ingested = room
+            .ingest(999, "editor-999", "editor-999", 1, update)
+            .await;
+        assert!(
+            matches!(ingested, librepaper_engine::log::Ingested::Accepted),
+            "{ingested:?}"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_thread_read_carries_the_anchor_of_each_comment() {
+    let Some(served) = serve("token-thread-anchor").await else {
+        return;
+    };
+    let (comment, _) = served.mint_token("comment", "Reviewer bot").await;
+    let passage = "interval covers the mean";
+    let (view, epoch, range) = served.read(&comment, passage).await;
+    let (status, created) = served
+        .call(
+            &comment,
+            "document_comment",
+            json!({"action": "create", "view_id": view, "range_id": range,
+                   "body": "How could we put this?", "operation": operation(&epoch)}),
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+    assert!(created["error"].is_null(), "{created}");
+
+    // A Comment token is told where the comment sits, and the handle works.
+    let (thread, view, epoch) = served.first_thread(&comment).await;
+    let anchor = &thread["anchor"];
+    assert_eq!(anchor["path"], "paper.md", "{thread}");
+    assert_eq!(anchor["exact"], passage, "{thread}");
+    assert_eq!(anchor["status"], "exact");
+    // The anchor stands in for the browser's own records of the passage.
+    for restated in ["original_anchor", "attachment", "presentation"] {
+        assert!(thread[restated].is_null(), "{restated} in {thread}");
+    }
+    let handle = anchor["range_id"].as_str().expect("a range handle");
+    let (status, again) = served
+        .call(
+            &comment,
+            "document_comment",
+            json!({"action": "create", "view_id": view, "range_id": handle,
+                   "body": "A second remark on the same words", "operation": operation(&epoch)}),
+        )
+        .await;
+    assert_eq!(status, 200, "{again}");
+    assert!(again["error"].is_null(), "{again}");
+
+    // The one-thread form carries it too.
+    let id = thread["id"].as_str().unwrap();
+    let (status, one) = served
+        .call(
+            &comment,
+            "document_read",
+            json!({"queries": [{"kind": "thread", "id": id}]}),
+        )
+        .await;
+    assert_eq!(status, 200, "{one}");
+    assert_eq!(
+        one["result"]["results"][0]["thread"]["anchor"]["exact"],
+        passage
+    );
+    assert!(
+        one["result"]["results"][0]["thread"]["original_anchor"].is_null(),
+        "{one}"
+    );
+
+    // Text added above the passage moves it; the anchor follows.
+    served
+        .rewrite_paper(&format!(
+            "# Interval estimates\n\nA new opening paragraph.\n{}",
+            &PAPER[21..]
+        ))
+        .await;
+    let (moved, _, _) = served.first_thread(&comment).await;
+    assert_eq!(moved["anchor"]["exact"], passage, "{moved}");
+    assert!(moved["anchor"]["range_id"].is_string());
+
+    // Taking the passage out leaves a status and the original words only.
+    served
+        .rewrite_paper("# Interval estimates\n\nNothing is left here.\n")
+        .await;
+    let (gone, _, _) = served.first_thread(&comment).await;
+    assert_ne!(gone["anchor"]["status"], "exact", "{gone}");
+    assert!(gone["anchor"]["range_id"].is_null(), "{gone}");
+    assert!(gone["anchor"]["path"].is_null(), "{gone}");
+    assert_eq!(gone["anchor"]["original_exact"], passage);
 }

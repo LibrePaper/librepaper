@@ -44,6 +44,11 @@ impl Room {
     /// One page of comments, shaped the way `agent_query`'s `thread` query
     /// reads them, plus the revision that page was read at.
     ///
+    /// `anchor_of` gives each comment the `anchor` an agent reads it by. It
+    /// sees the whole comment, not the stripped view, because the passage is
+    /// worked out against the reader's own view of the source. A comment
+    /// that gets one loses the records it restates; see `set_anchor`.
+    ///
     /// `after` is the position a continuation cursor decoded to. The
     /// revision is what a cursor binds to, exactly as it bound to the old
     /// whole-collection digest: an agent that keeps paging across a change
@@ -56,18 +61,26 @@ impl Room {
         moderates: bool,
         after: Option<comments::Position>,
         limit: usize,
+        anchor_of: &(dyn Fn(&crate::room::Comment) -> Option<Value> + Sync),
     ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError>
     {
-        let (views, page) = self
-            .comment_page(after, limit, author, sees_source, moderates)
+        // Derived for every reader, not only one who sees the source:
+        // `comment_page` skips that below the suggest rung, and the anchor
+        // is the one source-level thing a reader of any role is given.
+        let mut page = comments::page(&self.catalog, self.document_id, after, limit)
             .await
             .map_err(crate::room::source_change::AgentError::from)?;
-        let items = views
-            .into_iter()
-            .zip(page.comments.iter())
-            .map(|(view, c)| {
+        self.derive(&mut page.comments).await;
+        let items = page
+            .comments
+            .iter()
+            .map(|c| {
+                let view = CommentView::for_viewer(c, author, sees_source, moderates);
                 let mut view = serde_json::to_value(view).unwrap_or(Value::Null);
                 view["comment_version"] = json!(c.version());
+                if let Some(anchor) = anchor_of(c) {
+                    set_anchor(&mut view, anchor);
+                }
                 if let Some(at) = c.at {
                     view["cursor"] = json!(comments::encode_cursor(self.document_id, None, at));
                 }
@@ -84,6 +97,7 @@ impl Room {
 
     /// One comment and a bounded window of its replies, shaped as the
     /// `thread` query's `id` form returns them.
+    #[allow(clippy::too_many_arguments)]
     pub async fn thread_reply_window(
         &self,
         comment_id: Uuid,
@@ -92,6 +106,7 @@ impl Room {
         moderates: bool,
         after: Option<comments::Position>,
         limit: usize,
+        anchor_of: &(dyn Fn(&crate::room::Comment) -> Option<Value> + Sync),
     ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError>
     {
         let missing = crate::room::agent_query::ThreadWindow {
@@ -121,6 +136,9 @@ impl Room {
         ))
         .unwrap_or(Value::Null);
         thread["comment_version"] = json!(comment.version());
+        if let Some(anchor) = anchor_of(&comment) {
+            set_anchor(&mut thread, anchor);
+        }
         let items = page
             .replies
             .iter()
@@ -143,5 +161,46 @@ impl Room {
             complete: page.complete,
             missing: false,
         })
+    }
+}
+
+/// Gives a comment view the `anchor` an agent reads the comment by, and
+/// takes out the three records that anchor restates: the stored anchor,
+/// its attachment and the rendered quotation.
+///
+/// Those are the browser's working data. Left in, they said the same
+/// passage three more times in every comment an agent read, and they
+/// still carried a file id and offsets for a passage the anchor reports
+/// as gone. A comment that gets no anchor is a remark about the document
+/// as a whole, never comes through here, and keeps its view as it is.
+fn set_anchor(view: &mut Value, anchor: Value) {
+    if let Some(object) = view.as_object_mut() {
+        object.remove("original_anchor");
+        object.remove("attachment");
+        object.remove("presentation");
+        object.insert("anchor".to_string(), anchor);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_anchored_view_drops_the_records_its_anchor_restates() {
+        let mut view = json!({
+            "id": "c1",
+            "body": "a remark",
+            "original_anchor": {"file": "f1", "start": 0, "end": 4},
+            "attachment": {"file": "f1"},
+            "presentation": {"quote": "quoted"},
+        });
+        set_anchor(&mut view, json!({"status":"exact","path":"paper.md"}));
+        assert!(view.get("original_anchor").is_none());
+        assert!(view.get("attachment").is_none());
+        assert!(view.get("presentation").is_none());
+        assert_eq!(view["anchor"]["path"], "paper.md");
+        assert_eq!(view["id"], "c1");
+        assert_eq!(view["body"], "a remark");
     }
 }

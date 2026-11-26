@@ -1,9 +1,12 @@
 //! `librepaper mcp`: the stdio entry point that serves the document MCP tools.
-//! Two kinds of caller run it, never a person at a prompt. The sidebar
+//! Three kinds of caller run it, never a person at a prompt. The sidebar
 //! assistant's own chosen ACP agent spawns it on this computer, as its own
 //! child process, following the command the local service's session handed it
 //! at `session/new`. An agent on another machine runs it with an agent token
 //! in `LIBREPAPER_AGENT_TOKEN`, which names both the server and the project.
+//! A collaborator, who cannot issue agent tokens, runs it with `--link`: a
+//! share link that includes its key, served with their stored `librepaper
+//! login` sign-in, at that link's role.
 //! It speaks nothing but MCP frames over stdio. It is listed in help so people
 //! can register it with their MCP client.
 //! LibrePaper's own local service is neither caller: it drives ACP directly
@@ -37,6 +40,9 @@ pub(crate) struct McpArgs {
     // not type it.
     #[arg(long, value_name = "NAME", hide = true)]
     connection: Option<String>,
+    /// A share link to the project. The agent works as you, with your `librepaper login` sign-in, at that link's role. For collaborators, who cannot issue agent tokens.
+    #[arg(long, value_name = "URL")]
+    link: Option<String>,
     #[command(flatten)]
     deployment: Deployment,
 }
@@ -45,16 +51,27 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
     use librepaper_companion::local::connections::{
         ConnectionStore, CONNECTION_VARIABLE, STATE_HOME_VARIABLE,
     };
-    let Deployment { server, token } = args.deployment;
-    let connection = args
-        .connection
+    let McpArgs {
+        connection,
+        link,
+        deployment: Deployment { server, token },
+    } = args;
+    let connection = connection
         .or_else(|| std::env::var(CONNECTION_VARIABLE).ok())
         .filter(|name| !name.is_empty());
     let Some(connection) = connection else {
         let agent_token = std::env::var(AGENT_TOKEN_VARIABLE).unwrap_or_default();
+        if let Some(link) = link {
+            if !agent_token.is_empty() {
+                return Err(format!(
+                    "librepaper mcp got both --link and {AGENT_TOKEN_VARIABLE}; use one: --link to work as yourself with your sign-in, or the agent token to work as its agent"
+                ));
+            }
+            return run_mcp_link(&link, server.as_deref(), token.as_deref()).await;
+        }
         if agent_token.is_empty() {
             return Err(format!(
-                "librepaper mcp needs a connection or an agent token: pass --connection NAME, \
+                "librepaper mcp needs a connection, a share link or an agent token: pass --connection NAME or --link URL, \
                  or set {CONNECTION_VARIABLE}, or set {AGENT_TOKEN_VARIABLE} to a token from the project's Agent panel"
             ));
         }
@@ -98,6 +115,25 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
     let served = librepaper_companion::automation::mcp::stdio(&peer).await;
     tasks.stop(Duration::ZERO).await;
     served
+}
+
+/// Serve the project named by a share link, as the stored sign-in at that
+/// link's role. The sign-in comes from `AutomationPeer::open`; the grant file
+/// is not read on this path.
+async fn run_mcp_link(link: &str, server: Option<&str>, token: Option<&str>) -> Result<(), String> {
+    let link = DocumentLink::parse(link, server.unwrap_or(""))?;
+    require_key(&link)?;
+    let peer = AutomationPeer::open(link, server, token).await?;
+    librepaper_companion::automation::mcp::stdio(&peer).await
+}
+
+/// A share link without its key cannot open the project for anyone but its
+/// owner, so refuse it with the way forward.
+fn require_key(link: &DocumentLink) -> Result<(), String> {
+    if link.has_key() {
+        return Ok(());
+    }
+    Err("librepaper mcp --link needs a share link that includes its key, the address the Share panel gives, such as /docs/<slug>#k=...; if you own the project, use an agent token in LIBREPAPER_AGENT_TOKEN instead".into())
 }
 
 /// Split an agent token into the app origin and the project slug. The key is
@@ -207,5 +243,14 @@ mod tests {
         );
         std::fs::write(&path, &scoped).unwrap();
         assert_eq!(read_grant(&path).unwrap(), scoped);
+    }
+
+    #[test]
+    fn a_share_link_without_its_key_is_refused_for_link() {
+        let keyed = DocumentLink::parse("https://docs.example/docs/abc#k=secret", "").unwrap();
+        assert!(require_key(&keyed).is_ok());
+
+        let bare = DocumentLink::parse("https://docs.example/docs/abc", "").unwrap();
+        assert!(require_key(&bare).is_err());
     }
 }

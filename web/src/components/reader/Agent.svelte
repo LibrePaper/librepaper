@@ -27,7 +27,7 @@
 
   const TABS = $derived([
     { id: "builtin", label: m.common_chat() },
-    ...(canShare ? [{ id: "external", label: m.common_agent() }] : []),
+    ...(canShare ? [{ id: "external", label: m.agent_tab_connect() }] : []),
     { id: "tasks", label: m.agent_tab_tasks() },
   ]);
   // The picked tab is kept only while it is still offered. Without one, the
@@ -150,7 +150,7 @@
       </DesktopOnly>
     </Tabs.Content>
     {#if canShare}
-      <Tabs.Content value="external"><AgentExternal {open} {sharing} /></Tabs.Content>
+      <Tabs.Content value="external"><AgentExternal {open} {sharing} {slug} /></Tabs.Content>
     {/if}
     <Tabs.Content value="tasks">{#if current === "tasks"}{@render tasksPane()}{/if}</Tabs.Content>
   </PanelTabs>

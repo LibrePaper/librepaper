@@ -25,7 +25,7 @@
   "tools": [
     {
       "name": "document_read",
-      "description": "Read bounded exact source or search, outline, bibliography, comments and context. Reuse returned view and range handles.",
+      "description": "Read bounded exact source or search, outline, bibliography, comments and context. Reuse returned view and range handles. A thread query returns each comment with its anchor: the path, the exact quoted text with a little before and after, a status, and a range_id for that passage in this view.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -86,7 +86,8 @@
                 },
                 "id": {
                   "type": "string",
-                  "maxLength": 128
+                  "maxLength": 128,
+                  "description": "With a thread query: one comment's id, as a thread listing gave it, to read that thread with its replies. Leave it out to list the threads."
                 },
                 "key": {
                   "type": "string",
@@ -133,7 +134,8 @@
                 },
                 "comment_id": {
                   "type": "string",
-                  "maxLength": 128
+                  "maxLength": 128,
+                  "description": "With a source, context or section query: read the passage this comment is on, in place of path and a range. A thread query selects one thread with id, not with this."
                 },
                 "context": {
                   "type": "string",
@@ -147,7 +149,8 @@
                   "enum": [
                     "all",
                     "unresolved"
-                  ]
+                  ],
+                  "description": "With a thread query: all comments, the default, or only the unresolved ones."
                 },
                 "limit": {
                   "type": "integer",
@@ -572,8 +575,54 @@
       }
     },
     {
+      "name": "document_compile",
+      "description": "Compile one file in the project owner's open browser editor tab and return the status, diagnostics and the tail of the compiler log. The server never compiles: the owner's tab must be open and signed in as the owner. Omit run unless the code in the document must execute; running code needs an Editor token, the desktop app and the owner's opt-in for agents. If the wait runs out the status is pending: fetch it later with document_result {kind: compile, id: compile_id}.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "description": "The file to compile, for example paper.tex, index.qmd or main.typ."
+          },
+          "output": {
+            "type": "string",
+            "enum": ["pdf", "html"],
+            "description": "Omit to use the editor's own output setting for this format."
+          },
+          "run": {
+            "type": "boolean",
+            "description": "Run the code chunks (Quarto and Typst Run code). Needs an Editor token. Default false."
+          },
+          "wait_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 25000,
+            "description": "How long to wait for the compile, in milliseconds. Default 20000."
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "document_result",
-      "description": "Read a retained candidate or its render result by kind and id.",
+      "description": "Read a retained candidate, its render result or a compile result by kind and id.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -588,7 +637,8 @@
             "enum": [
               "operation",
               "candidate",
-              "render"
+              "render",
+              "compile"
             ]
           },
           "id": {
