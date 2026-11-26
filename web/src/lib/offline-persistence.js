@@ -260,6 +260,26 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
           if (dirty && !closed) await putState();
           await pendingFlush;
         },
+        // Deletes this project's offline copy: the snapshot record and every
+        // delta row for it, in one transaction. Nothing may write after this,
+        // so `closed` is set first; an in-flight write is waited out before
+        // the delete so it cannot recreate the record.
+        async discard() {
+          await hydration;
+          closed = true;
+          clearTimeout(writeTimer);
+          writeTimer = null;
+          await pendingFlush.catch(() => {});
+          database ||= await openOfflineDatabase(indexedDB_);
+          const transaction = database.transaction([STATES, UPDATES], "readwrite");
+          const done = transactionDone(transaction);
+          const states = transaction.objectStore(STATES);
+          const updates = transaction.objectStore(UPDATES);
+          const pending = await updatesFor(transaction);
+          for (const item of pending) updates.delete([key, item.id]);
+          states.delete(key);
+          await done;
+        },
         // There is no `confirm(coverage)` any more, and there is no stored
         // coverage to confirm. The server used to send the Loro vector it
         // had durably covered on every acknowledgement, and this kept it so

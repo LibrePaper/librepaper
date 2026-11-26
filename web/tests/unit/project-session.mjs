@@ -1239,4 +1239,83 @@ const gate = () => {
   }
 }
 
-console.log("project-session: persistence, identity, swap, directory changes, protocol join shapes, doc-gap, acknowledgement boundaries, pressure retry, join cancellation and join trace passed");
+// A join that ends short with no frame left to complete it is reported to
+// `onUnjoinable`, because nothing else retries it and the editor would hang
+// with the socket open. The report runs after the offline discard, so one
+// turn of the event loop is awaited before the calls are checked.
+const nextTurn = () => new Promise((resolve) => setTimeout(resolve, 0));
+const unjoinablePersistence = (discards) => ({
+  open: () => ({ hydration: Promise.resolve(), discard: async () => { discards.count += 1; } }),
+});
+{
+  // (a) `doc-rows` that does not cover the advertised head, on an empty
+  // document: nothing local can be lost, so the copy is discarded first.
+  const { head } = sourceLog();
+  const calls = [];
+  const discards = { count: 0 };
+  const empty = createProjectSession({
+    send: () => {},
+    onState: () => {},
+    presenceId: () => "unjoinable-empty",
+    onUnjoinable: (info) => calls.push(info),
+    persistence: unjoinablePersistence(discards),
+  });
+  try {
+    await empty.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [] });
+    assert.equal(empty.joined, false);
+    await nextTurn();
+    assert.deepEqual(calls, [{ empty: true }], "a terminal short on an empty document is reported once");
+    assert.equal(discards.count, 1, "the empty offline copy is discarded before the report");
+  } finally {
+    empty.leave();
+  }
+}
+{
+  // (b) A `doc-state` carrying a base is followed by `doc-rows`, so its short
+  // is not terminal and nothing is reported or discarded yet.
+  const { base, head } = sourceLog();
+  const calls = [];
+  const discards = { count: 0 };
+  const waiting = createProjectSession({
+    send: () => {},
+    onState: () => {},
+    presenceId: () => "unjoinable-base",
+    onUnjoinable: (info) => calls.push(info),
+    persistence: unjoinablePersistence(discards),
+  });
+  try {
+    await waiting.start({ protocol: "librepaper.room.v3", vector: encode(head.encode()), base: encode(base), updates: [] });
+    assert.equal(waiting.joined, false);
+    await nextTurn();
+    assert.deepEqual(calls, [], "a base-only short waits for the rows that follow it");
+    assert.equal(discards.count, 0);
+  } finally {
+    waiting.leave();
+  }
+}
+{
+  // (c) A terminal short on a document with local edits: the report says so,
+  // and the local work is never discarded.
+  const { head } = sourceLog();
+  const calls = [];
+  const discards = { count: 0 };
+  const local = createProjectSession({
+    send: () => {},
+    onState: () => {},
+    presenceId: () => "unjoinable-local",
+    onUnjoinable: (info) => calls.push(info),
+    persistence: unjoinablePersistence(discards),
+  });
+  try {
+    local.addText("notes.md", "work made offline");
+    await local.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [] });
+    assert.equal(local.joined, false);
+    await nextTurn();
+    assert.deepEqual(calls, [{ empty: false }], "a terminal short with local work is reported as not empty");
+    assert.equal(discards.count, 0, "local work is never discarded");
+  } finally {
+    local.leave();
+  }
+}
+
+console.log("project-session: persistence, identity, swap, directory changes, protocol join shapes, doc-gap, acknowledgement boundaries, pressure retry, join cancellation, join trace and unjoinable joins passed");

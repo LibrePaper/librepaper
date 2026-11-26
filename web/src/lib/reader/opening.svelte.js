@@ -58,6 +58,7 @@ import { createReaderCollaboration } from "./collaboration.js";
  *   onFiles?: (events: any, session: any) => void,
  *   onAwareness?: (session: any) => void,
  *   onDocumentChanged?: (reason: string) => void,
+ *   onUnjoinable?: (info: { empty: boolean }) => void,
  *   localStorageFailed?: (error: string) => void,
  *   paint?: () => void,
  *   openFailed?: (error: any) => void,
@@ -102,6 +103,8 @@ export function createOpening({
   onFiles = (_events, _session) => {},
   onAwareness = (_session) => {},
   onDocumentChanged = (_reason) => {},
+  // The join ended short with nothing left to complete it. See createProjectSession.
+  onUnjoinable = (_info) => {},
   // A local write failed that had not failed before.
   localStorageFailed = (_error) => {},
   // Paints the preview.
@@ -201,6 +204,7 @@ export function createOpening({
         },
         ...sessionEvents(),
         onDocumentChanged,
+        onUnjoinable,
       });
       session = collaboration.start(document_);
       if (seed) await seed(session);

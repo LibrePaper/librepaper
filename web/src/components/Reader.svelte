@@ -165,6 +165,20 @@
   // when the demo starts so that no other reader loads the template sources.
   const DEMO = location.pathname === "/try";
   const SLUG = DEMO ? "try-librepaper" : location.pathname.split("/")[2];
+  // Set when a join ends terminally short with nothing local to lose, so the
+  // page reloads once for a fresh start. Per tab (sessionStorage), cleared once
+  // a join completes, so a second failure is shown rather than looping.
+  const REJOIN_KEY = `librepaper:rejoin:${SLUG}`;
+  function rejoinReload() {
+    try {
+      if (sessionStorage.getItem(REJOIN_KEY)) return false;
+      sessionStorage.setItem(REJOIN_KEY, "1");
+    } catch {
+      return false;
+    }
+    location.reload();
+    return true;
+  }
   // Panels that need the server. The demo draws them greyed out.
   const DEMO_OFF = ["collaboration", "agent", "history", "git", "share"];
   const DEMO_HINT = m.reader_demo_hint();
@@ -352,6 +366,10 @@
     onDocumentChanged: () => {
       location.reload();
     },
+    onUnjoinable: ({ empty }) => {
+      if (empty && rejoinReload()) return;
+      say(m.reader_unjoinable(), { kind: "problem", id: "reader:unjoinable" });
+    },
     localStorageFailed: (error) => {
       say(m.readerc_local_storage_failed({ error }), { kind: "problem", id: "reader:local-storage-failed" });
     },
@@ -363,6 +381,15 @@
   const mayEdit = $derived(lifecycle.state.mayEdit);
   const connected = $derived(lifecycle.state.connected);
   const persistence = $derived(lifecycle.state.persistence);
+  // A completed join ends the retry: the next failure may reload again.
+  $effect(() => {
+    if (!persistence.joined) return;
+    try {
+      sessionStorage.removeItem(REJOIN_KEY);
+    } catch {
+      // Storage is blocked, so there was no key to clear.
+    }
+  });
   const peers = $derived(lifecycle.state.peers);
   const settled = $derived(lifecycle.state.settled);
   const openedLocally = $derived(lifecycle.state.openedLocally);
